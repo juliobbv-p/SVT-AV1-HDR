@@ -79,8 +79,8 @@ static const vector<uint8_t> valid_enc_mode = {
 };
 static const vector<uint8_t> invalid_enc_mode = {
     // Presets above MAX_ENC_PRESET are clamped down in copy_api_from_app, so
-    // the only rejected values are those below MIN_ENC_PRESET (ENC_MR).
-    (uint8_t)(ENC_MR - 1),
+    // the only rejected values are those below MIN_ENC_PRESET (ENC_MRS).
+    (uint8_t)(ENC_MRS - 1),
 };
 
 /* The intra period defines the interval of frames after which you insert an

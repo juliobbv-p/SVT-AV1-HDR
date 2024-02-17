@@ -28,7 +28,7 @@ The encoder parameters are listed in this table below along with their
 | **StatFile**                       | --stat-file          | any string   | None          | PSNR / SSIM per picture stat output file path, requires `--enable-stat-report 1`                                  |
 | **Progress**                       | --progress           | [0-2]        | 1             | Verbosity of the output [0: no progress is printed, 1: default output, 2: detailed output]                        |
 | **NoProgress**                     | --no-progress        | [0-1]        | 0             | Do not print out progress [1: `--progress 0`, 0: `--progress 1`]                                                  |
-| **EncoderMode**                    | --preset             | [-1-13]      | 8             | Encoder preset, presets < 0 are for debugging. Higher presets means faster encodes, but with a quality tradeoff. Capped at 11 for VOD (9 for random access at 4K and above), 9 for still images, and [7-13] with `--rtc 1` (13 is experimental) |
+| **EncoderMode**                    | --preset             | [-3-13]      | 8             | Encoder preset, presets < 0 are for research purposes. Higher presets means faster encodes, but with a quality tradeoff. Capped at 11 for VOD (9 for random access at 4K and above), 9 for still images, and [7-13] with `--rtc 1` (13 is experimental) |
 | **SvtAv1Params**                   | --svtav1-params      | any string   | None          | Colon-separated list of `key=value` pairs of parameters with keys based on command line options without `--`      |
 
 #### Usage of **SvtAv1Params**
