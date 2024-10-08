@@ -1007,6 +1007,11 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
+    if (config->noise_norm_strength > 4) {
+        SVT_ERROR("Noise normalization strength must be between 0 and 4\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
     return return_error;
 }
 
@@ -1185,6 +1190,7 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
 
     config_ptr->max_allowed_consecutive_frames_skips = 0;
 
+    config_ptr->noise_norm_strength = 1;
     return return_error;
 }
 
@@ -1355,6 +1361,10 @@ void svt_av1_print_lib_params(SequenceControlSet* scs) {
 
         if (config->hbd_mds != DEFAULT) {
             SVT_INFO("SVT [config]: High Bit Depth Mode Decision setting \t\t\t\t\t: %d\n", config->hbd_mds);
+        }
+
+        if (config->noise_norm_strength > 0) {
+            SVT_INFO("SVT [config]: Noise Normalization Strength \t\t\t\t\t: %d\n", config->noise_norm_strength);
         }
     }
 #if DEBUG_BUFFERS
@@ -2433,6 +2443,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"tf-strength", &config_struct->tf_strength},
         {"max-tx-size", &config_struct->max_tx_size},
         {"roi-map-block-size", &config_struct->roi_map_block_size},
+        {"noise-norm-strength", &config_struct->noise_norm_strength},
     };
 
     const size_t uint8_opts_size = sizeof(uint8_opts) / sizeof(uint8_opts[0]);

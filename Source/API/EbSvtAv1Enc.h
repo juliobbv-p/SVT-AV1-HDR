@@ -1104,6 +1104,14 @@ typedef struct EbSvtAv1EncConfiguration {
      * after svt_av1_enc_init_handle(), which clears this field.
      */
     uint8_t fast_decode_user_opts;
+    /**
+     * @brief Noise normalization strength; modifies the encoder's willingness
+     * to boost AC coefficients in low-noise blocks.
+     * Min value is 0.
+     * Max value is 4.
+     * Default is 1.
+     */
+    uint8_t noise_norm_strength;
 
     /**
      * ROI QP offset map block size. Supported values are 16 and 64 pixels.
@@ -1123,6 +1131,7 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(uint8_t) // max_allowed_consecutive_frames_skips
         - sizeof(uint8_t) // fast_decode_user_opts
         - sizeof(uint8_t) // roi_map_block_size
+        - sizeof(uint8_t) // noise_norm_strength
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
