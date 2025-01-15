@@ -1151,6 +1151,16 @@ typedef struct EbSvtAv1EncConfiguration {
     bool alt_ssim_tuning;
 
     /**
+     * @brief Transform size/type bias type
+     * 0: disabled
+     * 1: full
+     * 2: transform size only
+     * 3: interpolation filter tweaks only
+     * Default is 0
+     */
+    uint8_t tx_bias;
+
+    /**
      * ROI QP offset map block size. Supported values are 16 and 64 pixels.
      */
     uint8_t roi_map_block_size;
@@ -1174,6 +1184,7 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(uint8_t) // sharp_tx
         - sizeof(double) // qp_scale_compress_strength
         - sizeof(bool) // alt_ssim_tuning
+        - sizeof(uint8_t) // tx_bias
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
