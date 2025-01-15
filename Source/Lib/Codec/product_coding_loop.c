@@ -4491,8 +4491,20 @@ static void perform_tx_pd0(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                                             DCT_DCT);
 
         uint64_t distortion[DIST_CALC_TOTAL];
-        svt_aom_picture_full_distortion32_bits_single(
-            coeff, recon, MIN(tx_width, 32), width, height, distortion, cand_bf->eob.y[txb]);
+        svt_aom_picture_full_distortion32_bits_single_facade(coeff,
+                                                             recon,
+                                                             MIN(tx_width, 32),
+                                                             width,
+                                                             height,
+                                                             tx_width,
+                                                             tx_height,
+                                                             distortion,
+                                                             cand_bf->eob.y[txb],
+                                                             &cand_bf->cand->block_mi,
+                                                             false,
+                                                             pcs->temporal_layer_index,
+                                                             pcs->scs->static_config.ac_bias,
+                                                             pcs->scs->static_config.tx_bias);
         distortion[DIST_CALC_RESIDUAL] += ctx->three_quad_energy;
         y_full_distortion[DIST_CALC_RESIDUAL] += RIGHT_SIGNED_SHIFT(distortion[DIST_CALC_RESIDUAL], shift)
             << ctx->mds_subres_step;
@@ -4774,18 +4786,20 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     // Prediction and its bias stay fixed while transform types are searched.
     uint64_t prediction_spatial_dist = 0;
     if (spatial_distortion) {
-        EbSpatialFullDistType spatial_full_dist_type_fun = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)
-            ? svt_full_distortion_kernel16_bits
-            : svt_spatial_full_distortion_kernel;
-
-        prediction_spatial_dist = spatial_full_dist_type_fun(input_pic->y_buffer,
-                                                             input_txb_origin_index,
-                                                             input_pic->y_stride,
-                                                             cand_bf->pred->y_buffer,
-                                                             (int32_t)txb_origin_index,
-                                                             cand_bf->pred->y_stride,
-                                                             cropped_tx_width,
-                                                             cropped_tx_height);
+        prediction_spatial_dist = svt_spatial_full_distortion_kernel_facade(input_pic->y_buffer,
+                                                                            input_txb_origin_index,
+                                                                            input_pic->y_stride,
+                                                                            cand_bf->pred->y_buffer,
+                                                                            (int32_t)txb_origin_index,
+                                                                            cand_bf->pred->y_stride,
+                                                                            cropped_tx_width,
+                                                                            cropped_tx_height,
+                                                                            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                                                            &(cand_bf->cand->block_mi),
+                                                                            false, // is_chroma
+                                                                            pcs->temporal_layer_index,
+                                                                            pcs->scs->static_config.ac_bias,
+                                                                            pcs->scs->static_config.tx_bias);
     }
     const uint64_t prediction_psy_dist = spatial_distortion && effective_ac_bias
         ? get_svt_psy_full_dist(input_pic->y_buffer,
@@ -4933,24 +4947,27 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                                            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
                 }
 
-                EbSpatialFullDistType spatial_full_dist_type_fun                 = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)
-                                    ? svt_full_distortion_kernel16_bits
-                                    : svt_spatial_full_distortion_kernel;
                 txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION] = prediction_spatial_dist;
                 // With no coefficients, reconstruction is the copied prediction.
                 if (!y_has_coeff) {
                     txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] =
                         txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION];
                 } else {
-                    txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] = spatial_full_dist_type_fun(
-                        input_pic->y_buffer,
-                        input_txb_origin_index,
-                        input_pic->y_stride,
-                        recon_ptr->y_buffer,
-                        (int32_t)txb_origin_index,
-                        cand_bf->recon->y_stride,
-                        cropped_tx_width,
-                        cropped_tx_height);
+                    txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] =
+                        svt_spatial_full_distortion_kernel_facade(input_pic->y_buffer,
+                                                                  input_txb_origin_index,
+                                                                  input_pic->y_stride,
+                                                                  recon_ptr->y_buffer,
+                                                                  (int32_t)txb_origin_index,
+                                                                  cand_bf->recon->y_stride,
+                                                                  cropped_tx_width,
+                                                                  cropped_tx_height,
+                                                                  SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                                                  &(cand_bf->cand->block_mi),
+                                                                  false, // is_chroma
+                                                                  pcs->temporal_layer_index,
+                                                                  pcs->scs->static_config.ac_bias,
+                                                                  pcs->scs->static_config.tx_bias);
                     if (effective_ac_bias) {
                         txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
                             input_pic->y_buffer,
@@ -4977,14 +4994,21 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                     bwidth  = txbwidth < 64 ? txbwidth : 32;
                     bheight = txbheight < 64 ? txbheight : 32;
                 }
-                svt_aom_picture_full_distortion32_bits_single(
+                svt_aom_picture_full_distortion32_bits_single_facade(
                     coeff,
                     &(((int32_t*)recon_coeff_ptr->y_buffer)[ctx->txb_1d_offset]),
                     txbwidth < 64 ? txbwidth : 32,
                     bwidth,
                     bheight,
+                    txbwidth,
+                    txbheight,
                     txb_full_distortion_txt[DIST_SSD][tx_type],
-                    eob_txt[tx_type]);
+                    eob_txt[tx_type],
+                    &(cand_bf->cand->block_mi),
+                    false, // is_chroma
+                    pcs->temporal_layer_index,
+                    pcs->scs->static_config.ac_bias,
+                    pcs->scs->static_config.tx_bias);
                 txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] += ctx->three_quad_energy;
                 txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION] += ctx->three_quad_energy;
                 //assert(ctx->three_quad_energy == 0 && ctx->cu_stats->size < 64);
@@ -5643,13 +5667,20 @@ static void perform_dct_dct_tx_light_pd1(PictureControlSet* pcs, ModeDecisionCon
         bheight = txbheight < 64 ? txbheight : 32;
     }
 
-    svt_aom_picture_full_distortion32_bits_single((int32_t*)ctx->tx_coeffs->y_buffer,
-                                                  (int32_t*)recon_coeff_ptr->y_buffer,
-                                                  txbwidth < 64 ? txbwidth : 32,
-                                                  bwidth,
-                                                  bheight,
-                                                  y_full_distortion,
-                                                  cand_bf->eob.y[0]);
+    svt_aom_picture_full_distortion32_bits_single_facade((int32_t*)ctx->tx_coeffs->y_buffer,
+                                                         (int32_t*)recon_coeff_ptr->y_buffer,
+                                                         txbwidth < 64 ? txbwidth : 32,
+                                                         bwidth,
+                                                         bheight,
+                                                         txbwidth,
+                                                         txbheight,
+                                                         y_full_distortion,
+                                                         cand_bf->eob.y[0],
+                                                         &(cand_bf->cand->block_mi),
+                                                         false, // is_chroma
+                                                         pcs->temporal_layer_index,
+                                                         pcs->scs->static_config.ac_bias,
+                                                         pcs->scs->static_config.tx_bias);
     const int32_t shift                   = (MAX_TX_SCALE - av1_get_tx_scale_tab[tx_size]) * 2;
     y_full_distortion[DIST_CALC_RESIDUAL] = RIGHT_SIGNED_SHIFT(
         y_full_distortion[DIST_CALC_RESIDUAL] + ctx->three_quad_energy, shift);
@@ -5906,11 +5937,8 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
         }
 
         const int32_t cropped_tx_width = MIN((uint8_t)tx_width, pcs->ppcs->aligned_width - (ctx->blk_org_x + tx_org_x));
-        const int32_t cropped_tx_height                  = MIN((uint8_t)(tx_height >> ctx->mds_subres_step),
-                                                               pcs->ppcs->aligned_height - (ctx->blk_org_y + tx_org_y));
-        EbSpatialFullDistType spatial_full_dist_type_fun = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)
-            ? svt_full_distortion_kernel16_bits
-            : svt_spatial_full_distortion_kernel;
+        const int32_t cropped_tx_height = MIN((uint8_t)(tx_height >> ctx->mds_subres_step),
+                                              pcs->ppcs->aligned_height - (ctx->blk_org_y + tx_org_y));
         if (ssim_level == SSIM_LVL_1 || ssim_level == SSIM_LVL_3) {
             y_full_distortion[DIST_SSIM][DIST_CALC_PREDICTION] = svt_spatial_full_distortion_ssim_kernel(
                 input_pic->y_buffer,
@@ -5937,14 +5965,21 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
             y_full_distortion[DIST_SSIM][DIST_CALC_PREDICTION] <<= 4;
             y_full_distortion[DIST_SSIM][DIST_CALC_RESIDUAL] <<= 4;
         }
-        y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] = spatial_full_dist_type_fun(input_pic->y_buffer,
-                                                                                       input_txb_origin_index,
-                                                                                       input_pic->y_stride,
-                                                                                       cand_bf->pred->y_buffer,
-                                                                                       (int32_t)txb_origin_index,
-                                                                                       cand_bf->pred->y_stride,
-                                                                                       cropped_tx_width,
-                                                                                       cropped_tx_height);
+        y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] = svt_spatial_full_distortion_kernel_facade(
+            input_pic->y_buffer,
+            input_txb_origin_index,
+            input_pic->y_stride,
+            cand_bf->pred->y_buffer,
+            (int32_t)txb_origin_index,
+            cand_bf->pred->y_stride,
+            cropped_tx_width,
+            cropped_tx_height,
+            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+            &(cand_bf->cand->block_mi),
+            false, // is_chroma
+            pcs->temporal_layer_index,
+            pcs->scs->static_config.ac_bias,
+            pcs->scs->static_config.tx_bias);
         if (effective_ac_bias) {
             y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] += get_svt_psy_full_dist(
                 input_pic->y_buffer,
@@ -5963,14 +5998,21 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
         if (!cand_bf->eob.y[txb_itr]) {
             y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] = y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION];
         } else {
-            y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] = spatial_full_dist_type_fun(input_pic->y_buffer,
-                                                                                         input_txb_origin_index,
-                                                                                         input_pic->y_stride,
-                                                                                         recon_ptr->y_buffer,
-                                                                                         (int32_t)txb_origin_index,
-                                                                                         cand_bf->recon->y_stride,
-                                                                                         cropped_tx_width,
-                                                                                         cropped_tx_height);
+            y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] = svt_spatial_full_distortion_kernel_facade(
+                input_pic->y_buffer,
+                input_txb_origin_index,
+                input_pic->y_stride,
+                recon_ptr->y_buffer,
+                (int32_t)txb_origin_index,
+                cand_bf->recon->y_stride,
+                cropped_tx_width,
+                cropped_tx_height,
+                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                &(cand_bf->cand->block_mi),
+                false, // is_chroma
+                pcs->temporal_layer_index,
+                pcs->scs->static_config.ac_bias,
+                pcs->scs->static_config.tx_bias);
             if (effective_ac_bias) {
                 y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
                     input_pic->y_buffer,
@@ -6001,13 +6043,20 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
             bheight = txbheight < 64 ? txbheight : 32;
         }
 
-        svt_aom_picture_full_distortion32_bits_single(coeff,
-                                                      &(((int32_t*)recon_coeff_ptr->y_buffer)[txb_1d_offset]),
-                                                      txbwidth < 64 ? txbwidth : 32,
-                                                      bwidth,
-                                                      bheight,
-                                                      y_full_distortion[DIST_SSD],
-                                                      cand_bf->eob.y[txb_itr]);
+        svt_aom_picture_full_distortion32_bits_single_facade(coeff,
+                                                             &(((int32_t*)recon_coeff_ptr->y_buffer)[txb_1d_offset]),
+                                                             txbwidth < 64 ? txbwidth : 32,
+                                                             bwidth,
+                                                             bheight,
+                                                             txbwidth,
+                                                             txbheight,
+                                                             y_full_distortion[DIST_SSD],
+                                                             cand_bf->eob.y[txb_itr],
+                                                             &(cand_bf->cand->block_mi),
+                                                             false, // is_chroma
+                                                             pcs->temporal_layer_index,
+                                                             pcs->scs->static_config.ac_bias,
+                                                             pcs->scs->static_config.tx_bias);
         y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] += ctx->three_quad_energy;
         y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] += ctx->three_quad_energy;
 
