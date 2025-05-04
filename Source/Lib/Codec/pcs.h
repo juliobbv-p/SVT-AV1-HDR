@@ -1250,6 +1250,7 @@ typedef struct PictureControlSetInitData {
     uint8_t sharp_tx;
     bool    alt_ssim_tuning;
     uint8_t tx_bias;
+    uint8_t complex_hvs;
 } PictureControlSetInitData;
 
 /**************************************
