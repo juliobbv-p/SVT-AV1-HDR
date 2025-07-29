@@ -1123,6 +1123,13 @@ typedef struct EbSvtAv1EncConfiguration {
     uint8_t kf_tf_strength;
 
     /**
+     * @brief Use alternative lambda factors
+     * false = use regular lambda factors
+     * true = use alternative lambda factors (from SVT-AV1 3.0.2)
+     * Default is false in SVT-AV1-HDR. */
+    bool alt_lambda_factors;
+
+    /**
      * ROI QP offset map block size. Supported values are 16 and 64 pixels.
      */
     uint8_t roi_map_block_size;
@@ -1130,6 +1137,7 @@ typedef struct EbSvtAv1EncConfiguration {
     // clang-format off
     /* Add 128 Byte Padding to Struct to avoid changing the size of the public configuration struct */
     uint8_t padding[128
+        - sizeof(uint8_t) // roi_map_block_size
         - sizeof(PredStructure) + sizeof (uint8_t) // pred_strucutre type was changed from uint8_t to PredStructure
         - sizeof(int) // This was added to take into account the new hbd_mds field while keeping previous ABI compat
         - sizeof(bool) // add the ability to shut MCTF for key frames
@@ -1139,9 +1147,9 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(uint8_t) // max_hierarchical_levels (runtime MG size change)
         - sizeof(uint8_t) // max_allowed_consecutive_frames_skips
         - sizeof(uint8_t) // fast_decode_user_opts
-        - sizeof(uint8_t) // roi_map_block_size
         - sizeof(uint8_t) // noise_norm_strength
         - sizeof(uint8_t) // kf_tf_strength
+        - sizeof(bool) // alt_lambda_factors
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
