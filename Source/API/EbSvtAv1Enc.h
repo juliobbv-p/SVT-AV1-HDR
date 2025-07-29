@@ -1122,6 +1122,13 @@ typedef struct EbSvtAv1EncConfiguration {
      * 4: 10 + (4 - 4) = 10 (2x stronger) */
     uint8_t kf_tf_strength;
 
+    /**
+     * @brief Use alternative lambda factors
+     * false = use regular lambda factors
+     * true = use alternative lambda factors (from SVT-AV1 3.0.2)
+     * Default is false in SVT-AV1-HDR. */
+    bool alt_lambda_factors;
+
     // clang-format off
     /* Add 128 Byte Padding to Struct to avoid changing the size of the public configuration struct */
     uint8_t padding[128
@@ -1136,6 +1143,7 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(uint8_t) // fast_decode_user_opts
         - sizeof(uint8_t) // noise_norm_strength
         - sizeof(uint8_t) // kf_tf_strength
+        - sizeof(bool) // alt_lambda_factors
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
