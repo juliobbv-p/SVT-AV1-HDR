@@ -81,6 +81,8 @@ For each enable-*, there is a disable-* option, and vice versa.
     enable-dovi
     --enable-hdr10plus,   Enable support for HDR10+ metadata (if hdr10plus lib is found)
     enable-hdr10plus
+    --ext-lib-static,   Force linking with static libraries for external dependencies (dovi and hdr10plus)
+    ext-lib-static
     --disable-native,   Disable the use of -march=native
     disable-native
     --enable-pgo,       Enable profile guided optimization
@@ -364,6 +366,7 @@ parse_options() {
         rtc-build) CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DRTC_BUILD=ON" && shift ;;
         mobile-build) CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DMOBILE_BUILD=ON" && shift ;;
         log-quiet) CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DLOG_QUIET=ON" && shift ;;
+        ext-lib-static) CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DEXT_LIB_STATIC=ON" && shift ;;
         *) print_message "Unknown option: $1" && shift ;;
         esac
     done
@@ -410,6 +413,7 @@ else
             rtc-build) parse_options rtc-build && shift ;;
             mobile-build) parse_options mobile-build && shift ;;
             log-quiet) parse_options log-quiet && shift ;;
+            ext-lib-static) parse_options ext-lib-static && shift ;;
             asm | bindir | cc | cxx | gen | jobs | pgo-dir | pgo-videos | prefix | sanitizer | target_system | android-ndk)
                 parse_equal_option "$1" "$2"
                 case $1 in
@@ -536,6 +540,7 @@ else
             rtc-build) parse_options rtc-build && shift ;;
             mobile-build) parse_options mobile-build && shift ;;
             log-quiet) parse_options log-quiet && shift ;;
+            ext-lib-static) parse_options ext-lib-static && shift ;;
             end) ${IN_SCRIPT:-false} && exit ;;
             *) die "Error, unknown option: $1" ;;
             esac
