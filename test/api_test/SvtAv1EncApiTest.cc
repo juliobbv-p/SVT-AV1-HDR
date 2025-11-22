@@ -119,6 +119,7 @@ TEST(EncApiTest, null_buffers_do_not_disrupt_encoding) {
     ASSERT_EQ(
         EB_ErrorNone,
         svt_av1_enc_init_handle(&context.enc_handle, &context.enc_params));
+    context.enc_params.encoder_bit_depth = 8;
     context.enc_params.source_width = 64;
     context.enc_params.source_height = 64;
     context.enc_params.enc_mode = 13;

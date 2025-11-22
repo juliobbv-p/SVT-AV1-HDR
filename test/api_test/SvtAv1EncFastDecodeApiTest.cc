@@ -82,6 +82,7 @@ std::vector<uint8_t> encode(const EncodeParams& prm) {
     cfg.source_height = kHeight;
     cfg.frame_rate_numerator = 30;
     cfg.frame_rate_denominator = 1;
+    cfg.encoder_bit_depth = 8;
     cfg.enc_mode = 6;
     cfg.qp = 30;
     cfg.rate_control_mode = SVT_AV1_RC_MODE_CQP_OR_CRF;
@@ -347,7 +348,7 @@ TEST(SvtAv1FastDecodeApiTest, Level2StillImageKeepsTools) {
     const Headers h = encode_and_parse(EncodeParams(2, true));
     EXPECT_EQ(1u, h.enable_filter_intra);
     EXPECT_EQ(1u, h.enable_cdef);
-    EXPECT_EQ(0u, h.using_qmatrix);
+    EXPECT_EQ(1u, h.using_qmatrix);
 }
 
 #if CONFIG_ENABLE_FAST_DECODE_3

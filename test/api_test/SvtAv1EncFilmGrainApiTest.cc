@@ -24,6 +24,7 @@ TEST_P(FilmGrainApiTest, RejectsBadEventsAndCanContinueEncoding) {
     table.scaling_shift = 8;
     table.ar_coeff_shift = 6;
     table.bit_depth = 8;
+    cfg.encoder_bit_depth = 8;
     cfg.source_width = 320;
     cfg.source_height = 240;
     cfg.enc_mode = 10;
