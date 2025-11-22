@@ -73,6 +73,7 @@ std::vector<uint8_t> encode(const ReconParam& prm, bool recon_enabled) {
     EbComponentType* enc = nullptr;
     EbSvtAv1EncConfiguration cfg{};
     EXPECT_EQ(EB_ErrorNone, svt_av1_enc_init_handle(&enc, &cfg));
+    cfg.encoder_bit_depth = 8;
     cfg.source_width = kWidth;
     cfg.source_height = kHeight;
     cfg.frame_rate_numerator = 30;

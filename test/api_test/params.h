@@ -285,7 +285,7 @@ static const vector<uint32_t> special_frame_rate_denominator = {
  *
  * Default is 8. */
 static const vector<uint32_t> default_encoder_bit_depth = {
-    8,
+    10,
 };
 static const vector<uint32_t> valid_encoder_bit_depth = {
     8,   // 8 bit.
