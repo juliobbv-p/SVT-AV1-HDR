@@ -1170,6 +1170,17 @@ typedef struct EbSvtAv1EncConfiguration {
     uint8_t complex_hvs;
 
     /**
+     * @brief Controls noise detection for CDEF/restoration filtering
+     * 0: off
+     * 1: always-on noise-adaptive filters
+     * 2: default tune behavior
+     * 3: noise-adaptive CDEF only
+     * 4: noise-adaptive restoration filtering only
+     * Default is 2
+     */
+    uint8_t noise_adaptive_filtering;
+
+    /**
      * ROI QP offset map block size. Supported values are 16 and 64 pixels.
      */
     uint8_t roi_map_block_size;
@@ -1195,6 +1206,7 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(bool) // alt_ssim_tuning
         - sizeof(uint8_t) // tx_bias
         - sizeof(uint8_t) // complex_hvs
+        - sizeof(uint8_t) // noise_adaptive_filtering
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
