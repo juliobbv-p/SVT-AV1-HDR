@@ -1180,6 +1180,13 @@ typedef struct EbSvtAv1EncConfiguration {
      */
     uint8_t noise_adaptive_filtering;
 
+    /* @brief Controls scaling of the CDEF strength computation
+      *  1: minimum CDEF scaling
+      *  8: ~0.5x CDEF scaling
+      *  30: 2x CDEF scaling
+      *  Default is 15 (1x scaling). */
+    uint8_t cdef_scaling;
+
     /**
      * ROI QP offset map block size. Supported values are 16 and 64 pixels.
      */
@@ -1207,6 +1214,7 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(uint8_t) // tx_bias
         - sizeof(uint8_t) // complex_hvs
         - sizeof(uint8_t) // noise_adaptive_filtering
+        - sizeof(uint8_t) // cdef_scaling
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
