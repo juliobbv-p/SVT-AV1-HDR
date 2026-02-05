@@ -1,0 +1,145 @@
+﻿name: "linux-compile"
+description: "Composite action to configure and build the project with CMake/Ninja on Ubuntu runners."
+inputs:
+  cc:
+    description: "C compiler"
+    required: false
+    default: "gcc"
+  cxx:
+    description: "C++ compiler"
+    required: false
+    default: "g++"
+  cmake_build_type:
+    description: "CMake build type"
+    required: false
+    default: "Release"
+  packages:
+    description: "Additional packages to install (space-separated)"
+    required: false
+    default: ""
+  build_shared_libs:
+    description: "Build shared libraries (ON/OFF)"
+    required: false
+    default: "OFF"
+  extra_cmake_flags:
+    description: "Extra flags to pass to CMake"
+    required: false
+    default: ""
+  extra_cflags:
+    description: "Extra C flags"
+    required: false
+    default: ""
+  extra_cxxflags:
+    description: "Extra C++ flags"
+    required: false
+    default: ""
+  extra_ldflags:
+    description: "Extra linker flags"
+    required: false
+    default: ""
+  prefix_dir:
+    description: "Installation prefix directory"
+    required: false
+    default: "/usr/local"
+  cmake_generator:
+    description: "CMake generator"
+    required: false
+    default: "Ninja"
+  build_targets:
+    description: "Optional cmake --build --target (comma-separated)"
+    required: false
+    default: ""
+  save_cache:
+    description: "Whether to save the ccache cache (true/false)"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install build deps
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        if type apt-get > /dev/null 2>&1; then
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -y
+          apt-get install -y --no-install-recommends curl git python3 ca-certificates cmake ninja-build build-essential pkgconf nasm ccache ${PACKAGES}
+        elif type apk > /dev/null 2>&1; then
+          apk add --no-cache curl git python3 ca-certificates cmake ninja build-base pkgconf nasm ccache ${PACKAGES}
+        elif type brew > /dev/null 2>&1; then
+          if [ -n "${PACKAGES}" ]; then
+            brew install ${PACKAGES}
+          fi
+        else
+          echo "Not yet implemented package installation"
+        fi
+        # Ensure ccache dir exists
+        mkdir -p .ccache
+    - name: Restore build/cache
+      uses: actions/cache/restore@v5.0.3
+      id: cache
+      with:
+        path: .ccache
+        key: ${{ runner.os }}-svtav1-${{ inputs.cc }}-${{ inputs.cmake_build_type }}-${{ hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','test/**','third_party/**', '**/*.patch') }}
+        restore-keys: ${{ runner.os }}-svtav1-${{ inputs.cc }}-${{ inputs.cmake_build_type }}-
+    - name: Configure with CMake
+      shell: bash
+      env:
+        CC: ${{ inputs.cc }}
+        CXX: ${{ inputs.cxx }}
+        EXTRA_CFLAGS: ${{ inputs.extra_cflags }}
+        EXTRA_CXXFLAGS: ${{ inputs.extra_cxxflags }}
+        EXTRA_LDFLAGS: ${{ inputs.extra_ldflags }}
+        CMAKE_GENERATOR: ${{ inputs.cmake_generator }}
+        CMAKE_BUILD_TYPE: ${{ inputs.cmake_build_type }}
+        BUILD_SHARED_LIBS: ${{ inputs.build_shared_libs }}
+        EXTRA_CMAKE_FLAGS: ${{ inputs.extra_cmake_flags }}
+        PREFIX_DIR: ${{ inputs.prefix_dir }}
+        CCACHE_DIR: ${{ github.workspace }}/.ccache
+        CCACHE_COMPRESS: 1
+      run: |
+        set -x
+        export CFLAGS="$CFLAGS${EXTRA_CFLAGS:+${CFLAGS:+ }$EXTRA_CFLAGS}"
+        export CXXFLAGS="$CXXFLAGS${EXTRA_CXXFLAGS:+${CXXFLAGS:+ }$EXTRA_CXXFLAGS}"
+        export LDFLAGS="$LDFLAGS${EXTRA_LDFLAGS:+${LDFLAGS:+ }$EXTRA_LDFLAGS}"
+        time cmake \
+        -G "${CMAKE_GENERATOR}" \
+        -S . \
+        -B Build \
+        -DREPRODUCIBLE_BUILDS=ON \
+        -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" \
+        -DBUILD_SHARED_LIBS="${BUILD_SHARED_LIBS}" \
+        -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+        -DCMAKE_C_FLAGS="$CFLAGS" \
+        -DCMAKE_CXX_FLAGS="$CXXFLAGS" \
+        -DCMAKE_EXE_LINKER_FLAGS="$LDFLAGS" \
+        -DCMAKE_SHARED_LINKER_FLAGS="$LDFLAGS" \
+        -DCMAKE_MODULE_LINKER_FLAGS="$LDFLAGS" \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+        ${EXTRA_CMAKE_FLAGS} || {
+        ret=$?
+        cat Build/CMakeFiles/CMakeError.log || true
+        exit $ret
+        }
+    - name: Build
+      shell: bash
+      env:
+        CCACHE_DIR: ${{ github.workspace }}/.ccache
+        TARGET: ${{ inputs.build_targets }}
+      run: |
+        if [ -n "${TARGET}" ]; then
+          IFS=',' read -r -a targets <<< "${TARGET}"
+          time cmake --build Build --target "${targets[@]}"
+        else
+          time cmake --build Build
+        fi
+        echo "ccache stats:" && ccache -s || true
+    - name: Save build/cache
+      if: always() && steps.cache.outputs.cache-hit != 'true' && inputs.save_cache == 'true'
+      uses: actions/cache/save@v5.0.3
+      with:
+        path: .ccache
+        key: ${{ steps.cache.outputs.cache-primary-key }}
