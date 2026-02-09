@@ -64,7 +64,7 @@ namespace svt_av1_test_params {
  *
  */
 static const vector<uint8_t> default_enc_mode = {
-    ENC_M8,
+    ENC_M4,
 };
 static const vector<uint8_t> valid_enc_mode = {
     ENC_M0, /**< highest quality mode */
