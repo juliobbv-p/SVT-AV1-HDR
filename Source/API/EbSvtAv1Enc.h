@@ -1188,6 +1188,28 @@ typedef struct EbSvtAv1EncConfiguration {
     uint8_t cdef_scaling;
 
     /**
+     * @brief Photon noise ISO value
+     *
+     * Default is 0.
+     */
+    uint32_t photon_noise_iso;
+
+    /**
+     * @brief Enable chroma noise, which will is scaled based on luma values for generated film grain table.
+     *
+     * 0: disable chroma scaling
+     * 1: enable chroma scaling
+     *
+     * Default is 0.
+     */
+    uint8_t enable_photon_noise_chroma;
+
+    /**
+     * @brief Check if color range is provided by the user
+     */
+    bool color_range_provided;
+
+    /**
      * ROI QP offset map block size. Supported values are 16 and 64 pixels.
      */
     uint8_t roi_map_block_size;
@@ -1215,6 +1237,9 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(uint8_t) // complex_hvs
         - sizeof(uint8_t) // noise_adaptive_filtering
         - sizeof(uint8_t) // cdef_scaling
+        - sizeof(uint32_t) // photon_noise_iso
+        - sizeof(uint8_t) // enable_photon_noise_chroma
+        - sizeof(bool) // color_range_provided
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
