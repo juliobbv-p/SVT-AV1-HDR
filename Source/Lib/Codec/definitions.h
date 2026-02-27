@@ -2232,6 +2232,8 @@ typedef struct SrcVarCtx {
     int64_t        ss, ss2;
     unsigned int (*vf)(const uint8_t* a, int a_stride, const uint8_t* b, int b_stride, unsigned int* sse);
 } SrcVarCtx;
+#define CONVERT_TO_STR_COMPILE_TIME_HELPER(x) #x
+#define CONVERT_TO_STR_COMPILE_TIME(x) CONVERT_TO_STR_COMPILE_TIME_HELPER(x)
 
 #ifdef __cplusplus
 }
