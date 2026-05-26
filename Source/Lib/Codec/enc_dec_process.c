@@ -3137,6 +3137,7 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                         pcs->sb_max_sq_size[sb_index] = 0;
                     }
                     sb_ptr->final_blk_cnt = 0;
+                    sb_ptr->all_skip      = true;
                     // A single EncDec thread codes the SBs one at a time, so it packs their blocks back to back in
                     // the pool (paging in only the blocks coded) instead of using each SB's worst-case slice
                     const bool pack_blks = scs->enc_dec_process_init_count == 1;
