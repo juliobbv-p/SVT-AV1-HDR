@@ -17,7 +17,16 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 
 project(svt-av1 VERSION 4.3.0
-    LANGUAGES C CXX)
+    LANGUAGES NONE)
+
+option(SVT_AV1_TEST_VECTORS_ONLY "Configure only the TestVectors download target" OFF)
+if(SVT_AV1_TEST_VECTORS_ONLY)
+    message(STATUS "SVT_AV1_TEST_VECTORS_ONLY: configuring only TestVectors")
+    add_subdirectory(test/e2e_test)
+    return()
+endif()
+
+enable_language(C CXX)
 
 set(VERSION_TAG "")
 
