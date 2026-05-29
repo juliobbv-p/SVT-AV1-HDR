@@ -155,6 +155,44 @@ jobs:
           compression-level: 9
           overwrite: true
 
+  msvc-x86-RelWithDebInfo:
+    name: Win64 (MSVC, RelWithDebInfo, x86)
+    runs-on: [self-hosted, windows]
+    env:
+      CFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
+      CXXFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
+      CMAKE_GENERATOR: Visual Studio 16 2019
+      CMAKE_GENERATOR_PLATFORM: x64
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: true
+      - name: Cache build
+        uses: actions/cache@v5.0.3
+        with:
+          key:
+            ${{ runner.os }}-build-${{ hashFiles('**/CMakeLists.txt') }}-${{ format('{0}{1}{2}{3}{4}',
+            env.CMAKE_GENERATOR, env.CMAKE_GENERATOR_PLATFORM, env.CFLAGS, env.CXXFLAGS, env.LDFLAGS) }}-RelWithDebInfo
+          path: msvc
+      # MSVC unit test builds can't be static due to the limitation of our old googletest lib
+      - name: Configure cmake
+        run: |
+          cmake -S . -B msvc -DSVT_AV1_LTO=ON -DREPRODUCIBLE_BUILDS=ON -DBUILD_TESTING=ON -DBUILD_APPS=OFF -DCMAKE_OUTPUT_DIRECTORY=msvc/bin
+      - name: Build
+        run: cmake --build msvc --config RelWithDebInfo -j 16 -t SvtAv1UnitTests -t SvtAv1ApiTests -t SvtAv1E2ETests
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: windows-unit-test-artifacts
+          path: |
+            msvc/bin/RelWithDebInfo/SvtAv1*Tests.exe
+            msvc/bin/RelWithDebInfo/*.dll
+            msvc/bin/RelWithDebInfo/*.pdb
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
   macos-universal-RelWithDebInfo:
     name: macOS (Universal, RelWithDebInfo)
     runs-on: [self-hosted, macos, ARM64]
@@ -271,6 +309,79 @@ jobs:
         if: always() && steps.cache.outputs.cache-hit != 'true'
         with:
           path: ~/.cache/gtest-parallel
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      # - name: Upload junit reports
+      #   uses: actions/upload-artifact@v7.0.0
+      #   with:
+      #     name: junit-reports-shard-${{ matrix.shard }}
+      #     path: reports/
+      #     if-no-files-found: error
+      #     retention-days: 1
+      #     compression-level: 9
+      #     overwrite: true
+
+  windows-unit-tests:
+    name: Windows Unit Tests
+    needs:
+      - msvc-x86-RelWithDebInfo
+      - prep-gtest-parallel
+      - prep-test-vectors
+    runs-on: [self-hosted, windows]
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      fail-fast: true
+    env:
+      TOTAL_SHARDS: 16
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: windows-unit-test-artifacts
+      # on windows, gtest-parallel expects the cache to be at %LOCALAPPDATA%/gtest-parallel, we need to restore and save to a local folder first due to the container isolation
+      - name: Restore cached test times
+        id: cache
+        uses: actions/cache/restore@v5.0.3
+        with:
+          path: gtest-parallel-times
+          key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
+      - name: Download gtest_parallel.py
+        uses: actions/cache/restore@v5.0.3
+        with:
+          key: ${{ needs.prep-gtest-parallel.outputs.gtest-parallel-cache-key }}
+          path: gtest_parallel.py
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+      - name: Prepare test vectors
+        uses: actions/cache/restore@v5.0.3
+        with:
+          path: vectors
+          key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+      - name: Run tests shards
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          New-Item -ItemType Directory -Force -Path reports
+          if (Test-Path gtest-parallel-times) {
+            Copy-Item -Path gtest-parallel-times -Destination ${env:LOCALAPPDATA}/gtest-parallel -Recurse -Force
+          }
+          python gtest_parallel.py `
+            --print_test_times `
+            --shard_index=${{ matrix.shard }} `
+            --shard_count=${{ env.TOTAL_SHARDS }} `
+            ./SvtAv1UnitTests.exe `
+            ./SvtAv1E2ETests.exe `
+             -- --gtest_output="xml:reports/{#}.xml"
+          if (Test-Path ${env:LOCALAPPDATA}/gtest-parallel) {
+            Copy-Item -Path ${env:LOCALAPPDATA}/gtest-parallel -Destination gtest-parallel-times -Recurse -Force
+          }
+      - name: Save test times cache
+        uses: actions/cache/save@v5.0.3
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: gtest-parallel-times
           key: ${{ steps.cache.outputs.cache-primary-key }}
       # - name: Upload junit reports
       #   uses: actions/upload-artifact@v7.0.0

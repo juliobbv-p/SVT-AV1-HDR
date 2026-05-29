@@ -192,6 +192,41 @@ jobs:
           compression-level: 9
           overwrite: true
 
+  msvc-x86-release:
+    name: Win64 (MSVC, Release, x86)
+    runs-on: [self-hosted, windows]
+    env:
+      CFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
+      CXXFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
+      CMAKE_GENERATOR: Visual Studio 16 2019
+      CMAKE_GENERATOR_PLATFORM: x64
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: true
+      - name: Cache build
+        uses: actions/cache@v5.0.3
+        with:
+          key:
+            ${{ runner.os }}-build-${{ hashFiles('**/CMakeLists.txt') }}-${{ format('{0}{1}{2}{3}{4}',
+            env.CMAKE_GENERATOR, env.CMAKE_GENERATOR_PLATFORM, env.CFLAGS, env.CXXFLAGS, env.LDFLAGS) }}-release
+          path: msvc
+      - name: Configure cmake
+        run:
+          cmake -S . -B msvc -DSVT_AV1_LTO=ON -DREPRODUCIBLE_BUILDS=ON -DCMAKE_OUTPUT_DIRECTORY=msvc/bin
+          -DBUILD_SHARED_LIBS=OFF
+      - name: Build
+        run: cmake --build msvc --config Release -j 16
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: svtav1-bin-windows-release
+          path: msvc/bin/Release/SvtAv1EncApp.exe
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
   macos-universal-release:
     name: macOS (Universal, Release)
     runs-on: [self-hosted, macos, ARM64]
@@ -373,6 +408,44 @@ jobs:
           done
           $ret
 
+  windows-enc-test:
+    name: Win64 Enc Test
+    runs-on: [self-hosted, windows]
+    needs:
+      - msvc-x86-release
+    outputs:
+      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
+      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
+      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
+      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: svtav1-bin-windows-release
+          path: msvc/bin/Release
+      - name: Extract input vectors
+        run: |
+          Move-Item C:/akiyo_cif.y4m.zst,C:/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst .
+          zstd -df $(Get-ChildItem *.zst)
+      - name: Run encoding tests
+        run: |
+          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 2 -i akiyo_cif.y4m -n 17 -b test-pr-Windows-Release-8bit-m2.ivf
+          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-Release-8bit-m8.ivf
+          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-Release-10bit-m2.ivf
+          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-Release-10bit-m8.ivf
+      - name: Hash IVF outputs
+        id: hashes
+        run: |
+          $akiyoM2 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-8bit-m2.ivf).Hash.ToLowerInvariant()
+          $akiyoM8 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-8bit-m8.ivf).Hash.ToLowerInvariant()
+          $chimeraM2 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-10bit-m2.ivf).Hash.ToLowerInvariant()
+          $chimeraM8 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-10bit-m8.ivf).Hash.ToLowerInvariant()
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "akiyo_m2=$akiyoM2"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "akiyo_m8=$akiyoM8"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "chimera_m2=$chimeraM2"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "chimera_m8=$chimeraM8"
+
   macos-enc-test:
     name: macOS Enc Test
     runs-on: [self-hosted, macos, ARM64]
@@ -415,17 +488,17 @@ jobs:
       image: ubuntu:25.04
     needs:
       - linux-enc-test
-      # - windows-enc-test
+      - windows-enc-test
       - macos-enc-test
     env:
       linux_akiyo_m2: ${{ needs.linux-enc-test.outputs.akiyo_m2 }}
       linux_akiyo_m8: ${{ needs.linux-enc-test.outputs.akiyo_m8 }}
       linux_chimera_m2: ${{ needs.linux-enc-test.outputs.chimera_m2 }}
       linux_chimera_m8: ${{ needs.linux-enc-test.outputs.chimera_m8 }}
-      # windows_akiyo_m2: ${{ needs.windows-enc-test.outputs.akiyo_m2 }}
-      # windows_akiyo_m8: ${{ needs.windows-enc-test.outputs.akiyo_m8 }}
-      # windows_chimera_m2: ${{ needs.windows-enc-test.outputs.chimera_m2 }}
-      # windows_chimera_m8: ${{ needs.windows-enc-test.outputs.chimera_m8 }}
+      windows_akiyo_m2: ${{ needs.windows-enc-test.outputs.akiyo_m2 }}
+      windows_akiyo_m8: ${{ needs.windows-enc-test.outputs.akiyo_m8 }}
+      windows_chimera_m2: ${{ needs.windows-enc-test.outputs.chimera_m2 }}
+      windows_chimera_m8: ${{ needs.windows-enc-test.outputs.chimera_m8 }}
       macos_akiyo_m2: ${{ needs.macos-enc-test.outputs.akiyo_m2 }}
       macos_akiyo_m8: ${{ needs.macos-enc-test.outputs.akiyo_m8 }}
       macos_chimera_m2: ${{ needs.macos-enc-test.outputs.chimera_m2 }}
