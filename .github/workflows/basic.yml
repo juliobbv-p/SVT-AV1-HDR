@@ -192,6 +192,58 @@ jobs:
           compression-level: 9
           overwrite: true
 
+  macos-universal-release:
+    name: macOS (Universal, Release)
+    runs-on: [self-hosted, macos, ARM64]
+    env:
+      CC: clang
+      CXX: clang++
+      CFLAGS: -Werror -Wshadow -pipe
+      CXXFLAGS: -Werror -Wshadow -pipe
+      LDFLAGS: -Werror -Wshadow -pipe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build arm64
+        uses: ./.github/actions/compile
+        with:
+          cmake_build_type: Release
+          cc: clang
+          cxx: clang++
+          extra_cmake_flags: -DCMAKE_OSX_ARCHITECTURES=arm64
+          save_cache: false
+      - name: Prep for x86_64
+        run: |
+          mv Bin/Release Bin/Release-arm64
+          git -C Build clean -ffdx
+      - name: Build x86_64
+        uses: ./.github/actions/compile
+        with:
+          cmake_build_type: Release
+          cc: clang
+          cxx: clang++
+          extra_cmake_flags: -DCMAKE_OSX_ARCHITECTURES=x86_64
+      - name: Create universal binary
+        run: |
+          mv Bin/Release Bin/Release-x86_64
+          mkdir -p Bin/Release
+          for file in Bin/Release-arm64/*; do
+            echo "Creating universal binary for $(basename $file)"
+            lipo -create "Bin/Release-arm64/$(basename $file)" "Bin/Release-x86_64/$(basename $file)" -output "Bin/Release/$(basename $file)"
+          done
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: svtav1-bin-macos-release
+          path: Bin/Release/SvtAv1EncApp
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
   linux-enc-test:
     name: Linux Enc Test
     runs-on: [self-hosted, linux]
@@ -320,6 +372,86 @@ jobs:
             fi
           done
           $ret
+
+  macos-enc-test:
+    name: macOS Enc Test
+    runs-on: [self-hosted, macos, ARM64]
+    needs:
+      - macos-universal-release
+    outputs:
+      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
+      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
+      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
+      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: svtav1-bin-macos-release
+          path: Bin/Release
+      - name: Extract input vectors
+        run: |
+          cp ~/akiyo_cif.y4m.zst ~/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst .
+          zstd -df akiyo_cif.y4m.zst Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+      - name: Run encoding tests
+        run: |
+          chmod +x Bin/Release/SvtAv1EncApp
+          ./Bin/Release/SvtAv1EncApp --preset 2 -i akiyo_cif.y4m -n 17 -b test-pr-Darwin-Release-8bit-m2.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Darwin-Release-8bit-m8.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Darwin-Release-10bit-m2.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Darwin-Release-10bit-m8.ivf
+      - name: Hash IVF outputs
+        id: hashes
+        run: |
+          echo "akiyo_m2=$(sha256sum test-pr-Darwin-Release-8bit-m2.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "akiyo_m8=$(sha256sum test-pr-Darwin-Release-8bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "chimera_m2=$(sha256sum test-pr-Darwin-Release-10bit-m2.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "chimera_m8=$(sha256sum test-pr-Darwin-Release-10bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+  enc-os-diff-test:
+    name: Enc OS Diff Test
+    runs-on: [self-hosted, linux]
+    container:
+      image: ubuntu:25.04
+    needs:
+      - linux-enc-test
+      # - windows-enc-test
+      - macos-enc-test
+    env:
+      linux_akiyo_m2: ${{ needs.linux-enc-test.outputs.akiyo_m2 }}
+      linux_akiyo_m8: ${{ needs.linux-enc-test.outputs.akiyo_m8 }}
+      linux_chimera_m2: ${{ needs.linux-enc-test.outputs.chimera_m2 }}
+      linux_chimera_m8: ${{ needs.linux-enc-test.outputs.chimera_m8 }}
+      # windows_akiyo_m2: ${{ needs.windows-enc-test.outputs.akiyo_m2 }}
+      # windows_akiyo_m8: ${{ needs.windows-enc-test.outputs.akiyo_m8 }}
+      # windows_chimera_m2: ${{ needs.windows-enc-test.outputs.chimera_m2 }}
+      # windows_chimera_m8: ${{ needs.windows-enc-test.outputs.chimera_m8 }}
+      macos_akiyo_m2: ${{ needs.macos-enc-test.outputs.akiyo_m2 }}
+      macos_akiyo_m8: ${{ needs.macos-enc-test.outputs.akiyo_m8 }}
+      macos_chimera_m2: ${{ needs.macos-enc-test.outputs.chimera_m2 }}
+      macos_chimera_m8: ${{ needs.macos-enc-test.outputs.chimera_m8 }}
+    steps:
+      - name: Compare IVF hashes across OS
+        run: |
+          success=true
+          compare_hash() (
+            key="$1" linux_hash="$2" windows_hash="$3" macos_hash="$4" ret=true
+
+            if [ -n "$windows_hash" ] && [ "$linux_hash" != "$windows_hash" ]; then
+              echo "Hash mismatch for $key between Linux and Windows: $linux_hash vs $windows_hash"
+              success=false
+            fi
+            if [ -n "$macos_hash" ] && [ "$linux_hash" != "$macos_hash" ]; then
+              echo "Hash mismatch for $key between Linux and macOS: $linux_hash vs $macos_hash"
+              success=false
+            fi
+          )
+
+          compare_hash "akiyo_m2" "${linux_akiyo_m2}" "${windows_akiyo_m2}" "${macos_akiyo_m2}"
+          compare_hash "akiyo_m8" "${linux_akiyo_m8}" "${windows_akiyo_m8}" "${macos_akiyo_m8}"
+          compare_hash "chimera_m2" "${linux_chimera_m2}" "${windows_chimera_m2}" "${macos_chimera_m2}"
+          compare_hash "chimera_m8" "${linux_chimera_m8}" "${windows_chimera_m8}" "${macos_chimera_m8}"
+          $success
 
   # Build the target/default branch to enable bitstream regression detection.
   # Skipped when pushing directly to the default branch (nothing to compare against).

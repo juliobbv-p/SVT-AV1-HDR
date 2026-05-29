@@ -155,6 +155,60 @@ jobs:
           compression-level: 9
           overwrite: true
 
+  macos-universal-RelWithDebInfo:
+    name: macOS (Universal, RelWithDebInfo)
+    runs-on: [self-hosted, macos, ARM64]
+    env:
+      CC: clang
+      CXX: clang++
+      CFLAGS: -Werror -Wshadow -pipe
+      CXXFLAGS: -Werror -Wshadow -pipe
+      LDFLAGS: -Werror -Wshadow -pipe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build arm64 unit tests
+        uses: ./.github/actions/compile
+        with:
+          cmake_build_type: RelWithDebInfo
+          cc: clang
+          cxx: clang++
+          extra_cmake_flags: -DBUILD_TESTING=ON -DBUILD_APPS=OFF -DCMAKE_OSX_ARCHITECTURES=arm64
+          build_targets: SvtAv1UnitTests,SvtAv1ApiTests,SvtAv1E2ETests
+          save_cache: false
+      - name: Prep for x86_64
+        run: |
+          mv Bin/RelWithDebInfo Bin/RelWithDebInfo-arm64
+          git -C Build clean -ffdx
+      - name: Build x86_64 unit tests
+        uses: ./.github/actions/compile
+        with:
+          cmake_build_type: RelWithDebInfo
+          cc: clang
+          cxx: clang++
+          extra_cmake_flags: -DBUILD_TESTING=ON -DBUILD_APPS=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64
+          build_targets: SvtAv1UnitTests,SvtAv1ApiTests,SvtAv1E2ETests
+      - name: Create universal test binaries
+        run: |
+          mv Bin/RelWithDebInfo Bin/RelWithDebInfo-x86_64
+          mkdir -p Bin/RelWithDebInfo
+          for file in Bin/RelWithDebInfo-arm64/SvtAv1*Tests; do
+            echo "Creating universal binary for $(basename $file)"
+            lipo -create "Bin/RelWithDebInfo-arm64/$(basename $file)" "Bin/RelWithDebInfo-x86_64/$(basename $file)" -output "Bin/RelWithDebInfo/$(basename $file)"
+          done
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: macos-unit-test-artifacts
+          path: Bin/RelWithDebInfo/SvtAv1*Tests
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
   linux-unit-tests:
     name: Linux Unit Tests (shard ${{ matrix.shard }})
     needs:
@@ -212,6 +266,77 @@ jobs:
             Bin/RelWithDebInfo/SvtAv1E2ETests \
              -- --gtest_output="xml:reports/{#}.xml"
             # Bin/RelWithDebInfo/SvtAv1ApiTests \ # Currently some tests fail.
+      - name: Save test times cache
+        uses: actions/cache/save@v5.0.3
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/gtest-parallel
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      # - name: Upload junit reports
+      #   uses: actions/upload-artifact@v7.0.0
+      #   with:
+      #     name: junit-reports-shard-${{ matrix.shard }}
+      #     path: reports/
+      #     if-no-files-found: error
+      #     retention-days: 1
+      #     compression-level: 9
+      #     overwrite: true
+
+  macos-unit-tests:
+    name: macOS Unit Tests (Arm64, shard ${{ matrix.shard }})
+    needs:
+      - macos-universal-RelWithDebInfo
+      - prep-gtest-parallel
+      - prep-test-vectors
+    runs-on: [self-hosted, macos, ARM64]
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      fail-fast: true
+    env:
+      TOTAL_SHARDS: 16
+    steps:
+      - name: Install dependencies
+        run: |
+          python3 --version
+      - name: Download unit test artifacts
+        uses: actions/download-artifact@v7.0.0
+        with:
+          name: macos-unit-test-artifacts
+          path: Bin/RelWithDebInfo/
+      # gtest-parallel expects the cache to be ~/.cache/gtest-parallel
+      - name: Restore cached test times
+        id: cache
+        uses: actions/cache/restore@v5.0.3
+        with:
+          path: ~/.cache/gtest-parallel
+          key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
+      - name: Download gtest_parallel.py
+        uses: actions/cache/restore@v5.0.3
+        with:
+          key: ${{ needs.prep-gtest-parallel.outputs.gtest-parallel-cache-key }}
+          path: gtest_parallel.py
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+      - name: Prepare test vectors
+        uses: actions/cache/restore@v5.0.3
+        with:
+          path: vectors
+          key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+      - name: Run tests shard
+        shell: bash
+        run: |
+          mkdir -p reports ~/.cache
+          chmod +x gtest_parallel.py Bin/RelWithDebInfo/*Tests
+          python3 ./gtest_parallel.py \
+            --print_test_times \
+            --shard_index=${{ matrix.shard }} \
+            --shard_count=${{ env.TOTAL_SHARDS }} \
+            Bin/RelWithDebInfo/SvtAv1UnitTests \
+            Bin/RelWithDebInfo/SvtAv1E2ETests \
+             -- --gtest_output="xml:reports/{#}.xml"
       - name: Save test times cache
         uses: actions/cache/save@v5.0.3
         if: always() && steps.cache.outputs.cache-hit != 'true'
