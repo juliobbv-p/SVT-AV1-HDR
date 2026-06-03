@@ -1050,7 +1050,7 @@ static uint64_t pd0_prediction_distortion(PictureControlSet* pcs, ModeDecisionCo
                                                                pcs->temporal_layer_index,
                                                                pcs->scs->static_config.ac_bias,
                                                                pcs->scs->static_config.tx_bias);
-        const double ac_bias = get_effective_ac_bias(
+        const double ac_bias = get_effective_ac_bias_mds0(
             pcs->scs->static_config.ac_bias, pcs->slice_type == I_SLICE, pcs->temporal_layer_index);
         if (ac_bias) {
             distortion += get_svt_psy_full_dist(input->y_buffer,
@@ -1233,7 +1233,7 @@ static void obmc_trans_face_off(ModeDecisionCandidateBuffer* cand_bf, PictureCon
                                                                      pred->y_stride,
                                                                      ctx->blk_geom->bwidth,
                                                                      ctx->blk_geom->bheight);
-                const double effective_ac_bias                   = get_effective_ac_bias(
+                const double effective_ac_bias                   = get_effective_ac_bias_mds0(
                     pcs->scs->static_config.ac_bias, pcs->slice_type == I_SLICE, pcs->temporal_layer_index);
                 if (effective_ac_bias) {
                     cand_bf->luma_fast_dist += get_svt_psy_full_dist(input_pic->y_buffer,
@@ -1399,7 +1399,7 @@ void fast_loop_core(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs
                                                              pred->y_stride,
                                                              ctx->blk_geom->bwidth,
                                                              ctx->blk_geom->bheight);
-        const double effective_ac_bias                   = get_effective_ac_bias(
+        const double effective_ac_bias                   = get_effective_ac_bias_mds0(
             pcs->scs->static_config.ac_bias, pcs->slice_type == I_SLICE, pcs->temporal_layer_index);
         if (effective_ac_bias) {
             cand_bf->luma_fast_dist += get_svt_psy_full_dist(input_pic->y_buffer,
