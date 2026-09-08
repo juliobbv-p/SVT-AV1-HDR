@@ -157,7 +157,9 @@ EbErrorType read_film_grain_table(FILE* file, FilmGrainTable* table) {
         entry.grain.random_seed = (uint16_t)seed;
         entry.grain.ignore_ref  = 1;
         entry.grain.bit_depth   = 8;
-        if (!svt_aom_film_grain_params_valid(&entry.grain)) {
+        // The input chroma format is not known here. The encoder validates the
+        // 4:2:0-only chroma point-count constraint when accepting the grain event.
+        if (!svt_aom_film_grain_params_valid(&entry.grain, false)) {
             goto fail;
         }
         FilmGrainEntry* next = malloc(sizeof(*next));

@@ -85,6 +85,13 @@ void svt_cfl_luma_subsampling_420_hbd_avx2(const uint16_t *input, int32_t input_
 void svt_cfl_luma_subsampling_420_hbd_sse4_1(const uint16_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
 RTCD_EXTERN void(*svt_cfl_luma_subsampling_420_hbd)(const uint16_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
 
+void svt_cfl_luma_subsampling_444_lbd_c(const uint8_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
+void svt_cfl_luma_subsampling_444_lbd_avx2(const uint8_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
+RTCD_EXTERN void(*svt_cfl_luma_subsampling_444_lbd)(const uint8_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
+void svt_cfl_luma_subsampling_444_hbd_c(const uint16_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
+void svt_cfl_luma_subsampling_444_hbd_avx2(const uint16_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
+RTCD_EXTERN void(*svt_cfl_luma_subsampling_444_hbd)(const uint16_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
+
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 void svt_aom_highbd_filter_intra_predictor_c(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 void svt_aom_highbd_filter_intra_predictor_neon(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);

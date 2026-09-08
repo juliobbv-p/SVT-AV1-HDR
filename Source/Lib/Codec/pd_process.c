@@ -3800,16 +3800,16 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
         }
         if (pcs->tf_ctrls.chroma_lvl) {
             noise_level_fp16 = svt_estimate_noise_highbd_fp16(altref_buffer_highbd_start[PLANE_U], // U only
-                                                              (central_picture_ptr->width >> 1),
-                                                              (central_picture_ptr->height >> 1),
+                                                              (central_picture_ptr->width >> ss_x),
+                                                              (central_picture_ptr->height >> ss_y),
                                                               central_picture_ptr->u_stride,
                                                               encoder_bit_depth);
             noise_levels_log1p_fp16[PLANE_U] = svt_aom_noise_log1p_fp16(noise_level_fp16);
 
             noise_level_fp16 = svt_estimate_noise_highbd_fp16(altref_buffer_highbd_start[PLANE_V], // V only
-                                                              (central_picture_ptr->width >> 1),
-                                                              (central_picture_ptr->height >> 1),
-                                                              central_picture_ptr->u_stride,
+                                                              (central_picture_ptr->width >> ss_x),
+                                                              (central_picture_ptr->height >> ss_y),
+                                                              central_picture_ptr->v_stride,
                                                               encoder_bit_depth);
             noise_levels_log1p_fp16[PLANE_V] = svt_aom_noise_log1p_fp16(noise_level_fp16);
         }
