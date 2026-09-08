@@ -45,6 +45,9 @@ void svt_aom_get_block_txb_ctx(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                uint32_t x, uint32_t y, BlockSize plane_bsize, TxSize tx_size, int16_t* txb_skip_ctx,
                                int16_t* dc_sign_ctx);
 
+void svt_aom_get_quantizer(const Quants* quants, const Dequants* deq, int plane, int dc_index, int ac_index,
+                           int16_t params[7][8], MacroblockPlane* result);
+
 extern const int av1_get_tx_scale_tab[TX_SIZES_ALL];
 #ifdef __cplusplus
 }
