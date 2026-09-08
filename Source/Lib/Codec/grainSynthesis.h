@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-static inline bool svt_aom_film_grain_params_valid(const AomFilmGrain* grain) {
+static inline bool svt_aom_film_grain_params_valid(const AomFilmGrain* grain, bool is_yuv420) {
     if (grain->apply_grain == 0) {
         return true;
     }
@@ -34,7 +34,8 @@ static inline bool svt_aom_film_grain_params_valid(const AomFilmGrain* grain) {
         (uint32_t)grain->ar_coeff_lag > 3 || grain->ar_coeff_shift < 6 || grain->ar_coeff_shift > 9 ||
         (uint32_t)grain->grain_scale_shift > 3 || (uint32_t)grain->num_y_points > 14 ||
         (uint32_t)grain->num_cb_points > 10 || (uint32_t)grain->num_cr_points > 10 ||
-        (!grain->chroma_scaling_from_luma && grain->num_y_points && (!grain->num_cb_points != !grain->num_cr_points))) {
+        (is_yuv420 && !grain->chroma_scaling_from_luma && grain->num_y_points &&
+         (!grain->num_cb_points != !grain->num_cr_points))) {
         return false;
     }
     const int counts[]           = {grain->num_y_points, grain->num_cb_points, grain->num_cr_points};
