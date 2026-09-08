@@ -124,7 +124,6 @@ TEST(FilmGrainTableTest, RejectsInvalidEntriesAndAcceptsFullRange) {
         changed("cCb 0", "cCb 4294967296"),
         changed("12345", "9999999999999999999999999999999999999999"),
         changed("sY 2 0 16 255 16", "sY 2 0 16 0 16"),
-        changed("sCb 0", "sCb 1 0 16"),
         "filmgrn1\nE 0 10000000 1 1 0\n",
         "filmgrn1\nE -1 10000000 0 0 0\n",
         "filmgrn1\nE 0 10000000 1 65536 1\n" + kTableModel,

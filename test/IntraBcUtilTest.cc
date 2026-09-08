@@ -121,7 +121,8 @@ class DvValiationTest : public ::testing::TestWithParam<DvValidationParam> {
                                       xd.tile.mi_row_start + TEST_GET_PARAM(1),
                                       xd.tile.mi_col_start + TEST_GET_PARAM(2),
                                       TEST_GET_PARAM(3),
-                                      MAX_MIB_SIZE_LOG2));
+                                      MAX_MIB_SIZE_LOG2,
+                                      1));
     }
 };
 
