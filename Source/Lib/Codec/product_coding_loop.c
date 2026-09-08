@@ -8556,7 +8556,8 @@ static void md_encode_block_pd0(PictureControlSet* pcs, ModeDecisionContext* ctx
 
     generate_md_stage_0_cand_pd0(ctx, &fast_candidate_total_count, pcs);
 
-    if (ctx->pd0_use_src_samples) {
+    // Only access neighbors when this pass initialized the corresponding array.
+    if (!ctx->skip_intra && ctx->pd0_use_src_samples) {
         prepare_pd0_source_neighbors(ctx, input_pic, input_origin_index);
     }
     ctx->md_stage       = MD_STAGE_0;
