@@ -8,7 +8,7 @@
 */
 
 #include "aom_dsp_rtcd.h"
-#include "inv_transforms.h"
+#include "qm_psnr.h"
 #if EN_AVX512_SUPPORT
 #include <immintrin.h>
 
@@ -256,9 +256,9 @@ void svt_av1_highbd_quantize_b_qm_avx512(const TranLow* coeff_ptr, intptr_t n_co
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 // Keep the eight errors in output order from the widening load to the store.
-// Factor the difference of squares into a single multiply.
-static AOM_FORCE_INLINE void rdoq_deltas(const TranLow* t, const TranLow* q, const TranLow* dq, const QmVal* iqm,
-                                         int dequant, int shift, int n, int64_t* out) {
+// Without matrix rounding the difference of squares takes a single multiply.
+static AOM_FORCE_INLINE void rdoq_deltas(const TranLow* t, const TranLow* q, const TranLow* dq, const QmVal* qm,
+                                         const QmVal* iqm, int dequant, int shift, int n, int64_t* out) {
     const __m128i scale = _mm_cvtsi32_si128(shift);
     for (int i = 0; i < n; i += 8) {
         const __m256i orig  = _mm256_abs_epi32(_mm256_loadu_si256((const __m256i*)(t + i)));
@@ -276,19 +276,36 @@ static AOM_FORCE_INLINE void rdoq_deltas(const TranLow* t, const TranLow* q, con
             scale);
         const __m256i a = _mm256_sll_epi32(_mm256_sub_epi32(recon, orig), scale);
         const __m256i b = _mm256_sll_epi32(_mm256_sub_epi32(low, orig), scale);
-        const __m512i u = _mm512_cvtepi32_epi64(a), v = _mm512_cvtepi32_epi64(b);
-        const __m512i delta = _mm512_mullo_epi64(_mm512_sub_epi64(u, v), _mm512_add_epi64(u, v));
+        __m512i       delta;
+        if (qm) {
+            const __m512i w     = _mm512_cvtepu8_epi64(_mm_loadl_epi64((const __m128i*)(qm + i)));
+            const __m512i u     = _mm512_mul_epi32(_mm512_cvtepi32_epi64(a), w),
+                          v     = _mm512_mul_epi32(_mm512_cvtepi32_epi64(b), w);
+            const __m512i round = _mm512_set1_epi64(1 << (2 * AOM_QM_BITS - 1));
+            const __m512i aa    = _mm512_srli_epi64(_mm512_add_epi64(_mm512_mullo_epi64(u, u), round), 2 * AOM_QM_BITS);
+            const __m512i bb    = _mm512_srli_epi64(_mm512_add_epi64(_mm512_mullo_epi64(v, v), round), 2 * AOM_QM_BITS);
+            delta               = _mm512_sub_epi64(aa, bb);
+        } else {
+            const __m512i u = _mm512_cvtepi32_epi64(a), v = _mm512_cvtepi32_epi64(b);
+            delta = _mm512_mullo_epi64(_mm512_sub_epi64(u, v), _mm512_add_epi64(u, v));
+        }
         _mm512_storeu_si512(
             out + i, _mm512_mask_mov_epi64(delta, _mm256_cmpgt_epi32_mask(orig, recon), _mm512_set1_epi64(INT64_MIN)));
     }
 }
 
-void svt_av1_rdoq_deltas_avx512(const TranLow* t, const TranLow* q, const TranLow* dq, const QmVal* iqm, int dequant,
-                                int shift, int n, int64_t* out) {
-    if (iqm) {
-        rdoq_deltas(t, q, dq, iqm, dequant, shift, n, out);
+void svt_av1_rdoq_deltas_avx512(const TranLow* t, const TranLow* q, const TranLow* dq, const QmVal* qm,
+                                const QmVal* iqm, int dequant, int shift, int n, int64_t* out) {
+    if (qm) {
+        if (iqm) {
+            rdoq_deltas(t, q, dq, qm, iqm, dequant, shift, n, out);
+        } else {
+            rdoq_deltas(t, q, dq, qm, NULL, dequant, shift, n, out);
+        }
+    } else if (iqm) {
+        rdoq_deltas(t, q, dq, NULL, iqm, dequant, shift, n, out);
     } else {
-        rdoq_deltas(t, q, dq, NULL, dequant, shift, n, out);
+        rdoq_deltas(t, q, dq, NULL, NULL, dequant, shift, n, out);
     }
 }
 #endif

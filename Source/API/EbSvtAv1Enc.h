@@ -1229,6 +1229,14 @@ typedef struct EbSvtAv1EncConfiguration {
      */
     uint8_t noise_chroma_from_luma;
 
+    /*
+     * QM-weighted transform distortion:
+     * -1: automatic (on for tune IQ),
+     *  0: PSNR,
+     *  1: QM-PSNR.
+     * */
+    int8_t enable_qmpsnr;
+
     /**
      * ROI QP offset map block size. Supported values are 16 and 64 pixels.
      */
@@ -1262,6 +1270,7 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(bool) // color_range_provided
         - sizeof(int8_t) // noise_size
         - sizeof(uint8_t) // noise_chroma_from_luma
+        - sizeof(int8_t) // enable_qmpsnr
     ];
     // clang-format on
 } EbSvtAv1EncConfiguration;

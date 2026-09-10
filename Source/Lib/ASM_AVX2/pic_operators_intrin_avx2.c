@@ -16,6 +16,7 @@
 
 #include "pack_unpack_c.h"
 #include "common_dsp_rtcd.h"
+#include "inv_transforms.h"
 #include "pic_operators.h"
 
 #define _mm256_set_m128i(/* __m128i */ hi, /* __m128i */ lo) \
@@ -1747,9 +1748,18 @@ void svt_memcpy_intrin_avx2(void* dst_ptr, void const* src_ptr, size_t size) {
     }
 }
 
-static INLINE __m256i coefficient_squares(__m256i v) {
+static INLINE __m256i coefficient_squares(__m256i magnitude, __m256i weights, int weighted) {
+    // For every defined scalar square the weighted magnitude fits uint32_t,
+    // including magnitudes above INT32_MAX. Round before summing adjacent lanes.
+    const __m256i v   = weighted ? _mm256_mullo_epi32(magnitude, weights) : magnitude;
     const __m256i odd = _mm256_srli_epi64(v, 32);
-    return _mm256_add_epi64(_mm256_mul_epu32(v, v), _mm256_mul_epu32(odd, odd));
+    if (!weighted) {
+        return _mm256_add_epi64(_mm256_mul_epu32(v, v), _mm256_mul_epu32(odd, odd));
+    }
+    const __m256i bias = _mm256_set1_epi64x(1 << (2 * AOM_QM_BITS - 1));
+    const __m256i a    = _mm256_add_epi64(_mm256_mul_epu32(v, v), bias);
+    const __m256i b    = _mm256_add_epi64(_mm256_mul_epu32(odd, odd), bias);
+    return _mm256_add_epi64(_mm256_srli_epi64(a, 2 * AOM_QM_BITS), _mm256_srli_epi64(b, 2 * AOM_QM_BITS));
 }
 
 static INLINE uint64_t sum_squares_lanes(__m256i v) {
@@ -1758,32 +1768,51 @@ static INLINE uint64_t sum_squares_lanes(__m256i v) {
 }
 
 static INLINE void coeff_distortion_rows(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t width,
-                                         uint32_t height, uint64_t* distortion, int has_recon) {
+                                         uint32_t height, uint64_t* distortion, int has_recon, const QmVal* weights,
+                                         uint32_t weight_stride, int weighted) {
     __m256i energy = _mm256_setzero_si256(), error = energy;
-    if (stride == width && height && (uint64_t)width * height <= UINT32_MAX) {
+    if (stride == width && (!weighted || weight_stride == width) && height && (uint64_t)width * height <= UINT32_MAX) {
         width *= height;
         height = 1;
     }
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; x += 8) {
             const int     half = width - x == 4;
+            const __m256i w    = !weighted ? _mm256_setzero_si256()
+                                           : _mm256_cvtepu8_epi32(half ? _mm_loadu_si32(weights + x)
+                                                                    : _mm_loadl_epi64((const __m128i*)(weights + x)));
             const __m256i c    = half ? _mm256_zextsi128_si256(_mm_loadu_si128((const __m128i*)(coeff + x)))
                                       : _mm256_loadu_si256((const __m256i*)(coeff + x));
-            energy             = _mm256_add_epi64(energy, coefficient_squares(_mm256_abs_epi32(c)));
+            energy             = _mm256_add_epi64(energy, coefficient_squares(_mm256_abs_epi32(c), w, weighted));
             if (has_recon) {
                 const __m256i r = half ? _mm256_zextsi128_si256(_mm_loadu_si128((const __m128i*)(recon + x)))
                                        : _mm256_loadu_si256((const __m256i*)(recon + x));
                 const __m256i d = _mm256_sub_epi32(_mm256_max_epi32(c, r), _mm256_min_epi32(c, r));
-                error           = _mm256_add_epi64(error, coefficient_squares(d));
+                error           = _mm256_add_epi64(error, coefficient_squares(d, w, weighted));
             }
         }
         coeff += stride;
         if (has_recon) {
             recon += stride;
         }
+        if (weighted) {
+            weights += weight_stride;
+        }
     }
     distortion[DIST_CALC_PREDICTION] = sum_squares_lanes(energy);
     distortion[DIST_CALC_RESIDUAL]   = has_recon ? sum_squares_lanes(error) : distortion[DIST_CALC_PREDICTION];
+}
+
+void svt_qm_full_distortion_avx2(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t width,
+                                 uint32_t height, uint64_t* distortion, uint32_t eob, const QmVal* weights,
+                                 uint32_t weight_stride) {
+    if (!weights || (width & 3)) {
+        svt_qm_full_distortion_c(coeff, recon, stride, width, height, distortion, eob, weights, weight_stride);
+    } else if (eob) {
+        coeff_distortion_rows(coeff, recon, stride, width, height, distortion, 1, weights, weight_stride, 1);
+    } else {
+        coeff_distortion_rows(coeff, NULL, stride, width, height, distortion, 0, weights, weight_stride, 1);
+    }
 }
 
 void svt_full_distortion_kernel32_bits_avx2(int32_t* coeff, int32_t* recon, uint32_t stride, uint32_t w, uint32_t h,
@@ -1792,7 +1821,7 @@ void svt_full_distortion_kernel32_bits_avx2(int32_t* coeff, int32_t* recon, uint
         svt_full_distortion_kernel32_bits_c(coeff, recon, stride, w, h, distortion);
         return;
     }
-    coeff_distortion_rows(coeff, recon, stride, w, h, distortion, 1);
+    coeff_distortion_rows(coeff, recon, stride, w, h, distortion, 1, NULL, 0, 0);
 }
 
 void svt_full_distortion_kernel_cbf_zero32_bits_avx2(int32_t* coeff, uint32_t stride,
@@ -1801,5 +1830,5 @@ void svt_full_distortion_kernel_cbf_zero32_bits_avx2(int32_t* coeff, uint32_t st
         svt_full_distortion_kernel_cbf_zero32_bits_c(coeff, stride, distortion, w, h);
         return;
     }
-    coeff_distortion_rows(coeff, NULL, stride, w, h, distortion, 0);
+    coeff_distortion_rows(coeff, NULL, stride, w, h, distortion, 0, NULL, 0, 0);
 }

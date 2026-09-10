@@ -20,12 +20,17 @@
 
 // The simple RDOQ pass visits each AC position once. Its two reconstruction
 // errors are independent of scan order and of the evolving entropy contexts.
-static INLINE __m256i rdoq_square(__m256i errors) {
-    return _mm256_mul_epu32(errors, errors);
+static AOM_FORCE_INLINE __m256i rdoq_square(__m256i errors, int weighted) {
+    __m256i sq = _mm256_mul_epu32(errors, errors);
+    if (weighted) {
+        sq = _mm256_srli_epi64(_mm256_add_epi64(sq, _mm256_set1_epi64x(1 << (2 * AOM_QM_BITS - 1))), 2 * AOM_QM_BITS);
+    }
+    return sq;
 }
 
 static AOM_FORCE_INLINE void rdoq_deltas(const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff,
-                                         const QmVal* iqm, int ac_dequant, int shift, int count, int64_t* delta) {
+                                         const QmVal* qm, const QmVal* iqm, int ac_dequant, int shift, int count,
+                                         int64_t* delta) {
     assert(count % 8 == 0);
     const __m256i ac    = _mm256_set1_epi32(ac_dequant);
     const __m128i scale = _mm_cvtsi32_si128(shift);
@@ -42,11 +47,16 @@ static AOM_FORCE_INLINE void rdoq_deltas(const TranLow* tcoeff, const TranLow* q
         const __m256i low_level = _mm256_max_epi32(_mm256_sub_epi32(qabs, _mm256_set1_epi32(1)),
                                                    _mm256_setzero_si256());
         const __m256i low       = _mm256_srl_epi32(_mm256_mullo_epi32(low_level, step), scale);
-        const __m256i cur_err   = _mm256_sll_epi32(_mm256_abs_epi32(_mm256_sub_epi32(orig, recon)), scale);
-        const __m256i low_err   = _mm256_sll_epi32(_mm256_abs_epi32(_mm256_sub_epi32(orig, low)), scale);
-        const __m256i even      = _mm256_sub_epi64(rdoq_square(cur_err), rdoq_square(low_err));
-        const __m256i odd       = _mm256_sub_epi64(rdoq_square(_mm256_srli_epi64(cur_err, 32)),
-                                             rdoq_square(_mm256_srli_epi64(low_err, 32)));
+        __m256i       cur_err   = _mm256_sll_epi32(_mm256_abs_epi32(_mm256_sub_epi32(orig, recon)), scale);
+        __m256i       low_err   = _mm256_sll_epi32(_mm256_abs_epi32(_mm256_sub_epi32(orig, low)), scale);
+        if (qm) {
+            const __m256i wt = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i*)(qm + i)));
+            cur_err          = _mm256_mullo_epi32(cur_err, wt);
+            low_err          = _mm256_mullo_epi32(low_err, wt);
+        }
+        const __m256i even = _mm256_sub_epi64(rdoq_square(cur_err, qm != NULL), rdoq_square(low_err, qm != NULL));
+        const __m256i odd  = _mm256_sub_epi64(rdoq_square(_mm256_srli_epi64(cur_err, 32), qm != NULL),
+                                             rdoq_square(_mm256_srli_epi64(low_err, 32), qm != NULL));
         // A coefficient already below its target magnitude cannot be lowered.
         const __m256i disabled = _mm256_cmpgt_epi32(orig, recon);
         const __m256i never    = _mm256_set1_epi64x(INT64_MIN);
@@ -61,12 +71,21 @@ static AOM_FORCE_INLINE void rdoq_deltas(const TranLow* tcoeff, const TranLow* q
     }
 }
 
-void svt_av1_rdoq_deltas_avx2(const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff, const QmVal* iqm,
-                              int ac_dequant, int shift, int count, int64_t* delta) {
-    if (iqm) {
-        rdoq_deltas(tcoeff, qcoeff, dqcoeff, iqm, ac_dequant, shift, count, delta);
+void svt_av1_rdoq_deltas_avx2(const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff, const QmVal* qm,
+                              const QmVal* iqm, int ac_dequant, int shift, int count, int64_t* delta) {
+    // Hoist the two matrix tests out of the coefficient loop.
+    if (qm) {
+        if (iqm) {
+            rdoq_deltas(tcoeff, qcoeff, dqcoeff, qm, iqm, ac_dequant, shift, count, delta);
+        } else {
+            rdoq_deltas(tcoeff, qcoeff, dqcoeff, qm, NULL, ac_dequant, shift, count, delta);
+        }
     } else {
-        rdoq_deltas(tcoeff, qcoeff, dqcoeff, NULL, ac_dequant, shift, count, delta);
+        if (iqm) {
+            rdoq_deltas(tcoeff, qcoeff, dqcoeff, NULL, iqm, ac_dequant, shift, count, delta);
+        } else {
+            rdoq_deltas(tcoeff, qcoeff, dqcoeff, NULL, NULL, ac_dequant, shift, count, delta);
+        }
     }
 }
 
