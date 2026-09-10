@@ -35,6 +35,7 @@
 #include "pic_manager_process.h"
 #include "rc_process.h"
 #include "md_config_process.h"
+#include "qm_psnr.h"
 #include "enc_dec_process.h"
 #include "ec_process.h"
 #include "packetization_process.h"
@@ -1374,6 +1375,7 @@ static ONCE_ROUTINE(init_global_tables) {
     svt_av1_init_me_luts();
     init_fn_ptr();
     svt_aom_init_iscan();
+    svt_av1_init_qmpsnr_weights();
     svt_aom_build_tx_org();
 #if CONFIG_ENABLE_INTER_COMPOUND && CONFIG_ENABLE_COMPOUND_TYPES
     svt_av1_init_wedge_masks();
@@ -5066,6 +5068,10 @@ static void copy_api_from_app(SequenceControlSet* scs, EbSvtAv1EncConfiguration*
 
     // CDEF scaling
     scs->static_config.cdef_scaling = config_struct->cdef_scaling;
+
+    // Resolve the metric after tune selection, preserving an explicit disable.
+    scs->static_config.enable_qmpsnr = config_struct->enable_qmpsnr == -1 ? scs->static_config.tune == TUNE_IQ
+                                                                          : config_struct->enable_qmpsnr;
 
     // Override settings for Still IQ tune
     if (scs->static_config.tune == TUNE_IQ) {

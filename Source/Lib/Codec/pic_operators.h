@@ -31,7 +31,7 @@ void svt_aom_picture_full_distortion32_bits_single_facade(int32_t* coeff, int32_
                                                           uint32_t area_height, uint64_t* distortion,
                                                           uint32_t cnt_nz_coeff, BlockModeInfo* block_mi,
                                                           bool is_chroma, uint8_t temporal_layer_index, double ac_bias,
-                                                          uint8_t tx_bias);
+                                                          uint8_t tx_bias, const QmVal* qm);
 
 uint64_t svt_spatial_full_distortion_kernel_facade(uint8_t* input, uint32_t input_offset, uint32_t input_stride,
                                                    uint8_t* recon, int32_t recon_offset, uint32_t recon_stride,

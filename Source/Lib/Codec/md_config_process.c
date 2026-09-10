@@ -22,6 +22,7 @@
 #include "md_process.h"
 #include "av1me.h"
 #include "q_matrices.h"
+#include "qm_psnr.h"
 #include "svt_log.h"
 #include "coefficients.h"
 #include "common_utils.h"
@@ -236,6 +237,59 @@ static INLINE int svt_av1_still_get_chroma_qmlevel_444(int qindex, int min, int 
         level = 2;
     }
     return CLIP3(min, max, level);
+}
+
+#if CONFIG_ENABLE_QUANT_MATRIX
+// One immutable copy for all pictures and encoder instances. Keep the original
+// matrices for quantization/RDOQ; only full-block distortion uses this layout.
+static QmVal    qmpsnr_weights[NUM_QM_LEVELS - 1][2][QM_TOTAL_SIZE];
+static uint16_t qmpsnr_offsets[TX_SIZES_ALL];
+#endif
+
+void svt_av1_init_qmpsnr_weights(void) {
+#if CONFIG_ENABLE_QUANT_MATRIX
+    int offset = 0;
+    for (int t = 0; t < TX_SIZES_ALL; ++t) {
+        const TxSize adjusted = av1_get_adjusted_tx_size(t);
+        if (t != adjusted) {
+            qmpsnr_offsets[t] = qmpsnr_offsets[adjusted];
+            continue;
+        }
+        qmpsnr_offsets[t]     = offset;
+        const int      width  = tx_size_wide[t];
+        const int      height = tx_size_high[t];
+        const int16_t* scan   = get_scan_order(t, DCT_DCT)->scan;
+        for (int q = 0; q < NUM_QM_LEVELS - 1; ++q) {
+            for (int plane = 0; plane < 2; ++plane) {
+                const QmVal* src = &wt_matrix_ref[q][plane][offset];
+                QmVal*       dst = &qmpsnr_weights[q][plane][offset];
+                for (int y = 0; y < height; ++y) {
+                    for (int x = 0; x < width; ++x) {
+                        // Preserve the column-major scan-position lookup used
+                        // by QM-PSNR, including rectangular transforms.
+                        dst[y * width + x] = src[scan[x * height + y]];
+                    }
+                }
+            }
+        }
+        offset += width * height;
+    }
+    assert(offset == QM_TOTAL_SIZE);
+#endif
+}
+
+const QmVal* svt_av1_get_qmpsnr_weights(int level, int plane, TxSize tx_size) {
+#if CONFIG_ENABLE_QUANT_MATRIX
+    assert(level >= 0 && level < NUM_QM_LEVELS);
+    assert(plane >= 0 && plane < 3);
+    assert(tx_size >= 0 && tx_size < TX_SIZES_ALL);
+    return level == NUM_QM_LEVELS - 1 ? NULL : &qmpsnr_weights[level][plane != 0][qmpsnr_offsets[tx_size]];
+#else
+    UNUSED(level);
+    UNUSED(plane);
+    UNUSED(tx_size);
+    return NULL;
+#endif
 }
 
 static void svt_av1_qm_init(PictureParentControlSet* pcs) {

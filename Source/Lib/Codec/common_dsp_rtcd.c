@@ -582,6 +582,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2_AVX2(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d, svt_enc_msb_pack2d_sse2_intrin, svt_enc_msb_pack2d_avx2_intrin_al);
     SET_SSE2_AVX2(svt_aom_un_pack2d_16_bit_src_mul4, svt_enc_msb_un_pack2_d, svt_enc_msb_un_pack2d_sse2_intrin, svt_enc_msb_un_pack2d_avx2_intrin);
     SET_SSE41_AVX2(svt_full_distortion_kernel_cbf_zero32_bits, svt_full_distortion_kernel_cbf_zero32_bits_c, svt_full_distortion_kernel_cbf_zero32_bits_sse4_1, svt_full_distortion_kernel_cbf_zero32_bits_avx2);
+    SET_ONLY_C(svt_qm_full_distortion, svt_qm_full_distortion_c);
     SET_SSE41_AVX2(svt_full_distortion_kernel32_bits, svt_full_distortion_kernel32_bits_c, svt_full_distortion_kernel32_bits_sse4_1, svt_full_distortion_kernel32_bits_avx2);
     SET_SSE41_AVX2_AVX512(svt_spatial_full_distortion_kernel, svt_spatial_full_distortion_kernel_c, svt_spatial_full_distortion_kernel_sse4_1, svt_spatial_full_distortion_kernel_avx2, svt_spatial_full_distortion_kernel_avx512);
     SET_SSE41_AVX2(svt_full_distortion_kernel16_bits, svt_full_distortion_kernel16_bits_c, svt_full_distortion_kernel16_bits_sse4_1, svt_full_distortion_kernel16_bits_avx2);
@@ -1196,6 +1197,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d, svt_enc_msb_pack2d_neon);
     SET_NEON(svt_aom_un_pack2d_16_bit_src_mul4, svt_enc_msb_un_pack2_d, svt_enc_msb_un_pack2d_neon);
     SET_NEON(svt_full_distortion_kernel_cbf_zero32_bits, svt_full_distortion_kernel_cbf_zero32_bits_c, svt_full_distortion_kernel_cbf_zero32_bits_neon);
+    SET_NEON(svt_qm_full_distortion, svt_qm_full_distortion_c, svt_qm_full_distortion_neon);
     SET_NEON(svt_full_distortion_kernel32_bits, svt_full_distortion_kernel32_bits_c, svt_full_distortion_kernel32_bits_neon);
     SET_NEON_NEON_DOTPROD(svt_spatial_full_distortion_kernel, svt_spatial_full_distortion_kernel_c, svt_spatial_full_distortion_kernel_neon, svt_spatial_full_distortion_kernel_neon_dotprod);
     SET_NEON_SVE(svt_full_distortion_kernel16_bits, svt_full_distortion_kernel16_bits_c, svt_full_distortion_kernel16_bits_neon, svt_full_distortion_kernel16_bits_sve);
@@ -1791,6 +1793,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d);
     SET_ONLY_C(svt_aom_un_pack2d_16_bit_src_mul4, svt_enc_msb_un_pack2_d);
     SET_ONLY_C(svt_full_distortion_kernel_cbf_zero32_bits, svt_full_distortion_kernel_cbf_zero32_bits_c);
+    SET_ONLY_C(svt_qm_full_distortion, svt_qm_full_distortion_c);
     SET_ONLY_C(svt_full_distortion_kernel32_bits, svt_full_distortion_kernel32_bits_c);
     SET_ONLY_C(svt_spatial_full_distortion_kernel, svt_spatial_full_distortion_kernel_c);
     SET_ONLY_C(svt_full_distortion_kernel16_bits, svt_full_distortion_kernel16_bits_c);
