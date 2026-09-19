@@ -45,7 +45,6 @@ jobs:
           Linux | x86-64 | LLVM Project Clang LLD | `znver2` | LTO PGO  
           Linux | x86-64 | LLVM Project Clang LLD | `x86-64-v3` + `znver2` | LTO PGO  
           macOS | arm64 | LLVM Project Clang LLD | `armv8.5-a+simd+crypto` + `apple-m3` | LTO PGO  
-          macOS | x86-64 | LLVM Project Clang LLD | `skylake` | LTO PGO  
 
           On x86-64 systems, no matter if you're on an Intel or AMD system, you should try these builds in the order of `icelake-server` + `znver5` ⇒ `znver2` ⇒ `x86-64-v3` + `znver2`.  
           If your CPU doesn't support the features required by the `icelake-server` + `znver5` version, often indicated by crashing outright when attempting to make any encodes, you can try the `znver2` version and see if that works. If not, then the `x86-64-v3` + `znver2` version, which should always work on any modern systems.  
@@ -192,25 +191,3 @@ jobs:
       with:
         tag_name: ${{ needs.tag.outputs.tag }}
         files: BuildAction/armv8.5-a+simd+crypto+apple-m3/static/macOS_arm64_armv8.5-a+simd+crypto+apple-m3.tar.xz
-
-
-  build-macos-x86-64:
-    needs: [tag, release]
-    runs-on: "macos-26-intel"
-    steps:
-    - uses: actions/checkout@v7
-      with:
-        fetch-depth: 0
-        fetch-tags: true
-
-    - uses: Akatmks/build-svt-av1@v1
-      with:
-        pgo-video: "FoodMarket2"
-        pgo-parameters: "--crf 20.00 --tune 0 --film-grain 8 --enable-dlf 2"
-
-    - run: ls BuildAction/skylake/static/SvtAv1EncApp
-    - run: cd BuildAction/skylake/static && tar cJf macOS_x86-64_skylake.tar.xz SvtAv1EncApp
-    - uses: softprops/action-gh-release@v3
-      with:
-        tag_name: ${{ needs.tag.outputs.tag }}
-        files: BuildAction/skylake/static/macOS_x86-64_skylake.tar.xz
