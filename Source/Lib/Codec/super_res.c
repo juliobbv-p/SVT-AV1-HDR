@@ -69,6 +69,7 @@ void calculate_scaled_size_helper(uint16_t* dim, uint8_t denom) {
     }
 }
 
+#if CONFIG_ENABLE_RESIZE
 static int32_t av1_get_upscale_convolve_step(int in_length, int out_length) {
     return ((in_length << RS_SCALE_SUBPEL_BITS) + out_length / 2) / out_length;
 }
@@ -79,6 +80,7 @@ static int32_t get_upscale_convolve_x0(int in_length, int out_length, int32_t x_
         RS_SCALE_EXTRA_OFF - err / 2;
     return (int32_t)((uint32_t)x0 & RS_SCALE_SUBPEL_MASK);
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 static void av1_convolve_horiz_rs_c(const uint8_t* src, int src_stride, uint8_t* dst, int dst_stride, int w, int h,
                                     const int16_t* x_filters, int x0_qn, int x_step_qn) {
@@ -102,6 +104,7 @@ static void av1_convolve_horiz_rs_c(const uint8_t* src, int src_stride, uint8_t*
     }
 }
 
+#if CONFIG_ENABLE_RESIZE
 static void av1_highbd_convolve_horiz_rs_c(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride, int w,
                                            int h, const int16_t* x_filters, int x0_qn, int x_step_qn, int bd) {
     src -= UPSCALE_NORMATIVE_TAPS / 2 - 1;
@@ -123,6 +126,7 @@ static void av1_highbd_convolve_horiz_rs_c(const uint16_t* src, int src_stride, 
         dst += dst_stride;
     }
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 void upscale_normative_rect(const uint8_t* const input, int height, int width, int in_stride, uint8_t* output,
                             int height2, int width2, int out_stride, int x_step_qn, int x0_qn, int pad_left,
@@ -185,6 +189,7 @@ void upscale_normative_rect(const uint8_t* const input, int height, int width, i
     }
 }
 
+#if CONFIG_ENABLE_RESIZE
 static void highbd_upscale_normative_rect(const uint8_t* const input, int height, int width, int in_stride,
                                           uint8_t* output, int height2, int width2, int out_stride, int x_step_qn,
                                           int x0_qn, int pad_left, int pad_right, int bd) {
@@ -247,9 +252,17 @@ static void highbd_upscale_normative_rect(const uint8_t* const input, int height
         svt_aom_free(tmp_right);
     }
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 void svt_av1_upscale_normative_rows(const Av1Common* cm, const uint8_t* src, int src_stride, uint8_t* dst,
                                     int dst_stride, int rows, int sub_x, int bd, bool is_16bit_pipeline) {
+#if !CONFIG_ENABLE_RESIZE
+    // resize/superres disabled in this build; callers are gated off, never reached at runtime.
+    (void)cm, (void)src, (void)src_stride, (void)dst, (void)dst_stride, (void)rows, (void)sub_x, (void)bd,
+        (void)is_16bit_pipeline;
+    assert(0);
+    return;
+#else
     int       high_bd                = bd > EB_EIGHT_BIT || is_16bit_pipeline;
     const int downscaled_plane_width = ROUND_POWER_OF_TWO(cm->frm_size.frame_width, sub_x);
     const int upscaled_plane_width   = ROUND_POWER_OF_TWO(cm->frm_size.superres_upscaled_width, sub_x);
@@ -320,4 +333,5 @@ void svt_av1_upscale_normative_rows(const Av1Common* cm, const uint8_t* src, int
         /*Update the fractional pixel offset to prepare for the next tile col*/
         x0_qn += (dst_width * x_step_qn) - (src_width << RS_SCALE_SUBPEL_BITS);
     }
+#endif
 }

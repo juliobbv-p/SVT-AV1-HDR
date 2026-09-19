@@ -94,7 +94,9 @@
   for CMAKE_BUILD_TYPE in Debug Release; do
     test -e "./Bin/$CMAKE_BUILD_TYPE/SvtAv1EncApp" || continue
     ./Bin/$CMAKE_BUILD_TYPE/SvtAv1EncApp --preset 2 -i "$SVT_ENCTEST_FILENAME" -n 17 -b "test-${BRANCH:-pr}-$(uname -sm | tr ' ' _)-${CMAKE_BUILD_TYPE}-${SVT_ENCTEST_BITNESS}bit-m2.ivf"
+    ./Bin/$CMAKE_BUILD_TYPE/SvtAv1EncApp --preset 2 --tune 5 -i "$SVT_ENCTEST_FILENAME" -n 17 -b "test-${BRANCH:-pr}-$(uname -sm | tr ' ' _)-${CMAKE_BUILD_TYPE}-${SVT_ENCTEST_BITNESS}bit-m2-tune5.ivf"
     ./Bin/$CMAKE_BUILD_TYPE/SvtAv1EncApp --preset 8 -i "$SVT_ENCTEST_FILENAME" -n 120 -b "test-${BRANCH:-pr}-$(uname -sm | tr ' ' _)-${CMAKE_BUILD_TYPE}-${SVT_ENCTEST_BITNESS}bit-m8.ivf"
+    ./Bin/$CMAKE_BUILD_TYPE/SvtAv1EncApp --preset 8 --tune 5 -i "$SVT_ENCTEST_FILENAME" -n 120 -b "test-${BRANCH:-pr}-$(uname -sm | tr ' ' _)-${CMAKE_BUILD_TYPE}-${SVT_ENCTEST_BITNESS}bit-m8-tune5.ivf"
   done
 
 .enc-ext-test-script: |

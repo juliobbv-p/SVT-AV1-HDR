@@ -62,7 +62,7 @@ static const uint8_t quantizer_to_qindex[] = {
 /** get qp value with the given qindex */
 static uint32_t get_qp(const int16_t qindex) {
     if (qindex > 255) {
-        printf("qindex is larger than 255!\n");
+        ADD_FAILURE() << "qindex is larger than 255!\n";
         return 63;
     }
 
@@ -182,10 +182,10 @@ class CodingOptionTest : public SvtAv1E2ETestFramework {
         uint32_t expect_rows =
             (uint32_t)((video_src_->get_height_with_padding() >> 2) /
                        (1 << config->tile_rows));
-        printf("expect_cols %d, expect_rows %d\n", expect_cols, expect_rows);
-        printf("tile_cols %d, tile_rows %d\n",
-               stream_info->tile_cols,
-               stream_info->tile_rows);
+        std::cerr << "expect_cols " << expect_cols << ", expect_rows "
+                  << expect_rows << "\n";
+        std::cerr << "tile_cols " << stream_info->tile_cols << ", tile_rows "
+                  << stream_info->tile_rows << "\n";
         EXPECT_EQ(expect_cols, stream_info->tile_cols)
             << "Tile columns " << stream_info->tile_cols << " actual"
             << expect_cols;

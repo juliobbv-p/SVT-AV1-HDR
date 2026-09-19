@@ -258,6 +258,24 @@ EbErrorType svt_picture_buffer_desc_noy8b_update(EbPictureBufferDesc* object_ptr
 EbErrorType svt_picture_buffer_desc_update(EbPictureBufferDesc* pictureBufferDescPtr, const EbPtr object_init_data_ptr);
 EbErrorType svt_recon_picture_buffer_desc_update(EbPictureBufferDesc* object_ptr, EbPtr object_init_data_ptr);
 
+// Pooled picture-buffer pool: `count` descriptors backed by ONE aligned allocation,
+// sliced by (ALVALUE-aligned) offset. Replaces `count` separate EbPictureBufferDesc
+// allocations to cut heap fragmentation / per-allocation overhead. Each descs[i] borrows
+// its buffer_alloc from `backing` (dctor NULL); the pool owns/frees backing + descs.
+typedef struct SvtPicBufDescPool {
+    uint8_t*             backing; // single aligned backing buffer for all descriptors
+    EbPictureBufferDesc* descs; // contiguous array of `count` descriptors
+    uint32_t             count;
+} SvtPicBufDescPool;
+
+// All `count` descriptors share the same init data.
+EbErrorType svt_aom_pic_buf_desc_pool_ctor(SvtPicBufDescPool* pool, const EbPictureBufferDescInitData* init_data,
+                                           uint32_t count);
+// Descriptor i is built from init_data_arr[i] (for variable per-slot dimensions).
+EbErrorType svt_aom_pic_buf_desc_pool_ctor_var(SvtPicBufDescPool*                 pool,
+                                               const EbPictureBufferDescInitData* init_data_arr, uint32_t count);
+void        svt_aom_pic_buf_desc_pool_dctor(SvtPicBufDescPool* pool);
+
 int32_t svt_aom_realloc_frame_buffer(Yv12BufferConfig* ybf, int32_t width, int32_t height, int32_t ss_x, int32_t ss_y,
                                      int32_t use_highbitdepth, int32_t border, int32_t byte_alignment,
                                      AomCodecFrameBuffer* fb, AomGetFrameBufferCbFn cb, void* cb_priv);

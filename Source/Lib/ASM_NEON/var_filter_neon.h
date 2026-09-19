@@ -17,6 +17,132 @@
 #include "sum_neon.h"
 #include "aom_dsp_rtcd.h"
 
+// Interpolate 'a' and 'b' in the ratio 3:1.
+static inline uint8x8_t interp_3_1_w8(uint8x8_t a, uint8x8_t b) {
+    return vrhadd_u8(a, vhadd_u8(a, b));
+}
+
+// Interpolate 'a' and 'b' in the ratio 1:1. (Compute the average.)
+static inline uint8x8_t interp_1_1_w8(uint8x8_t a, uint8x8_t b) {
+    return vrhadd_u8(a, b);
+}
+
+// Interpolate 'a' and 'b' in the ratio 1:3.
+static inline uint8x8_t interp_1_3_w8(uint8x8_t a, uint8x8_t b) {
+    return vrhadd_u8(b, vhadd_u8(a, b));
+}
+
+// Interpolate 'a' and 'b' according to the filter specified by 'filter_offset'.
+static inline uint8x16_t interp_w16(uint8x16_t a, uint8x16_t b, int filter_offset) {
+    if (filter_offset == 0) {
+        return a;
+    }
+    const uint8x16_t avg = vhaddq_u8(a, b);
+    if (filter_offset == 1) {
+        return vrhaddq_u8(a, vhaddq_u8(a, avg));
+    }
+    if (filter_offset == 2) {
+        return vrhaddq_u8(a, avg);
+    }
+    if (filter_offset == 3) {
+        return vrhaddq_u8(a, vhaddq_u8(b, avg));
+    }
+    if (filter_offset == 4) {
+        return vrhaddq_u8(a, b);
+    }
+    if (filter_offset == 5) {
+        return vrhaddq_u8(b, vhaddq_u8(a, avg));
+    }
+    if (filter_offset == 6) {
+        return vrhaddq_u8(b, avg);
+    }
+    return vrhaddq_u8(b, vhaddq_u8(b, avg));
+}
+
+// Load adjacent pixel values and interpolate in ratio 3:1.
+static inline uint8x8_t load_interp_3_1_w8(const uint8_t* p) {
+    return interp_3_1_w8(vld1_u8(p), vld1_u8(p + 1));
+}
+
+// Load adjacent pixel values and interpolate in ratio 1:1.
+static inline uint8x8_t load_interp_1_1_w8(const uint8_t* p) {
+    return interp_1_1_w8(vld1_u8(p), vld1_u8(p + 1));
+}
+
+// Load adjacent pixel values and interpolate in ratio 1:3.
+static inline uint8x8_t load_interp_1_3_w8(const uint8_t* p) {
+    return interp_1_3_w8(vld1_u8(p), vld1_u8(p + 1));
+}
+
+// Load adjacent pixel values and interpolate according to 'filter_offset'.
+static inline uint8x8_t load_interp_w8(const uint8_t* p, int filter_offset) {
+    const uint8x8_t a = vld1_u8(p);
+    if (filter_offset == 0) {
+        return a;
+    }
+    const uint8x8_t b   = vld1_u8(p + 1);
+    const uint8x8_t avg = vhadd_u8(a, b);
+    if (filter_offset == 1) {
+        return vrhadd_u8(a, vhadd_u8(a, avg));
+    }
+    if (filter_offset == 2) {
+        return vrhadd_u8(a, avg);
+    }
+    if (filter_offset == 3) {
+        return vrhadd_u8(a, vhadd_u8(b, avg));
+    }
+    if (filter_offset == 4) {
+        return vrhadd_u8(a, b);
+    }
+    if (filter_offset == 5) {
+        return vrhadd_u8(b, vhadd_u8(a, avg));
+    }
+    if (filter_offset == 6) {
+        return vrhadd_u8(b, avg);
+    }
+    return vrhadd_u8(b, vhadd_u8(b, avg));
+}
+
+static inline uint8x16_t load_interp_w8x2(const uint8_t* p, int64_t stride, int filter_offset) {
+    const uint8x16_t a = load_u8_8x2(p, stride);
+    if (filter_offset == 0) {
+        return a;
+    }
+    return interp_w16(a, load_u8_8x2(p + 1, stride), filter_offset);
+}
+
+static inline uint8x16_t interp_3_1_w16(uint8x16_t a, uint8x16_t b) {
+    return vrhaddq_u8(a, vhaddq_u8(a, b));
+}
+
+static inline uint8x16_t interp_1_1_w16(uint8x16_t a, uint8x16_t b) {
+    return vrhaddq_u8(a, b);
+}
+
+static inline uint8x16_t interp_1_3_w16(uint8x16_t a, uint8x16_t b) {
+    return vrhaddq_u8(b, vhaddq_u8(a, b));
+}
+
+static inline uint8x16_t load_interp_w16(const uint8_t* p, int offset) {
+    const uint8x16_t a = vld1q_u8(p);
+    if (offset == 0) {
+        return a;
+    }
+    return interp_w16(a, vld1q_u8(p + 1), offset);
+}
+
+static inline uint8x16_t load_interp_3_1_w16(const uint8_t* p) {
+    return interp_3_1_w16(vld1q_u8(p), vld1q_u8(p + 1));
+}
+
+static inline uint8x16_t load_interp_1_1_w16(const uint8_t* p) {
+    return interp_1_1_w16(vld1q_u8(p), vld1q_u8(p + 1));
+}
+
+static inline uint8x16_t load_interp_1_3_w16(const uint8_t* p) {
+    return interp_1_3_w16(vld1q_u8(p), vld1q_u8(p + 1));
+}
+
 static inline void var_filter_block2d_bil_w4(const uint8_t* src_ptr, uint8_t* dst_ptr, int src_stride, int pixel_step,
                                              int dst_height, int filter_offset) {
     const uint8x8_t f0 = vdup_n_u8(8 - filter_offset);

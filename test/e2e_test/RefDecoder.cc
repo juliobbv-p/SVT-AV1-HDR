@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <cmath>
 #include <algorithm>
+#include "aom/aom_codec.h"
 #include "aom/aom_decoder.h"
 #include "aom/aomdx.h"
 #include "aom/inspection.h"
@@ -113,11 +114,43 @@ RefDecoder* create_reference_decoder(bool enable_analyzer /* = false*/) {
     return decoder;
 }
 
+static VideoColorFormat trans_video_format(aom_img_fmt_t fmt) {
+    switch (fmt) {
+    case AOM_IMG_FMT_YV12: return IMG_FMT_YV12;
+    case AOM_IMG_FMT_I420: return IMG_FMT_I420;
+    case AOM_IMG_FMT_AOMYV12: return IMG_FMT_YV12_CUSTOM_COLOR_SPACE;
+    case AOM_IMG_FMT_AOMI420: return IMG_FMT_I420_CUSTOM_COLOR_SPACE;
+    case AOM_IMG_FMT_I422: return IMG_FMT_422;
+    case AOM_IMG_FMT_I444: return IMG_FMT_444;
+    case AOM_IMG_FMT_444A: return IMG_FMT_444A;
+    case AOM_IMG_FMT_I42016: return IMG_FMT_420;
+    case AOM_IMG_FMT_I42216: return IMG_FMT_422;
+    case AOM_IMG_FMT_I44416: return IMG_FMT_444;
+    default: break;
+    }
+    return IMG_FMT_422;
+}
+
 // callback function to get frame data and mi data
 void RefDecoder::inspect_cb(void* pbi, void* data) {
     RefDecoder* pThis = (RefDecoder*)data;
     if (pThis == nullptr)
         return;
+
+    if (!pThis->video_param_.width) {
+        aom_codec_ctx_t* codec_ =
+            reinterpret_cast<aom_codec_ctx_t*>(pThis->codec_handle_);
+        aom_img_fmt_t fmt;
+        int render_size[2];
+        unsigned int bit_depth;
+        aom_codec_control(codec_, AV1D_GET_IMG_FORMAT, &fmt);
+        aom_codec_control(codec_, AV1D_GET_DISPLAY_SIZE, render_size);
+        aom_codec_control(codec_, AV1D_GET_BIT_DEPTH, &bit_depth);
+        pThis->video_param_.format = trans_video_format(fmt);
+        pThis->video_param_.width = render_size[0];
+        pThis->video_param_.height = render_size[1];
+        pThis->video_param_.bits_per_sample = bit_depth;
+    }
 
     if (!pThis->insp_frame_data_ && pThis->video_param_.width) {
         pThis->insp_frame_data_ = new insp_frame_data();
@@ -129,7 +162,7 @@ void RefDecoder::inspect_cb(void* pbi, void* data) {
     }
     insp_frame_data* inspect_data = (insp_frame_data*)pThis->insp_frame_data_;
     if (!pThis->insp_frame_data_) {
-        printf("inspect frame data structure is not ready!\n");
+        std::cerr << "inspect frame data structure is not ready!\n";
         return;
     }
 
@@ -177,23 +210,6 @@ void RefDecoder::parse_frame_info() {
         stream_info_.max_qindex = max_qindex;
     stream_info_.max_intra_period =
         get_max_intra_period_length(stream_info_.frame_type_list);
-}
-
-static VideoColorFormat trans_video_format(aom_img_fmt_t fmt) {
-    switch (fmt) {
-    case AOM_IMG_FMT_YV12: return IMG_FMT_YV12;
-    case AOM_IMG_FMT_I420: return IMG_FMT_I420;
-    case AOM_IMG_FMT_AOMYV12: return IMG_FMT_YV12_CUSTOM_COLOR_SPACE;
-    case AOM_IMG_FMT_AOMI420: return IMG_FMT_I420_CUSTOM_COLOR_SPACE;
-    case AOM_IMG_FMT_I422: return IMG_FMT_422;
-    case AOM_IMG_FMT_I444: return IMG_FMT_444;
-    case AOM_IMG_FMT_444A: return IMG_FMT_444A;
-    case AOM_IMG_FMT_I42016: return IMG_FMT_420;
-    case AOM_IMG_FMT_I42216: return IMG_FMT_422;
-    case AOM_IMG_FMT_I44416: return IMG_FMT_444;
-    default: break;
-    }
-    return IMG_FMT_422;
 }
 
 RefDecoder::RefDecoder(RefDecoder::RefDecoderErr& ret, bool enable_analyzer)
@@ -264,6 +280,23 @@ RefDecoder::RefDecoderErr RefDecoder::decode(const uint8_t* data,
     }
     enc_bytes_ += size;
     burst_bytes_ = std::max(burst_bytes_, size);
+
+    // Capture per-frame parses for ref-frame management cross-check.
+    // AOMD_GET_LAST_REF_UPDATES returns refresh_frame_flags (bit i set iff
+    // DPB slot i was refreshed). AOMD_GET_FRAME_CORRUPTED reports decode
+    // integrity. Both controls reflect the LAST decoded frame.
+    int refresh_flags = 0;
+    if (aom_codec_control(codec_, AOMD_GET_LAST_REF_UPDATES, &refresh_flags) ==
+        AOM_CODEC_OK) {
+        stream_info_.refresh_frame_flags_list.push_back(
+            (uint8_t)(refresh_flags & 0xFF));
+    }
+    int corrupted = 0;
+    if (aom_codec_control(codec_, AOMD_GET_FRAME_CORRUPTED, &corrupted) ==
+        AOM_CODEC_OK) {
+        stream_info_.frame_corrupted_list.push_back(corrupted);
+    }
+
     return REF_CODEC_OK;
 }
 
@@ -276,7 +309,7 @@ RefDecoder::RefDecoderErr RefDecoder::get_frame(VideoFrame& frame) {
         return REF_CODEC_NEED_MORE_INPUT;
 
     trans_video_frame(img, frame);
-    video_param_ = (VideoFrameParam)frame;
+    video_param_ = frame;
     dec_frame_cnt_++;
     stream_info_.frame_bit_rate = enc_bytes_ / dec_frame_cnt_ * 8;
     stream_info_.format = frame.format;

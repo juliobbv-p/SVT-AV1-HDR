@@ -28,6 +28,7 @@
 
 #include "svt_log.h"
 #include "resize.h"
+#include "enc_mode_config.h"
 
 /********************************************
  * Constants
@@ -967,19 +968,19 @@ static void hme_level_1(MeContext*           me_ctx, // ME context Ptr, used to 
 }
 
 // Perform HME Level 2 for one 64x64 block on the given picture
-void hme_level_2(MeContext*           me_ctx, // ME context Ptr, used to get/update ME results
-                 int16_t              org_x, // Block position in the horizontal direction
-                 int16_t              org_y, // Block position in the vertical direction
-                 uint32_t             block_width, // Block pwidth - full resolution
-                 uint32_t             block_height, // Block height - full resolution
-                 EbPictureBufferDesc* ref_pic_ptr, // reference picture
-                 int16_t              sa_width, // hme level 1 search area in width
-                 int16_t              sa_height, // hme level 1 search area in height
-                 int16_t              hme_l1_sc_x, // best Level1 xMV at (sr_w, sr_h)
-                 int16_t              hme_l1_sc_y, // best Level1 yMV at (sr_w, sr_h)
-                 uint64_t*            best_sad, // Level2 SAD at (sr_w, sr_h)
-                 int16_t*             hme_l2_sc_x, // Level2 xMV at (sr_w, sr_h)
-                 int16_t*             hme_l2_sc_y // Level2 yMV at (sr_w, sr_h)
+static void hme_level_2(MeContext*           me_ctx, // ME context Ptr, used to get/update ME results
+                        int16_t              org_x, // Block position in the horizontal direction
+                        int16_t              org_y, // Block position in the vertical direction
+                        uint32_t             block_width, // Block pwidth - full resolution
+                        uint32_t             block_height, // Block height - full resolution
+                        EbPictureBufferDesc* ref_pic_ptr, // reference picture
+                        int16_t              sa_width, // hme level 1 search area in width
+                        int16_t              sa_height, // hme level 1 search area in height
+                        int16_t              hme_l1_sc_x, // best Level1 xMV at (sr_w, sr_h)
+                        int16_t              hme_l1_sc_y, // best Level1 yMV at (sr_w, sr_h)
+                        uint64_t*            best_sad, // Level2 SAD at (sr_w, sr_h)
+                        int16_t*             hme_l2_sc_x, // Level2 xMV at (sr_w, sr_h)
+                        int16_t*             hme_l2_sc_y // Level2 yMV at (sr_w, sr_h)
 ) {
     // round up the search region width to nearest multiple of 8 because the SAD calculation performance (for
     // intrinsic functions) is the same for search region width from 1 to 8
@@ -1056,20 +1057,19 @@ void hme_level_2(MeContext*           me_ctx, // ME context Ptr, used to get/upd
     return;
 }
 
-uint32_t check_00_center(EbPictureBufferDesc* ref_pic_ptr, MeContext* me_ctx, uint32_t sb_origin_x,
-                         uint32_t sb_origin_y, uint32_t sb_width, uint32_t sb_height, int16_t* x_search_center,
-                         int16_t* y_search_center, uint32_t zz_sad)
+static uint64_t check_00_center(EbPictureBufferDesc* ref_pic_ptr, MeContext* me_ctx, uint32_t sb_origin_x,
+                                uint32_t sb_origin_y, uint32_t sb_width, uint32_t sb_height, int16_t* x_search_center,
+                                int16_t* y_search_center, uint32_t zz_sad)
 
 {
-    uint32_t zero_mv_sad, hme_mv_sad;
-    uint64_t hme_mv_cost, zero_mv_cost, search_center_cost;
-    int16_t  org_x         = (int16_t)sb_origin_x;
-    int16_t  org_y         = (int16_t)sb_origin_y;
-    uint32_t subsample_sad = 1;
-    int16_t  pad_width     = (int16_t)BLOCK_SIZE_64 - 1;
-    int16_t  pad_height    = (int16_t)BLOCK_SIZE_64 - 1;
+    const int16_t org_x         = (int16_t)sb_origin_x;
+    const int16_t org_y         = (int16_t)sb_origin_y;
+    const int     subsample_sad = 1;
+    const int16_t pad_width     = (int16_t)BLOCK_SIZE_64 - 1;
+    const int16_t pad_height    = (int16_t)BLOCK_SIZE_64 - 1;
 
-    int32_t search_region_index = org_x + (org_y)*ref_pic_ptr->y_stride;
+    int32_t  search_region_index = org_x + (org_y)*ref_pic_ptr->y_stride;
+    uint64_t zero_mv_sad;
     if (me_ctx->me_early_exit_th) {
         zero_mv_sad = zz_sad;
     } else {
@@ -1102,20 +1102,20 @@ uint32_t check_00_center(EbPictureBufferDesc* ref_pic_ptr, MeContext* me_ctx, ui
         : *y_search_center;
     ///
 
-    zero_mv_cost        = zero_mv_sad << COST_PRECISION;
-    search_region_index = (int16_t)(org_x) + *x_search_center +
+    uint64_t zero_mv_cost = zero_mv_sad << COST_PRECISION;
+    search_region_index   = (int16_t)(org_x) + *x_search_center +
         ((int16_t)(org_y) + *y_search_center) * ref_pic_ptr->y_stride;
 
-    hme_mv_sad = svt_nxm_sad_kernel(me_ctx->b64_src_ptr,
-                                    me_ctx->b64_src_stride << subsample_sad,
-                                    &(ref_pic_ptr->y_buffer[search_region_index]),
-                                    ref_pic_ptr->y_stride << subsample_sad,
-                                    sb_height >> subsample_sad,
-                                    sb_width);
+    uint64_t hme_mv_sad = svt_nxm_sad_kernel(me_ctx->b64_src_ptr,
+                                             me_ctx->b64_src_stride << subsample_sad,
+                                             &(ref_pic_ptr->y_buffer[search_region_index]),
+                                             ref_pic_ptr->y_stride << subsample_sad,
+                                             sb_height >> subsample_sad,
+                                             sb_width);
 
-    hme_mv_sad         = hme_mv_sad << subsample_sad;
-    hme_mv_cost        = hme_mv_sad << COST_PRECISION;
-    search_center_cost = MIN(zero_mv_cost, hme_mv_cost);
+    hme_mv_sad                  = hme_mv_sad << subsample_sad;
+    uint64_t hme_mv_cost        = hme_mv_sad << COST_PRECISION;
+    uint64_t search_center_cost = MIN(zero_mv_cost, hme_mv_cost);
 
     *x_search_center = (search_center_cost == zero_mv_cost) ? 0 : *x_search_center;
     *y_search_center = (search_center_cost == zero_mv_cost) ? 0 : *y_search_center;
@@ -1150,8 +1150,7 @@ static EbPictureBufferDesc* get_me_reference(PictureParentControlSet* pcs, MeCon
 
 // factor to slowdown the ME search region growth to MAX
 uint16_t svt_aom_get_scaled_picture_distance(uint16_t dist) {
-    uint8_t round_up = ((dist % 8) == 0) ? 0 : 1;
-    return ((dist * 5) / 8) + round_up;
+    return DIVIDE_AND_CEIL(dist * 5, 8);
 }
 
 static const double search_area_multipliers[3][5] = {
@@ -1648,7 +1647,7 @@ static void prehme_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_t or
             }
         } // End ref pic loop
     } // End list loop
-    if (me_ctx->temporal_layer_index > 0 && best_sad < me_ctx->me_hme_prune_ctrls.phme_sad_th) {
+    if (!frame_is_boosted(pcs) && best_sad < me_ctx->me_hme_prune_ctrls.phme_sad_th) {
         for (int list_i = REF_LIST_0; list_i < me_ctx->num_of_list_to_search; ++list_i) {
             for (uint8_t ref_i = 0; ref_i < me_ctx->num_of_ref_pic_to_search[list_i]; ++ref_i) {
                 if (!me_ctx->search_results[list_i][ref_i].do_ref) {
@@ -2209,7 +2208,7 @@ static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_
         }
     }
     const uint32_t zz_th = me_ctx->me_hme_prune_ctrls.zz_sad_th;
-    if (me_ctx->temporal_layer_index > 0 && best_zz_sad < zz_th) {
+    if (!frame_is_boosted(pcs) && best_zz_sad < zz_th) {
         for (int list_i = REF_LIST_0; list_i < me_ctx->num_of_list_to_search; ++list_i) {
             for (uint8_t ref_i = 0; ref_i < me_ctx->num_of_ref_pic_to_search[list_i]; ++ref_i) {
                 if (ref_i == 0) {
@@ -2227,9 +2226,9 @@ static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_
     const uint32_t safe_limit_zz_th = me_ctx->me_safe_limit_zz_th;
     if (safe_limit_zz_th) {
         bool me_safe_limit_refs = false;
-        if (pcs->hierarchical_levels > 0 && me_ctx->num_of_list_to_search == 2 &&
-            pcs->temporal_layer_index >= pcs->hierarchical_levels && pcs->similar_brightness_refs &&
-            me_ctx->zz_sad[0][0] < safe_limit_zz_th && me_ctx->zz_sad[1][0] < safe_limit_zz_th) {
+        if (pcs->hierarchical_levels > 0 && me_ctx->num_of_list_to_search == 2 && frame_is_leaf(pcs) &&
+            pcs->similar_brightness_refs && me_ctx->zz_sad[0][0] < safe_limit_zz_th &&
+            me_ctx->zz_sad[1][0] < safe_limit_zz_th) {
             me_safe_limit_refs = true;
         }
 
@@ -2669,13 +2668,13 @@ static void perform_gm_detection(
 
             // Active block detection
             const int active_th = 4;
-            int       mx        = _MVXT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) << 2;
+            int       mx        = _MVXT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) * 4;
             if (mx < -active_th) {
                 per_sig_cnt[list_index][ref_pic_index][0][0]++;
             } else if (mx > active_th) {
                 per_sig_cnt[list_index][ref_pic_index][0][1]++;
             }
-            int my = _MVYT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) << 2;
+            int my = _MVYT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) * 4;
             if (my < -active_th) {
                 per_sig_cnt[list_index][ref_pic_index][1][0]++;
             } else if (my > active_th) {
@@ -2704,13 +2703,13 @@ static void perform_gm_detection(
 
             // Active block detection
             const int active_th = 32;
-            int       mx        = _MVXT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) << 2;
+            int       mx        = _MVXT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) * 4;
             if (mx < -active_th) {
                 per_sig_cnt[list_index][ref_pic_index][0][0]++;
             } else if (mx > active_th) {
                 per_sig_cnt[list_index][ref_pic_index][0][1]++;
             }
-            int my = _MVYT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) << 2;
+            int my = _MVYT(me_ctx->p_sb_best_mv[list_index][ref_pic_index][n_idx]) * 4;
             if (my < -active_th) {
                 per_sig_cnt[list_index][ref_pic_index][1][0]++;
             } else if (my > active_th) {
@@ -2825,6 +2824,67 @@ static INLINE void init_me_hme_data(MeContext* me_ctx) {
 *   performs ME on 64x64 blocks
 *******************************************/
 
+// Early-exit path for static 64x64 blocks. If the list0/ref0 (0,0) SAD is
+// below me_ctx->me_static_b64_th, populate the minimal set of outputs that
+// downstream consumers (construct_me_candidate_array*, compute_distortion)
+// need and return true so the caller can skip init/HME/integer ME.
+static bool me_static_b64_bypass(MeContext* me_ctx, uint32_t b64_origin_x, uint32_t b64_origin_y) {
+    if (!me_ctx->me_static_b64_th) {
+        return false;
+    }
+
+    // The bypass decision uses the list0/ref0 zero-motion SAD: if the block is static against the
+    // primary reference, skip the full ME pipeline (HME + integer search).
+    const uint32_t l0r0_raw = get_zz_sad(me_ctx->me_ds_ref_array[0][0].picture_ptr,
+                                         me_ctx,
+                                         b64_origin_x,
+                                         b64_origin_y,
+                                         me_ctx->b64_width,
+                                         me_ctx->b64_height);
+    if ((uint64_t)l0r0_raw * 64 * 64 >= (uint64_t)me_ctx->me_static_b64_th * me_ctx->b64_width * me_ctx->b64_height) {
+        return false;
+    }
+
+    // Static block against list0/ref0. Fill the zero-MV ME result for list0/ref0 only, and disable
+    // every farther reference (do_ref = 0) so mode decision skips it entirely. This matches the
+    // optimization's intent -- the bypass exits ME for ALL references on a static block, not just
+    // ref0 -- while removing the non-determinism. The previous code filled only list0/ref0 and left
+    // the other ref slots holding a stale per-ref best-SAD from a previously processed b64;
+    // construct_me_candidate_array() consumed that for best-distortion / candidate pruning, and which
+    // b64s a thread picks up depends on ME segment scheduling, so the bitstream became thread-count /
+    // run dependent. With do_ref = 0 those slots are never read. do_ref is re-initialized to 1 for
+    // every reference by init_me_hme_data() at the top of each b64, so disabling it here is per-b64
+    // safe. The single-reference path is unchanged (no farther refs to disable).
+    const uint32_t zz_sad = (uint32_t)((uint64_t)l0r0_raw * 64 * 64 / (me_ctx->b64_width * me_ctx->b64_height));
+    me_ctx->zz_sad[0][0]                = zz_sad;
+    me_ctx->search_results[0][0].do_ref = 1;
+    // 64x64
+    me_ctx->p_sb_best_sad[0][0][RASTER_SCAN_CU_INDEX_64x64] = zz_sad;
+    // 32x32
+    const uint32_t sad32 = zz_sad >> 2;
+    for (int i = RASTER_SCAN_CU_INDEX_32x32_0; i <= RASTER_SCAN_CU_INDEX_32x32_3; i++) {
+        me_ctx->p_sb_best_sad[0][0][i] = sad32;
+    }
+    // 16x16
+    const uint32_t sad16 = zz_sad >> 4;
+    for (int i = RASTER_SCAN_CU_INDEX_16x16_0; i <= RASTER_SCAN_CU_INDEX_16x16_15; i++) {
+        me_ctx->p_sb_best_sad[0][0][i] = sad16;
+    }
+    // 8x8
+    const uint32_t sad8 = zz_sad >> 6;
+    for (int i = RASTER_SCAN_CU_INDEX_8x8_0; i < SQUARE_PU_COUNT; i++) {
+        me_ctx->p_sb_best_sad[0][0][i] = sad8;
+    }
+    // Disable every farther reference: do_ref = 0 => skipped in MD, stale SAD never read.
+    for (uint32_t list_index = REF_LIST_0; list_index < me_ctx->num_of_list_to_search; ++list_index) {
+        for (uint8_t ref_idx = 0; ref_idx < me_ctx->num_of_ref_pic_to_search[list_index]; ++ref_idx) {
+            if (list_index != 0 || ref_idx != 0)
+                me_ctx->search_results[list_index][ref_idx].do_ref = 0;
+        }
+    }
+    return true;
+}
+
 EbErrorType svt_aom_motion_estimation_b64(
     PictureParentControlSet* pcs, // input parameter, Picture Control Set Ptr
     uint32_t                 b64_index, // input parameter, SB Index
@@ -2849,25 +2909,32 @@ EbErrorType svt_aom_motion_estimation_b64(
 
     //pruning of the references is not done for alt-ref / when HMeLevel2 not done
     uint8_t prune_ref = me_ctx->enable_hme_flag && me_ctx->me_type != ME_MCTF;
-    // Initialize ME/HME buffers
+    // Initialize ME/HME buffers. This MUST run for every b64, including the static-b64 bypass
+    // below: init_me_hme_data zeroes the *entire* p_sb_best_mv across all lists/refs (the
+    // "R2R FIX" dirty-MV guard) and resets the per-ref search_results. The bypass only populates
+    // list0/ref0, so without this the other ref/list slots retain a stale MV from a previously
+    // processed b64, which can drive an out-of-bounds reference fetch in inter prediction
+    // (observed as a SIGSEGV in svt_av1_convolve_2d_copy_sr_neon on edge SBs at >=1080p RTC).
     init_me_hme_data(me_ctx);
-    // HME: Perform Hierarchical Motion Estimation for all reference frames for the current 64x64 block.
-    hme_b64(pcs, b64_origin_x, b64_origin_y, me_ctx, input_ptr);
+    if (!me_static_b64_bypass(me_ctx, b64_origin_x, b64_origin_y)) {
+        // HME: Perform Hierarchical Motion Estimation for all reference frames for the current 64x64 block.
+        hme_b64(pcs, b64_origin_x, b64_origin_y, me_ctx, input_ptr);
 
-    if (me_ctx->me_type == ME_MCTF && me_ctx->search_results[0][0].hme_sad < me_ctx->tf_me_exit_th) {
-        me_ctx->tf_use_pred_64x64_only_th = (uint8_t)~0;
-        return return_error;
-    }
-    // prune the reference frames based on the HME outputs.
-    if (prune_ref) {
-        hme_prune_ref_and_adjust_sr(me_ctx);
-    }
-    // Full pel: Perform the Integer Motion Estimation on the allowed reference frames.
-    integer_search_b64(pcs, me_ctx, b64_origin_x, b64_origin_y, input_ptr);
+        if (me_ctx->me_type == ME_MCTF && me_ctx->search_results[0][0].hme_sad < me_ctx->tf_me_exit_th) {
+            me_ctx->tf_use_pred_64x64_only_th = (uint8_t)~0;
+            return return_error;
+        }
+        // prune the reference frames based on the HME outputs.
+        if (prune_ref) {
+            hme_prune_ref_and_adjust_sr(me_ctx);
+        }
+        // Full pel: Perform the Integer Motion Estimation on the allowed reference frames.
+        integer_search_b64(pcs, me_ctx, b64_origin_x, b64_origin_y, input_ptr);
 
-    // prune the reference frames
-    if (prune_ref && me_ctx->me_hme_prune_ctrls.enable_me_hme_ref_pruning) {
-        me_prune_ref(me_ctx);
+        // prune the reference frames
+        if (prune_ref && me_ctx->me_hme_prune_ctrls.enable_me_hme_ref_pruning) {
+            me_prune_ref(me_ctx);
+        }
     }
 
     if (me_ctx->me_type != ME_MCTF) {

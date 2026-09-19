@@ -149,7 +149,6 @@ static INLINE uint16_t find_average_highbd_avx512(const uint16_t* src, int32_t h
     const int32_t   num_bit_left = 16 - bit_depth /* energy */ + 5 /* SIMD */;
     const int32_t   h_allowed    = (1 << num_bit_left) / (w32 + (leftover ? 32 : 0));
     int32_t         height_t     = 0;
-    int32_t         i            = height;
     __m512i         sss          = _mm512_setzero_si512();
 
     assert(h_allowed);
@@ -159,7 +158,7 @@ static INLINE uint16_t find_average_highbd_avx512(const uint16_t* src, int32_t h
             const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
             __m512i       ss  = _mm512_setzero_si512();
 
-            i = h_t;
+            int32_t i = h_t;
             do {
                 int32_t j = 0;
                 do {
@@ -182,7 +181,7 @@ static INLINE uint16_t find_average_highbd_avx512(const uint16_t* src, int32_t h
             const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
             __m512i       ss  = _mm512_setzero_si512();
 
-            i = h_t;
+            int32_t i = h_t;
             do {
                 int32_t j = 0;
                 while (j < w32) {

@@ -52,8 +52,7 @@ void svt_av1_loop_filter_frame(
         int32_t partial_frame*/);
 uint64_t picture_sse_calculations(PictureControlSet* pcs, EbPictureBufferDesc* recon_ptr, int32_t plane);
 
-EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, // source input
-                                      PictureControlSet* pcs, LpfPickMethod method);
+EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, PictureControlSet* pcs);
 void        svt_av1_pick_filter_level_by_q(PictureControlSet* pcs, uint8_t qindex, int32_t* filter_level);
 
 void svt_av1_filter_block_plane_vert(const PictureControlSet* const pcs, const int32_t plane,

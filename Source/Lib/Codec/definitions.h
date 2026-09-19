@@ -22,6 +22,9 @@
 #include "EbSvtAv1Enc.h"
 #include <stdbool.h>
 
+#define SVT_STRINGIFY_(x) #x
+#define SVT_STRINGIFY(x) SVT_STRINGIFY_(x)
+
 #ifdef _WIN32
 #define inline __inline
 #elif __GNUC__
@@ -114,12 +117,6 @@ typedef struct MrpCtrls {
      */
     uint8_t referencing_scheme;
 
-    // SC signals
-    uint8_t sc_base_ref_list0_count;
-    uint8_t sc_base_ref_list1_count;
-    uint8_t sc_non_base_ref_list0_count;
-    uint8_t sc_non_base_ref_list1_count;
-    // non-SC signals
     uint8_t base_ref_list0_count;
     uint8_t base_ref_list1_count;
     uint8_t non_base_ref_list0_count;
@@ -153,6 +150,8 @@ typedef struct MrpCtrls {
     uint8_t ld_reduce_ref_buffs;
     // When flat rtc structure is used, this is the number of refs to use (from previous consecutive frames)
     uint8_t flat_max_refs;
+    // HME L0 MRP detector threshold. 0: off. Higher values are more conservative.
+    uint16_t early_hme_l0_prune_th;
 
 } MrpCtrls;
 
@@ -326,6 +325,8 @@ enum {
 #define MAX_TXB_COUNT_UV 4 // Maximum number of transform blocks per depth for chroma planes
 #define MAX_LAD 120 // max lookahead-distance 2x60fps
 #define ROUND_UV(x) (((x) >> 3) << 3)
+// Round in luma coordinates to the origin of a minimum 4x4 chroma block.
+#define ROUND_UV_TO(x, ss) (((x) >> (2 + (ss))) << (2 + (ss)))
 #define SWITCHABLE_FILTER_CONTEXTS ((SWITCHABLE_FILTERS + 1) * 4)
 #define CFL_BUF_LINE (32)
 #define CFL_BUF_LINE_I128 (CFL_BUF_LINE >> 3)
@@ -645,18 +646,25 @@ static inline int svt_ctzll(unsigned __int64 x) {
 }
 #endif
 
+// Count of set bits in x. Portable, branchless, ~12 ops; not on any hot
+// path so the C version is fine and avoids compiler-specific intrinsics.
+static INLINE int svt_numbits(unsigned int x) {
+    x = x - ((x >> 1) & 0x55555555u);
+    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+    x = (x + (x >> 4)) & 0x0F0F0F0Fu;
+    return (int)((x * 0x01010101u) >> 24);
+}
+
 /* clang-format on */
 
 typedef uint16_t ConvBufType;
 
 typedef struct ConvolveParams {
-    int32_t      ref;
     int32_t      do_average;
     ConvBufType* dst;
     int32_t      dst_stride;
     int32_t      round_0;
     int32_t      round_1;
-    int32_t      plane;
     int32_t      is_compound;
     int32_t      use_jnt_comp_avg;
     int32_t      fwd_offset;
@@ -733,15 +741,14 @@ typedef enum PdPass {
 } PdPass;
 
 typedef enum ATTRIBUTE_PACKED {
-    REGULAR_PD0 =
-        -1, // The regular PD0 path; negative so that LPD1 can start at 0 (easy for indexing arrays in lpd0_ctrls)
-    LPD0_LVL_0     = 0,
-    LPD0_LVL_1     = 1,
-    LPD0_LVL_2     = 2,
-    LPD0_LVL_3     = 3,
-    LPD0_LVL_4     = 4,
-    VERY_LIGHT_PD0 = 5, // Lightest PD0 path, doesn't perform TX
-    LPD0_LEVELS // Number of light-PD0 paths (regular PD0 isn't a light-PD0 path)
+    PD0_LVL_0 = 0,
+    PD0_LVL_1 = 1,
+    PD0_LVL_2 = 2,
+    PD0_LVL_3 = 3,
+    PD0_LVL_4 = 4,
+    PD0_LVL_5 = 5,
+    PD0_LVL_6 = 6, // Lightest PD0 path, doesn't perform TX
+    PD0_LEVELS // Number of PD0 paths
 } Pd0Level;
 
 typedef enum ATTRIBUTE_PACKED {
@@ -752,7 +759,8 @@ typedef enum ATTRIBUTE_PACKED {
     LPD1_LVL_2 = 2, // Light PD1 path, having more shortcuts than previous LPD1 level
     LPD1_LVL_3 = 3, // Light PD1 path, having more shortcuts than previous LPD1 level
     LPD1_LVL_4 = 4, // Light PD1 path, having more shortcuts than previous LPD1 level
-    LPD1_LVL_5 = 5, // Light-PD1 path, with most aggressive feature levels
+    LPD1_LVL_5 = 5, // Light PD1 path, having more shortcuts than previous LPD1 level
+    LPD1_LVL_6 = 6, // Light-PD1 path, with most aggressive feature levels
     LPD1_LEVELS // Number of light-PD1 paths (regular PD1 isn't a light-PD1 path)
 } Pd1Level;
 
@@ -833,10 +841,9 @@ enum {
 } UENUM1BYTE(SUBPEL_SEARCH_TYPE);
 
 enum {
-    SUBPEL_TREE        = 0,
-    SUBPEL_TREE_PRUNED = 1, // Prunes 1/2-pel searches
-    //SUBPEL_TREE_PRUNED_MORE = 2,      // Not supported - (from libaom: Prunes 1/2-pel searches more aggressively)
-    //SUBPEL_TREE_PRUNED_EVENMORE = 3,  // Not supported - (from libaom: Prunes 1/2- and 1/4-pel searches)
+    SUBPEL_TREE               = 0,
+    SUBPEL_TREE_PRUNED        = 1, // Prunes 1/2-pel searches
+    SUBPEL_FIXED_STAGE_SEARCH = 2,
 } UENUM1BYTE(SUBPEL_SEARCH_METHODS);
 
 enum { EIGHTH_PEL, QUARTER_PEL, HALF_PEL, FULL_PEL } UENUM1BYTE(SUBPEL_FORCE_STOP);
@@ -995,6 +1002,9 @@ typedef enum TxClass {
 
 #define AOMMIN(x, y) (((x) < (y)) ? (x) : (y))
 #define AOMMAX(x, y) (((x) > (y)) ? (x) : (y))
+
+// Offset a possibly-NULL pointer without forming NULL + offset (UB).
+#define ADD_OFFSET_OR_NULL(base, offset) ((base) ? (base) + (offset) : NULL)
 
 // frame transform mode
 typedef enum ATTRIBUTE_PACKED {
@@ -1431,7 +1441,9 @@ typedef enum ATTRIBUTE_PACKED {
 // onyxc_int.h
 #define CDEF_MAX_STRENGTHS 16
 
-#define UNDISP_QUEUE_SIZE (REF_FRAMES * 10)
+// A parked frame is redeemed by a show_existing_frame naming a dpb index, and the queue is filled
+// in decode order, so no more than REF_FRAMES can be outstanding
+#define UNDISP_QUEUE_SIZE REF_FRAMES
 
 /* Constant values while waiting for the sequence header */
 #define FRAME_ID_LENGTH 15
@@ -1591,6 +1603,9 @@ static INLINE bool is_inter_mode(PredictionMode mode) {
 }
 
 static INLINE int32_t is_inter_compound_mode(PredictionMode mode) {
+    if (!CONFIG_ENABLE_INTER_COMPOUND) {
+        return 0; // single-ref: no compound modes -> const-folds, cascades DCE
+    }
     return mode >= NEAREST_NEARESTMV && mode <= NEW_NEWMV;
 }
 
@@ -1631,6 +1646,7 @@ typedef enum FrameContextIndex {
 #define QINDEX_BITS 8
 #define MIN_QP_VALUE 0
 #define MAX_QP_VALUE 63
+#define LAMBDA_WEIGHT_NEUTRAL 128
 // Total number of QM sets stored
 #define QM_LEVEL_BITS 4
 #define NUM_QM_LEVELS (1 << QM_LEVEL_BITS)
@@ -1751,6 +1767,7 @@ typedef struct ScaleFactors {
     int32_t y_scale_fp; // vertical fixed point scale factor
     int32_t x_step_q4;
     int32_t y_step_q4;
+    int32_t is_scaled; // precomputed av1_is_scaled(sf); per-frame invariant
 
     int32_t (*scale_value_x)(int32_t val, const struct ScaleFactors* sf);
     int32_t (*scale_value_y)(int32_t val, const struct ScaleFactors* sf);
@@ -1850,8 +1867,9 @@ typedef enum Tune {
     TUNE_PSNR = 1, // Average of (PSNR, SSIM, VMAF)
     TUNE_SSIM = 2, // SSIM-optimized
     TUNE_IQ   = 3, // Image Quality
-    TUNE_MS_SSIM = 4, // MS_SSIM and SSIMULACRA2 optimized
-    TUNE_FILM_GRAIN = 5 // Film Grain optimized
+    TUNE_MS_SSIM = 4,  // MS_SSIM and SSIMULACRA2 optimized
+    TUNE_VMAF    = 5,  // VMAF preprocessing (unsharp filter on luma)
+    TUNE_FILM_GRAIN = 6 // Film Grain optimized
 } Tune;
 
 /*
@@ -2014,6 +2032,7 @@ void(*error_handler)(
 
 //***Prediction Structure***
 #define MAX_TEMPORAL_LAYERS                         6
+#define MAX_MINIGOP_SIZE                            (1 << (MAX_TEMPORAL_LAYERS - 1))
 #define MAX_NUM_OF_REF_PIC_LIST                     2
 #define MAX_REF_IDX                                 4
 #define MAX_ELAPSED_IDR_COUNT                       1024

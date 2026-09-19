@@ -10,8 +10,10 @@
 * PATENTS file, you can obtain it at https://www.aomedia.org/license/patent-license.
 */
 
+#include "qm_psnr.h"
 #include "definitions.h"
 #include "full_loop.h"
+#include "enc_intra_prediction.h"
 #include "pcs.h"
 #include "rd_cost.h"
 #include "aom_dsp_rtcd.h"
@@ -633,27 +635,40 @@ static INLINE int get_coeff_cost_general(int is_last, int ci, TranLow abs_qc, in
     } else {
         cost += txb_costs->base_cost[coeff_ctx][AOMMIN(abs_qc, 3)];
     }
-    if (abs_qc != 0) {
-        if (ci == 0) {
-            cost += txb_costs->dc_sign_cost[dc_sign_ctx][sign];
+    // All callers invoke this only on the non-zero coeff path, so abs_qc != 0 always.
+    if (ci == 0) {
+        cost += txb_costs->dc_sign_cost[dc_sign_ctx][sign];
+    } else {
+        cost += av1_cost_literal(1);
+    }
+    if (abs_qc > NUM_BASE_LEVELS) {
+        int br_ctx;
+        if (is_last) {
+            br_ctx = get_br_ctx_eob(ci, bwl, tx_class);
         } else {
-            cost += av1_cost_literal(1);
+            br_ctx = get_br_ctx(levels, ci, bwl, tx_class);
         }
-        if (abs_qc > NUM_BASE_LEVELS) {
-            int br_ctx;
-            if (is_last) {
-                br_ctx = get_br_ctx_eob(ci, bwl, tx_class);
-            } else {
-                br_ctx = get_br_ctx(levels, ci, bwl, tx_class);
-            }
-            cost += get_br_cost(abs_qc, txb_costs->lps_cost[br_ctx]);
-        }
+        cost += get_br_cost(abs_qc, txb_costs->lps_cost[br_ctx]);
     }
     return cost;
 }
 
-static INLINE int64_t get_coeff_dist(TranLow tcoeff, TranLow dqcoeff, int shift) {
-    return SQR(((int64_t)tcoeff - dqcoeff) * (int64_t)(1lu << shift));
+bool svt_use_qmpsnr(PictureControlSet* pcs, ModeDecisionContext* ctx, int plane, bool tx_search) {
+    const QuantizationParams* quant = &pcs->ppcs->frm_hdr.quantization_params;
+    // Inter mode/partition/SKIP decisions retain their spatial distortion scale.
+    // QM weighting still selects transforms and optimizes their coefficients.
+    // A flat channel keeps the existing PSNR path, including spatial SSE and its shortcuts.
+    return (pcs->scs->allintra || tx_search) && pcs->scs->static_config.enable_qmpsnr && quant->using_qmatrix &&
+        quant->qm[plane] < NUM_QM_LEVELS - 1 && !svt_av1_is_lossless_segment(pcs, ctx->blk_ptr->segment_id);
+}
+
+const QmVal* svt_get_qmpsnr_matrix(PictureControlSet* pcs, ModeDecisionContext* ctx, TxSize tx_size, TxType tx_type,
+                                   int plane, bool tx_search) {
+    if (!svt_use_qmpsnr(pcs, ctx, plane, tx_search) || !IS_2D_TRANSFORM(tx_type)) {
+        return NULL;
+    }
+    const int level = pcs->ppcs->frm_hdr.quantization_params.qm[plane];
+    return pcs->ppcs->gqmatrix[level][plane][av1_get_adjusted_tx_size(tx_size)];
 }
 
 static INLINE void get_qc_dqc_low(TranLow abs_qc, int sign, int dqv, int shift, TranLow* qc_low, TranLow* dqc_low) {
@@ -705,14 +720,13 @@ static AOM_FORCE_INLINE int get_two_coeff_cost_simple(int ci, TranLow abs_qc, in
     if (abs_qc <= 3) {
         diff = txb_costs->base_cost[coeff_ctx][abs_qc + 4];
     }
-    if (abs_qc) {
-        cost += av1_cost_literal(1);
-        if (abs_qc > NUM_BASE_LEVELS) {
-            const int br_ctx      = get_br_ctx(levels, ci, bwl, tx_class);
-            int       brcost_diff = 0;
-            cost += get_br_cost_with_diff(abs_qc, txb_costs->lps_cost[br_ctx], &brcost_diff);
-            diff += brcost_diff;
-        }
+    // Caller (update_coeff_simple) only invokes this with abs_qc != 0.
+    cost += av1_cost_literal(1);
+    if (abs_qc > NUM_BASE_LEVELS) {
+        const int br_ctx      = get_br_ctx(levels, ci, bwl, tx_class);
+        int       brcost_diff = 0;
+        cost += get_br_cost_with_diff(abs_qc, txb_costs->lps_cost[br_ctx], &brcost_diff);
+        diff += brcost_diff;
     }
     *cost_low = cost - diff;
 
@@ -723,17 +737,15 @@ static INLINE int get_coeff_cost_eob(int ci, TranLow abs_qc, int sign, int coeff
                                      const LvMapCoeffCost* txb_costs, int bwl, TxClass tx_class) {
     int cost = 0;
     cost += txb_costs->base_eob_cost[coeff_ctx][AOMMIN(abs_qc, 3) - 1];
-    if (abs_qc != 0) {
-        if (ci == 0) {
-            cost += txb_costs->dc_sign_cost[dc_sign_ctx][sign];
-        } else {
-            cost += av1_cost_literal(1);
-        }
-        if (abs_qc > NUM_BASE_LEVELS) {
-            int br_ctx;
-            br_ctx = get_br_ctx_eob(ci, bwl, tx_class);
-            cost += get_br_cost(abs_qc, txb_costs->lps_cost[br_ctx]);
-        }
+    // Callers only invoke this on the non-zero coeff path, so abs_qc != 0 always.
+    if (ci == 0) {
+        cost += txb_costs->dc_sign_cost[dc_sign_ctx][sign];
+    } else {
+        cost += av1_cost_literal(1);
+    }
+    if (abs_qc > NUM_BASE_LEVELS) {
+        const int br_ctx = get_br_ctx_eob(ci, bwl, tx_class);
+        cost += get_br_cost(abs_qc, txb_costs->lps_cost[br_ctx]);
     }
     return cost;
 }
@@ -751,10 +763,10 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
                                               int dc_sign_ctx, int64_t rdmult, int shift, const int16_t* dequant,
                                               const int16_t* scan, const LvMapEobCost* txb_eob_costs,
                                               const LvMapCoeffCost* txb_costs, const TranLow* tcoeff, TranLow* qcoeff,
-                                              TranLow* dqcoeff, uint8_t* levels, int sharpness, const QmVal* iqm_ptr) {
+                                              TranLow* dqcoeff, uint8_t* levels, int sharpness, const QmVal* iqm_ptr,
+                                              const QmVal* qm) {
     assert(si != *eob - 1);
     const int     ci        = scan[si];
-    const int     dqv       = get_dqv(dequant, ci, iqm_ptr);
     const TranLow qc        = qcoeff[ci];
     const int     coeff_ctx = get_lower_levels_ctx(levels, ci, bwl, tx_size, tx_class);
     if (qc == 0) {
@@ -765,8 +777,8 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
         const TranLow tqc         = tcoeff[ci];
         const TranLow dqc         = dqcoeff[ci];
         const int     sign        = (qc < 0) ? 1 : 0;
-        const int64_t dist0       = get_coeff_dist(tqc, 0, shift);
-        int64_t       dist        = get_coeff_dist(tqc, dqc, shift) - dist0;
+        const int64_t dist0       = svt_qm_coeff_dist(tqc, 0, shift, qm, ci);
+        int64_t       dist        = svt_qm_coeff_dist(tqc, dqc, shift, qm, ci) - dist0;
         int           rate        = get_coeff_cost_general(
             0, ci, abs_qc, sign, coeff_ctx, dc_sign_ctx, txb_costs, bwl, tx_class, levels);
         int64_t rd = RDCOST(rdmult, *accu_rate + rate, *accu_dist + dist);
@@ -782,9 +794,10 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
             rate_low         = txb_costs->base_cost[coeff_ctx][0];
             rd_low           = RDCOST(rdmult, *accu_rate + rate_low, *accu_dist);
         } else {
+            const int dqv = get_dqv(dequant, ci, iqm_ptr);
             get_qc_dqc_low(abs_qc, sign, dqv, shift, &qc_low, &dqc_low);
             abs_qc_low = abs_qc - 1;
-            dist_low   = get_coeff_dist(tqc, dqc_low, shift) - dist0;
+            dist_low   = svt_qm_coeff_dist(tqc, dqc_low, shift, qm, ci) - dist0;
             rate_low   = get_coeff_cost_general(
                 0, ci, abs_qc_low, sign, coeff_ctx, dc_sign_ctx, txb_costs, bwl, tx_class, levels);
             rd_low = RDCOST(rdmult, *accu_rate + rate_low, *accu_dist + dist_low);
@@ -852,9 +865,8 @@ static INLINE void update_coeff_general(int* accu_rate, int64_t* accu_dist, int 
                                         TxClass tx_class, int bwl, int height, int64_t rdmult, int shift,
                                         int dc_sign_ctx, const int16_t* dequant, const int16_t* scan,
                                         const LvMapCoeffCost* txb_costs, const TranLow* tcoeff, TranLow* qcoeff,
-                                        TranLow* dqcoeff, uint8_t* levels, const QmVal* iqm_ptr) {
+                                        TranLow* dqcoeff, uint8_t* levels, const QmVal* iqm_ptr, const QmVal* qm) {
     const int     ci        = scan[si];
-    const int     dqv       = get_dqv(dequant, ci, iqm_ptr);
     const TranLow qc        = qcoeff[ci];
     const int     is_last   = si == (eob - 1);
     const int     coeff_ctx = get_lower_levels_ctx_general(is_last, si, bwl, height, levels, ci, tx_size, tx_class);
@@ -865,8 +877,8 @@ static INLINE void update_coeff_general(int* accu_rate, int64_t* accu_dist, int 
         const TranLow abs_qc = abs(qc);
         const TranLow tqc    = tcoeff[ci];
         const TranLow dqc    = dqcoeff[ci];
-        const int64_t dist   = get_coeff_dist(tqc, dqc, shift);
-        const int64_t dist0  = get_coeff_dist(tqc, 0, shift);
+        const int64_t dist   = svt_qm_coeff_dist(tqc, dqc, shift, qm, ci);
+        const int64_t dist0  = svt_qm_coeff_dist(tqc, 0, shift, qm, ci);
         const int     rate   = get_coeff_cost_general(
             is_last, ci, abs_qc, sign, coeff_ctx, dc_sign_ctx, txb_costs, bwl, tx_class, levels);
         const int64_t rd = RDCOST(rdmult, rate, dist);
@@ -880,9 +892,10 @@ static INLINE void update_coeff_general(int* accu_rate, int64_t* accu_dist, int 
             dist_low                      = dist0;
             rate_low                      = txb_costs->base_cost[coeff_ctx][0];
         } else {
+            const int dqv = get_dqv(dequant, ci, iqm_ptr);
             get_qc_dqc_low(abs_qc, sign, dqv, shift, &qc_low, &dqc_low);
             abs_qc_low = abs_qc - 1;
-            dist_low   = get_coeff_dist(tqc, dqc_low, shift);
+            dist_low   = svt_qm_coeff_dist(tqc, dqc_low, shift, qm, ci);
             rate_low   = get_coeff_cost_general(
                 is_last, ci, abs_qc_low, sign, coeff_ctx, dc_sign_ctx, txb_costs, bwl, tx_class, levels);
         }
@@ -905,8 +918,7 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
                                                  int bwl, int64_t rdmult, int shift, const int16_t* dequant,
                                                  const int16_t* scan, const LvMapCoeffCost* txb_costs,
                                                  const TranLow* tcoeff, TranLow* qcoeff, TranLow* dqcoeff,
-                                                 uint8_t* levels, const QmVal* iqm_ptr) {
-    const int dqv = get_dqv(dequant, scan[si], iqm_ptr);
+                                                 uint8_t* levels, const QmVal* iqm_ptr, const QmVal* qm) {
     (void)eob;
     // this simple version assumes the coeff's scan_idx is not DC (scan_idx != 0)
     // and not the last (scan_idx != eob - 1)
@@ -928,12 +940,13 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
             return;
         }
 
-        const int64_t dist = get_coeff_dist(abs_tqc, abs_dqc, shift);
+        const int64_t dist = svt_qm_coeff_dist(abs_tqc, abs_dqc, shift, qm, ci);
         const int64_t rd   = RDCOST(rdmult, rate, dist);
 
+        const int     dqv         = get_dqv(dequant, ci, iqm_ptr);
         const TranLow abs_qc_low  = abs_qc - 1;
         const TranLow abs_dqc_low = (abs_qc_low * dqv) >> shift;
-        const int64_t dist_low    = get_coeff_dist(abs_tqc, abs_dqc_low, shift);
+        const int64_t dist_low    = svt_qm_coeff_dist(abs_tqc, abs_dqc_low, shift, qm, ci);
         const int64_t rd_low      = RDCOST(rdmult, rate_low, dist_low);
 
         if (rd_low < rd) {
@@ -981,22 +994,10 @@ enum {
 } UENUM1BYTE(DELTAQ_MODE);
 
 // These numbers are empirically obtained.
-#if TUNE_CHROMA_SSIM
-static const int plane_rd_mult[2][REF_TYPES][PLANE_TYPES] = {{
-                                                                 {17, 13},
-                                                                 {16, 10},
-                                                             },
-                                                             {
-                                                                 {17, 13},
-                                                                 {16, 10},
-                                                             }};
-#else
-static const int plane_rd_mult[2][REF_TYPES][PLANE_TYPES] = {{{17, 20}, {16, 20}},
-                                                             {
-                                                                 {17, 13},
-                                                                 {16, 10},
-                                                             }};
-#endif
+static const int plane_rd_mult[REF_TYPES][PLANE_TYPES] = {
+    {17, 13},
+    {16, 10},
+};
 
 /*
  * Reduce the number of non-zero quantized coefficients before getting to the main/complex RDOQ stage
@@ -1005,9 +1006,9 @@ static const int plane_rd_mult[2][REF_TYPES][PLANE_TYPES] = {{{17, 20}, {16, 20}
  */
 static INLINE void update_coeff_eob_fast(uint16_t* eob, int shift, const int16_t* dequant_ptr, const int16_t* scan,
                                          const TranLow* coeff_ptr, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr) {
-    int eob_out = *eob;
-    int zbin[2] = {dequant_ptr[0] + ROUND_POWER_OF_TWO(dequant_ptr[0] * 70, 7),
-                   dequant_ptr[1] + ROUND_POWER_OF_TWO(dequant_ptr[1] * 70, 7)};
+    int       eob_out = *eob;
+    const int zbin[2] = {dequant_ptr[0] + ROUND_POWER_OF_TWO(dequant_ptr[0] * 70, 7),
+                         dequant_ptr[1] + ROUND_POWER_OF_TWO(dequant_ptr[1] * 70, 7)};
     for (int i = *eob - 1; i >= 0; i--) {
         const int rc         = scan[i];
         const int qcoeff     = qcoeff_ptr[rc];
@@ -1041,9 +1042,7 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                TxSize tx_size, TxType tx_type, bool is_inter, uint8_t use_sharpness,
                                uint8_t delta_q_present, uint8_t picture_qp, uint32_t lambda, int plane,
                                bool light_rdoq) {
-    SequenceControlSet*    scs        = pcs->scs;
-    bool                   allintra   = scs->allintra;
-    bool                   rtc        = scs->static_config.rtc;
+    const QmVal*           qm         = pcs->scs->static_config.enable_qmpsnr ? qparam->qmatrix : NULL;
     int                    sharpness  = 0; // No Sharpness
     const ScanOrder* const scan_order = get_scan_order(tx_size, tx_type);
     const int16_t*         scan       = scan_order->scan;
@@ -1081,8 +1080,7 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
         rweight = 10;
     }
 
-    const int64_t rdmult =
-        (((((int64_t)lambda * plane_rd_mult[allintra || rtc][is_inter][plane_type]) * rweight) / 100) + 2) >> rshift;
+    const int64_t  rdmult = (((((int64_t)lambda * plane_rd_mult[is_inter][plane_type]) * rweight) / 100) + 2) >> rshift;
     uint8_t* const levels = set_levels(ctx->md_levels_buf, width, height);
 
     if (*eob > 1) {
@@ -1118,7 +1116,8 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                              qcoeff_ptr,
                              dqcoeff_ptr,
                              levels,
-                             qparam->iqmatrix);
+                             qparam->iqmatrix,
+                             qm);
         --si;
     } else {
         assert(abs_qc == 1);
@@ -1127,8 +1126,8 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
 
         const TranLow tqc   = coeff_ptr[ci];
         const TranLow dqc   = dqcoeff_ptr[ci];
-        const int64_t dist  = get_coeff_dist(tqc, dqc, shift);
-        const int64_t dist0 = get_coeff_dist(tqc, 0, shift);
+        const int64_t dist  = svt_qm_coeff_dist(tqc, dqc, shift, qm, ci);
+        const int64_t dist0 = svt_qm_coeff_dist(tqc, 0, shift, qm, ci);
         accu_dist += dist - dist0;
         --si;
     }
@@ -1157,7 +1156,8 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                              dqcoeff_ptr,               \
                              levels,                    \
                              sharpness,                 \
-                             qparam->iqmatrix);         \
+                             qparam->iqmatrix,          \
+                             qm);                       \
         }                                               \
         break;
     switch (tx_class) {
@@ -1183,12 +1183,16 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                     sharpness);
     }
 
-    int si_end = 1; // default: full RDOQ
-    if (ctx->rdoq_ctrls.cut_off_num) {
-        const int cut_off_coeff = AOMMAX((width * height) >> 7,
-                                         (*eob * ctx->rdoq_ctrls.cut_off_num) / ctx->rdoq_ctrls.cut_off_denum);
-        si_end                  = AOMMAX(1, *eob - cut_off_coeff);
-    }
+    // The "simple" RDOQ loop only runs for coeffs below the eob region (needs si >= si_end,
+    // and si_end >= 1). When the eob region already consumed everything (si < 1, e.g. eob==1
+    // or <= max_nz_num nonzero coeffs) skip the cut-off divide and the loop dispatch entirely.
+    if (si >= 1) {
+        int si_end = 1; // default: full RDOQ
+        if (ctx->rdoq_ctrls.cut_off_num) {
+            const int cut_off_coeff = AOMMAX((width * height) >> 7,
+                                             (*eob * ctx->rdoq_ctrls.cut_off_num) / ctx->rdoq_ctrls.cut_off_denum);
+            si_end                  = AOMMAX(1, *eob - cut_off_coeff);
+        }
 #define UPDATE_COEFF_SIMPLE_CASE(tx_class_literal) \
     case tx_class_literal:                         \
         for (; si >= si_end; --si) {               \
@@ -1207,16 +1211,18 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                 qcoeff_ptr,        \
                                 dqcoeff_ptr,       \
                                 levels,            \
-                                qparam->iqmatrix); \
+                                qparam->iqmatrix,  \
+                                qm);               \
         }                                          \
         break;
-    switch (tx_class) {
-        UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_2D);
-        UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_HORIZ);
-        UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_VERT);
+        switch (tx_class) {
+            UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_2D);
+            UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_HORIZ);
+            UPDATE_COEFF_SIMPLE_CASE(TX_CLASS_VERT);
 #undef UPDATE_COEFF_SIMPLE_CASE
-    default:
-        assert(false);
+        default:
+            assert(false);
+        }
     }
 
     // DC position
@@ -1241,7 +1247,8 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                              qcoeff_ptr,
                              dqcoeff_ptr,
                              levels,
-                             qparam->iqmatrix);
+                             qparam->iqmatrix,
+                             qm);
     }
 }
 
@@ -1362,24 +1369,248 @@ void svt_aom_quantize_inv_quantize_light(PictureControlSet* pcs, int32_t* coeff,
     }
 }
 
-// See av1_get_txb_entropy_context in libaom
-uint8_t svt_av1_compute_cul_level_c(const int16_t* const scan, const int32_t* const quant_coeff, uint16_t* eob) {
+// See av1_get_txb_entropy_context in libaom. Reference: sum |quant_coeff| over the eob coded coeffs
+// in scan order, capped at COEFF_CONTEXT_MASK; the caller applies the clamp + DC sign. (The SIMD
+// kernels additionally switch to a linear whole-block sum for dense blocks; the C reference stays
+// simple and eob-bounded.)
+int32_t svt_av1_compute_cul_level_c(const int16_t* const scan, const int32_t* const quant_coeff, int32_t eob,
+                                    int32_t n_coeffs) {
+    (void)n_coeffs;
     int32_t cul_level = 0;
-    for (int32_t c = 0; c < *eob; ++c) {
-        const int16_t pos   = scan[c];
-        const int32_t v     = quant_coeff[pos];
-        int32_t       level = ABS(v);
-        cul_level += level;
-        // Early exit the loop if cul_level reaches COEFF_CONTEXT_MASK
+    for (int32_t c = 0; c < eob; ++c) {
+        cul_level += ABS(quant_coeff[scan[c]]);
         if (cul_level >= COEFF_CONTEXT_MASK) {
             break;
         }
     }
+    return cul_level;
+}
 
-    cul_level = AOMMIN(COEFF_CONTEXT_MASK, cul_level);
-    // DC value
+// Retract EOB by removing trailing low-magnitude coefficients separated by zero gaps
+// Tracks symbol-count knees at levels 3/6/9/12 and golomb tail at 15+.
+static INLINE int32_t ec_shave_est_zero_rate_save(int32_t ref_level, int32_t bit_cost) {
+    int32_t save = ((ref_level > 3) + (ref_level > 6) + (ref_level > 9) + (ref_level > 12)) * bit_cost;
+    if (ref_level > 14) {
+        save += get_golomb_cost(ref_level);
+    }
+    return save;
+}
+
+static INLINE uint16_t shave_coeff(int32_t* quant_buf, int32_t* recon_buf, const int32_t* tcoeff, uint16_t eob,
+                                   TxSize tx_size, TxType tx_type, uint32_t lambda, const CoeffShavingCtrls* ctrls,
+                                   const QmVal* qm) {
+    const int16_t* const scan             = get_scan_order(tx_size, tx_type)->scan;
+    const int            level_th         = ctrls->level_threshold;
+    const int            gap_th           = ctrls->zero_gap_threshold;
+    int                  updated_eob      = (int)eob;
+    int                  prev_nz_scan_idx = updated_eob - 2;
+
+    // Two-phase design rationale:
+    // 1) Run a cheap structural pass first (gap/level only, no RD math) to retract EOB quickly.
+    // 2) Then run the expensive RD-gated pass only on the shortened tail.
+
+    // Phase 1: trailing coeff zeroing by zero-gap criterion.
+    while (updated_eob > 1) {
+        const int     last_scan_idx = updated_eob - 1;
+        const int     last_pos      = scan[last_scan_idx];
+        const int32_t val           = quant_buf[last_pos];
+        const int32_t abs_val       = (val < 0) ? -val : val;
+
+        // Current trailing coeff is not eligible for shaving.
+        // Since phase 2 obeys the same level-threshold rule, we are done.
+        if (abs_val > level_th) {
+            return (uint16_t)updated_eob;
+        }
+
+        while (prev_nz_scan_idx >= 0) {
+            const int pos = scan[prev_nz_scan_idx];
+            if (quant_buf[pos] != 0) {
+                break;
+            }
+            --prev_nz_scan_idx;
+        }
+
+        if (prev_nz_scan_idx < 0) {
+            break;
+        }
+
+        const int gap = last_scan_idx - prev_nz_scan_idx - 1;
+        if (gap < gap_th) {
+            break;
+        }
+
+        quant_buf[last_pos] = 0;
+        recon_buf[last_pos] = 0;
+
+        updated_eob = prev_nz_scan_idx + 1;
+        --prev_nz_scan_idx;
+    }
+
+    // Nothing more to do if RD shaving is disabled or no trailing coeff remains.
+    if (ctrls->rd_zero_strength <= 0 || updated_eob <= 1) {
+        return (uint16_t)updated_eob;
+    }
+
+    const int     shift         = av1_get_tx_scale_tab[tx_size];
+    const int32_t bit_cost      = av1_cost_literal(1);
+    const int64_t rd_rate_scale = (int64_t)ctrls->rd_zero_strength;
+
+    // Fast path: only |level| == 1 is eligible.
+    if (level_th == 1) {
+        while (updated_eob > 1) {
+            const int     last_scan_idx = updated_eob - 1;
+            const int     last_pos      = scan[last_scan_idx];
+            const int32_t val           = quant_buf[last_pos];
+            const int32_t abs_val       = (val >= 0) ? val : -val;
+
+            if (abs_val > 1) {
+                break;
+            }
+
+            const TranLow tqc      = (TranLow)tcoeff[last_pos];
+            const TranLow dqc_cur  = (TranLow)recon_buf[last_pos];
+            const int64_t dist_cur = svt_qm_coeff_dist(tqc, dqc_cur, shift, qm, last_pos);
+            const int64_t dist_new = svt_qm_coeff_dist(tqc, 0, shift, qm, last_pos);
+
+            // For |level| == 1, ec_shave_est_zero_rate_save() contributes 0.
+            const int64_t rate_save = (int64_t)bit_cost * rd_rate_scale;
+
+            const int64_t dist_term = (dist_new - dist_cur) * ((int64_t)1 << RDDIV_BITS);
+            const int64_t rate_term = ROUND_POWER_OF_TWO(rate_save * lambda, AV1_PROB_COST_SHIFT);
+            if (dist_term >= rate_term) {
+                break;
+            }
+
+            quant_buf[last_pos] = 0;
+            recon_buf[last_pos] = 0;
+
+            int next_eob = last_scan_idx;
+            while (next_eob > 0 && quant_buf[scan[next_eob - 1]] == 0) {
+                --next_eob;
+            }
+            updated_eob = next_eob;
+        }
+
+        return (uint16_t)updated_eob;
+    }
+
+    // Generic phase 2 for level_threshold > 1.
+    while (updated_eob > 1) {
+        const int     last_scan_idx = updated_eob - 1;
+        const int     last_pos      = scan[last_scan_idx];
+        const int32_t val           = quant_buf[last_pos];
+        const int32_t abs_val       = (val >= 0) ? val : -val;
+
+        if (abs_val > level_th) {
+            break;
+        }
+
+        const int64_t rate_save = (int64_t)(ec_shave_est_zero_rate_save(abs_val, bit_cost) + bit_cost) * rd_rate_scale;
+
+        const TranLow tqc      = (TranLow)tcoeff[last_pos];
+        const TranLow dqc_cur  = (TranLow)recon_buf[last_pos];
+        const int64_t dist_cur = svt_qm_coeff_dist(tqc, dqc_cur, shift, qm, last_pos);
+        const int64_t dist_new = svt_qm_coeff_dist(tqc, 0, shift, qm, last_pos);
+
+        const int64_t dist_term = (dist_new - dist_cur) * ((int64_t)1 << RDDIV_BITS);
+        const int64_t rate_term = ROUND_POWER_OF_TWO(rate_save * lambda, AV1_PROB_COST_SHIFT);
+        if (dist_term >= rate_term) {
+            break;
+        }
+
+        quant_buf[last_pos] = 0;
+        recon_buf[last_pos] = 0;
+
+        int next_eob = last_scan_idx;
+        while (next_eob > 0 && quant_buf[scan[next_eob - 1]] == 0) {
+            --next_eob;
+        }
+        updated_eob = next_eob;
+    }
+
+    return (uint16_t)updated_eob;
+}
+
+// eob<=1 is a single (possibly zero) DC coefficient whose raw level is |dc|; eob>1 uses the ISA
+// kernel (scan/gather for sparse blocks, linear for dense). The clamp + DC sign is applied here
+// once, shared by both paths and all ISA variants.
+static INLINE uint8_t compute_cul_level_fast(const int16_t* const scan, const int32_t* const quant_coeff,
+                                             int32_t n_coeffs, uint16_t* eob) {
+    int32_t cul_level = (*eob <= 1) ? abs(quant_coeff[0])
+                                    : svt_av1_compute_cul_level(scan, quant_coeff, *eob, n_coeffs);
+    cul_level         = AOMMIN(COEFF_CONTEXT_MASK, cul_level);
     set_dc_sign(&cul_level, quant_coeff[0]);
     return (uint8_t)cul_level;
+}
+
+// Sequence tables have zero deltas and are shared by concurrent pictures.
+// Select AC lanes from one row and DC from another without modifying the tables.
+void svt_aom_get_quantizer(const Quants* quants, const Dequants* deq, int plane, int dc_index, int ac_index,
+                           int16_t params[7][8], MacroblockPlane* result) {
+    assert(plane >= PLANE_Y && plane <= PLANE_V);
+    assert(dc_index >= 0 && dc_index < QINDEX_RANGE && ac_index >= 0 && ac_index < QINDEX_RANGE);
+    const int16_t* ac[7];
+    const int16_t* dc[7];
+    if (plane == 0) {
+        ac[0] = quants->y_quant[ac_index];
+        dc[0] = quants->y_quant[dc_index];
+        ac[1] = quants->y_quant_fp[ac_index];
+        dc[1] = quants->y_quant_fp[dc_index];
+        ac[2] = quants->y_round_fp[ac_index];
+        dc[2] = quants->y_round_fp[dc_index];
+        ac[3] = quants->y_quant_shift[ac_index];
+        dc[3] = quants->y_quant_shift[dc_index];
+        ac[4] = quants->y_zbin[ac_index];
+        dc[4] = quants->y_zbin[dc_index];
+        ac[5] = quants->y_round[ac_index];
+        dc[5] = quants->y_round[dc_index];
+        ac[6] = deq->y_dequant_qtx[ac_index];
+        dc[6] = deq->y_dequant_qtx[dc_index];
+    } else if (plane == 1) {
+        ac[0] = quants->u_quant[ac_index];
+        dc[0] = quants->u_quant[dc_index];
+        ac[1] = quants->u_quant_fp[ac_index];
+        dc[1] = quants->u_quant_fp[dc_index];
+        ac[2] = quants->u_round_fp[ac_index];
+        dc[2] = quants->u_round_fp[dc_index];
+        ac[3] = quants->u_quant_shift[ac_index];
+        dc[3] = quants->u_quant_shift[dc_index];
+        ac[4] = quants->u_zbin[ac_index];
+        dc[4] = quants->u_zbin[dc_index];
+        ac[5] = quants->u_round[ac_index];
+        dc[5] = quants->u_round[dc_index];
+        ac[6] = deq->u_dequant_qtx[ac_index];
+        dc[6] = deq->u_dequant_qtx[dc_index];
+    } else {
+        ac[0] = quants->v_quant[ac_index];
+        dc[0] = quants->v_quant[dc_index];
+        ac[1] = quants->v_quant_fp[ac_index];
+        dc[1] = quants->v_quant_fp[dc_index];
+        ac[2] = quants->v_round_fp[ac_index];
+        dc[2] = quants->v_round_fp[dc_index];
+        ac[3] = quants->v_quant_shift[ac_index];
+        dc[3] = quants->v_quant_shift[dc_index];
+        ac[4] = quants->v_zbin[ac_index];
+        dc[4] = quants->v_zbin[dc_index];
+        ac[5] = quants->v_round[ac_index];
+        dc[5] = quants->v_round[dc_index];
+        ac[6] = deq->v_dequant_qtx[ac_index];
+        dc[6] = deq->v_dequant_qtx[dc_index];
+    }
+    if (dc_index != ac_index) {
+        for (int i = 0; i < 7; ++i) {
+            memcpy(params[i], ac[i], sizeof(params[i]));
+            params[i][0] = dc[i][0];
+            ac[i]        = params[i];
+        }
+    }
+    result->quant_qtx       = ac[0];
+    result->quant_fp_qtx    = ac[1];
+    result->round_fp_qtx    = ac[2];
+    result->quant_shift_qtx = ac[3];
+    result->zbin_qtx        = ac[4];
+    result->round_qtx       = ac[5];
+    result->dequant_qtx     = ac[6];
 }
 
 void svt_av1_perform_noise_normalization(MacroblockPlane* p, QuantParam* qparam, TranLow* coeff_ptr,
@@ -1526,72 +1757,17 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
     if (segmentation_qp_offset != 0) {
         q_index = CLIP3(0, 255, q_index + segmentation_qp_offset);
     }
-    if (component_type != COMPONENT_LUMA) {
-        const int8_t offset = (component_type == COMPONENT_CHROMA_CB)
-            ? pcs->ppcs->frm_hdr.quantization_params.delta_q_dc[1] // we are assuming delta_q_ac == delta_q_dc
-            : pcs->ppcs->frm_hdr.quantization_params.delta_q_dc[2];
-        q_index += offset;
-        q_index = (uint32_t)CLIP3(0, 255, (int32_t)q_index);
-    }
-    if (bit_depth == EB_EIGHT_BIT) {
-        if (component_type == COMPONENT_LUMA) {
-            candidate_plane.quant_qtx       = enc_ctx->quants_8bit.y_quant[q_index];
-            candidate_plane.quant_fp_qtx    = enc_ctx->quants_8bit.y_quant_fp[q_index];
-            candidate_plane.round_fp_qtx    = enc_ctx->quants_8bit.y_round_fp[q_index];
-            candidate_plane.quant_shift_qtx = enc_ctx->quants_8bit.y_quant_shift[q_index];
-            candidate_plane.zbin_qtx        = enc_ctx->quants_8bit.y_zbin[q_index];
-            candidate_plane.round_qtx       = enc_ctx->quants_8bit.y_round[q_index];
-            candidate_plane.dequant_qtx     = enc_ctx->deq_8bit.y_dequant_qtx[q_index];
-        } else if (component_type == COMPONENT_CHROMA_CB) {
-            candidate_plane.quant_qtx       = enc_ctx->quants_8bit.u_quant[q_index];
-            candidate_plane.quant_fp_qtx    = enc_ctx->quants_8bit.u_quant_fp[q_index];
-            candidate_plane.round_fp_qtx    = enc_ctx->quants_8bit.u_round_fp[q_index];
-            candidate_plane.quant_shift_qtx = enc_ctx->quants_8bit.u_quant_shift[q_index];
-            candidate_plane.zbin_qtx        = enc_ctx->quants_8bit.u_zbin[q_index];
-            candidate_plane.round_qtx       = enc_ctx->quants_8bit.u_round[q_index];
-            candidate_plane.dequant_qtx     = enc_ctx->deq_8bit.u_dequant_qtx[q_index];
-        }
-
-        else {
-            candidate_plane.quant_qtx       = enc_ctx->quants_8bit.v_quant[q_index];
-            candidate_plane.quant_fp_qtx    = enc_ctx->quants_8bit.v_quant_fp[q_index];
-            candidate_plane.round_fp_qtx    = enc_ctx->quants_8bit.v_round_fp[q_index];
-            candidate_plane.quant_shift_qtx = enc_ctx->quants_8bit.v_quant_shift[q_index];
-            candidate_plane.zbin_qtx        = enc_ctx->quants_8bit.v_zbin[q_index];
-            candidate_plane.round_qtx       = enc_ctx->quants_8bit.v_round[q_index];
-            candidate_plane.dequant_qtx     = enc_ctx->deq_8bit.v_dequant_qtx[q_index];
-        }
-    } else {
-        if (component_type == COMPONENT_LUMA) {
-            candidate_plane.quant_qtx       = enc_ctx->quants_bd.y_quant[q_index];
-            candidate_plane.quant_fp_qtx    = enc_ctx->quants_bd.y_quant_fp[q_index];
-            candidate_plane.round_fp_qtx    = enc_ctx->quants_bd.y_round_fp[q_index];
-            candidate_plane.quant_shift_qtx = enc_ctx->quants_bd.y_quant_shift[q_index];
-            candidate_plane.zbin_qtx        = enc_ctx->quants_bd.y_zbin[q_index];
-            candidate_plane.round_qtx       = enc_ctx->quants_bd.y_round[q_index];
-            candidate_plane.dequant_qtx     = enc_ctx->deq_bd.y_dequant_qtx[q_index];
-        }
-
-        else if (component_type == COMPONENT_CHROMA_CB) {
-            candidate_plane.quant_qtx       = enc_ctx->quants_bd.u_quant[q_index];
-            candidate_plane.quant_fp_qtx    = enc_ctx->quants_bd.u_quant_fp[q_index];
-            candidate_plane.round_fp_qtx    = enc_ctx->quants_bd.u_round_fp[q_index];
-            candidate_plane.quant_shift_qtx = enc_ctx->quants_bd.u_quant_shift[q_index];
-            candidate_plane.zbin_qtx        = enc_ctx->quants_bd.u_zbin[q_index];
-            candidate_plane.round_qtx       = enc_ctx->quants_bd.u_round[q_index];
-            candidate_plane.dequant_qtx     = enc_ctx->deq_bd.u_dequant_qtx[q_index];
-        }
-
-        else {
-            candidate_plane.quant_qtx       = enc_ctx->quants_bd.v_quant[q_index];
-            candidate_plane.quant_fp_qtx    = enc_ctx->quants_bd.v_quant_fp[q_index];
-            candidate_plane.round_fp_qtx    = enc_ctx->quants_bd.v_round_fp[q_index];
-            candidate_plane.quant_shift_qtx = enc_ctx->quants_bd.v_quant_shift[q_index];
-            candidate_plane.zbin_qtx        = enc_ctx->quants_bd.v_zbin[q_index];
-            candidate_plane.round_qtx       = enc_ctx->quants_bd.v_round[q_index];
-            candidate_plane.dequant_qtx     = enc_ctx->deq_bd.v_dequant_qtx[q_index];
-        }
-    }
+    const QuantizationParams* quant_params = &pcs->ppcs->frm_hdr.quantization_params;
+    const int                 dc_index     = CLIP3(0, 255, q_index + quant_params->delta_q_dc[plane]);
+    const int                 ac_index     = CLIP3(0, 255, q_index + quant_params->delta_q_ac[plane]);
+    DECLARE_ALIGNED(16, int16_t, local_quant_params[7][8]);
+    svt_aom_get_quantizer(bit_depth == EB_EIGHT_BIT ? &enc_ctx->quants_8bit : &enc_ctx->quants_bd,
+                          bit_depth == EB_EIGHT_BIT ? &enc_ctx->deq_8bit : &enc_ctx->deq_bd,
+                          plane,
+                          dc_index,
+                          ac_index,
+                          local_quant_params,
+                          &candidate_plane);
 
     const ScanOrder* const scan_order = get_scan_order(txsize, tx_type);
 
@@ -1618,7 +1794,7 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
     }
     if (perform_rdoq) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-        if ((bit_depth > EB_EIGHT_BIT) || (is_encode_pass && scs->is_16bit_pipeline)) {
+        if ((bit_depth > EB_EIGHT_BIT) || (is_encode_pass && SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline))) {
             svt_av1_highbd_quantize_fp_facade((TranLow*)coeff,
                                               n_coeffs,
                                               &candidate_plane,
@@ -1641,7 +1817,7 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
         }
     } else {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-        if ((bit_depth > EB_EIGHT_BIT) || (is_encode_pass && scs->is_16bit_pipeline)) {
+        if ((bit_depth > EB_EIGHT_BIT) || (is_encode_pass && SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline))) {
             svt_av1_highbd_quantize_b_facade((TranLow*)coeff,
                                              n_coeffs,
                                              &candidate_plane,
@@ -1664,19 +1840,22 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
         }
     }
     if (perform_rdoq && *eob != 0) {
-        int width    = tx_size_wide[txsize];
-        int height   = tx_size_high[txsize];
-        int eob_perc = (*eob) * 100 / (width * height);
-        if (eob_perc >= ctx->rdoq_ctrls.eob_th) {
+        int width  = tx_size_wide[txsize];
+        int height = tx_size_high[txsize];
+        // eob_perc >= th  <=>  eob*100 >= th*(w*h) for positive integers; avoids a per-TU divide.
+        const int eob_scaled = (*eob) * 100;
+        const int wh         = width * height;
+        if (eob_scaled >= ctx->rdoq_ctrls.eob_th * wh) {
             perform_rdoq = 0;
         }
-        if (perform_rdoq && (eob_perc >= ctx->rdoq_ctrls.eob_fast_th)) {
+        if (perform_rdoq && (eob_scaled >= ctx->rdoq_ctrls.eob_fast_th * wh)) {
             svt_fast_optimize_b(
                 (TranLow*)coeff, &candidate_plane, quant_coeff, (TranLow*)recon_coeff, eob, txsize, tx_type);
         }
         if (perform_rdoq == 0) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-            if ((bit_depth > EB_EIGHT_BIT) || (is_encode_pass && scs->is_16bit_pipeline)) {
+            if ((bit_depth > EB_EIGHT_BIT) ||
+                (is_encode_pass && SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline))) {
                 svt_av1_highbd_quantize_b_facade((TranLow*)coeff,
                                                  n_coeffs,
                                                  &candidate_plane,
@@ -1737,6 +1916,21 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
                            light_rdoq);
     }
 
+    // Apply coefficient shaving for luma after all quantization/RDOQ is complete.
+    // This catches all luma quantize paths (light PD1, regular TX, encode pass)
+    // in a single place.
+    if (component_type == COMPONENT_LUMA && ctx->coeff_shaving_ctrls.enabled && *eob > 1) {
+        *eob = shave_coeff(quant_coeff,
+                           recon_coeff,
+                           coeff,
+                           *eob,
+                           txsize,
+                           tx_type,
+                           lambda,
+                           &ctx->coeff_shaving_ctrls,
+                           pcs->scs->static_config.enable_qmpsnr ? q_matrix : NULL);
+    }
+
     if (is_encode_pass && *eob != 0 && tx_type != IDTX && (component_type == COMPONENT_LUMA)) {
         svt_av1_perform_noise_normalization(
             &candidate_plane, &qparam, (TranLow*)coeff, quant_coeff, (TranLow*)recon_coeff, txsize, tx_type, eob, pcs);
@@ -1747,7 +1941,7 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
     }
 
     // Derive cul_level
-    return svt_av1_compute_cul_level(scan_order->scan, quant_coeff, eob);
+    return compute_cul_level_fast(scan_order->scan, quant_coeff, n_coeffs, eob);
 }
 
 void svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecisionContext* ctx, uint8_t* pred_buffer,
@@ -1755,6 +1949,7 @@ void svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecisionCon
                                          uint32_t rec_offset, uint32_t rec_stride, int32_t* rec_coeff_buffer,
                                          uint32_t coeff_offset, bool hbd, TxSize txsize, TxType transform_type,
                                          PlaneType component_type, uint32_t eob) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
     if (hbd) {
         svt_aom_inv_transform_recon(rec_coeff_buffer + coeff_offset,
                                     CONVERT_TO_BYTEPTR(((uint16_t*)pred_buffer) + pred_offset),
@@ -1767,7 +1962,11 @@ void svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecisionCon
                                     component_type,
                                     eob,
                                     svt_av1_is_lossless_segment(pcs, ctx->blk_ptr->segment_id));
-    } else {
+    } else
+#else
+    (void)hbd;
+#endif
+    {
         svt_aom_inv_transform_recon8bit(rec_coeff_buffer + coeff_offset,
                                         pred_buffer + pred_offset,
                                         pred_stride,
@@ -1781,6 +1980,37 @@ void svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecisionCon
     }
 }
 
+// Computes an EOB-based approximation of chroma coefficient rate.
+// Returns true if the approximation was applied; false if full estimation is required.
+static bool skip_chroma_rate_est(const ModeDecisionContext* ctx, const ModeDecisionCandidateBuffer* cand_bf,
+                                 COMPONENT_TYPE component_type, uint32_t tx_width_uv, uint32_t tx_height_uv,
+                                 uint64_t* cb_coeff_bits, uint64_t* cr_coeff_bits) {
+    // lvl=1 always uses full estimation; lvl=0 and lvl>=2 use approximation
+    if (!(ctx->rate_est_ctrls.coeff_rate_est_lvl >= 2 || ctx->rate_est_ctrls.coeff_rate_est_lvl == 0)) {
+        return false;
+    }
+    const uint64_t th = ((uint64_t)tx_width_uv * tx_height_uv) >> 6;
+    if (component_type == COMPONENT_CHROMA || component_type == COMPONENT_CHROMA_CB) {
+        if (cand_bf->eob.u[0] < th) {
+            *cb_coeff_bits = cand_bf->eob.u[0] ? (3000 + (uint64_t)cand_bf->eob.u[0] * 500) : 0;
+        } else if (ctx->rate_est_ctrls.coeff_rate_est_lvl == 0) {
+            *cb_coeff_bits = cand_bf->eob.u[0] ? (1500 + (uint64_t)cand_bf->eob.u[0] * 50) : 0;
+        } else {
+            return false;
+        }
+    }
+    if (component_type == COMPONENT_CHROMA || component_type == COMPONENT_CHROMA_CR) {
+        if (cand_bf->eob.v[0] < th) {
+            *cr_coeff_bits = cand_bf->eob.v[0] ? (3000 + (uint64_t)cand_bf->eob.v[0] * 500) : 0;
+        } else if (ctx->rate_est_ctrls.coeff_rate_est_lvl == 0) {
+            *cr_coeff_bits = cand_bf->eob.v[0] ? (1500 + (uint64_t)cand_bf->eob.v[0] * 50) : 0;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
 /*
   tx path for light PD1 chroma
 */
@@ -1791,8 +2021,10 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
                                         uint64_t cb_full_distortion[DIST_CALC_TOTAL],
                                         uint64_t cr_full_distortion[DIST_CALC_TOTAL], uint64_t* cb_coeff_bits,
                                         uint64_t* cr_coeff_bits) {
-    uint32_t     full_lambda  = ctx->hbd_md ? ctx->full_lambda_md[EB_10_BIT_MD] : ctx->full_lambda_md[EB_8_BIT_MD];
-    const TxSize tx_size_uv   = av1_get_max_uv_txsize(ctx->blk_geom->bsize, 1, 1);
+    const int    chroma_ss    = ctx->subsampling_x;
+    uint32_t     full_lambda  = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? ctx->full_lambda_md[EB_10_BIT_MD]
+                                                                  : ctx->full_lambda_md[EB_8_BIT_MD];
+    const TxSize tx_size_uv   = av1_get_max_uv_txsize(ctx->blk_geom->bsize, chroma_ss, chroma_ss);
     const int    tx_width_uv  = tx_size_wide[tx_size_uv];
     const int    tx_height_uv = tx_size_high[tx_size_uv];
 
@@ -1813,12 +2045,18 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
         }
     }
     assert(tx_size_uv < TX_SIZES_ALL);
+    pf_shape                   = svt_get_qmpsnr_coeff_shape(pcs, ctx, PLANE_U, pf_shape, false);
     const int32_t chroma_shift = (MAX_TX_SCALE - av1_get_tx_scale_tab[tx_size_uv]) * 2;
     uint32_t      bwidth       = tx_width_uv;
     uint32_t      bheight      = tx_height_uv;
     if (pf_shape) {
         bwidth  = MAX((bwidth >> pf_shape), 4);
         bheight = (bheight >> pf_shape);
+    }
+    bool qmpsnr = svt_use_qmpsnr(pcs, ctx, PLANE_U, false);
+    if (qmpsnr) {
+        bwidth  = MIN(bwidth, 32);
+        bheight = MIN(bheight, 32);
     }
     if (component_type == COMPONENT_CHROMA || component_type == COMPONENT_CHROMA_CB) {
         svt_aom_residual_kernel(input_pic->u_buffer,
@@ -1830,7 +2068,7 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
                                 (int16_t*)cand_bf->residual->u_buffer,
                                 blk_chroma_origin_index,
                                 cand_bf->residual->u_stride,
-                                ctx->hbd_md,
+                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                                 ctx->blk_geom->bwidth_uv,
                                 ctx->blk_geom->bheight_uv);
 
@@ -1843,43 +2081,51 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
                                    NOT_USED_VALUE,
                                    tx_size_uv,
                                    &ctx->three_quad_energy,
-                                   ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
+                                   SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
                                    cand_bf->cand->transform_type_uv,
                                    PLANE_TYPE_UV,
                                    pf_shape);
-        cand_bf->quant_dc.u[0] = svt_aom_quantize_inv_quantize(pcs,
-                                                               ctx,
-                                                               &(((int32_t*)ctx->tx_coeffs->u_buffer)[0]),
-                                                               &(((int32_t*)cand_bf->quant->u_buffer)[0]),
-                                                               &(((int32_t*)cand_bf->rec_coeff->u_buffer)[0]),
-                                                               chroma_qindex,
-                                                               0,
-                                                               tx_size_uv,
-                                                               &cand_bf->eob.u[0],
-                                                               COMPONENT_CHROMA_CB,
-                                                               ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
-                                                               cand_bf->cand->transform_type_uv,
-                                                               0,
-                                                               0,
-                                                               cand_bf->cand->block_mi.mode,
-                                                               full_lambda,
-                                                               false);
+        cand_bf->quant_dc.u[0] = svt_aom_quantize_inv_quantize(
+            pcs,
+            ctx,
+            &(((int32_t*)ctx->tx_coeffs->u_buffer)[0]),
+            &(((int32_t*)cand_bf->quant->u_buffer)[0]),
+            &(((int32_t*)cand_bf->rec_coeff->u_buffer)[0]),
+            chroma_qindex,
+            0,
+            tx_size_uv,
+            &cand_bf->eob.u[0],
+            COMPONENT_CHROMA_CB,
+            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
+            cand_bf->cand->transform_type_uv,
+            0,
+            0,
+            cand_bf->cand->block_mi.mode,
+            full_lambda,
+            false);
 
-        svt_aom_picture_full_distortion32_bits_single_facade(&(((int32_t*)ctx->tx_coeffs->u_buffer)[0]),
-                                                             &(((int32_t*)cand_bf->rec_coeff->u_buffer)[0]),
-                                                             tx_width_uv,
-                                                             bwidth,
-                                                             bheight,
-                                                             bwidth,
-                                                             bheight,
-                                                             cb_full_distortion,
-                                                             cand_bf->eob.u[0],
-                                                             &(cand_bf->cand->block_mi),
-                                                             true, // is_chroma
-                                                             pcs->temporal_layer_index,
-                                                             pcs->scs->static_config.ac_bias,
-                                                             pcs->scs->static_config.tx_bias);
+        svt_aom_picture_full_distortion32_bits_single_facade(
+            &(((int32_t*)ctx->tx_coeffs->u_buffer)[0]),
+            &(((int32_t*)cand_bf->rec_coeff->u_buffer)[0]),
+            qmpsnr ? MIN(tx_width_uv, 32) : tx_width_uv,
+            bwidth,
+            bheight,
+            bwidth,
+            bheight,
+            cb_full_distortion,
+            cand_bf->eob.u[0],
+            &(cand_bf->cand->block_mi),
+            true, // is_chroma
+            pcs->temporal_layer_index,
+            pcs->scs->static_config.ac_bias,
+            pcs->scs->static_config.tx_bias,
+            svt_get_qmpsnr_matrix(pcs, ctx, tx_size_uv, cand_bf->cand->transform_type_uv, 1, false),
+            get_scan_order(tx_size_uv, cand_bf->cand->transform_type_uv)->scan);
 
+        if (qmpsnr && (tx_width_uv == 64 || tx_height_uv == 64)) {
+            cb_full_distortion[0] += ctx->three_quad_energy;
+            cb_full_distortion[1] += ctx->three_quad_energy;
+        }
         cb_full_distortion[DIST_CALC_RESIDUAL]   = RIGHT_SIGNED_SHIFT(cb_full_distortion[DIST_CALC_RESIDUAL],
                                                                     chroma_shift);
         cb_full_distortion[DIST_CALC_PREDICTION] = RIGHT_SIGNED_SHIFT(cb_full_distortion[DIST_CALC_PREDICTION],
@@ -1903,13 +2149,19 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
             pf_shape = N4_SHAPE;
         }
     }
-    bwidth  = tx_width_uv;
-    bheight = tx_height_uv;
+    pf_shape = svt_get_qmpsnr_coeff_shape(pcs, ctx, PLANE_V, pf_shape, false);
+    bwidth   = tx_width_uv;
+    bheight  = tx_height_uv;
     if (pf_shape) {
         bwidth  = MAX((bwidth >> pf_shape), 4);
         bheight = (bheight >> pf_shape);
     }
 
+    qmpsnr = svt_use_qmpsnr(pcs, ctx, PLANE_V, false);
+    if (qmpsnr) {
+        bwidth  = MIN(bwidth, 32);
+        bheight = MIN(bheight, 32);
+    }
     if (component_type == COMPONENT_CHROMA || component_type == COMPONENT_CHROMA_CR) {
         //Cr Residual
         svt_aom_residual_kernel(input_pic->v_buffer,
@@ -1921,7 +2173,7 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
                                 (int16_t*)cand_bf->residual->v_buffer,
                                 blk_chroma_origin_index,
                                 cand_bf->residual->v_stride,
-                                ctx->hbd_md,
+                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                                 ctx->blk_geom->bwidth_uv,
                                 ctx->blk_geom->bheight_uv);
         // Cr Transform
@@ -1933,43 +2185,51 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
                                    NOT_USED_VALUE,
                                    tx_size_uv,
                                    &ctx->three_quad_energy,
-                                   ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
+                                   SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
                                    cand_bf->cand->transform_type_uv,
                                    PLANE_TYPE_UV,
                                    pf_shape);
-        cand_bf->quant_dc.v[0] = svt_aom_quantize_inv_quantize(pcs,
-                                                               ctx,
-                                                               &(((int32_t*)ctx->tx_coeffs->v_buffer)[0]),
-                                                               &(((int32_t*)cand_bf->quant->v_buffer)[0]),
-                                                               &(((int32_t*)cand_bf->rec_coeff->v_buffer)[0]),
-                                                               chroma_qindex,
-                                                               0,
-                                                               tx_size_uv,
-                                                               &cand_bf->eob.v[0],
-                                                               COMPONENT_CHROMA_CR,
-                                                               ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
-                                                               cand_bf->cand->transform_type_uv,
-                                                               0,
-                                                               0,
-                                                               cand_bf->cand->block_mi.mode,
-                                                               full_lambda,
-                                                               false);
+        cand_bf->quant_dc.v[0] = svt_aom_quantize_inv_quantize(
+            pcs,
+            ctx,
+            &(((int32_t*)ctx->tx_coeffs->v_buffer)[0]),
+            &(((int32_t*)cand_bf->quant->v_buffer)[0]),
+            &(((int32_t*)cand_bf->rec_coeff->v_buffer)[0]),
+            chroma_qindex,
+            0,
+            tx_size_uv,
+            &cand_bf->eob.v[0],
+            COMPONENT_CHROMA_CR,
+            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
+            cand_bf->cand->transform_type_uv,
+            0,
+            0,
+            cand_bf->cand->block_mi.mode,
+            full_lambda,
+            false);
 
-        svt_aom_picture_full_distortion32_bits_single_facade(&(((int32_t*)ctx->tx_coeffs->v_buffer)[0]),
-                                                             &(((int32_t*)cand_bf->rec_coeff->v_buffer)[0]),
-                                                             tx_width_uv,
-                                                             bwidth,
-                                                             bheight,
-                                                             bwidth,
-                                                             bheight,
-                                                             cr_full_distortion,
-                                                             cand_bf->eob.v[0],
-                                                             &(cand_bf->cand->block_mi),
-                                                             true, // is_chroma
-                                                             pcs->temporal_layer_index,
-                                                             pcs->scs->static_config.ac_bias,
-                                                             pcs->scs->static_config.tx_bias);
+        svt_aom_picture_full_distortion32_bits_single_facade(
+            &(((int32_t*)ctx->tx_coeffs->v_buffer)[0]),
+            &(((int32_t*)cand_bf->rec_coeff->v_buffer)[0]),
+            qmpsnr ? MIN(tx_width_uv, 32) : tx_width_uv,
+            bwidth,
+            bheight,
+            bwidth,
+            bheight,
+            cr_full_distortion,
+            cand_bf->eob.v[0],
+            &(cand_bf->cand->block_mi),
+            true, // is_chroma
+            pcs->temporal_layer_index,
+            pcs->scs->static_config.ac_bias,
+            pcs->scs->static_config.tx_bias,
+            svt_get_qmpsnr_matrix(pcs, ctx, tx_size_uv, cand_bf->cand->transform_type_uv, 2, false),
+            get_scan_order(tx_size_uv, cand_bf->cand->transform_type_uv)->scan);
 
+        if (qmpsnr && (tx_width_uv == 64 || tx_height_uv == 64)) {
+            cr_full_distortion[0] += ctx->three_quad_energy;
+            cr_full_distortion[1] += ctx->three_quad_energy;
+        }
         cr_full_distortion[DIST_CALC_RESIDUAL]   = RIGHT_SIGNED_SHIFT(cr_full_distortion[DIST_CALC_RESIDUAL],
                                                                     chroma_shift);
         cr_full_distortion[DIST_CALC_PREDICTION] = RIGHT_SIGNED_SHIFT(cr_full_distortion[DIST_CALC_PREDICTION],
@@ -1978,25 +2238,27 @@ void svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionCont
     }
 
     //CHROMA-ONLY
-    svt_aom_txb_estimate_coeff_bits(ctx,
-                                    0,
-                                    NULL,
-                                    pcs,
-                                    cand_bf,
-                                    NOT_USED_VALUE,
-                                    0,
-                                    cand_bf->quant,
-                                    NOT_USED_VALUE,
-                                    cand_bf->eob.u[0],
-                                    cand_bf->eob.v[0],
-                                    NOT_USED_VALUE,
-                                    cb_coeff_bits,
-                                    cr_coeff_bits,
-                                    NOT_USED_VALUE,
-                                    tx_size_uv,
-                                    NOT_USED_VALUE,
-                                    cand_bf->cand->transform_type_uv,
-                                    component_type);
+    if (!skip_chroma_rate_est(ctx, cand_bf, component_type, tx_width_uv, tx_height_uv, cb_coeff_bits, cr_coeff_bits)) {
+        svt_aom_txb_estimate_coeff_bits(ctx,
+                                        0,
+                                        NULL,
+                                        pcs,
+                                        cand_bf,
+                                        NOT_USED_VALUE,
+                                        0,
+                                        cand_bf->quant,
+                                        NOT_USED_VALUE,
+                                        cand_bf->eob.u[0],
+                                        cand_bf->eob.v[0],
+                                        NOT_USED_VALUE,
+                                        cb_coeff_bits,
+                                        cr_coeff_bits,
+                                        NOT_USED_VALUE,
+                                        tx_size_uv,
+                                        NOT_USED_VALUE,
+                                        cand_bf->cand->transform_type_uv,
+                                        component_type);
+    }
 }
 
 /****************************************
@@ -2007,6 +2269,7 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                           uint64_t cb_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
                           uint64_t cr_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* cb_coeff_bits,
                           uint64_t* cr_coeff_bits, bool is_full_loop) {
+    const int             chroma_ss = ctx->subsampling_x;
     EB_ALIGN(16) uint64_t txb_full_distortion[DIST_TOTAL][3][DIST_CALC_TOTAL];
     const SsimLevel       ssim_level = ctx->tune_ssim_level;
     if (ssim_level > SSIM_LVL_0) {
@@ -2016,37 +2279,42 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
     cand_bf->u_has_coeff = 0;
     cand_bf->v_has_coeff = 0;
     int16_t* chroma_residual_ptr;
-    uint32_t full_lambda = ctx->hbd_md ? ctx->full_lambda_md[EB_10_BIT_MD] : ctx->full_lambda_md[EB_8_BIT_MD];
+    uint32_t full_lambda = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? ctx->full_lambda_md[EB_10_BIT_MD]
+                                                             : ctx->full_lambda_md[EB_8_BIT_MD];
 
     ctx->three_quad_energy = 0;
 
     const double effective_ac_bias = get_effective_ac_bias(
         pcs->scs->static_config.ac_bias, pcs->slice_type == I_SLICE, pcs->temporal_layer_index);
     const uint8_t tx_depth     = cand_bf->cand->block_mi.tx_depth;
-    const TxSize  tx_size      = av1_get_tx_size(ctx->blk_geom->bsize, tx_depth, PLANE_TYPE_Y);
-    const TxSize  tx_size_uv   = av1_get_max_uv_txsize(ctx->blk_geom->bsize, 1, 1);
+    const TxSize  tx_size      = tx_depth_to_tx_size[tx_depth][ctx->blk_geom->bsize];
+    const TxSize  tx_size_uv   = av1_get_max_uv_txsize(ctx->blk_geom->bsize, chroma_ss, chroma_ss);
     const int     tx_width_uv  = tx_size_wide[tx_size_uv];
     const int     tx_height_uv = tx_size_high[tx_size_uv];
     const bool    is_inter = (is_inter_mode(cand_bf->cand->block_mi.mode) || cand_bf->cand->block_mi.use_intrabc) ? true
                                                                                                                   : false;
-    const int     tu_count = tx_depth ? 1 : tx_blocks_per_depth[ctx->blk_geom->bsize][tx_depth]; //NM: 128x128 exeption
-    uint32_t      txb_1d_offset = 0;
+    const bool    multi_uv = svt_aom_multi_uv_tx(ctx->blk_geom->bsize, chroma_ss);
+    const bool    intra_multi_uv = multi_uv && !is_inter;
+    const unsigned uv_depth      = multi_uv ? 1 : tx_depth;
+    const int32_t  tu_count      = svt_aom_uv_tx_count(ctx->blk_geom->bsize, chroma_ss);
+    uint32_t       txb_1d_offset = 0;
 
     int txb_itr = 0;
     do {
-        const uint32_t txb_origin_x        = tx_org[ctx->blk_geom->bsize][is_inter][tx_depth][txb_itr].x;
-        const uint32_t txb_origin_y        = tx_org[ctx->blk_geom->bsize][is_inter][tx_depth][txb_itr].y;
-        int32_t        cropped_tx_width_uv = MIN(
-            (uint32_t)tx_width_uv, (pcs->ppcs->aligned_width >> 1) - ((ROUND_UV(ctx->blk_org_x + txb_origin_x)) >> 1));
-        int32_t cropped_tx_height_uv = MIN(
-            (uint32_t)tx_height_uv,
-            (pcs->ppcs->aligned_height >> 1) - ((ROUND_UV(ctx->blk_org_y + txb_origin_y)) >> 1));
-        uint32_t tu_cb_origin_index = (ROUND_UV(txb_origin_x) +
-                                       (ROUND_UV(txb_origin_y) * cand_bf->residual->u_stride)) >>
-            1;
-        uint32_t tu_cr_origin_index = (ROUND_UV(txb_origin_x) +
-                                       (ROUND_UV(txb_origin_y) * cand_bf->residual->v_stride)) >>
-            1;
+        const uint32_t txb_origin_x         = tx_org[ctx->blk_geom->bsize][is_inter][uv_depth][txb_itr].x;
+        const uint32_t txb_origin_y         = tx_org[ctx->blk_geom->bsize][is_inter][uv_depth][txb_itr].y;
+        int32_t        cropped_tx_width_uv  = MIN((uint32_t)tx_width_uv,
+                                          (pcs->ppcs->aligned_width >> chroma_ss) -
+                                              ((ROUND_UV_TO(ctx->blk_org_x + txb_origin_x, chroma_ss)) >> chroma_ss));
+        int32_t        cropped_tx_height_uv = MIN((uint32_t)tx_height_uv,
+                                           (pcs->ppcs->aligned_height >> chroma_ss) -
+                                               ((ROUND_UV_TO(ctx->blk_org_y + txb_origin_y, chroma_ss)) >> chroma_ss));
+        uint32_t       tu_cb_origin_index   = (ROUND_UV_TO(txb_origin_x, chroma_ss) +
+                                       (ROUND_UV_TO(txb_origin_y, chroma_ss) * cand_bf->residual->u_stride)) >>
+            chroma_ss;
+        uint32_t tu_cr_origin_index = (ROUND_UV_TO(txb_origin_x, chroma_ss) +
+                                       (ROUND_UV_TO(txb_origin_y, chroma_ss) * cand_bf->residual->v_stride)) >>
+            chroma_ss;
         TxCoeffShape pf_shape = ctx->pf_ctrls.pf_shape;
         if (ctx->md_stage == MD_STAGE_3 && ctx->use_tx_shortcuts_mds3 && ctx->chroma_complexity == COMPONENT_LUMA) {
             pf_shape = N4_SHAPE;
@@ -2068,14 +2336,15 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
         //    *Note - this might require that we have inv transform in the loop
         if (component_type == COMPONENT_CHROMA_CB || component_type == COMPONENT_CHROMA ||
             component_type == COMPONENT_ALL) {
-            ctx->cb_txb_skip_context = 0;
-            ctx->cb_dc_sign_context  = 0;
+            const TxCoeffShape cb_pf_shape = svt_get_qmpsnr_coeff_shape(pcs, ctx, PLANE_U, pf_shape, false);
+            ctx->cb_txb_skip_context       = 0;
+            ctx->cb_dc_sign_context        = 0;
             if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
                 svt_aom_get_txb_ctx(pcs,
                                     COMPONENT_CHROMA,
                                     ctx->cb_dc_sign_level_coeff_na,
-                                    ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
-                                    ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
+                                    ROUND_UV_TO(ctx->blk_org_x + txb_origin_x, chroma_ss) >> chroma_ss,
+                                    ROUND_UV_TO(ctx->blk_org_y + txb_origin_y, chroma_ss) >> chroma_ss,
                                     ctx->blk_geom->bsize_uv,
                                     tx_size_uv,
                                     &ctx->cb_txb_skip_context,
@@ -2083,6 +2352,22 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
             }
             // Configure the Chroma Residual Ptr
 
+            if (intra_multi_uv) {
+                svt_av1_intra_prediction_uv_txb(ctx, pcs, cand_bf, 1, txb_origin_x, txb_origin_y);
+                svt_aom_residual_kernel(
+                    input_pic->u_buffer,
+                    ctx->blk_org_x + txb_origin_x + (ctx->blk_org_y + txb_origin_y) * input_pic->u_stride,
+                    input_pic->u_stride,
+                    cand_bf->pred->u_buffer,
+                    tu_cb_origin_index,
+                    cand_bf->pred->u_stride,
+                    (int16_t*)cand_bf->residual->u_buffer,
+                    tu_cb_origin_index,
+                    cand_bf->residual->u_stride,
+                    SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                    tx_width_uv,
+                    tx_height_uv);
+            }
             chroma_residual_ptr = &(((int16_t*)cand_bf->residual->u_buffer)[tu_cb_origin_index]);
 
             // Cb Transform
@@ -2094,10 +2379,10 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                                        NOT_USED_VALUE,
                                        tx_size_uv,
                                        &ctx->three_quad_energy,
-                                       ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
+                                       SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
                                        cand_bf->cand->transform_type_uv,
                                        PLANE_TYPE_UV,
-                                       pf_shape);
+                                       cb_pf_shape);
 
             int32_t seg_qp               = pcs->ppcs->frm_hdr.segmentation_params.segmentation_enabled
                               ? pcs->ppcs->frm_hdr.segmentation_params.feature_data[ctx->blk_ptr->segment_id][SEG_LVL_ALT_Q]
@@ -2113,7 +2398,7 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                 tx_size_uv,
                 &cand_bf->eob.u[txb_itr],
                 COMPONENT_CHROMA_CB,
-                ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
+                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
                 cand_bf->cand->transform_type_uv,
                 ctx->cb_txb_skip_context,
                 ctx->cb_dc_sign_context,
@@ -2121,7 +2406,9 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                 full_lambda,
                 false);
 
-            if (is_full_loop && ctx->mds_do_spatial_sse) {
+            const bool qmpsnr                    = svt_use_qmpsnr(pcs, ctx, PLANE_U, false);
+            uint64_t   psy_dist[DIST_CALC_TOTAL] = {0};
+            if ((is_full_loop && ctx->mds_do_spatial_sse) || intra_multi_uv) {
                 uint32_t cb_has_coeff = cand_bf->eob.u[txb_itr] > 0;
 
                 if (cb_has_coeff) {
@@ -2135,7 +2422,7 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                                                         cand_bf->recon->u_stride,
                                                         (int32_t*)cand_bf->rec_coeff->u_buffer,
                                                         txb_1d_offset,
-                                                        ctx->hbd_md,
+                                                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                                                         tx_size_uv,
                                                         cand_bf->cand->transform_type_uv,
                                                         PLANE_TYPE_UV,
@@ -2147,14 +2434,16 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                                             tu_cb_origin_index,
                                             tx_width_uv,
                                             tx_height_uv,
-                                            ctx->hbd_md);
+                                            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
                 }
 
-                const uint32_t input_chroma_txb_origin_index = ((ROUND_UV(ctx->blk_org_x + txb_origin_x)) >> 1) +
-                    ((ROUND_UV(ctx->blk_org_y + txb_origin_y)) >> 1) * input_pic->u_stride;
-                const int32_t txb_uv_origin_index = (ROUND_UV(txb_origin_x) +
-                                                     (ROUND_UV(txb_origin_y) * cand_bf->quant->u_stride)) >>
-                    1;
+                const uint32_t input_chroma_txb_origin_index =
+                    ((ROUND_UV_TO(ctx->blk_org_x + txb_origin_x, chroma_ss)) >> chroma_ss) +
+                    ((ROUND_UV_TO(ctx->blk_org_y + txb_origin_y, chroma_ss)) >> chroma_ss) * input_pic->u_stride;
+                const int32_t txb_uv_origin_index = (ROUND_UV_TO(txb_origin_x, chroma_ss) +
+                                                     (ROUND_UV_TO(txb_origin_y, chroma_ss) *
+                                                      cand_bf->quant->u_stride)) >>
+                    chroma_ss;
 
                 if (ssim_level == SSIM_LVL_1 || ssim_level == SSIM_LVL_3) {
                     txb_full_distortion[DIST_SSIM][1][DIST_CALC_PREDICTION] = svt_spatial_full_distortion_ssim_kernel(
@@ -2166,7 +2455,7 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->pred->u_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
 
                     txb_full_distortion[DIST_SSIM][1][DIST_CALC_RESIDUAL] = svt_spatial_full_distortion_ssim_kernel(
@@ -2178,27 +2467,28 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->recon->u_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
 
                     txb_full_distortion[DIST_SSIM][1][DIST_CALC_PREDICTION] <<= 4;
                     txb_full_distortion[DIST_SSIM][1][DIST_CALC_RESIDUAL] <<= 4;
                 }
-                txb_full_distortion[DIST_SSD][1][DIST_CALC_PREDICTION] = svt_spatial_full_distortion_kernel_facade(
-                    input_pic->u_buffer,
-                    input_chroma_txb_origin_index,
-                    input_pic->u_stride,
-                    cand_bf->pred->u_buffer,
-                    txb_uv_origin_index,
-                    cand_bf->pred->u_stride,
-                    cropped_tx_width_uv,
-                    cropped_tx_height_uv,
-                    ctx->hbd_md,
-                    &(cand_bf->cand->block_mi),
-                    true, // is_chroma
-                    pcs->temporal_layer_index,
-                    pcs->scs->static_config.ac_bias,
-                    pcs->scs->static_config.tx_bias);
+                txb_full_distortion[DIST_SSD][1][DIST_CALC_PREDICTION] = qmpsnr
+                    ? 0
+                    : svt_spatial_full_distortion_kernel_facade(input_pic->u_buffer,
+                                                                input_chroma_txb_origin_index,
+                                                                input_pic->u_stride,
+                                                                cand_bf->pred->u_buffer,
+                                                                txb_uv_origin_index,
+                                                                cand_bf->pred->u_stride,
+                                                                cropped_tx_width_uv,
+                                                                cropped_tx_height_uv,
+                                                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                                                &(cand_bf->cand->block_mi),
+                                                                true, // is_chroma
+                                                                pcs->temporal_layer_index,
+                                                                pcs->scs->static_config.ac_bias,
+                                                                pcs->scs->static_config.tx_bias);
                 if (effective_ac_bias) {
                     txb_full_distortion[DIST_SSD][1][DIST_CALC_PREDICTION] += get_svt_psy_full_dist(
                         input_pic->u_buffer,
@@ -2209,25 +2499,26 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->pred->u_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
                 }
 
-                txb_full_distortion[DIST_SSD][1][DIST_CALC_RESIDUAL] = svt_spatial_full_distortion_kernel_facade(
-                    input_pic->u_buffer,
-                    input_chroma_txb_origin_index,
-                    input_pic->u_stride,
-                    cand_bf->recon->u_buffer,
-                    txb_uv_origin_index,
-                    cand_bf->recon->u_stride,
-                    cropped_tx_width_uv,
-                    cropped_tx_height_uv,
-                    ctx->hbd_md,
-                    &(cand_bf->cand->block_mi),
-                    true, // is_chroma
-                    pcs->temporal_layer_index,
-                    pcs->scs->static_config.ac_bias,
-                    pcs->scs->static_config.tx_bias);
+                txb_full_distortion[DIST_SSD][1][DIST_CALC_RESIDUAL] = qmpsnr
+                    ? 0
+                    : svt_spatial_full_distortion_kernel_facade(input_pic->u_buffer,
+                                                                input_chroma_txb_origin_index,
+                                                                input_pic->u_stride,
+                                                                cand_bf->recon->u_buffer,
+                                                                txb_uv_origin_index,
+                                                                cand_bf->recon->u_stride,
+                                                                cropped_tx_width_uv,
+                                                                cropped_tx_height_uv,
+                                                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                                                &(cand_bf->cand->block_mi),
+                                                                true, // is_chroma
+                                                                pcs->temporal_layer_index,
+                                                                pcs->scs->static_config.ac_bias,
+                                                                pcs->scs->static_config.tx_bias);
                 if (effective_ac_bias) {
                     txb_full_distortion[DIST_SSD][1][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
                         input_pic->u_buffer,
@@ -2238,27 +2529,37 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->recon->u_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
                 }
 
                 txb_full_distortion[DIST_SSD][1][DIST_CALC_PREDICTION] <<= 4;
                 txb_full_distortion[DIST_SSD][1][DIST_CALC_RESIDUAL] <<= 4;
-            } else {
+
+                if (qmpsnr) {
+                    psy_dist[0] = txb_full_distortion[DIST_SSD][1][0];
+                    psy_dist[1] = txb_full_distortion[DIST_SSD][1][1];
+                }
+            }
+            if (qmpsnr || !((is_full_loop && ctx->mds_do_spatial_sse) || intra_multi_uv)) {
                 // *Full Distortion (SSE)
                 // *Note - there are known issues with how this distortion metric is currently
                 //    calculated.  The amount of scaling between the two arrays is not
                 //    equivalent.
                 uint32_t bwidth  = tx_width_uv;
                 uint32_t bheight = tx_height_uv;
-                if (pf_shape) {
-                    bwidth  = MAX((bwidth >> pf_shape), 4);
-                    bheight = (bheight >> pf_shape);
+                if (cb_pf_shape) {
+                    bwidth  = MAX((bwidth >> cb_pf_shape), 4);
+                    bheight = (bheight >> cb_pf_shape);
+                }
+                if (qmpsnr) {
+                    bwidth  = MIN(bwidth, 32);
+                    bheight = MIN(bheight, 32);
                 }
                 svt_aom_picture_full_distortion32_bits_single_facade(
                     &(((int32_t*)ctx->tx_coeffs->u_buffer)[txb_1d_offset]),
                     &(((int32_t*)cand_bf->rec_coeff->u_buffer)[txb_1d_offset]),
-                    tx_width_uv,
+                    qmpsnr ? MIN(tx_width_uv, 32) : tx_width_uv,
                     bwidth,
                     bheight,
                     bwidth,
@@ -2269,13 +2570,22 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                     true, // is_chroma
                     pcs->temporal_layer_index,
                     pcs->scs->static_config.ac_bias,
-                    pcs->scs->static_config.tx_bias);
+                    pcs->scs->static_config.tx_bias,
+                    svt_get_qmpsnr_matrix(pcs, ctx, tx_size_uv, cand_bf->cand->transform_type_uv, 1, false),
+                    get_scan_order(tx_size_uv, cand_bf->cand->transform_type_uv)->scan);
 
+                if (qmpsnr && (tx_width_uv == 64 || tx_height_uv == 64)) {
+                    txb_full_distortion[DIST_SSD][1][0] += ctx->three_quad_energy;
+                    txb_full_distortion[DIST_SSD][1][1] += ctx->three_quad_energy;
+                }
                 const int32_t chroma_shift = (MAX_TX_SCALE - av1_get_tx_scale_tab[tx_size_uv]) * 2;
                 txb_full_distortion[DIST_SSD][1][DIST_CALC_RESIDUAL] = RIGHT_SIGNED_SHIFT(
                     txb_full_distortion[DIST_SSD][1][DIST_CALC_RESIDUAL], chroma_shift);
                 txb_full_distortion[DIST_SSD][1][DIST_CALC_PREDICTION] = RIGHT_SIGNED_SHIFT(
                     txb_full_distortion[DIST_SSD][1][DIST_CALC_PREDICTION], chroma_shift);
+
+                txb_full_distortion[DIST_SSD][1][0] += psy_dist[0];
+                txb_full_distortion[DIST_SSD][1][1] += psy_dist[1];
             }
             cand_bf->u_has_coeff |= ((cand_bf->eob.u[txb_itr] != 0) << txb_itr);
             cb_full_distortion[DIST_SSIM][DIST_CALC_RESIDUAL] += txb_full_distortion[DIST_SSIM][1][DIST_CALC_RESIDUAL];
@@ -2289,14 +2599,15 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
 
         if (component_type == COMPONENT_CHROMA_CR || component_type == COMPONENT_CHROMA ||
             component_type == COMPONENT_ALL) {
-            ctx->cr_txb_skip_context = 0;
-            ctx->cr_dc_sign_context  = 0;
+            const TxCoeffShape cr_pf_shape = svt_get_qmpsnr_coeff_shape(pcs, ctx, PLANE_V, pf_shape, false);
+            ctx->cr_txb_skip_context       = 0;
+            ctx->cr_dc_sign_context        = 0;
             if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
                 svt_aom_get_txb_ctx(pcs,
                                     COMPONENT_CHROMA,
                                     ctx->cr_dc_sign_level_coeff_na,
-                                    ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
-                                    ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
+                                    ROUND_UV_TO(ctx->blk_org_x + txb_origin_x, chroma_ss) >> chroma_ss,
+                                    ROUND_UV_TO(ctx->blk_org_y + txb_origin_y, chroma_ss) >> chroma_ss,
                                     ctx->blk_geom->bsize_uv,
                                     tx_size_uv,
                                     &ctx->cr_txb_skip_context,
@@ -2304,6 +2615,22 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
             }
             // Configure the Chroma Residual Ptr
 
+            if (intra_multi_uv) {
+                svt_av1_intra_prediction_uv_txb(ctx, pcs, cand_bf, 2, txb_origin_x, txb_origin_y);
+                svt_aom_residual_kernel(
+                    input_pic->v_buffer,
+                    ctx->blk_org_x + txb_origin_x + (ctx->blk_org_y + txb_origin_y) * input_pic->v_stride,
+                    input_pic->v_stride,
+                    cand_bf->pred->v_buffer,
+                    tu_cr_origin_index,
+                    cand_bf->pred->v_stride,
+                    (int16_t*)cand_bf->residual->v_buffer,
+                    tu_cr_origin_index,
+                    cand_bf->residual->v_stride,
+                    SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                    tx_width_uv,
+                    tx_height_uv);
+            }
             chroma_residual_ptr = &(((int16_t*)cand_bf->residual->v_buffer)[tu_cr_origin_index]);
 
             // Cr Transform
@@ -2315,10 +2642,10 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                                        NOT_USED_VALUE,
                                        tx_size_uv,
                                        &ctx->three_quad_energy,
-                                       ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
+                                       SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
                                        cand_bf->cand->transform_type_uv,
                                        PLANE_TYPE_UV,
-                                       pf_shape);
+                                       cr_pf_shape);
             int32_t seg_qp               = pcs->ppcs->frm_hdr.segmentation_params.segmentation_enabled
                               ? pcs->ppcs->frm_hdr.segmentation_params.feature_data[ctx->blk_ptr->segment_id][SEG_LVL_ALT_Q]
                               : 0;
@@ -2333,14 +2660,16 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                 tx_size_uv,
                 &cand_bf->eob.v[txb_itr],
                 COMPONENT_CHROMA_CR,
-                ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT,
+                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
                 cand_bf->cand->transform_type_uv,
                 ctx->cr_txb_skip_context,
                 ctx->cr_dc_sign_context,
                 cand_bf->cand->block_mi.mode,
                 full_lambda,
                 false);
-            if (is_full_loop && ctx->mds_do_spatial_sse) {
+            const bool qmpsnr                    = svt_use_qmpsnr(pcs, ctx, PLANE_V, false);
+            uint64_t   psy_dist[DIST_CALC_TOTAL] = {0};
+            if ((is_full_loop && ctx->mds_do_spatial_sse) || intra_multi_uv) {
                 uint32_t cr_has_coeff = cand_bf->eob.v[txb_itr] > 0;
 
                 if (cr_has_coeff) {
@@ -2354,7 +2683,7 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                                                         cand_bf->recon->v_stride,
                                                         (int32_t*)cand_bf->rec_coeff->v_buffer,
                                                         txb_1d_offset,
-                                                        ctx->hbd_md,
+                                                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                                                         tx_size_uv,
                                                         cand_bf->cand->transform_type_uv,
                                                         PLANE_TYPE_UV,
@@ -2366,13 +2695,15 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                                             tu_cb_origin_index,
                                             tx_width_uv,
                                             tx_height_uv,
-                                            ctx->hbd_md);
+                                            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
                 }
-                const uint32_t input_chroma_txb_origin_index = ((ROUND_UV(ctx->blk_org_x + txb_origin_x)) >> 1) +
-                    ((ROUND_UV(ctx->blk_org_y + txb_origin_y)) >> 1) * input_pic->v_stride;
-                const int32_t txb_uv_origin_index = (ROUND_UV(txb_origin_x) +
-                                                     (ROUND_UV(txb_origin_y) * cand_bf->quant->v_stride)) >>
-                    1;
+                const uint32_t input_chroma_txb_origin_index =
+                    ((ROUND_UV_TO(ctx->blk_org_x + txb_origin_x, chroma_ss)) >> chroma_ss) +
+                    ((ROUND_UV_TO(ctx->blk_org_y + txb_origin_y, chroma_ss)) >> chroma_ss) * input_pic->v_stride;
+                const int32_t txb_uv_origin_index = (ROUND_UV_TO(txb_origin_x, chroma_ss) +
+                                                     (ROUND_UV_TO(txb_origin_y, chroma_ss) *
+                                                      cand_bf->quant->v_stride)) >>
+                    chroma_ss;
 
                 if (ssim_level == SSIM_LVL_1 || ssim_level == SSIM_LVL_3) {
                     txb_full_distortion[DIST_SSIM][2][DIST_CALC_PREDICTION] = svt_spatial_full_distortion_ssim_kernel(
@@ -2384,7 +2715,7 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->pred->v_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
 
                     txb_full_distortion[DIST_SSIM][2][DIST_CALC_RESIDUAL] = svt_spatial_full_distortion_ssim_kernel(
@@ -2396,27 +2727,28 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->recon->v_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
 
                     txb_full_distortion[DIST_SSIM][2][DIST_CALC_PREDICTION] <<= 4;
                     txb_full_distortion[DIST_SSIM][2][DIST_CALC_RESIDUAL] <<= 4;
                 }
-                txb_full_distortion[DIST_SSD][2][DIST_CALC_PREDICTION] = svt_spatial_full_distortion_kernel_facade(
-                    input_pic->v_buffer,
-                    input_chroma_txb_origin_index,
-                    input_pic->v_stride,
-                    cand_bf->pred->v_buffer,
-                    txb_uv_origin_index,
-                    cand_bf->pred->v_stride,
-                    cropped_tx_width_uv,
-                    cropped_tx_height_uv,
-                    ctx->hbd_md,
-                    &(cand_bf->cand->block_mi),
-                    true, // is_chroma
-                    pcs->temporal_layer_index,
-                    pcs->scs->static_config.ac_bias,
-                    pcs->scs->static_config.tx_bias);
+                txb_full_distortion[DIST_SSD][2][DIST_CALC_PREDICTION] = qmpsnr
+                    ? 0
+                    : svt_spatial_full_distortion_kernel_facade(input_pic->v_buffer,
+                                                                input_chroma_txb_origin_index,
+                                                                input_pic->v_stride,
+                                                                cand_bf->pred->v_buffer,
+                                                                txb_uv_origin_index,
+                                                                cand_bf->pred->v_stride,
+                                                                cropped_tx_width_uv,
+                                                                cropped_tx_height_uv,
+                                                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                                                &(cand_bf->cand->block_mi),
+                                                                true, // is_chroma
+                                                                pcs->temporal_layer_index,
+                                                                pcs->scs->static_config.ac_bias,
+                                                                pcs->scs->static_config.tx_bias);
                 if (effective_ac_bias) {
                     txb_full_distortion[DIST_SSD][2][DIST_CALC_PREDICTION] += get_svt_psy_full_dist(
                         input_pic->v_buffer,
@@ -2427,25 +2759,26 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->pred->v_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
                 }
 
-                txb_full_distortion[DIST_SSD][2][DIST_CALC_RESIDUAL] = svt_spatial_full_distortion_kernel_facade(
-                    input_pic->v_buffer,
-                    input_chroma_txb_origin_index,
-                    input_pic->v_stride,
-                    cand_bf->recon->v_buffer,
-                    txb_uv_origin_index,
-                    cand_bf->recon->v_stride,
-                    cropped_tx_width_uv,
-                    cropped_tx_height_uv,
-                    ctx->hbd_md,
-                    &(cand_bf->cand->block_mi),
-                    true, // is_chroma
-                    pcs->temporal_layer_index,
-                    pcs->scs->static_config.ac_bias,
-                    pcs->scs->static_config.tx_bias);
+                txb_full_distortion[DIST_SSD][2][DIST_CALC_RESIDUAL] = qmpsnr
+                    ? 0
+                    : svt_spatial_full_distortion_kernel_facade(input_pic->v_buffer,
+                                                                input_chroma_txb_origin_index,
+                                                                input_pic->v_stride,
+                                                                cand_bf->recon->v_buffer,
+                                                                txb_uv_origin_index,
+                                                                cand_bf->recon->v_stride,
+                                                                cropped_tx_width_uv,
+                                                                cropped_tx_height_uv,
+                                                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                                                &(cand_bf->cand->block_mi),
+                                                                true, // is_chroma
+                                                                pcs->temporal_layer_index,
+                                                                pcs->scs->static_config.ac_bias,
+                                                                pcs->scs->static_config.tx_bias);
                 if (effective_ac_bias) {
                     txb_full_distortion[DIST_SSD][2][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
                         input_pic->v_buffer,
@@ -2456,27 +2789,37 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                         cand_bf->recon->v_stride,
                         cropped_tx_width_uv,
                         cropped_tx_height_uv,
-                        ctx->hbd_md,
+                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
                         effective_ac_bias);
                 }
 
                 txb_full_distortion[DIST_SSD][2][DIST_CALC_PREDICTION] <<= 4;
                 txb_full_distortion[DIST_SSD][2][DIST_CALC_RESIDUAL] <<= 4;
-            } else {
+
+                if (qmpsnr) {
+                    psy_dist[0] = txb_full_distortion[DIST_SSD][2][0];
+                    psy_dist[1] = txb_full_distortion[DIST_SSD][2][1];
+                }
+            }
+            if (qmpsnr || !((is_full_loop && ctx->mds_do_spatial_sse) || intra_multi_uv)) {
                 // *Full Distortion (SSE)
                 // *Note - there are known issues with how this distortion metric is currently
                 //    calculated.  The amount of scaling between the two arrays is not
                 //    equivalent.
                 uint32_t bwidth  = tx_width_uv;
                 uint32_t bheight = tx_height_uv;
-                if (pf_shape) {
-                    bwidth  = MAX((bwidth >> pf_shape), 4);
-                    bheight = (bheight >> pf_shape);
+                if (cr_pf_shape) {
+                    bwidth  = MAX((bwidth >> cr_pf_shape), 4);
+                    bheight = (bheight >> cr_pf_shape);
+                }
+                if (qmpsnr) {
+                    bwidth  = MIN(bwidth, 32);
+                    bheight = MIN(bheight, 32);
                 }
                 svt_aom_picture_full_distortion32_bits_single_facade(
                     &(((int32_t*)ctx->tx_coeffs->v_buffer)[txb_1d_offset]),
                     &(((int32_t*)cand_bf->rec_coeff->v_buffer)[txb_1d_offset]),
-                    tx_width_uv,
+                    qmpsnr ? MIN(tx_width_uv, 32) : tx_width_uv,
                     bwidth,
                     bheight,
                     bwidth,
@@ -2487,13 +2830,22 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
                     true, // is_chroma
                     pcs->temporal_layer_index,
                     pcs->scs->static_config.ac_bias,
-                    pcs->scs->static_config.tx_bias);
+                    pcs->scs->static_config.tx_bias,
+                    svt_get_qmpsnr_matrix(pcs, ctx, tx_size_uv, cand_bf->cand->transform_type_uv, 2, false),
+                    get_scan_order(tx_size_uv, cand_bf->cand->transform_type_uv)->scan);
 
+                if (qmpsnr && (tx_width_uv == 64 || tx_height_uv == 64)) {
+                    txb_full_distortion[DIST_SSD][2][0] += ctx->three_quad_energy;
+                    txb_full_distortion[DIST_SSD][2][1] += ctx->three_quad_energy;
+                }
                 const int32_t chroma_shift = (MAX_TX_SCALE - av1_get_tx_scale_tab[tx_size_uv]) * 2;
                 txb_full_distortion[DIST_SSD][2][DIST_CALC_RESIDUAL] = RIGHT_SIGNED_SHIFT(
                     txb_full_distortion[DIST_SSD][2][DIST_CALC_RESIDUAL], chroma_shift);
                 txb_full_distortion[DIST_SSD][2][DIST_CALC_PREDICTION] = RIGHT_SIGNED_SHIFT(
                     txb_full_distortion[DIST_SSD][2][DIST_CALC_PREDICTION], chroma_shift);
+
+                txb_full_distortion[DIST_SSD][2][0] += psy_dist[0];
+                txb_full_distortion[DIST_SSD][2][1] += psy_dist[1];
             }
             cand_bf->v_has_coeff |= ((cand_bf->eob.v[txb_itr] != 0) << txb_itr);
             cr_full_distortion[DIST_SSIM][DIST_CALC_RESIDUAL] += txb_full_distortion[DIST_SSIM][2][DIST_CALC_RESIDUAL];
@@ -2512,29 +2864,32 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
         uint64_t cb_txb_coeff_bits = 0;
         uint64_t cr_txb_coeff_bits = 0;
 
-        //CHROMA-ONLY
-        svt_aom_txb_estimate_coeff_bits(ctx,
-                                        0,
-                                        NULL,
-                                        pcs,
-                                        cand_bf,
-                                        txb_origin_index,
-                                        txb_1d_offset,
-                                        cand_bf->quant,
-                                        cand_bf->eob.y[txb_itr],
-                                        cand_bf->eob.u[txb_itr],
-                                        cand_bf->eob.v[txb_itr],
-                                        &y_txb_coeff_bits,
-                                        &cb_txb_coeff_bits,
-                                        &cr_txb_coeff_bits,
-                                        tx_size,
-                                        tx_size_uv,
-                                        cand_bf->cand->transform_type[txb_itr],
-                                        cand_bf->cand->transform_type_uv,
-                                        component_type);
+        if (!skip_chroma_rate_est(
+                ctx, cand_bf, component_type, tx_width_uv, tx_height_uv, cb_coeff_bits, cr_coeff_bits)) {
+            //CHROMA-ONLY
+            svt_aom_txb_estimate_coeff_bits(ctx,
+                                            0,
+                                            NULL,
+                                            pcs,
+                                            cand_bf,
+                                            txb_origin_index,
+                                            txb_1d_offset,
+                                            cand_bf->quant,
+                                            cand_bf->eob.y[txb_itr],
+                                            cand_bf->eob.u[txb_itr],
+                                            cand_bf->eob.v[txb_itr],
+                                            &y_txb_coeff_bits,
+                                            &cb_txb_coeff_bits,
+                                            &cr_txb_coeff_bits,
+                                            tx_size,
+                                            tx_size_uv,
+                                            cand_bf->cand->transform_type[txb_itr],
+                                            cand_bf->cand->transform_type_uv,
+                                            component_type);
 
-        *cb_coeff_bits += cb_txb_coeff_bits;
-        *cr_coeff_bits += cr_txb_coeff_bits;
+            *cb_coeff_bits += cb_txb_coeff_bits;
+            *cr_coeff_bits += cr_txb_coeff_bits;
+        }
         txb_1d_offset += tx_width_uv * tx_height_uv;
 
         ++txb_itr;
@@ -2553,7 +2908,7 @@ uint8_t svt_aom_do_md_recon(PictureParentControlSet* pcs, ModeDecisionContext* c
         encdec_bypass; // for inter prediction of future frame or if recon is being output
     const uint8_t need_md_rec_for_dlf_search  = pcs->dlf_ctrls.enabled; // for DLF levels
     const uint8_t need_md_rec_for_cdef_search = pcs->cdef_search_ctrls.enabled &&
-        !pcs->cdef_search_ctrls.use_qp_strength &&
+        pcs->cdef_search_ctrls.qp_strength_level != CDEF_QP_STRENGTH_YUV &&
         !pcs->cdef_search_ctrls.use_reference_cdef_fs; // CDEF search levels needing the recon samples
     const uint8_t need_md_rec_for_restoration_search = pcs->enable_restoration; // any resoration search level
     const uint8_t need_md_rec_for_quality            = (pcs->compute_psnr || pcs->compute_ssim) &&

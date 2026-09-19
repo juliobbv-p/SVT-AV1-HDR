@@ -22,6 +22,17 @@
 extern "C" {
 #endif
 
+bool         svt_use_qmpsnr(PictureControlSet* pcs, ModeDecisionContext* ctx, int plane, bool tx_search);
+const QmVal* svt_get_qmpsnr_matrix(PictureControlSet* pcs, ModeDecisionContext* ctx, TxSize tx_size, TxType tx_type,
+                                   int plane, bool tx_search);
+
+// Partial transforms discard residual energy which spatial SSE measures
+// QM-PSNR needs the full coefficient region, including when the quantized EOB is zero
+static INLINE TxCoeffShape svt_get_qmpsnr_coeff_shape(PictureControlSet* pcs, ModeDecisionContext* ctx, int plane,
+                                                      TxCoeffShape shape, bool tx_search) {
+    return svt_use_qmpsnr(pcs, ctx, plane, tx_search) ? DEFAULT_SHAPE : shape;
+}
+
 void    svt_aom_full_loop_chroma_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                            ModeDecisionCandidateBuffer* cand_bf, EbPictureBufferDesc* input_pic,
                                            uint32_t input_cb_origin_in_index, uint32_t blk_chroma_origin_index,
@@ -40,6 +51,9 @@ void    svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecision
                                             uint32_t coeff_offset, bool hbd, TxSize txsize, TxType transform_type,
                                             PlaneType component_type, uint32_t eob);
 uint8_t svt_aom_do_md_recon(PictureParentControlSet* pcs, ModeDecisionContext* ctx);
+
+void svt_aom_get_quantizer(const Quants* quants, const Dequants* deq, int plane, int dc_index, int ac_index,
+                           int16_t params[7][8], MacroblockPlane* result);
 
 extern const int av1_get_tx_scale_tab[TX_SIZES_ALL];
 #ifdef __cplusplus

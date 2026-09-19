@@ -37,6 +37,9 @@ if(MSVC)
 endif()
 
 set(all_files
+    ac_bias_avx2.c
+    hadamard_path_avx2.c
+    hadamard_path_avx2.h
     aom_subpixel_8t_intrin_avx2.c
     av1_inv_txfm_avx2.c
     av1_inv_txfm_avx2.h
@@ -44,6 +47,7 @@ set(all_files
     blend_a64_mask_avx2.c
     cdef_avx2.c
     cdef_block_avx2.c
+    cdef_filter_block_avx2.c
     cfl_avx2.c
     comb_avg_sad_intrin_avx2.c
     compute_sad_avx2.h
@@ -70,6 +74,7 @@ set(all_files
     itx_lbd.h
     jnt_convolve_2d_avx2.c
     jnt_convolve_avx2.c
+    lowbd_fwd_txfm2d_avx2.c
     mc.h
     memory_avx2.h
     noise_model_avx2.c

@@ -318,6 +318,10 @@ INSTANTIATE_TEST_SUITE_P(
     AVX2, LowbdZ1PredTest,
     ::testing::Combine(::testing::Values(svt_av1_dr_prediction_z1_avx2),
                        ::testing::Values(0, 1)));
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, LowbdZ1PredTest,
+    ::testing::Combine(::testing::Values(svt_av1_dr_prediction_z1_sse4_1),
+                       ::testing::Values(0, 1)));
 #endif  // ARCH_X86_64
 
 #ifdef ARCH_AARCH64
@@ -375,6 +379,10 @@ INSTANTIATE_TEST_SUITE_P(
     AVX2, LowbdZ2PredTest,
     ::testing::Combine(::testing::Values(svt_av1_dr_prediction_z2_avx2),
                        ::testing::Values(0, 1)));
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, LowbdZ2PredTest,
+    ::testing::Combine(::testing::Values(svt_av1_dr_prediction_z2_sse4_1),
+                       ::testing::Values(0, 1)));
 
 #endif  // ARCH_X86_64
 
@@ -430,6 +438,10 @@ TEST_P(LowbdZ3PredTest, MatchTest) {
 INSTANTIATE_TEST_SUITE_P(
     AVX2, LowbdZ3PredTest,
     ::testing::Combine(::testing::Values(svt_av1_dr_prediction_z3_avx2),
+                       ::testing::Values(0, 1)));
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, LowbdZ3PredTest,
+    ::testing::Combine(::testing::Values(svt_av1_dr_prediction_z3_sse4_1),
                        ::testing::Values(0, 1)));
 #endif  // ARCH_X86_64
 
@@ -488,6 +500,9 @@ TEST_P(HighbdZ1PredTest, MatchTest) {
 INSTANTIATE_TEST_SUITE_P(
     AVX2, HighbdZ1PredTest,
     ::testing::Values(svt_av1_highbd_dr_prediction_z1_avx2));
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, HighbdZ1PredTest,
+    ::testing::Values(svt_av1_highbd_dr_prediction_z1_sse4_1));
 #endif  // ARCH_X86_64
 
 #ifdef ARCH_AARCH64
@@ -544,6 +559,9 @@ TEST_P(HighbdZ2PredTest, MatchTest) {
 INSTANTIATE_TEST_SUITE_P(
     AVX2, HighbdZ2PredTest,
     ::testing::Values(svt_av1_highbd_dr_prediction_z2_avx2));
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, HighbdZ2PredTest,
+    ::testing::Values(svt_av1_highbd_dr_prediction_z2_sse4_1));
 #endif  // ARCH_X86_64
 
 #ifdef ARCH_AARCH64
@@ -598,6 +616,9 @@ TEST_P(HighbdZ3PredTest, MatchTest) {
 INSTANTIATE_TEST_SUITE_P(
     AVX2, HighbdZ3PredTest,
     ::testing::Values(svt_av1_highbd_dr_prediction_z3_avx2));
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, HighbdZ3PredTest,
+    ::testing::Values(svt_av1_highbd_dr_prediction_z3_sse4_1));
 #endif  // ARCH_X86_64
 
 #ifdef ARCH_AARCH64

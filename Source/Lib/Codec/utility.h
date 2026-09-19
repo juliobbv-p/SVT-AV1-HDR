@@ -47,10 +47,10 @@ typedef struct BlockGeom {
 
     uint8_t   bwidth; // block width
     uint8_t   bheight; // block height
-    uint8_t   bwidth_uv; // block width for Chroma 4:2:0
-    uint8_t   bheight_uv; // block height for Chroma 4:2:0
+    uint8_t   bwidth_uv; // chroma block width for this sequence
+    uint8_t   bheight_uv; // chroma block height for this sequence
     BlockSize bsize; // bloc size
-    BlockSize bsize_uv; // bloc size for Chroma 4:2:0
+    BlockSize bsize_uv; // chroma block size for this sequence
 
     uint16_t d1_depth_offset; // offset to the next d1 sq block
     uint16_t ns_depth_offset; // offset to the next nsq block (skip remaining d2 blocks)
@@ -213,23 +213,6 @@ typedef enum MinigopIndex {
     L2_14_INDEX = 29,
     L2_15_INDEX = 30
 } MinigopIndex;
-
-// Right shift that replicates gcc's implementation
-
-static inline int gcc_right_shift(int a, unsigned shift) {
-    if (!a) {
-        return 0;
-    }
-    if (a > 0) {
-        return a >> shift;
-    }
-    static const unsigned sbit = 1u << (sizeof(sbit) * CHAR_BIT - 1);
-    a                          = (unsigned)a >> shift;
-    while (shift) {
-        a |= sbit >> shift--;
-    }
-    return a ^ sbit;
-}
 
 static INLINE int convert_to_trans_prec(int allow_hp, int coor) {
     if (allow_hp) {

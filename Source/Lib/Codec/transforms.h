@@ -38,7 +38,8 @@ typedef struct Position {
 } Position;
 
 // origin is block - separate tables for INTRA (idx 0) and INTER (idx 1) needed b/c of tx depth 2
-extern const Position tx_org[BLOCK_SIZES_ALL][2 /*is_inter*/][MAX_VARTX_DEPTH + 1][MAX_TXB_COUNT];
+extern Position tx_org[BLOCK_SIZES_ALL][2 /*is_inter*/][MAX_VARTX_DEPTH + 1][MAX_TXB_COUNT];
+void            svt_aom_build_tx_org(void); // fills tx_org at init
 
 static INLINE int is_rect_tx(TxSize tx_size) {
     return tx_size >= TX_SIZES;

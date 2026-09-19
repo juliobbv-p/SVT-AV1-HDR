@@ -59,6 +59,7 @@ typedef struct EncDecContext {
     uint64_t tot_skip_coded_area;
     uint64_t tot_hp_coded_area;
     uint64_t tot_cnt_zero_mv;
+    uint64_t tot_total_rate;
     uint64_t three_quad_energy;
 
     uint16_t coded_area_sb;
@@ -80,6 +81,8 @@ EbErrorType svt_aom_enc_dec_context_ctor(EbThreadContext* thread_ctx, const EbEn
                                          int tasks_index);
 
 void* svt_aom_mode_decision_kernel(void* input_ptr);
+
+void svt_aom_update_intrabc_reference(PictureControlSet* pcs, uint32_t sb_origin_x, uint32_t sb_origin_y);
 
 // Computes the SSIM score from the five per-block integer sums (used by the C and
 // SIMD svt_ssim_* kernels).

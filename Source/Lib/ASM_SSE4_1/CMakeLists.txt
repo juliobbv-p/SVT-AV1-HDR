@@ -35,14 +35,25 @@ set(all_files
     blend_a64_mask_sse4.c
     blend_sse4.h
     cdef_block_sse4_1.c
+    cdef_filter_block_sse4_1.c
     cdef_sse4.c
+    cfl_sse4_1.c
     compute_sad_intrin_sse4_1.c
+    palette_sse4_1.c
+    transforms_sse4_1.c
+    convert_subtract_sse4_1.c
     corner_match_sse4.c
     encodetxb_sse4.c
     filterintra_sse4.c
+    hadamard_sse4_1.c
+    dc_v_predictor_sse4_1.c
+    dr_prediction_sse4_1.c
     highbd_convolve_2d_sse4.c
+    highbd_dc_v_predictor_sse4_1.c
     highbd_fwd_txfm_sse4.c
     highbd_inv_txfm_sse4.c
+    highbd_paeth_predictor_sse4_1.c
+    highbd_smooth_predictor_sse4_1.c
     highbd_jnt_convolve_sse4.c
     highbd_txfm_utility_sse4.h
     intrapred_16bit_intrin_sse4_1.c

@@ -60,7 +60,6 @@ static void encode_context_dctor(EbPtr p) {
     EB_DESTROY_MUTEX(obj->total_number_of_recon_frame_mutex);
     EB_DESTROY_MUTEX(obj->total_number_of_shown_frames_mutex);
     EB_DESTROY_MUTEX(obj->sc_buffer_mutex);
-    EB_DESTROY_MUTEX(obj->stat_file_mutex);
     EB_DESTROY_MUTEX(obj->frame_updated_mutex);
     EB_DELETE(obj->prediction_structure_group_ptr);
     EB_DELETE_PTR_ARRAY(obj->picture_decision_reorder_queue, obj->picture_decision_reorder_queue_size);
@@ -76,7 +75,10 @@ static void encode_context_dctor(EbPtr p) {
     obj->packetization_reorder_queue_size = 0;
     EB_FREE(obj->stats_out.stat);
     destroy_stats_buffer(&obj->stats_buf_context, obj->frame_stats_buffer);
-    EB_DELETE_PTR_ARRAY(obj->rc.coded_frames_stat_queue, CODED_FRAMES_STAT_QUEUE_MAX_DEPTH);
+    // coded_frames_stat_queue[] entries are borrowed from the pool; free the pool + the
+    // (alias) pointer array once each.
+    EB_FREE_ARRAY(obj->rc.coded_frames_stat_pool);
+    EB_FREE_ARRAY(obj->rc.coded_frames_stat_queue);
 
     if (obj->rc_param_queue) {
         EB_FREE_2D(obj->rc_param_queue);
@@ -117,17 +119,19 @@ EbErrorType svt_aom_encode_context_ctor(EncodeContext* enc_ctx, EbPtr object_ini
     enc_ctx->enc_mode         = SPEED_CONTROL_INIT_MOD;
     enc_ctx->recode_tolerance = 25;
     enc_ctx->rc_cfg.min_cr    = 0;
-    EB_CREATE_MUTEX(enc_ctx->stat_file_mutex);
-    enc_ctx->num_lap_buffers = 0; // lap not supported for now
-    int* num_lap_buffers     = &enc_ctx->num_lap_buffers;
+    enc_ctx->num_lap_buffers  = 0; // lap not supported for now
+    int* num_lap_buffers      = &enc_ctx->num_lap_buffers;
     create_stats_buffer(&enc_ctx->frame_stats_buffer, &enc_ctx->stats_buf_context, *num_lap_buffers);
     EB_ALLOC_PTR_ARRAY(enc_ctx->rc.coded_frames_stat_queue, CODED_FRAMES_STAT_QUEUE_MAX_DEPTH);
 
     EB_CREATE_MUTEX(enc_ctx->rc.rc_mutex);
+    // One backing allocation for the whole coded-frames stat ring (was one alloc per slot).
+    EB_CALLOC_ARRAY(enc_ctx->rc.coded_frames_stat_pool, CODED_FRAMES_STAT_QUEUE_MAX_DEPTH);
     for (picture_index = 0; picture_index < CODED_FRAMES_STAT_QUEUE_MAX_DEPTH; ++picture_index) {
-        EB_NEW(enc_ctx->rc.coded_frames_stat_queue[picture_index],
-               svt_aom_rate_control_coded_frames_stats_context_ctor,
-               picture_index);
+        coded_frames_stats_entry* entry                    = &enc_ctx->rc.coded_frames_stat_pool[picture_index];
+        entry->picture_number                              = picture_index;
+        entry->frame_total_bit_actual                      = -1;
+        enc_ctx->rc.coded_frames_stat_queue[picture_index] = entry;
     }
 #if DEBUG_RC_CAP_LOG
     enc_ctx->rc.min_bit_actual_per_gop = 0xfffffffffffff;
@@ -150,8 +154,10 @@ EbErrorType svt_aom_encode_context_ctor(EncodeContext* enc_ctx, EbPtr object_ini
         enc_ctx->rc_param_queue[interval_index]->extend_maxq              = 0;
         enc_ctx->rc_param_queue[interval_index]->extend_minq_fast         = 0;
     }
-    enc_ctx->rc_param_queue_head_index = 0;
-    enc_ctx->cr_sb_end                 = 0;
+    enc_ctx->rc_param_queue_head_index    = 0;
+    enc_ctx->cr_sb_end                    = 0;
+    enc_ctx->cr_sb_index                  = 0;
+    enc_ctx->frames_since_last_cdf_update = 0;
 
     EB_CREATE_MUTEX(enc_ctx->rc_param_queue_mutex);
 

@@ -218,6 +218,10 @@ typedef struct EbSvtAv1EncConfiguration {
      * Min value is -3.
      * Max value is 13.
      * Default is 4.
+     *
+     * When PRESET_CHANGE_EVENT is used to change the preset on the fly, this
+     * value is served as minimum possible preset value. The actual preset value
+     * is stored in pcs->enc_mode.
      */
     int8_t enc_mode;
 
@@ -311,9 +315,9 @@ typedef struct EbSvtAv1EncConfiguration {
 
     /**
      * @brief Encoder color format.
-     * Only YUV420 is supported for now.
+     * YUV420 (Main Profile) and YUV444 (High Profile) are supported.
      *
-     * Min is YUV400.
+     * Supported values are YUV420 and YUV444.
      * Max is YUV444.
      * Default is YUV420.
      */
@@ -325,6 +329,8 @@ typedef struct EbSvtAv1EncConfiguration {
      * Min is MAIN_PROFILE.
      * Max is PROFESSIONAL_PROFILE.
      * Default is MAIN_PROFILE.
+     * MAIN_PROFILE is automatically promoted to HIGH_PROFILE for YUV444 input,
+     * with an informational log message. This does not convert the input format.
      */
     EbAv1SeqProfile profile;
     /* Constraints for bitstream in terms of max bitrate and max buffer size.
@@ -647,7 +653,7 @@ typedef struct EbSvtAv1EncConfiguration {
 
     bool enable_overlays;
     /**
-     * @brief Tune for a particular metric; 0: VQ, 1: PSNR, 2: SSIM, 3: IQ (Image Quality), 4: MS_SSIM, 5: Film Grain.
+     * @brief Tune for a particular metric; 0: VQ, 1: PSNR, 2: SSIM, 3: IQ (Image Quality), 4: MS-SSIM, 5: VMAF, 6: Film Grain.
      *
      * Default is 1.
      */
@@ -964,6 +970,92 @@ typedef struct EbSvtAv1EncConfiguration {
     double ac_bias;
 
     /**
+     * @brief High Bit-Depth Mode Decision, used to control the bit-depth of the mode decision path.
+     * -1: preset determined (auto)
+     * 0: full 8-bit MD
+     * 1: full 10-bit MD
+     * 2: hybrid 8/10-bit MD
+     * Default is -1
+     */
+    int hbd_mds;
+
+    /**
+     * @brief Enable MCTF for key frames.
+     * 0 = off
+     * 1 = on
+     * Default is 1. */
+    bool enable_tf_key;
+
+    /**
+     * @brief Max Intra Bitrate Percentage
+     *
+     * Maximum bitrate for intra frames, expressed as a percentage of the
+     * target bitrate. 0 means no limit.
+     *
+     * Default is 300.
+     */
+    uint32_t max_intra_bitrate_pct;
+
+    /**
+     * @brief Max Inter Bitrate Percentage
+     *
+     * Maximum bitrate for inter frames, expressed as a percentage of the
+     * target bitrate. 0 means no limit.
+     *
+     * Default is 0.
+     */
+    uint32_t max_inter_bitrate_pct;
+
+    /**
+     * @brief Enable Intra Block Copy
+     *
+     * false: off
+     * true: on (default, preset-based)
+     *
+     * Default is true. */
+    bool enable_intrabc;
+
+    /**
+     * @brief Ref-frame management — number of simultaneously STOREd refs
+     * the application may hold.
+     *
+     * 0 (default): feature disabled; legacy reference selection and the
+     *              legacy buffer-pool size are preserved BIT-EXACTLY. No
+     *              extra memory is allocated.
+     * 1..4       : enable the STORE / CLEAR / USE event API. The
+     *              ref-buffer pool grows by this many entries (one full
+     *              picture buffer each) to hold the locked anchors.
+     *              The encoder still uses all 8 DPB slots dynamically;
+     *              STORE locks one slot at a time, and CLEAR releases.
+     *
+     * Validation (svt_av1_verify_settings):
+     *   - max_managed_refs <= 4
+     *   - if > 0: pred_structure must be LOW_DELAY.
+     */
+    uint8_t max_managed_refs;
+
+    /**
+     * @brief Highest hierarchical_levels this session may reach at runtime.
+     *
+     * Buffer pools are sized once at init from hierarchical_levels. A session
+     * that raises its mini-GOP size later via MG_SIZE_CHANGE_EVENT must declare
+     * the ceiling here, or the pools sized for the initial value run dry.
+     *
+     * 0 (default): hierarchical_levels is fixed for the session; pool sizing
+     *              and reference selection are preserved BIT-EXACTLY and no
+     *              extra memory is allocated.
+     * 1..2       : size pools for this many levels instead of the configured
+     *              hierarchical_levels.
+     *
+     * Validation (svt_av1_verify_settings):
+     *   - max_hierarchical_levels <= 2
+     *   - if > 0: rtc, pred_structure == LOW_DELAY and rate_control_mode ==
+     *     CBR, matching where MG_SIZE_CHANGE_EVENT is accepted.
+     *   - if > 0: must be >= hierarchical_levels.
+     */
+    uint8_t max_hierarchical_levels;
+
+    /**
      * @brief Noise normalization strength; modifies the encoder's willingness
      * to boost AC coefficients in low-noise blocks.
      * Min value is 0.
@@ -984,8 +1076,17 @@ typedef struct EbSvtAv1EncConfiguration {
      * @brief Use alternative lambda factors
      * false = use regular lambda factors
      * true = use alternative lambda factors (from SVT-AV1 3.0.2)
-     * Default is true in SVT-AV1-HDR. */
+     * Default is false in SVT-AV1-HDR. */
     bool alt_lambda_factors;
+
+    /**
+     * @brief Enable sharp-tx, a toggle that enables much sharper transforms decisions for higher fidelity ouput,
+     at the possible cost of increasing artifacting
+     * 0: disabled
+     * 1: enabled
+     * Default is 1
+     */
+    uint8_t sharp_tx;
 
     /* @brief compresses the QP hierarchical layer scale to improve temporal video consistency
      * 0.0: no compression, original SVT-AV1 scaling
@@ -1001,24 +1102,6 @@ typedef struct EbSvtAv1EncConfiguration {
      * Default is 0
      */
     bool alt_ssim_tuning;
-
-    /**
-     * @brief Enable sharp-tx, a toggle that enables much sharper transforms decisions for higher fidelity ouput,
-     at the possible cost of increasing artifacting
-     * 0: disabled
-     * 1: enabled
-     * Default is 1
-     */
-    uint8_t sharp_tx;
-
-    /**
-     * @brief High Bit-Depth Mode Decision, used to control the bit-depth of the mode decision path.
-     * 0: preset-determined
-     * 1: full 10-bit MD
-     * 2: hybrid 8/10-bit MD
-     * Default is 0
-     */
-    uint8_t hbd_mds;
 
     /**
      * @brief Transform size/type bias type
@@ -1076,14 +1159,10 @@ typedef struct EbSvtAv1EncConfiguration {
      */
     int32_t noise_strength_chroma;
 
-    /*
-     * @brief Enable noise on chroma planes based on luma plane
-     *
-     * 0: off, chroma noise is applied based on chroma planes
-     * 1: on, chroma noise application is based on luma plane
-     * Default is 0.
+    /**
+     * @brief Check if color range is provided by the user
      */
-    uint8_t noise_chroma_from_luma;
+    bool color_range_provided;
 
     /**
      * @brief Control the grain size of noise
@@ -1094,17 +1173,50 @@ typedef struct EbSvtAv1EncConfiguration {
      */
     int8_t noise_size;
 
-    /**
-     * @brief Check if color range is provided by the user
+    /*
+     * @brief Enable noise on chroma planes based on luma plane
+     *
+     * 0: off, chroma noise is applied based on chroma planes
+     * 1: on, chroma noise application is based on luma plane
+     * Default is 0.
      */
-    bool color_range_provided;
+    uint8_t noise_chroma_from_luma;
 
-    /*Add 128 Byte Padding to Struct to avoid changing the size of the public configuration struct*/
-    uint8_t padding[128 - sizeof(PredStructure) +
-                    sizeof(uint8_t) // pred_strucutre type was changed from uint8_t to PredStructure
-                    /* SVT-AV1-HDR additions */
-                    - (sizeof(uint8_t) * 10) - (sizeof(int8_t) * 1) - (sizeof(int32_t) * 1) - (sizeof(bool) * 3) -
-                    (sizeof(double))];
+    /*
+     * QM-weighted transform distortion:
+     * -1: automatic (on for tune IQ),
+     *  0: PSNR,
+     *  1: QM-PSNR.
+     * */
+    int8_t enable_qmpsnr;
+
+    // clang-format off
+    /* Add 128 Byte Padding to Struct to avoid changing the size of the public configuration struct */
+    uint8_t padding[128
+        - sizeof(PredStructure) + sizeof (uint8_t) // pred_strucutre type was changed from uint8_t to PredStructure
+        - sizeof(int) // This was added to take into account the new hbd_mds field while keeping previous ABI compat
+        - sizeof(bool) // add the ability to shut MCTF for key frames
+        - sizeof(uint32_t) * 2 // max intra/inter bitrates
+        - sizeof(bool) // enable_intrabc
+        - sizeof(uint8_t) // max_managed_refs (ref-frame mgmt)
+        - sizeof(uint8_t) // max_hierarchical_levels (runtime MG size change)
+        - sizeof(uint8_t) // noise_norm_strength
+        - sizeof(uint8_t) // kf_tf_strength
+        - sizeof(bool) // alt_lambda_factors
+        - sizeof(uint8_t) // sharp_tx
+        - sizeof(double) // qp_scale_compress_strength
+        - sizeof(bool) // alt_ssim_tuning
+        - sizeof(uint8_t) // tx_bias
+        - sizeof(uint8_t) // complex_hvs
+        - sizeof(uint8_t) // noise_adaptive_filtering
+        - sizeof(uint8_t) // cdef_scaling
+        - sizeof(uint8_t) // noise_strength
+        - sizeof(int32_t) // noise_strength_chroma
+        - sizeof(bool) // color_range_provided
+        - sizeof(int8_t) // noise_size
+        - sizeof(uint8_t) // noise_chroma_from_luma
+        - sizeof(int8_t) // enable_qmpsnr
+    ];
     // clang-format on
 } EbSvtAv1EncConfiguration;
 

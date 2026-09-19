@@ -60,28 +60,14 @@ static INLINE void RENAME(calc_centroids)(const int* data, int* centroids, const
         }
     }
 
-    if (svt_memcpy != NULL) {
-        for (i = 0; i < k; ++i) {
-            if (count[i] == 0) {
-                svt_memcpy(centroids + i * AV1_K_MEANS_DIM,
-                           data + (lcg_rand16(&rand_state) % n) * AV1_K_MEANS_DIM,
-                           sizeof(centroids[0]) * AV1_K_MEANS_DIM);
-            } else {
-                for (j = 0; j < AV1_K_MEANS_DIM; ++j) {
-                    centroids[i * AV1_K_MEANS_DIM + j] = DIVIDE_AND_ROUND(centroids[i * AV1_K_MEANS_DIM + j], count[i]);
-                }
-            }
-        }
-    } else {
-        for (i = 0; i < k; ++i) {
-            if (count[i] == 0) {
-                svt_memcpy_c(centroids + i * AV1_K_MEANS_DIM,
-                             data + (lcg_rand16(&rand_state) % n) * AV1_K_MEANS_DIM,
-                             sizeof(centroids[0]) * AV1_K_MEANS_DIM);
-            } else {
-                for (j = 0; j < AV1_K_MEANS_DIM; ++j) {
-                    centroids[i * AV1_K_MEANS_DIM + j] = DIVIDE_AND_ROUND(centroids[i * AV1_K_MEANS_DIM + j], count[i]);
-                }
+    for (i = 0; i < k; ++i) {
+        if (count[i] == 0) {
+            SVT_MEMCPY(centroids + i * AV1_K_MEANS_DIM,
+                       data + (lcg_rand16(&rand_state) % n) * AV1_K_MEANS_DIM,
+                       sizeof(centroids[0]) * AV1_K_MEANS_DIM);
+        } else {
+            for (j = 0; j < AV1_K_MEANS_DIM; ++j) {
+                centroids[i * AV1_K_MEANS_DIM + j] = DIVIDE_AND_ROUND(centroids[i * AV1_K_MEANS_DIM + j], count[i]);
             }
         }
     }
@@ -104,43 +90,22 @@ void RENAME(svt_av1_k_means)(const int* data, int* centroids, uint8_t* indices, 
     RENAME(svt_av1_calc_indices)(data, centroids, indices, n, k);
     int64_t this_dist = RENAME(calc_total_dist)(data, centroids, indices, n, k);
 
-    if (svt_memcpy != NULL) {
-        for (int i = 0; i < max_itr; ++i) {
-            const int64_t pre_dist = this_dist;
-            svt_memcpy(pre_centroids, centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM);
-            svt_memcpy(pre_indices, indices, sizeof(pre_indices[0]) * n);
+    for (int i = 0; i < max_itr; ++i) {
+        const int64_t pre_dist = this_dist;
+        SVT_MEMCPY(pre_centroids, centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM);
+        SVT_MEMCPY(pre_indices, indices, sizeof(pre_indices[0]) * n);
 
-            RENAME(calc_centroids)(data, centroids, indices, n, k);
-            RENAME(svt_av1_calc_indices)(data, centroids, indices, n, k);
-            this_dist = RENAME(calc_total_dist)(data, centroids, indices, n, k);
+        RENAME(calc_centroids)(data, centroids, indices, n, k);
+        RENAME(svt_av1_calc_indices)(data, centroids, indices, n, k);
+        this_dist = RENAME(calc_total_dist)(data, centroids, indices, n, k);
 
-            if (this_dist > pre_dist) {
-                svt_memcpy(centroids, pre_centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM);
-                svt_memcpy(indices, pre_indices, sizeof(pre_indices[0]) * n);
-                break;
-            }
-            if (!memcmp(centroids, pre_centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM)) {
-                break;
-            }
+        if (this_dist > pre_dist) {
+            SVT_MEMCPY(centroids, pre_centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM);
+            SVT_MEMCPY(indices, pre_indices, sizeof(pre_indices[0]) * n);
+            break;
         }
-    } else {
-        for (int i = 0; i < max_itr; ++i) {
-            const int64_t pre_dist = this_dist;
-            svt_memcpy_c(pre_centroids, centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM);
-            svt_memcpy_c(pre_indices, indices, sizeof(pre_indices[0]) * n);
-
-            RENAME(calc_centroids)(data, centroids, indices, n, k);
-            RENAME(svt_av1_calc_indices)(data, centroids, indices, n, k);
-            this_dist = RENAME(calc_total_dist)(data, centroids, indices, n, k);
-
-            if (this_dist > pre_dist) {
-                svt_memcpy_c(centroids, pre_centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM);
-                svt_memcpy_c(indices, pre_indices, sizeof(pre_indices[0]) * n);
-                break;
-            }
-            if (!memcmp(centroids, pre_centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM)) {
-                break;
-            }
+        if (!memcmp(centroids, pre_centroids, sizeof(pre_centroids[0]) * k * AV1_K_MEANS_DIM)) {
+            break;
         }
     }
 }

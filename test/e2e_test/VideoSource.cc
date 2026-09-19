@@ -205,7 +205,7 @@ uint32_t VideoFileSource::read_input_frame() {
     }
 
     // Read raw data from file
-    size_t read_len = 0;
+    size_t read_len;
     uint32_t i;
     {
         uint8_t *eb_input_ptr = nullptr;

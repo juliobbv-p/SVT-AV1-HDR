@@ -24,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "aom_dsp_rtcd.h"
 #include "definitions.h"
+#include "resize.h"
 #include "utility.h"
 #include "unit_test_utility.h"
 #include "random.h"
@@ -378,7 +379,7 @@ static PicSizeParam pic_size_vector[] = {
 INSTANTIATE_TEST_SUITE_P(
     Resize, ResizePlaneLbdTest,
     ::testing::Combine(::testing::ValuesIn(pic_size_vector),
-                       ::testing::Range(8, 16), ::testing::Values(8)));
+                       ::testing::Range(8, 17), ::testing::Values(8)));
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 class ResizePlaneHbdTest : public ResizePlaneTest<uint16_t> {
@@ -532,4 +533,284 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(::testing::ValuesIn(pic_size_vector),
                        ::testing::Range(8, 16), ::testing::Values(10, 12)));
 #endif  // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
+/**
+ * @brief Unit test for svt_av1_down2_symeven: compares a SIMD variant
+ * against the plain C reference for a range of lengths chosen to exercise
+ * all four branches of the C reference: short-input fallback, initial
+ * (left-clamped), middle (unclamped), and end (right-clamped) parts.
+ */
+typedef void (*Down2SymevenFunc)(const uint8_t *const input, int length,
+                                 uint8_t *output);
+
+// Compares the requested SIMD variant directly against the C reference,
+// rather than through the reset_test_env()/setup_test_env() RTCD toggle:
+// this kernel is only ever dispatched to a NEON or an AVX2 implementation,
+// and the two variants support different minimum input lengths, so picking
+// "the fastest available" per architecture would run the small lengths
+// below against whichever variant happens to be built for the host.
+class Down2SymevenTest
+    : public ::testing::TestWithParam<std::tuple<int, Down2SymevenFunc>> {
+  public:
+    Down2SymevenTest()
+        : length_(std::get<0>(GetParam())),
+          test_func_(std::get<1>(GetParam())),
+          rnd_(0, 255) {
+    }
+
+    void SetUp() override {
+        input_ = (uint8_t *)svt_aom_memalign(32, length_);
+        ASSERT_NE(input_, nullptr);
+        // output has (length_+1)/2 valid samples; allocate length_ and verify
+        // the untouched tail keeps its sentinel value in run_case() below, to
+        // catch a kernel writing past the true output size.
+        ref_output_ = (uint8_t *)svt_aom_memalign(32, length_);
+        ASSERT_NE(ref_output_, nullptr);
+        tst_output_ = (uint8_t *)svt_aom_memalign(32, length_);
+        ASSERT_NE(tst_output_, nullptr);
+    }
+
+    void TearDown() override {
+        svt_aom_free(input_);
+        svt_aom_free(ref_output_);
+        svt_aom_free(tst_output_);
+    }
+
+  protected:
+    void run_case() {
+        const int out_len = (length_ + 1) / 2;
+        memset(ref_output_, 0xAA, length_);
+        memset(tst_output_, 0xBB, length_);
+
+        svt_av1_down2_symeven_c(input_, length_, ref_output_);
+        test_func_(input_, length_, tst_output_);
+
+        for (int i = 0; i < out_len; i++) {
+            ASSERT_EQ(ref_output_[i], tst_output_[i])
+                << "mismatch at output index " << i << " for length "
+                << length_;
+        }
+        for (int i = out_len; i < length_; i++) {
+            ASSERT_EQ(ref_output_[i], 0xAA)
+                << "overrun past output index " << out_len << " for length "
+                << length_;
+            ASSERT_EQ(tst_output_[i], 0xBB)
+                << "overrun past output index " << out_len << " for length "
+                << length_;
+        }
+    }
+
+    int length_;
+    Down2SymevenFunc test_func_;
+    SVTRandom rnd_;
+    uint8_t *input_;
+    uint8_t *ref_output_;
+    uint8_t *tst_output_;
+};
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(Down2SymevenTest);
+
+TEST_P(Down2SymevenTest, MatchTestWithRandomValue) {
+    for (int t = 0; t < min_test_times; t++) {
+        for (int i = 0; i < length_; i++) {
+            input_[i] = (uint8_t)rnd_.random();
+        }
+        run_case();
+    }
+}
+
+TEST_P(Down2SymevenTest, MatchTestWithZeroValue) {
+    memset(input_, 0, length_);
+    run_case();
+}
+
+TEST_P(Down2SymevenTest, MatchTestWithMaxValue) {
+    memset(input_, 255, length_);
+    run_case();
+}
+
+TEST_P(Down2SymevenTest, MatchTestWithAlternatingValue) {
+    for (int i = 0; i < length_; i++) {
+        input_[i] = (i & 1) ? 255 : 0;
+    }
+    run_case();
+}
+
+#ifdef ARCH_AARCH64
+// The 8-wide Neon batch computes each output as two int16 partial sums
+// (filter[0]*p0 + filter[2]*p2, and filter[1]*p1 + filter[3]*p3) that are
+// combined with a saturating int16 add. Each partial sum's true worst case,
+// reachable because the 8 input bytes behind p0..p3 are independently
+// controllable, is designed to fit int16, but grouping the taps
+// differently would not: the MatchTestWithRandomValue/MaxValue/
+// AlternatingValue cases above don't happen to hit that worst case (their
+// per-tap pair values are correlated - e.g. all-max gives every pJ=510,
+// not the independent extremes below), so this test targets it directly.
+TEST(Down2SymevenAdversarialTest, MatchTestWithAdversarialTapPattern) {
+    const int length = 128;
+    uint8_t *input = (uint8_t *)svt_aom_memalign(32, length);
+    ASSERT_NE(input, nullptr);
+    uint8_t *ref_output = (uint8_t *)svt_aom_memalign(32, length);
+    ASSERT_NE(ref_output, nullptr);
+    uint8_t *tst_output = (uint8_t *)svt_aom_memalign(32, length);
+    ASSERT_NE(tst_output, nullptr);
+
+    // For center c, p0=input[c]+input[c+1], p1=input[c-1]+input[c+2],
+    // p2=input[c-2]+input[c+3], p3=input[c-3]+input[c+4]. Setting
+    // input[c-3..c+4] = {0,0,255,255,255,255,0,0} makes p0=p1=510, p2=p3=0
+    // - filter[0]*p0+filter[1]*p1 = 56*510+12*510 = 34680, which overflows
+    // int16 if taps 0 and 1 (rather than 0 and 2) were grouped together.
+    // The inverse pattern similarly maximizes the negative-coefficient
+    // taps (p2, p3) while zeroing p0, p1. Only even centers are ever
+    // evaluated, so the window must start at an odd offset (c-3, with c
+    // even) - starting at offset 21 lands on center 24, and 61 on 64.
+    memset(input, 128, length);
+    const uint8_t max_window[8] = {0, 0, 255, 255, 255, 255, 0, 0};
+    const uint8_t min_window[8] = {255, 255, 0, 0, 0, 0, 255, 255};
+    memcpy(input + 21, max_window, sizeof(max_window));
+    memcpy(input + 61, min_window, sizeof(min_window));
+
+    svt_av1_down2_symeven_c(input, length, ref_output);
+    svt_av1_down2_symeven_neon(input, length, tst_output);
+
+    const int out_len = (length + 1) / 2;
+    for (int i = 0; i < out_len; i++) {
+        ASSERT_EQ(ref_output[i], tst_output[i])
+            << "mismatch at output index " << i;
+    }
+
+    svt_aom_free(input);
+    svt_aom_free(ref_output);
+    svt_aom_free(tst_output);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    NEON, Down2SymevenTest,
+    ::testing::Combine(::testing::Values(1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16,
+                                         18, 20, 22, 23, 24, 25, 30, 40, 64,
+                                         128, 255, 256, 257, 511, 512, 640,
+                                         1024, 1920, 3840),
+                       ::testing::Values(svt_av1_down2_symeven_neon)));
+#endif  // ARCH_AARCH64
+
+typedef void (*InterpolateCoreFunc)(const uint8_t *const input, int in_length,
+                                    uint8_t *output, int out_length,
+                                    const int16_t *interp_filters);
+
+// The 5 filter tables svt_av1_interpolate_core can be called with (chosen in
+// production by choose_interp_filter() based on the in/out length ratio, but
+// the kernel itself just uses whichever table the caller passes) - exercised
+// directly here so coverage doesn't depend on which in/out length ratios in
+// the parameter list happen to select which table.
+static const int16_t *const kInterpFilterTables[5] = {
+    &svt_aom_av1_filteredinterp_filters500[0][0],
+    &svt_aom_av1_filteredinterp_filters625[0][0],
+    &svt_aom_av1_filteredinterp_filters750[0][0],
+    &svt_aom_av1_filteredinterp_filters875[0][0],
+    &svt_av1_resize_filter_normative[0][0],
+};
+
+class InterpolateCoreTest
+    : public ::testing::TestWithParam<
+          std::tuple<int, int, int, InterpolateCoreFunc>> {
+  public:
+    InterpolateCoreTest()
+        : in_length_(std::get<0>(GetParam())),
+          out_length_(std::get<1>(GetParam())),
+          filter_(kInterpFilterTables[std::get<2>(GetParam())]),
+          test_func_(std::get<3>(GetParam())),
+          rnd_(0, 255),
+          input_(nullptr),
+          ref_output_(nullptr),
+          tst_output_(nullptr) {
+    }
+
+    // The output buffers are over-allocated by kOverrunPad bytes and the pad
+    // is sentinel-filled in run_case() below, to catch the 8-wide NEON store
+    // (or any bug in the middle-loop bound) writing past out_length_ even
+    // when the visible [0,out_length_) bytes still happen to match.
+    static const int kOverrunPad = 8;
+
+    void SetUp() override {
+        input_ = (uint8_t *)svt_aom_memalign(32, in_length_);
+        ASSERT_NE(input_, nullptr);
+        ref_output_ =
+            (uint8_t *)svt_aom_memalign(32, out_length_ + kOverrunPad);
+        ASSERT_NE(ref_output_, nullptr);
+        tst_output_ =
+            (uint8_t *)svt_aom_memalign(32, out_length_ + kOverrunPad);
+        ASSERT_NE(tst_output_, nullptr);
+    }
+
+    void TearDown() override {
+        svt_aom_free(input_);
+        svt_aom_free(ref_output_);
+        svt_aom_free(tst_output_);
+    }
+
+  protected:
+    void run_case() {
+        memset(ref_output_ + out_length_, 0xAA, kOverrunPad);
+        memset(tst_output_ + out_length_, 0xBB, kOverrunPad);
+
+        svt_av1_interpolate_core_c(
+            input_, in_length_, ref_output_, out_length_, filter_);
+        test_func_(input_, in_length_, tst_output_, out_length_, filter_);
+        for (int i = 0; i < out_length_; i++) {
+            ASSERT_EQ(ref_output_[i], tst_output_[i])
+                << "mismatch at output index " << i << " for in_length "
+                << in_length_ << " out_length " << out_length_;
+        }
+        for (int i = 0; i < kOverrunPad; i++) {
+            ASSERT_EQ(ref_output_[out_length_ + i], 0xAA)
+                << "overrun past out_length " << out_length_;
+            ASSERT_EQ(tst_output_[out_length_ + i], 0xBB)
+                << "overrun past out_length " << out_length_;
+        }
+    }
+
+    int in_length_;
+    int out_length_;
+    const int16_t *filter_;
+    InterpolateCoreFunc test_func_;
+    SVTRandom rnd_;
+    uint8_t *input_;
+    uint8_t *ref_output_;
+    uint8_t *tst_output_;
+};
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(InterpolateCoreTest);
+
+TEST_P(InterpolateCoreTest, MatchTestWithRandomValue) {
+    for (int t = 0; t < min_test_times; t++) {
+        for (int i = 0; i < in_length_; i++) {
+            input_[i] = (uint8_t)rnd_.random();
+        }
+        run_case();
+    }
+}
+
+TEST_P(InterpolateCoreTest, MatchTestWithZeroValue) {
+    memset(input_, 0, in_length_);
+    run_case();
+}
+
+TEST_P(InterpolateCoreTest, MatchTestWithMaxValue) {
+    memset(input_, 255, in_length_);
+    run_case();
+}
+
+TEST_P(InterpolateCoreTest, MatchTestWithAlternatingValue) {
+    for (int i = 0; i < in_length_; i++) {
+        input_[i] = (i & 1) ? 255 : 0;
+    }
+    run_case();
+}
+
+#ifdef ARCH_AARCH64
+INSTANTIATE_TEST_SUITE_P(
+    NEON, InterpolateCoreTest,
+    ::testing::Combine(::testing::Values(1, 2, 5, 7, 9, 64, 640, 1920, 3840),
+                       ::testing::Values(1, 2, 5, 7, 9, 64, 640, 1920, 3840),
+                       ::testing::Values(0, 1, 2, 3, 4),
+                       ::testing::Values(svt_av1_interpolate_core_neon)));
+#endif  // ARCH_AARCH64
 }  // namespace

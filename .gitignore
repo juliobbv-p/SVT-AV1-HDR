@@ -16,12 +16,15 @@
 Bin
 Build
 build
+build-*/
 compile_commands.json
 test/vectors/
 test/docs/
 !Build/linux/build.sh
+!Build/linux/build_rtc_pgo.sh
 !Build/windows/build.bat
 !Build/obj1fastdownloader.cmake
+!Build/gen_devirt.py
 .DS_Store
 third_party/aom/lib/*/aom.lib
 third_party/aom/lib/*/*/aom.lib

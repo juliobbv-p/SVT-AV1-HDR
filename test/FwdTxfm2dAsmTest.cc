@@ -440,11 +440,12 @@ class FwdTxfm2dAsmTest : public ::testing::TestWithParam<FwdTxfm2dAsmParam> {
 
             printf(
                 "C vs Opt; Transform: ;%02ix%02i; %17s; Speed compare: "
-                ";%5.2fx\n",
+                ";%5.2fx; Opt ns/call: ;%8.2f\n",
                 tx_size_wide[tx_size_],
                 tx_size_high[tx_size_],
                 tx_type_name[tx_type],
-                time_c / time_o);
+                time_c / time_o,
+                time_o * 1e6 / loops);
         }
     }
     void populate_with_random() {
@@ -611,5 +612,57 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(N2_SHAPE),
                        ::testing::Values(fwd_txfm_2d_N2_c_func),
                        ::testing::Values(fwd_txfm_2d_N2_neon_func)));
+TEST(LbdFwdExtremeRange, dct_dct_bitexact) {
+    typedef void (*F)(int16_t *, int32_t *, uint32_t, TxType, uint8_t);
+    struct {
+        TxSize tx;
+        int n;
+        F c;
+        F neon;
+    } cases[] = {
+        {TX_4X4, 4, svt_av1_transform_two_d_4x4_c, svt_av1_fwd_txfm2d_4x4_neon},
+        {TX_8X8, 8, svt_av1_transform_two_d_8x8_c, svt_av1_fwd_txfm2d_8x8_neon},
+        {TX_16X16,
+         16,
+         svt_av1_transform_two_d_16x16_c,
+         svt_av1_fwd_txfm2d_16x16_neon},
+        {TX_32X32,
+         32,
+         svt_av1_transform_two_d_32x32_c,
+         svt_av1_fwd_txfm2d_32x32_neon},
+    };
+    const int stride = MAX_TX_SIZE;
+    static int16_t in[MAX_TX_SQUARE];
+    static int32_t ref[MAX_TX_SQUARE], out[MAX_TX_SQUARE];
+    for (auto &c : cases) {
+        for (int pat = 0; pat < 5; pat++) {
+            for (int i = 0; i < c.n; i++)
+                for (int j = 0; j < c.n; j++) {
+                    int16_t v;
+                    switch (pat) {
+                    case 0: v = 255; break;   // all max (max DC / deep sums)
+                    case 1: v = -255; break;  // all min
+                    case 2:
+                        v = ((i + j) & 1) ? 255 : -255;
+                        break;  // checkerboard
+                    case 3:
+                        v = (j & 1) ? 255 : -255;
+                        break;  // vertical stripes
+                    default:
+                        v = (i & 1) ? 255 : -255;
+                        break;  // horizontal stripes
+                    }
+                    in[i * stride + j] = v;
+                }
+            c.c(in, ref, stride, DCT_DCT, 8);
+            c.neon(in, out, stride, DCT_DCT, 8);
+            for (int i = 0; i < c.n; i++)
+                for (int j = 0; j < c.n; j++)
+                    ASSERT_EQ(ref[i * stride + j], out[i * stride + j])
+                        << "tx=" << c.tx << " pat=" << pat << " (" << j << ","
+                        << i << ")";
+        }
+    }
+}
 #endif
 }  // namespace

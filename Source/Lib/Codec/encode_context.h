@@ -152,8 +152,6 @@ typedef struct EncodeContext {
     EbObjectWrapper* previous_picture_control_set_wrapper_ptr;
     uint64_t         picture_number_alt; // The picture number overlay includes all the overlay frames
 
-    EbHandle stat_file_mutex;
-
     bool                 is_mini_gop_changed;
     uint64_t             poc_map_idx[MAX_TPL_LA_SW];
     EbPictureBufferDesc* mc_flow_rec_picture_buffer[MAX_TPL_LA_SW];
@@ -182,11 +180,16 @@ typedef struct EncodeContext {
     EbRefFrameScale resize_evt;
     //Superblock end index for cycling refresh through the frame.
     uint32_t         cr_sb_end;
+    uint32_t         cr_sb_index; // SB cycling index (persists across frames)
     SvtAv1RoiMapEvt* roi_map_evt;
     Quants           quants_bd; // follows input bit depth
     Dequants         deq_bd; // follows input bit depth
     Quants           quants_8bit; // 8bit
     Dequants         deq_8bit; // 8bit
+    uint32_t         frames_since_last_cdf_update; // For selective CDF disable
+#if CONFIG_SINGLE_THREAD_KERNEL
+    void* st_me_context; // MotionEstimationContext_t* for inline TF in ST mode
+#endif
 } EncodeContext;
 
 typedef struct EncodeContextInitData {

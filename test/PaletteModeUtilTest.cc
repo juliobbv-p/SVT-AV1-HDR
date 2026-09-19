@@ -224,8 +224,8 @@ class KMeansTest : public ::testing::TestWithParam<int> {
         }
     }
 
-    void check_output(const int *centroids, const int k, const int *data,
-                      const uint8_t *indices, const int n) {
+    static void check_output(const int *centroids, const int k, const int *data,
+                             const uint8_t *indices, const int n) {
         for (int i = 0; i < n; i++) {
             const int min_delta = abs(data[i] - centroids[indices[i]]);
             for (int j = 0; j < k; j++) {
@@ -278,8 +278,9 @@ class KMeansTest : public ::testing::TestWithParam<int> {
         return sqrt(x_d * x_d + y_d * y_d);
     }
 
-    void check_output_2d(const int *centroids, const int k, const int *data,
-                         const uint8_t *indices, const int n) {
+    static void check_output_2d(const int *centroids, const int k,
+                                const int *data, const uint8_t *indices,
+                                const int n) {
         for (int i = 0; i < n; i++) {
             const double min_delta = distance_2d(data[2 * i],
                                                  data[2 * i + 1],
@@ -341,7 +342,7 @@ BlockSize TEST_BLOCK_SIZES[] = {BlockSize(4, 4),
                                 BlockSize(128, 128)};
 TestPattern TEST_PATTERNS[] = {MIN, MAX, RANDOM};
 
-#if ARCH_X86_64
+#if ARCH_X86_64 || ARCH_AARCH64
 static void av1_k_means_wrapper(av1_k_means_func func, const int *data,
                                 int *centroids, uint8_t *indices, int n, int k,
                                 int max_itr) {
@@ -549,7 +550,7 @@ TEST_P(Av1KMeansIndicesDimTest, DISABLED_speed) {
     speed();
 };
 
-#if ARCH_X86_64
+#if ARCH_X86_64 || ARCH_AARCH64
 
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(Av1KMeansDimTest);
 
@@ -560,6 +561,10 @@ TEST_P(Av1KMeansDimTest, RunCheckOutput) {
 TEST_P(Av1KMeansDimTest, DISABLED_speed) {
     speed();
 };
+
+#endif  // ARCH_X86_64 || ARCH_AARCH64
+
+#if ARCH_X86_64
 
 std::tuple<av1_k_means_func, av1_k_means_func> TEST_FUNC_PAIRS[] = {
     std::make_tuple(svt_av1_k_means_dim1_c, svt_av1_k_means_dim1_avx2),
@@ -584,15 +589,48 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::ValuesIn(TEST_BLOCK_SIZES),
                        ::testing::ValuesIn(TEST_INDICES_FUNC_PAIRS)));
 
+std::tuple<av1_k_means_func, av1_k_means_func> TEST_FUNC_PAIRS_SSE4_1[] = {
+    std::make_tuple(svt_av1_k_means_dim1_c, svt_av1_k_means_dim1_sse4_1),
+    std::make_tuple(svt_av1_k_means_dim2_c, svt_av1_k_means_dim2_sse4_1)};
+
+std::tuple<av1_k_means_indices_func, av1_k_means_indices_func>
+    TEST_INDICES_FUNC_PAIRS_SSE4_1[] = {
+        std::make_tuple(svt_av1_calc_indices_dim1_c,
+                        svt_av1_calc_indices_dim1_sse4_1),
+        std::make_tuple(svt_av1_calc_indices_dim2_c,
+                        svt_av1_calc_indices_dim2_sse4_1)};
+
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, Av1KMeansDimTest,
+    ::testing::Combine(::testing::ValuesIn(TEST_PATTERNS),
+                       ::testing::ValuesIn(TEST_BLOCK_SIZES),
+                       ::testing::ValuesIn(TEST_FUNC_PAIRS_SSE4_1)));
+
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1, Av1KMeansIndicesDimTest,
+    ::testing::Combine(::testing::ValuesIn(TEST_PATTERNS),
+                       ::testing::ValuesIn(TEST_BLOCK_SIZES),
+                       ::testing::ValuesIn(TEST_INDICES_FUNC_PAIRS_SSE4_1)));
+
 #endif  // ARCH_X86_64
 
 #if ARCH_AARCH64
+std::tuple<av1_k_means_func, av1_k_means_func> TEST_FUNC_PAIRS[] = {
+    std::make_tuple(svt_av1_k_means_dim1_c, svt_av1_k_means_dim1_neon),
+    std::make_tuple(svt_av1_k_means_dim2_c, svt_av1_k_means_dim2_neon)};
+
 std::tuple<av1_k_means_indices_func, av1_k_means_indices_func>
     TEST_INDICES_FUNC_PAIRS[] = {
         std::make_tuple(svt_av1_calc_indices_dim1_c,
                         svt_av1_calc_indices_dim1_neon),
         std::make_tuple(svt_av1_calc_indices_dim2_c,
                         svt_av1_calc_indices_dim2_neon)};
+
+INSTANTIATE_TEST_SUITE_P(
+    NEON, Av1KMeansDimTest,
+    ::testing::Combine(::testing::ValuesIn(TEST_PATTERNS),
+                       ::testing::ValuesIn(TEST_BLOCK_SIZES),
+                       ::testing::ValuesIn(TEST_FUNC_PAIRS)));
 
 INSTANTIATE_TEST_SUITE_P(
     NEON, Av1KMeansIndicesDimTest,

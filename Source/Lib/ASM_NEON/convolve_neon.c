@@ -20,6 +20,18 @@
 #include "transpose_neon.h"
 #include "utility.h"
 
+// Sign mask for is_fast_path: +1 = tap must be >= 0, -1 = tap must be <= 0,
+// 0 = tap must be zero/unused. This is the EIGHTTAP_REGULAR 6-tap pattern.
+static const int8_t kRegularSignMask6Tap[8] = {0, 1, -1, 1, 1, -1, 1, 0};
+
+// Vectorized sign-pattern check: narrow the filter to s8 and multiply by the
+// sign mask. A lane only keeps its high (sign) bit set if it has the "wrong"
+// sign; all-clear means the filter matches the expected pattern.
+static inline bool is_fast_path(const int8_t* sign_mask, const int16_t* x_filter_ptr) {
+    const int8x8_t xf = vmul_s8(vmovn_s16(vld1q_s16(x_filter_ptr)), vld1_s8(sign_mask));
+    return (vget_lane_u64(vreinterpret_u64_s8(xf), 0) & 0x8080808080808080ULL) == 0;
+}
+
 static inline uint8x8_t convolve4_8_x(const int16x8_t s0, const int16x8_t s1, const int16x8_t s2, const int16x8_t s3,
                                       const int16x4_t filter, int16x8_t horiz_const) {
     int16x8_t sum = horiz_const;
@@ -124,6 +136,42 @@ static inline uint8x8_t convolve8_8_x(const int16x8_t s0, const int16x8_t s1, co
     return vqrshrun_n_s16(sum, FILTER_BITS - 1);
 }
 
+// EOR-free unsigned-MAC horizontal pass for 6-tap REGULAR x_sr filters. Mirrors
+// convolve_2d_sr_horiz_6tap_fastpath_neon but rounds/saturates straight to u8
+// (single-pass output) instead of writing int16 intermediates. vmlal_u8 for the
+// positive taps {1,3,4,6}, vmlsl_u8 for the negative taps {2,5}; no bias, no
+// vmovl, no transpose.
+static inline void convolve_x_sr_6tap_fastpath_neon(const uint8_t* src, int src_stride, uint8_t* dst, int dst_stride,
+                                                    int w, int h, const int16_t* x_filter_ptr) {
+    const int16x8_t horiz_const = vdupq_n_s16(1 << ((ROUND0_BITS - 1) - 1));
+    const int8x8_t  fs8         = vmovn_s16(vshrq_n_s16(vld1q_s16(x_filter_ptr), 1));
+    const uint8x8_t fa          = vreinterpret_u8_s8(vabs_s8(fs8));
+
+    do {
+        const uint8_t* s     = src;
+        uint8_t*       d     = dst;
+        int            width = w;
+
+        do {
+            uint16x8_t sum = vreinterpretq_u16_s16(horiz_const);
+            sum            = vmlal_u8(sum, vld1_u8(s + 1), vdup_lane_u8(fa, 1));
+            sum            = vmlal_u8(sum, vld1_u8(s + 3), vdup_lane_u8(fa, 3));
+            sum            = vmlal_u8(sum, vld1_u8(s + 4), vdup_lane_u8(fa, 4));
+            sum            = vmlal_u8(sum, vld1_u8(s + 6), vdup_lane_u8(fa, 6));
+            sum            = vmlsl_u8(sum, vld1_u8(s + 2), vdup_lane_u8(fa, 2));
+            sum            = vmlsl_u8(sum, vld1_u8(s + 5), vdup_lane_u8(fa, 5));
+
+            vst1_u8(d, vqrshrun_n_s16(vreinterpretq_s16_u16(sum), FILTER_BITS - 1));
+
+            s += 8;
+            d += 8;
+            width -= 8;
+        } while (width != 0);
+        src += src_stride;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+
 void svt_av1_convolve_x_sr_neon(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride, int32_t w,
                                 int32_t h, const InterpFilterParams* filter_params_x,
                                 const InterpFilterParams* filter_params_y, const int32_t subpel_x_qn,
@@ -157,6 +205,11 @@ void svt_av1_convolve_x_sr_neon(const uint8_t* src, int32_t src_stride, uint8_t*
 
     if (filter_taps <= 4) {
         convolve_x_sr_4tap_neon(src + 2, src_stride, dst, dst_stride, w, h, x_filter_ptr);
+        return;
+    }
+
+    if (filter_taps == 6 && is_fast_path(kRegularSignMask6Tap, x_filter_ptr)) {
+        convolve_x_sr_6tap_fastpath_neon(src, src_stride, dst, dst_stride, w, h, x_filter_ptr);
         return;
     }
 
@@ -738,7 +791,6 @@ static inline int16x8_t convolve4_8_2d_h(const int16x8_t s0, const int16x8_t s1,
 
 static inline void convolve_2d_sr_horiz_4tap_neon(const uint8_t* src, ptrdiff_t src_stride, int16_t* dst,
                                                   ptrdiff_t dst_stride, int w, int h, const int16_t* filter_x) {
-    const int bd = 8;
     // All filter values are even, halve to reduce intermediate precision
     // requirements.
     const int16x4_t filter = vshr_n_s16(vld1_s16(filter_x + 2), 1);
@@ -746,7 +798,7 @@ static inline void convolve_2d_sr_horiz_4tap_neon(const uint8_t* src, ptrdiff_t 
     // A shim of 1 << ((ROUND0_BITS - 1) - 1) enables us to use non-rounding
     // shifts - which are generally faster than rounding shifts on modern CPUs.
     // (The extra -1 is needed because we halved the filter values.)
-    const int16x8_t horiz_const = vdupq_n_s16((1 << (bd + FILTER_BITS - 2)) + (1 << ((ROUND0_BITS - 1) - 1)));
+    const int16x8_t horiz_const = vdupq_n_s16((1 << ((ROUND0_BITS - 1) - 1)));
 
     if (w == 4) {
         do {
@@ -858,8 +910,6 @@ static inline int16x8_t convolve8_8_2d_h(const int16x8_t s0, const int16x8_t s1,
 
 static inline void convolve_2d_sr_horiz_8tap_neon(const uint8_t* src, int src_stride, int16_t* im_block, int im_stride,
                                                   int w, int im_h, const int16_t* x_filter_ptr) {
-    const int bd = 8;
-
     const uint8_t* src_ptr    = src;
     int16_t*       dst_ptr    = im_block;
     int            dst_stride = im_stride;
@@ -868,7 +918,7 @@ static inline void convolve_2d_sr_horiz_8tap_neon(const uint8_t* src, int src_st
     // A shim of 1 << ((ROUND0_BITS - 1) - 1) enables us to use non-rounding
     // shifts - which are generally faster than rounding shifts on modern CPUs.
     // (The extra -1 is needed because we halved the filter values.)
-    const int16x8_t horiz_const = vdupq_n_s16((1 << (bd + FILTER_BITS - 2)) + (1 << ((ROUND0_BITS - 1) - 1)));
+    const int16x8_t horiz_const = vdupq_n_s16((1 << ((ROUND0_BITS - 1) - 1)));
     // Filter values are even, so halve to reduce intermediate precision reqs.
     const int16x8_t x_filter = vshrq_n_s16(vld1q_s16(x_filter_ptr), 1);
 
@@ -968,6 +1018,46 @@ static inline void convolve_2d_sr_horiz_8tap_neon(const uint8_t* src, int src_st
     } while (--height != 0);
 }
 
+// EOR-free unsigned-MAC horizontal pass for 6-tap REGULAR filters. Produces the
+// same int16 im_block as convolve_2d_sr_horiz_8tap_neon, but uses vmlal_u8 for
+// the (known) positive taps {1,3,4,6} and vmlsl_u8 for the negative taps {2,5}
+// directly on u8 samples -- no 0x80 bias, no vmovl widening, no 8x8 transpose.
+// Row-parallel: each output lane j accumulates src[j+k]*filter[k].
+static inline void convolve_2d_sr_horiz_6tap_fastpath_neon(const uint8_t* src, int src_stride, int16_t* im_block,
+                                                           int im_stride, int w, int im_h,
+                                                           const int16_t* x_filter_ptr) {
+    // A shim of 1 << ((ROUND0_BITS - 1) - 1) enables non-rounding shifts; the
+    // extra -1 accounts for the halved filter. Same constant as the general path.
+    const int16x8_t horiz_const = vdupq_n_s16(1 << ((ROUND0_BITS - 1) - 1));
+    // Halved (exact: all taps even) signed taps, then absolute value as u8.
+    const int8x8_t  fs8 = vmovn_s16(vshrq_n_s16(vld1q_s16(x_filter_ptr), 1));
+    const uint8x8_t fa  = vreinterpret_u8_s8(vabs_s8(fs8));
+
+    do {
+        const uint8_t* s     = src;
+        int16_t*       d     = im_block;
+        int            width = w;
+
+        do {
+            uint16x8_t sum = vreinterpretq_u16_s16(horiz_const);
+            sum            = vmlal_u8(sum, vld1_u8(s + 1), vdup_lane_u8(fa, 1));
+            sum            = vmlal_u8(sum, vld1_u8(s + 3), vdup_lane_u8(fa, 3));
+            sum            = vmlal_u8(sum, vld1_u8(s + 4), vdup_lane_u8(fa, 4));
+            sum            = vmlal_u8(sum, vld1_u8(s + 6), vdup_lane_u8(fa, 6));
+            sum            = vmlsl_u8(sum, vld1_u8(s + 2), vdup_lane_u8(fa, 2));
+            sum            = vmlsl_u8(sum, vld1_u8(s + 5), vdup_lane_u8(fa, 5));
+
+            vst1q_s16(d, vshrq_n_s16(vreinterpretq_s16_u16(sum), ROUND0_BITS - 1));
+
+            s += 8;
+            d += 8;
+            width -= 8;
+        } while (width != 0);
+        src += src_stride;
+        im_block += im_stride;
+    } while (--im_h != 0);
+}
+
 void svt_av1_convolve_2d_sr_neon(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride, int32_t w,
                                  int32_t h, const InterpFilterParams* filter_params_x,
                                  const InterpFilterParams* filter_params_y, const int32_t subpel_x_qn,
@@ -1008,6 +1098,8 @@ void svt_av1_convolve_2d_sr_neon(const uint8_t* src, int32_t src_stride, uint8_t
 
     if (x_filter_taps <= 4) {
         convolve_2d_sr_horiz_4tap_neon(src_ptr + 2, src_stride, im_block, im_stride, w, im_h, x_filter_ptr);
+    } else if (x_filter_taps == 6 && is_fast_path(kRegularSignMask6Tap, x_filter_ptr)) {
+        convolve_2d_sr_horiz_6tap_fastpath_neon(src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr);
     } else {
         convolve_2d_sr_horiz_8tap_neon(src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr);
     }
@@ -1017,7 +1109,7 @@ void svt_av1_convolve_2d_sr_neon(const uint8_t* src, int32_t src_stride, uint8_t
     if (clamped_y_taps <= 4) {
         convolve_2d_sr_vert_4tap_neon(im_block, im_stride, dst, dst_stride, w, h, y_filter_ptr);
     } else if (clamped_y_taps == 6) {
-        convolve_2d_sr_vert_6tap_neon(im_block, im_stride, dst, dst_stride, w, h, y_filter);
+        convolve_2d_sr_vert_6tap_neon(im_block, im_stride, dst, dst_stride, w, h, y_filter_ptr);
     } else {
         convolve_2d_sr_vert_8tap_neon(im_block, im_stride, dst, dst_stride, w, h, y_filter);
     }

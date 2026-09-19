@@ -34,13 +34,17 @@
 extern "C" {
 #endif // __cplusplus
 
+#define FTR_RTC_INTER_PALETTE       1 // Palette on RTC inter-frame intra blocks (screen content, M7-M8); libaom-RT force_palette_test parity. Frame-idle gated post-ME (md-config stage) plus a per-block ME-residual floor at candidate injection.
+
 //FOR DEBUGGING - Do not remove
+
+
 #define LOG_ENC_DONE            0 // log encoder job one
 #define DEBUG_TPL               0 // Prints to debug TPL
 #define DETAILED_FRAME_OUTPUT   0 // Prints detailed frame output from the library for debugging
 #define DEBUG_BUFFERS           0 // Print process count and segments info
-#define TUNE_CHROMA_SSIM        1 // Allows for Chroma and SSIM BDR-based Tuning
-#define TUNE_CQP_CHROMA_SSIM    1 // Tune CQP qp scaling towards improved chroma and SSIM BDR
+
+#define TUNE_CQP_CHROMA_SSIM    0 // Tune CQP qp scaling towards improved chroma and SSIM BDR
 
 #define MIN_PIC_PARALLELIZATION 0 // Use the minimum amount of picture parallelization
 #define SRM_REPORT              0 // Report SRM status
@@ -51,8 +55,10 @@ extern "C" {
 #define FTR_KF_ON_FLY_SAMPLE         0 // Sample code to signal KF
 #define FTR_RES_ON_FLY_SAMPLE        0 // Sample functions to change the resolution on the fly
 #define FTR_RATE_ON_FLY_SAMPLE       0 // Sample functions to change bit rate
+#define FTR_PRESET_ON_FLY_SAMPLE     0 // Sample functions to change preset on the fly
 #define FTR_FRAME_RATE_ON_FLY_SAMPLE 0 // Sample functions to change frame rate
 #define FTR_PER_FRAME_QUALITY_SAMPLE 0 // Sample functions to compute PSNR per frame
+#define FTR_MG_SIZE_ON_FLY_SAMPLE    0 // Sample functions to change mini-GOP size on the fly
 #endif
 // Super-resolution debugging code
 #define DEBUG_SCALING           0

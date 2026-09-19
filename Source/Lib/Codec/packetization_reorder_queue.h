@@ -27,6 +27,9 @@ typedef struct PacketizationReorderEntry {
     EbDctor          dctor;
     uint64_t         picture_number;
     EbObjectWrapper* output_stream_wrapper_ptr;
+    // Parent PCS of the picture occupying this slot, held from insertion until
+    // release_frames() drains the slot.
+    EbObjectWrapper* ppcs_wrapper;
 
     uint64_t start_time_seconds;
     uint64_t start_time_u_seconds;

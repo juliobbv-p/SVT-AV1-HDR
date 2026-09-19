@@ -79,7 +79,35 @@ Examples:
         help="Read quality metrics from qm_dir and create per_image dataframe (default mode)",
     )
 
+    parser.add_argument(
+        "--svt_psnr_fast",
+        action="store_true",
+        help="SVT-only PSNR fast mode: build per-image data from the encoding "
+        "CSV's encoder-reported PSNR (no decode/QM CSV); then run the same "
+        "BD-rate analysis and reporting.",
+    )
+
     return parser.parse_args()
+
+
+def process_enc_only_psnr(data_readers: DataReaders) -> pd.DataFrame:
+    """Build per-image data from the encoding CSV alone, using the PSNR columns
+    the encoder produced under --enable-stat-report (SVT-only PSNR fast mode).
+
+    The decode + VMAF stage is skipped, so there is no decode/QM CSV to merge;
+    the encoding CSV already carries psnr_y/psnr_cb/psnr_cr.
+    """
+    print("Using SVT-only PSNR fast mode (encoder-reported PSNR from enc CSV)...")
+
+    encoding_df = data_readers.read_encoding_csv_data()
+    assert encoding_df is not None, "cannot read encoding CSV"
+    if "psnr_y" not in encoding_df.columns:
+        raise ValueError(
+            "Encoding CSV has no PSNR columns; run encode.py with --svt-psnr-fast"
+        )
+    # decode_time has no meaning here, but downstream perf tables expect it.
+    encoding_df["decode_time"] = float("nan")
+    return encoding_df
 
 
 def process_enc_qm_logs(data_readers: DataReaders) -> pd.DataFrame:
@@ -291,7 +319,10 @@ def main() -> None:
     # Process data based on the selected branch (default is --read_qm)
     per_image_data = pd.DataFrame()
 
-    if args.use_enc_qm_logs:
+    if args.svt_psnr_fast:
+        per_image_data = process_enc_only_psnr(data_readers)
+
+    elif args.use_enc_qm_logs:
         per_image_data = process_enc_qm_logs(data_readers)
 
     elif args.use_per_image_log:

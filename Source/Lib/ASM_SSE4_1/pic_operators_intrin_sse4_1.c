@@ -418,9 +418,9 @@ void svt_residual_kernel8bit_sse4_1(uint8_t* input, uint32_t input_stride, uint8
     }
 }
 
-void svt_full_distortion_kernel32_bits_sse4_1(int32_t* coeff, uint32_t coeff_stride, int32_t* recon_coeff,
-                                              uint32_t recon_coeff_stride, uint64_t distortion_result[DIST_CALC_TOTAL],
-                                              uint32_t area_width, uint32_t area_height) {
+void svt_full_distortion_kernel32_bits_sse4_1(int32_t* coeff, int32_t* recon_coeff, uint32_t stride,
+                                              uint32_t area_width, uint32_t area_height,
+                                              uint64_t distortion_result[DIST_CALC_TOTAL]) {
     uint32_t      row_count;
     const __m128i zero = _mm_setzero_si128();
     __m128i       sum1 = _mm_setzero_si128();
@@ -460,8 +460,8 @@ void svt_full_distortion_kernel32_bits_sse4_1(int32_t* coeff, uint32_t coeff_str
             recon_coeff_temp += 4;
         } while (--col_count);
 
-        coeff += coeff_stride;
-        recon_coeff += recon_coeff_stride;
+        coeff += stride;
+        recon_coeff += stride;
         row_count -= 1;
     } while (row_count > 0);
 

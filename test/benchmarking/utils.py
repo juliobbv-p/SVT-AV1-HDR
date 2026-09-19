@@ -11,10 +11,12 @@
 
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
 from multiprocessing import cpu_count
+from typing import Any, Dict
 
 
 # read spec from very end of file name
@@ -93,17 +95,84 @@ def get_max_workers(max_workers: int) -> int:
     return min(max_workers, int(cpu_count() * 2))
 
 
-def get_cmd_times(cmd, passes=1):
+def parse_macos_time_l_metrics(stderr_text: str) -> Dict[str, Any]:
+    """Parse labeled `/usr/bin/time -l` metrics from combined stderr text."""
+    required_int_labels = {
+        "instructions_retired": "instructions retired",
+        "cycles": "cycles elapsed",
+        "max_rss_bytes": "maximum resident set size",
+    }
+    metrics: Dict[str, Any] = {}
+
+    time_re = re.compile(
+        r"(?P<real>[0-9]+(?:\.[0-9]+)?)\s+real\s+"
+        r"(?P<user>[0-9]+(?:\.[0-9]+)?)\s+user\s+"
+        r"(?P<sys>[0-9]+(?:\.[0-9]+)?)\s+sys"
+    )
+    int_re = re.compile(r"^\s*(?P<value>\d+)\s+(?P<label>.+?)\s*$")
+
+    for line in stderr_text.splitlines():
+        time_match = time_re.search(line)
+        if time_match:
+            metrics["real_time"] = float(time_match.group("real"))
+            metrics["user_time"] = float(time_match.group("user"))
+            metrics["system_time"] = float(time_match.group("sys"))
+            metrics["cpu_time"] = metrics["user_time"] + metrics["system_time"]
+            continue
+
+        int_match = int_re.match(line)
+        if not int_match:
+            continue
+        label = int_match.group("label")
+        for key, expected_label in required_int_labels.items():
+            if label == expected_label:
+                metrics[key] = int(int_match.group("value"))
+                break
+
+    missing = [key for key in ["real_time", "user_time", "system_time", "cpu_time"] if key not in metrics]
+    missing.extend(key for key in required_int_labels if key not in metrics)
+    if missing:
+        raise ValueError(f"missing /usr/bin/time -l metric(s): {', '.join(sorted(missing))}")
+    if metrics["instructions_retired"] <= 0:
+        raise ValueError("instructions_retired must be present and positive")
+    return metrics
+
+
+def get_cmd_times(cmd, passes=1, return_stderr=False, time_mode="posix"):
     """
     Execute command and return its execution time.
 
     Args:
         cmd: command line to run, as single string for shell=True usage
         passes: number of iterations
+        return_stderr: when True, return (time, stderr_of_last_run) so callers
+            that need the program's stderr (e.g. to parse an encoder's PSNR
+            summary) can get it without spending an extra run.
+        time_mode: "posix" preserves the existing `/usr/bin/time -p` loop;
+            "macos_time_l" runs one child under `/usr/bin/time -l` and returns
+            labeled counter metrics.
 
     Returns:
-        Process time in seconds
+        Process time in seconds, or (time, stderr) when return_stderr is True.
+        In macos_time_l mode returns a metric dict whose cpu_time matches the
+        existing user+system timing convention.
     """
+
+    if time_mode == "macos_time_l":
+        if passes != 1:
+            raise ValueError("macos_time_l counter mode must run exactly one child")
+        run_cmd = ["/usr/bin/time", "-l", *shlex.split(cmd)]
+        res = subprocess.run(run_cmd, shell=False, capture_output=True, text=True)
+        stderr_text = res.stderr
+        if res.returncode != 0:
+            raise subprocess.CalledProcessError(
+                res.returncode, run_cmd, output=res.stdout, stderr=res.stderr
+            )
+        metrics = parse_macos_time_l_metrics(stderr_text)
+        return (metrics, stderr_text) if return_stderr else metrics
+
+    if time_mode != "posix":
+        raise ValueError(f"unknown time_mode: {time_mode}")
 
     # use system `time` command in POSIX format
     time_cmd = "/usr/bin/time -p"
@@ -111,6 +180,7 @@ def get_cmd_times(cmd, passes=1):
     total_time = 0.0
     wallclock_time = 0.0
     actual_passes = 0
+    last_stderr = ""
 
     if passes > 0:
         # for fixed number of passes - do all at once
@@ -137,6 +207,7 @@ def get_cmd_times(cmd, passes=1):
         )
 
         res = subprocess.run(run_cmd, shell=True, capture_output=True, text=True)
+        last_stderr = res.stderr
 
         try:
             time_values = res.stderr.splitlines()[-3:]
@@ -153,10 +224,90 @@ def get_cmd_times(cmd, passes=1):
     wallclock_time = time.time() - time_s
 
     if actual_passes == 0:
-        return wallclock_time
+        return (wallclock_time, last_stderr) if return_stderr else wallclock_time
 
     use_usr_sys_time = True
-    if use_usr_sys_time:
-        return total_time / actual_passes
+    result_time = total_time / actual_passes if use_usr_sys_time else wallclock_time / actual_passes
+    return (result_time, last_stderr) if return_stderr else result_time
 
-    return wallclock_time / actual_passes
+
+def collect_nsys_stats(report_path):
+    """Read parity metrics out of an Nsight Systems .nsys-rep capture for the
+    per-job CSV row.
+
+    Strategy: export to SQLite once, then query directly. This is more robust
+    across nsys versions than parsing the CLI's `nsys stats` text output (the
+    set of built-in reports has churned between releases — for instance the
+    `cpu_sampling` stats report present in nsys < 2025 was removed in 2026).
+
+    Returns a dict with safe defaults; never raises so the caller can merge
+    the results unconditionally even when nsys is missing or the capture
+    contains no data for a given metric."""
+    import sqlite3
+
+    out = {
+        "cpu_sampling_top1_func": "",
+        "osrt_total_ms": 0.0,
+    }
+    if not shutil.which("nsys") or not os.path.exists(report_path):
+        return out
+
+    sqlite_path = os.path.splitext(report_path)[0] + ".sqlite"
+    # Cap export at 3 minutes — typical .nsys-rep exports finish in seconds,
+    # but multi-GB captures from long preset-2 runs can stretch toward a
+    # minute on slow IO. The cap is a safety net against an `nsys` regression
+    # hanging the whole sweep, not a target latency.
+    try:
+        subprocess.run(
+            ["nsys", "export", "-t", "sqlite", "-f", "true",
+             "-o", sqlite_path, report_path],
+            capture_output=True, text=True, check=False, timeout=180,
+        )
+    except Exception:
+        return out
+
+    if not os.path.exists(sqlite_path):
+        return out
+
+    try:
+        db = sqlite3.connect(sqlite_path)
+        cur = db.cursor()
+
+        # Total OS runtime time (sem_wait, futex, pthread mutex/cond, syscalls).
+        # OSRT_API columns: start, end, eventClass, globalTid, correlationId, nameId, ...
+        try:
+            row = cur.execute(
+                "SELECT SUM(end - start) FROM OSRT_API"
+            ).fetchone()
+            if row and row[0] is not None:
+                out["osrt_total_ms"] = float(row[0]) / 1e6
+        except sqlite3.OperationalError:
+            pass
+
+        # Top sampled function across all threads — perf record -g equivalent.
+        # SAMPLE/SAMPLING_CALLCHAINS materialize only when the capture window
+        # is long enough to accumulate samples (default 1 kHz). For very short
+        # runs the table may be absent or empty; leave the column empty in
+        # that case rather than fabricating data.
+        try:
+            row = cur.execute("""
+                SELECT s.value, COUNT(*) AS n
+                FROM SAMPLING_CALLCHAINS scc
+                JOIN StringIds s ON s.id = scc.symbol
+                WHERE scc.stackDepth = 0
+                GROUP BY scc.symbol
+                ORDER BY n DESC
+                LIMIT 1
+            """).fetchone()
+            if row:
+                out["cpu_sampling_top1_func"] = row[0]
+        except sqlite3.OperationalError:
+            # SAMPLING_CALLCHAINS missing — short capture or sampling disabled.
+            pass
+
+        db.close()
+    except Exception:
+        # Best-effort; never block the encode job because of profiler parsing.
+        pass
+
+    return out

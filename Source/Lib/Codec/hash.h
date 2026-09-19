@@ -18,14 +18,11 @@
 extern "C" {
 #endif
 
-// CRC32C: POLY = 0x82f63b78;
-typedef struct _CRC32C {
-    /* Table for a quadword-at-a-time software crc. */
-    uint32_t table[8][256];
-} CRC32C;
-
-/* Construct table for software CRC-32C calculation. */
-void svt_av1_crc32c_calculator_init(CRC32C* p_crc32c);
+/* Build the process-wide table used by the software fall-back CRC-32C kernel
+ * (svt_av1_get_crc32c_value_c); called once at library init
+ * (init_global_tables) and read-only afterwards. The hardware kernels need no
+ * setup. */
+void svt_av1_crc32c_table_init(void);
 
 // Number of 2x2 pixel blocks per superblock
 // The biggest superblock supported by AV1 is 128x128, therefore there can be

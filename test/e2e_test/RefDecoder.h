@@ -128,6 +128,12 @@ class RefDecoder {
         int16_t min_qindex;
         int32_t max_intra_period;
         uint32_t frame_bit_rate;
+        // Per-decoded-frame parses for ref-frame management cross-check.
+        // refresh_frame_flags_list[i] is the AV1 refresh_frame_flags emitted
+        // by the encoder for the i-th decoded frame (i.e. which DPB slots
+        // were refreshed). frame_corrupted_list[i] is 0 on a clean decode.
+        std::vector<uint8_t> refresh_frame_flags_list;
+        std::vector<int> frame_corrupted_list;
         StreamInfo() {
             format = IMG_FMT_420;
             tile_rows = 0;
@@ -139,6 +145,8 @@ class RefDecoder {
             frame_bit_rate = 0;
             frame_type_list.clear();
             qindex_list.clear();
+            refresh_frame_flags_list.clear();
+            frame_corrupted_list.clear();
         }
     } StreamInfo;
 

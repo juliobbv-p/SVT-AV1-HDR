@@ -49,11 +49,13 @@ EbErrorType svt_aom_inter_prediction(SequenceControlSet* scs, PictureControlSet*
                                      uint8_t bit_depth, uint8_t is_16bit_pipeline);
 void        svt_aom_search_compound_diff_wedge(PictureControlSet* pcs, struct ModeDecisionContext* ctx,
                                                ModeDecisionCandidate* cand);
-bool        svt_aom_calc_pred_masked_compound(PictureControlSet* pcs, struct ModeDecisionContext* ctx,
-                                              ModeDecisionCandidate* cand);
+#if CONFIG_ENABLE_INTER_COMPOUND
+bool svt_aom_calc_pred_masked_compound(PictureControlSet* pcs, struct ModeDecisionContext* ctx,
+                                       ModeDecisionCandidate* cand);
+#endif
 
-EbErrorType svt_aom_inter_pu_prediction_av1_light_pd0(uint8_t hbd_md, struct ModeDecisionContext* ctx,
-                                                      PictureControlSet* pcs, ModeDecisionCandidateBuffer* cand_bf);
+EbErrorType svt_aom_inter_pu_prediction_av1_pd0(uint8_t hbd_md, struct ModeDecisionContext* ctx, PictureControlSet* pcs,
+                                                ModeDecisionCandidateBuffer* cand_bf);
 EbErrorType svt_aom_inter_pu_prediction_av1_light_pd1(uint8_t hbd_md, struct ModeDecisionContext* ctx,
                                                       PictureControlSet* pcs, ModeDecisionCandidateBuffer* cand_bf);
 EbErrorType svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, struct ModeDecisionContext* ctx, PictureControlSet* pcs,

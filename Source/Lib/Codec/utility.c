@@ -194,13 +194,6 @@ static BlockSize hvsize_to_bsize[/*H*/ 6][/*V*/ 6] = {
     {BLOCK_INVALID, BLOCK_INVALID, BLOCK_64X16, BLOCK_64X32, BLOCK_64X64, BLOCK_64X128},
     {BLOCK_INVALID, BLOCK_INVALID, BLOCK_INVALID, BLOCK_INVALID, BLOCK_128X64, BLOCK_128X128}};
 
-static uint32_t max_sb    = 64;
-static uint32_t max_depth = 5;
-static uint32_t max_part  = 9;
-static uint32_t max_num_active_blocks;
-
-//TODO need to remove above globals for multi-channel support
-
 static uint32_t get_num_ns_per_part(uint32_t part_it, uint32_t sq_size) {
     uint32_t tot_num_ns_per_part = part_it < 1 ? 1 : part_it < 3 ? 2 : part_it < 5 && sq_size < 128 ? 4 : 3;
     return tot_num_ns_per_part;
@@ -232,7 +225,8 @@ static const uint32_t d1_depth_offset[GEOM_TOT][6] = {{1, 1, 1, 1, 1, NOT_USED_V
                                                       {5, 13, 13, 13, 5, NOT_USED_VALUE}};
 
 static void md_scan_all_blks(GeomIndex geom, BlockGeom* blk_geom, uint32_t* idx_mds, uint32_t sq_size, uint32_t x,
-                             uint32_t y, uint8_t min_nsq_bsize) {
+                             uint32_t y, uint8_t min_nsq_bsize, uint32_t max_sb, uint32_t max_depth,
+                             uint32_t max_part) {
     //the input block is the parent square block of size sq_size located at pos (x,y)
     uint32_t part_it, nsq_it;
 
@@ -284,14 +278,18 @@ static void md_scan_all_blks(GeomIndex geom, BlockGeom* blk_geom, uint32_t* idx_
 
     uint32_t min_size = max_sb >> (max_depth - 1);
     if (halfsize >= min_size) {
-        md_scan_all_blks(geom, blk_geom, idx_mds, halfsize, x, y, min_nsq_bsize);
-        md_scan_all_blks(geom, blk_geom, idx_mds, halfsize, x + halfsize, y, min_nsq_bsize);
-        md_scan_all_blks(geom, blk_geom, idx_mds, halfsize, x, y + halfsize, min_nsq_bsize);
-        md_scan_all_blks(geom, blk_geom, idx_mds, halfsize, x + halfsize, y + halfsize, min_nsq_bsize);
+        md_scan_all_blks(geom, blk_geom, idx_mds, halfsize, x, y, min_nsq_bsize, max_sb, max_depth, max_part);
+        md_scan_all_blks(
+            geom, blk_geom, idx_mds, halfsize, x + halfsize, y, min_nsq_bsize, max_sb, max_depth, max_part);
+        md_scan_all_blks(
+            geom, blk_geom, idx_mds, halfsize, x, y + halfsize, min_nsq_bsize, max_sb, max_depth, max_part);
+        md_scan_all_blks(
+            geom, blk_geom, idx_mds, halfsize, x + halfsize, y + halfsize, min_nsq_bsize, max_sb, max_depth, max_part);
     }
 }
 
-static uint32_t count_total_num_of_active_blks(uint8_t min_nsq_bsize) {
+static uint32_t count_total_num_of_active_blks(uint8_t min_nsq_bsize, uint32_t max_sb, uint32_t max_depth,
+                                               uint32_t max_part) {
     uint32_t depth_it, sq_it_y, sq_it_x, part_it, nsq_it;
 
     uint32_t depth_scan_idx = 0;
@@ -332,6 +330,9 @@ static uint32_t count_total_num_of_active_blks(uint8_t min_nsq_bsize) {
   Build Block Geometry
 */
 void svt_aom_build_blk_geom(GeomIndex geom, BlockGeom* blk_geom) {
+    uint32_t max_sb;
+    uint32_t max_depth;
+    uint32_t max_part;
     uint32_t max_block_count;
     uint32_t min_nsq_bsize;
     if (geom == GEOM_0) {
@@ -402,13 +403,13 @@ void svt_aom_build_blk_geom(GeomIndex geom, BlockGeom* blk_geom) {
         min_nsq_bsize   = 0;
     }
     //(0)compute total number of blocks using the information provided
-    max_num_active_blocks = count_total_num_of_active_blks(min_nsq_bsize);
+    uint32_t max_num_active_blocks = count_total_num_of_active_blks(min_nsq_bsize, max_sb, max_depth, max_part);
     if (max_num_active_blocks != max_block_count) {
         SVT_LOG(" \n\n Error %i blocks\n\n ", max_num_active_blocks);
     }
     //(2) Construct md scan blk_geom_mds:  use info from dps
     uint32_t idx_mds = 0;
-    md_scan_all_blks(geom, blk_geom, &idx_mds, max_sb, 0, 0, min_nsq_bsize);
+    md_scan_all_blks(geom, blk_geom, &idx_mds, max_sb, 0, 0, min_nsq_bsize, max_sb, max_depth, max_part);
 }
 
 #if FIXED_POINT_ASSERT_TEST

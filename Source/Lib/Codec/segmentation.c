@@ -91,18 +91,17 @@ static void roi_map_apply_segmentation_based_quantization(PictureControlSet* pcs
     const SvtAv1RoiMapEvt* roi_map             = pcs->ppcs->roi_map_evt;
     SegmentationParams*    segmentation_params = &pcs->ppcs->frm_hdr.segmentation_params;
     const int              stride_b64          = (scs->max_input_luma_width + 63) / 64;
-    uint8_t                segment_id;
+    uint8_t                segment_id          = MAX_SEGMENTS;
     if (scs->seq_header.sb_size == BLOCK_64X64) {
         const int column_b64 = sb_ptr->org_x >> 6;
         const int row_b64    = sb_ptr->org_y >> 6;
         segment_id           = roi_map->b64_seg_map[row_b64 * stride_b64 + column_b64];
     } else { // sb128
-        segment_id = MAX_SEGMENTS;
         // 4 b64 blocks to check intersection
-        int       b64_seg_columns[4] = {sb_ptr->org_x, sb_ptr->org_x + 64, sb_ptr->org_x, sb_ptr->org_x + 64};
-        int       b64_seg_rows[4]    = {sb_ptr->org_y, sb_ptr->org_y, sb_ptr->org_y + 64, sb_ptr->org_y + 64};
-        int       blk_org_x          = sb_ptr->org_x + org_x;
-        int       blk_org_y          = sb_ptr->org_y + org_y;
+        const int b64_seg_columns[4] = {sb_ptr->org_x, sb_ptr->org_x + 64, sb_ptr->org_x, sb_ptr->org_x + 64};
+        const int b64_seg_rows[4]    = {sb_ptr->org_y, sb_ptr->org_y, sb_ptr->org_y + 64, sb_ptr->org_y + 64};
+        const int blk_org_x          = sb_ptr->org_x + org_x;
+        const int blk_org_y          = sb_ptr->org_y + org_y;
         const int bwidth             = block_size_wide[bsize];
         const int bheight            = block_size_high[bsize];
         for (int i = 0; i < 4; ++i) {
@@ -113,6 +112,11 @@ static void roi_map_apply_segmentation_based_quantization(PictureControlSet* pcs
                 segment_id           = MIN(segment_id, roi_map->b64_seg_map[row_b64 * stride_b64 + column_b64]);
             }
         }
+    }
+    assert(segment_id != MAX_SEGMENTS);
+    if (segment_id == MAX_SEGMENTS) {
+        // No intersection with any segment, assign to segment 0
+        segment_id = 0;
     }
 
     for (int i = segment_id; i >= 0; i--) {
@@ -162,9 +166,20 @@ static void roi_map_setup_segmentation(PictureControlSet* pcs, SequenceControlSe
     segmentation_params->segmentation_update_map      = true;
     segmentation_params->segmentation_temporal_update = false;
 
+    // A per-segment qindex of 0 is lossless, which SVT-AV1 does not support, and
+    // base_q_idx + delta > 255 overflows the qindex range. Clamp the user's ROI
+    // delta so the resulting segment qindex stays in [1, MAXQ]. This keeps every
+    // block in its intended ROI segment instead of relying on the fallback walk
+    // in roi_map_apply_segmentation_based_quantization(), which would otherwise
+    // silently reassign the block to another segment's QP (or, if no segment
+    // qualifies, fall through leaving segment_id unset once asserts are compiled
+    // out in release builds). Reachable under CBR/VBR where rate control can
+    // drive base_q_idx low. Matches libaom's ROI clamp (aomedia 46eb4e460).
+    const int base_q_idx = pcs->ppcs->frm_hdr.quantization_params.base_q_idx;
     for (int i = 0; i <= roi_map->max_seg_id; i++) {
-        segmentation_params->feature_enabled[i][SEG_LVL_ALT_Q]      = 1;
-        segmentation_params->feature_data[i][SEG_LVL_ALT_Q]         = roi_map->seg_qp[i];
+        segmentation_params->feature_enabled[i][SEG_LVL_ALT_Q] = 1;
+        segmentation_params->feature_data[i][SEG_LVL_ALT_Q]    = CLIP3(
+            1 - base_q_idx, MAXQ - base_q_idx, roi_map->seg_qp[i]);
         segmentation_params->feature_enabled[i][SEG_LVL_ALT_LF_Y_V] = 1;
         segmentation_params->feature_enabled[i][SEG_LVL_ALT_LF_Y_H] = 1;
         segmentation_params->feature_enabled[i][SEG_LVL_ALT_LF_U]   = 1;

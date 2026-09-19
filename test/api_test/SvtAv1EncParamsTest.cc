@@ -49,15 +49,11 @@ namespace {
  */
 class EncParamTestBase : public ::testing::Test {
   public:
-    EncParamTestBase() {
-        memset(&ctxt_, 0, sizeof(ctxt_));
-        param_name_str_ = "";
+    EncParamTestBase() : ctxt_{}, param_name_str_("") {
+        ;
     }
-    EncParamTestBase(const std::string &param_name) {
-        memset(&ctxt_, 0, sizeof(ctxt_));
-        param_name_str_ = param_name;
-    }
-    virtual ~EncParamTestBase() {
+    EncParamTestBase(const std::string &param_name)
+        : ctxt_{}, param_name_str_(param_name) {
     }
 
   public:

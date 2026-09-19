@@ -113,7 +113,7 @@ class PerformanceCollect {
     /** Stop counting time
      * @param collector the handle of time collector
      */
-    void stop_count(const CollectHandle collector) {
+    static void stop_count(const CollectHandle collector) {
         if (collector) {
             collector->tag_once();
         }

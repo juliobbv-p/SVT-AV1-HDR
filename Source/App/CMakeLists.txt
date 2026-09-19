@@ -140,6 +140,11 @@ set(all_files
 add_executable(SvtAv1EncApp
     ${all_files})
 
+# Expose pthread_setname_np on glibc for the app's main-thread naming.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(SvtAv1EncApp PRIVATE _GNU_SOURCE)
+endif()
+
 if(TARGET safestringlib)
     target_sources(SvtAv1EncApp PRIVATE $<TARGET_OBJECTS:safestringlib>)
 endif()
@@ -150,3 +155,10 @@ target_link_libraries(SvtAv1EncApp PRIVATE SvtAv1Enc ${LIBDOVI_LIBRARY} ${LIBHDR
 target_link_directories(SvtAv1EncApp PRIVATE ${LIBDOVI_LIBRARY_DIR} ${LIBHDR10PLUS_RS_LIBRARY_DIR})
 
 install(TARGETS SvtAv1EncApp RUNTIME COMPONENT Runtime DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# Strip the binary in minimal build for smallest possible size (lossless).
+if(MINIMAL_BUILD AND NOT MSVC AND NOT DEFINED ENV{NO_STRIP})
+    add_custom_command(TARGET SvtAv1EncApp POST_BUILD
+        COMMAND ${CMAKE_STRIP} $<TARGET_FILE:SvtAv1EncApp>
+        COMMENT "Stripping SvtAv1EncApp for minimal build")
+endif()

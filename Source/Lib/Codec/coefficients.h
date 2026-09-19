@@ -33,8 +33,9 @@ static const int nz_map_ctx_offset_1d[32] = {
     NZ_MAP_CTX_10, NZ_MAP_CTX_10, NZ_MAP_CTX_10, NZ_MAP_CTX_10,
 };
 
-extern const ScanOrder eb_av1_scan_orders[TX_SIZES_ALL][3];
-extern const int       tx_type_to_scan_index[TX_TYPES];
+extern ScanOrder eb_av1_scan_orders[TX_SIZES_ALL][3];
+void             svt_aom_init_iscan(void);
+extern const int tx_type_to_scan_index[TX_TYPES];
 
 static inline const ScanOrder* get_scan_order(const int tx_size, const int tx_type) {
     return &eb_av1_scan_orders[tx_size][tx_type_to_scan_index[tx_type]];

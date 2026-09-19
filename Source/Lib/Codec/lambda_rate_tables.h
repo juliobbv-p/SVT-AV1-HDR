@@ -12,6 +12,7 @@
 // lambda_rate_tables.h file contains all material to estimate the rate of intra, inter and skip modes
 #ifndef EbLambdaRateTables_h
 #define EbLambdaRateTables_h
+#include "EbConfigMacros.h" // CONFIG_ENABLE_HIGH_BIT_DEPTH
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,6 +38,7 @@ static const uint32_t av1_lambda_mode_decision8_bit_sad[QINDEX_RANGE /*256*/] = 
     12110, 12326, 12543, 12781, 13041, 13301, 13561, 13865, 14168, 14471, 14818, 15164, 15533, 15944, 16356, 16789,
     17244, 17742, 18262, 18826, 19411, 20039, 20689, 21404, 22140, 22920, 23787, 24675, 25650, 26690, 27773, 28943};
 // Lambda Table for bit-depth 10
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH // RTC is 8-bit only -> 10/12-bit lambda tables are dead
 static const uint32_t av1lambda_mode_decision10_bit_sad[QINDEX_RANGE /*256*/] = {
     22,    49,    54,    70,    81,    91,    108,   119,   135,   151,   167,   184,   200,   216,   232,   254,
     270,   287,   308,   324,   346,   368,   384,   406,   422,   444,   465,   487,   503,   525,   547,   568,
@@ -72,6 +74,7 @@ static const uint32_t av1lambda_mode_decision12_bit_sad[QINDEX_RANGE /*256*/] = 
     9432,  9564,  9698,  9842,  9987,  10132, 10289, 10446, 10604, 10775, 10947, 11121, 11308, 11498, 11691, 11899,
     12111, 12326, 12558, 12795, 13051, 13312, 13582, 13871, 14169, 14490, 14820, 15178, 15546, 15944, 16357, 16801,
     17263, 17761, 18280, 18838, 19420, 20048, 20702, 21409, 22146, 22940, 23796, 24693, 25657, 26698, 27785, 28958};
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 #ifdef __cplusplus
 }

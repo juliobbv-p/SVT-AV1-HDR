@@ -10,20 +10,21 @@
  * source code in the PATENTS file, you can obtain it at
  * https://www.aomedia.org/license/patent-license.
  */
-#include <stdlib.h>
 
-#include "definitions.h"
+#include <array>
+#include <cmath>
 #include "grainSynthesis.h"
 #include "gtest/gtest.h"
-#include "utility.h"
 #include "FilmGrainExpectedResult.h"
 #include "acm_random.h"
 #include "noise_model.h"
 #include "aom_dsp_rtcd.h"
+#include "pic_buffer_desc.h"
 
 #if CONFIG_ENABLE_FILM_GRAIN
 
-static AomFilmGrain film_grain_test_vectors[3] = {
+namespace {
+constexpr AomFilmGrain film_grain_test_vectors[3] = {
     /* Test 1 */
     {
         1 /* apply_grain */,
@@ -196,29 +197,11 @@ TEST(FilmGrain, parameters_equality) {
 }
 
 class AddFilmGrainTest : public ::testing::Test {
-  public:
-    static const int kWidth = 128;
-    static const int kHeight = 128;
-    static const int luma_size = kWidth * kHeight;
-    static const int chroma_size = luma_size >> 2;
-
-    void SetUp() override {
-        luma_ = (uint8_t *)svt_aom_malloc(luma_size);
-        cb_ = (uint8_t *)svt_aom_malloc(chroma_size);
-        cr_ = (uint8_t *)svt_aom_malloc(chroma_size);
-    }
-
-    void TearDown() override {
-        svt_aom_free(luma_);
-        svt_aom_free(cb_);
-        svt_aom_free(cr_);
-    }
-
   protected:
     void init_data() {
-        memset(luma_, 0, luma_size);
-        memset(cb_, 0, chroma_size);
-        memset(cr_, 0, chroma_size);
+        luma_.fill(0);
+        cb_.fill(0);
+        cr_.fill(0);
     }
 
     void check_output(int idx) {
@@ -241,18 +224,23 @@ class AddFilmGrainTest : public ::testing::Test {
     }
 
   protected:
-    uint8_t *luma_;
-    uint8_t *cb_;
-    uint8_t *cr_;
+    static constexpr int kWidth = 128;
+    static constexpr int kHeight = 128;
+    static constexpr int luma_size = kWidth * kHeight;
+    static constexpr int chroma_size = luma_size >> 2;
+
+    alignas(16) std::array<uint8_t, luma_size> luma_{};
+    alignas(16) std::array<uint8_t, chroma_size> cb_{};
+    alignas(16) std::array<uint8_t, chroma_size> cr_{};
 };
 
 TEST_F(AddFilmGrainTest, MatchTest) {
     for (int i = 0; i < 3; ++i) {
         init_data();
         svt_av1_add_film_grain_run(film_grain_test_vectors + i,
-                                   luma_,
-                                   cb_,
-                                   cr_,
+                                   luma_.data(),
+                                   cb_.data(),
+                                   cr_.data(),
                                    kHeight,
                                    kWidth,
                                    kWidth,     /* luma stride */
@@ -265,55 +253,25 @@ TEST_F(AddFilmGrainTest, MatchTest) {
     }
 }
 
-extern "C" {
-#include "pcs.h"
-#include "pic_buffer_desc.h"
-#include "pic_analysis_process.h"
-}
-
-static void svt_picture_buffer_desc_dctor(EbPtr p) {
-    EbPictureBufferDesc *obj = (EbPictureBufferDesc *)p;
-    EB_FREE_ALIGNED_ARRAY(obj->buffer_alloc);
-    obj->buffer_alloc_sz = 0;
-    obj->y_buffer = NULL;
-    obj->u_buffer = NULL;
-    obj->v_buffer = NULL;
-    obj->y_buffer_bit_inc = NULL;
-    obj->u_buffer_bit_inc = NULL;
-    obj->v_buffer_bit_inc = NULL;
-}
-
 // Return normally distrbuted values with standard deviation of sigma.
-double randn(libaom_test::ACMRandom *random, double sigma) {
+double randn(libaom_test::ACMRandom &random, double sigma) {
     while (1) {
-        const double u = 2.0 * ((double)random->Rand31() /
+        const double u = 2.0 * ((double)random.Rand31() /
                                 testing::internal::Random::kMaxRange) -
                          1.0;
-        const double v = 2.0 * ((double)random->Rand31() /
+        const double v = 2.0 * ((double)random.Rand31() /
                                 testing::internal::Random::kMaxRange) -
                          1.0;
         const double s = u * u + v * v;
         if (s > 0 && s < 1) {
-            return sigma * (u * sqrt(-2.0 * log(s) / s));
+            return sigma * (u * std::sqrt(-2.0 * std::log(s) / s));
         }
     }
     return 0;
 }
 
-static void denoise_and_model_dctor(EbPtr p) {
-    AomDenoiseAndModel *obj = (AomDenoiseAndModel *)p;
-
-    free(obj->flat_blocks);
-    for (int32_t i = 0; i < 3; ++i) {
-        EB_FREE_ARRAY(obj->denoised[i]);
-        EB_FREE_ARRAY(obj->packed[i]);
-    }
-    svt_aom_noise_model_free(&obj->noise_model);
-    svt_aom_flat_block_finder_free(&obj->flat_block_finder);
-}
-
 /* clang-format off */
-static AomFilmGrain expected_film_grain = {
+constexpr AomFilmGrain expected_film_grain = {
     1 /* apply_grain */,
     1 /* update_parameters */,
     {{0, 33}, {255, 34}, {0, 0}, {0, 0}, },
@@ -346,13 +304,25 @@ static AomFilmGrain expected_film_grain = {
 
 class DenoiseModelRunTest : public ::testing::Test {
   public:
-    static const int width_ = 128;
-    static const int height_ = 128;
+    static constexpr int width_ = 128;
+    static constexpr int height_ = 128;
 
-    DenoiseModelRunTest() {
-        for (int i = 0; i < 3; ++i)
-            data_ptr_[i] = denoised_ptr_[i] = nullptr;
-        memset(&output_film_grain, 0, sizeof(output_film_grain));
+    ~DenoiseModelRunTest() override {
+        if (in_pic_.dctor) {
+            in_pic_.dctor(&in_pic_);
+        }
+        if (noise_model.dctor) {
+            noise_model.dctor(&noise_model);
+        }
+    }
+
+    void SetUp() override {
+#if defined(ARCH_X86_64) || defined(ARCH_AARCH64)
+        EbCpuFlags cpu_flags = svt_aom_get_cpu_flags_to_use();
+#else
+        EbCpuFlags cpu_flags = 0;
+#endif
+        svt_aom_setup_rtcd_internal(cpu_flags);
 
         // create EbPictureBufferDesc
         EbPictureBufferDescInitData pbd_init_data;
@@ -366,12 +336,15 @@ class DenoiseModelRunTest : public ::testing::Test {
         pbd_init_data.split_mode = false;
         pbd_init_data.is_16bit_pipeline = false;
 
-        subsampling_x_ = (pbd_init_data.color_format == EB_YUV444 ? 0 : 1);
-        subsampling_y_ = (pbd_init_data.color_format >= EB_YUV422 ? 0 : 1);
+        const int subsampling_x_ =
+            (pbd_init_data.color_format == EB_YUV444 ? 0 : 1);
 
         EbErrorType err =
             svt_picture_buffer_desc_ctor(&in_pic_, &pbd_init_data);
-        EXPECT_EQ(err, 0) << "create input pic fail";
+        EXPECT_EQ(err, EB_ErrorNone) << "create input pic fail";
+        data_ptr_[0] = in_pic_.y_buffer;
+        data_ptr_[1] = in_pic_.u_buffer;
+        data_ptr_[2] = in_pic_.v_buffer;
 
         // create the denoise and noise model
         DenoiseAndModelInitData fg_init_data;
@@ -386,37 +359,15 @@ class DenoiseModelRunTest : public ::testing::Test {
         fg_init_data.u_stride = fg_init_data.v_stride =
             fg_init_data.y_stride >> subsampling_x_;
 
-        noise_model = {};
         err = svt_aom_denoise_and_model_ctor(&noise_model, &fg_init_data);
-        EXPECT_EQ(err, 0) << "svt_aom_denoise_and_model_ctor fail";
-    }
-
-    ~DenoiseModelRunTest() {
-        svt_picture_buffer_desc_dctor(&in_pic_);
-        denoise_and_model_dctor(&noise_model);
-    }
-
-    void SetUp() override {
-        random_.Reset(100171);
-        data_ptr_[0] = in_pic_.y_buffer;
-        data_ptr_[1] = in_pic_.u_buffer;
-        data_ptr_[2] = in_pic_.v_buffer;
-
-        memset(&output_film_grain, 0, sizeof(output_film_grain));
-
-#if defined(ARCH_X86_64) || defined(ARCH_AARCH64)
-        EbCpuFlags cpu_flags = svt_aom_get_cpu_flags_to_use();
-#else
-        EbCpuFlags cpu_flags = 0;
-#endif
-        svt_aom_setup_rtcd_internal(cpu_flags);
+        EXPECT_EQ(err, EB_ErrorNone) << "svt_aom_denoise_and_model_ctor fail";
     }
 
     void init_data() {
         for (int y = 0; y < height_; ++y) {
             for (int x = 0; x < width_; ++x) {
                 data_ptr_[0][y * width_ + x] =
-                    int(64 + y + randn(&this->random_, 1));
+                    int(64 + y + randn(this->random_, 1));
                 // Make the chroma planes completely correlated with the Y plane
                 for (int c = 1; c < 3; ++c) {
                     data_ptr_[c][(y >> 1) * (width_ >> 1) + (x >> 1)] =
@@ -440,14 +391,12 @@ class DenoiseModelRunTest : public ::testing::Test {
     }
 
   protected:
-    int subsampling_x_;
-    int subsampling_y_;
-    EbPictureBufferDesc in_pic_;
-    AomDenoiseAndModel noise_model;
-    AomFilmGrain output_film_grain;
-    libaom_test::ACMRandom random_;
-    uint8_t *data_ptr_[3];
-    uint8_t *denoised_ptr_[3];
+    EbPictureBufferDesc in_pic_{};
+    AomDenoiseAndModel noise_model{};
+    AomFilmGrain output_film_grain{};
+    libaom_test::ACMRandom random_{100171};
+    uint8_t *data_ptr_[3]{};
+    uint8_t *denoised_ptr_[3]{};
 };
 
 TEST_F(DenoiseModelRunTest, OutputFilmGrainCheck) {
@@ -455,5 +404,7 @@ TEST_F(DenoiseModelRunTest, OutputFilmGrainCheck) {
     check_filmgrain();
     EXPECT_FALSE(HasFailure());
 }
+
+}  // namespace
 
 #endif

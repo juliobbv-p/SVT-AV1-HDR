@@ -21,6 +21,7 @@
  * @author Cidana-Ivy, Cidana-Wenyao
  *
  ******************************************************************************/
+#include <iostream>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -206,10 +207,8 @@ class ResidualKernel8BitTest
                                                          finish_time_seconds,
                                                          finish_time_useconds);
 
-        printf("svt_residual_kernel8bit(%3dx%3d): %6.2f\n",
-               area_width_,
-               area_height_,
-               time_c / time_o);
+        std::cerr << "svt_residual_kernel8bit(" << area_width_ << "x"
+                  << area_height_ << "): " << time_c / time_o << "\n";
     }
 
     TestPattern test_pattern_;

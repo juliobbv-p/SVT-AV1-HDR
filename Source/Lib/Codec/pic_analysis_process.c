@@ -15,6 +15,8 @@
 
 #include "aom_dsp_rtcd.h"
 #include "definitions.h"
+#include <math.h>
+#include "temporal_filtering.h"
 #include "enc_handle.h"
 #include "sys_resource_manager.h"
 #include "pcs.h"
@@ -37,13 +39,21 @@
  * Context
  **************************************/
 typedef struct PictureAnalysisContext {
-    EbFifo* resource_coordination_results_input_fifo_ptr;
-    EbFifo* picture_analysis_results_output_fifo_ptr;
+    EbFifo*  resource_coordination_results_input_fifo_ptr;
+    EbFifo*  picture_analysis_results_output_fifo_ptr;
+    int16_t* vmaf_hring[5];
+    int      vmaf_padded_w;
+    uint8_t* vmaf_blur_plane;
+    int      vmaf_blur_pixels;
 } PictureAnalysisContext;
 
 static void picture_analysis_context_dctor(EbPtr p) {
     EbThreadContext*        thread_ctx = (EbThreadContext*)p;
     PictureAnalysisContext* obj        = (PictureAnalysisContext*)thread_ctx->priv;
+    for (int i = 0; i < 5; i++) {
+        EB_FREE_ARRAY(obj->vmaf_hring[i]);
+    }
+    EB_FREE_ARRAY(obj->vmaf_blur_plane);
     EB_FREE_ARRAY(obj);
 }
 
@@ -452,7 +462,7 @@ static int32_t apply_denoise_2d(SequenceControlSet* scs, PictureParentControlSet
     if (svt_aom_denoise_and_model_run(denoise_and_model,
                                       inputPicturePointer,
                                       &pcs->frm_hdr.film_grain_params,
-                                      scs->static_config.encoder_bit_depth > EB_EIGHT_BIT)) {}
+                                      SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > EB_EIGHT_BIT)) {}
 
     EB_DELETE(denoise_and_model);
 
@@ -483,11 +493,7 @@ static EbErrorType apply_film_grain_table(SequenceControlSet* scs_ptr, PicturePa
 
     AomFilmGrain* src_grain = scs_ptr->static_config.fgs_table;
 
-    if (svt_memcpy != NULL) {
-        svt_memcpy(dst_grain, src_grain, sizeof(*dst_grain));
-    } else {
-        svt_memcpy_c(dst_grain, src_grain, sizeof(*dst_grain));
-    }
+    SVT_MEMCPY(dst_grain, src_grain, sizeof(*dst_grain));
 
     frm_hdr->film_grain_params.apply_grain        = 1;
     frm_hdr->film_grain_params.random_seed        = random_seed;
@@ -739,7 +745,7 @@ static void pad_2b_compressed_input_picture(uint8_t* src_pic, uint32_t src_strid
  ************************************************/
 void svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions(SequenceControlSet*  scs,
                                                                 EbPictureBufferDesc* input_pic) {
-    bool is16_bit_input = scs->static_config.encoder_bit_depth > EB_EIGHT_BIT;
+    bool is16_bit_input = SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > EB_EIGHT_BIT;
 
     uint32_t       color_format  = input_pic->color_format;
     const uint16_t subsampling_x = (color_format == EB_YUV444 ? 0 : 1);
@@ -814,7 +820,7 @@ void svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions(SequenceControlS
  ************************************************/
 void svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions_16bit(SequenceControlSet*  scs,
                                                                       EbPictureBufferDesc* input_pic) {
-    assert(scs->static_config.encoder_bit_depth > EB_EIGHT_BIT);
+    assert(SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > EB_EIGHT_BIT);
 
     uint32_t      color_format  = input_pic->color_format;
     const uint8_t subsampling_x = (color_format == EB_YUV444 ? 0 : 1);
@@ -1289,32 +1295,31 @@ void svt_aom_is_screen_content_antialiasing_aware(PictureParentControlSet* pcs) 
 
     // The threshold values are selected experimentally.
     // Penalize presence of photo-like blocks (1/16th the weight of a palettizable block)
-    pcs->sc_class0 = ((count_palette_16 - count_photo_16 / 16) * blk_area8 * 10 > area);
+    pcs->sc_class0 = ((count_palette_16 - count_photo_16 / 16) * blk_area16 * 10 > area);
 
     // IntraBC would force loop filters off, so we use more strict rules that also
     // requires that the block has high variance.
     // Penalize presence of photo-like blocks (1/16th the weight of a palettizable block)
-    pcs->sc_class1 = pcs->sc_class0 && ((count_intrabc_16 - count_photo_16 / 16) * blk_area8 * 12 > area);
+    pcs->sc_class1 = pcs->sc_class0 && ((count_intrabc_16 - count_photo_16 / 16) * blk_area16 * 12 > area);
 
     pcs->sc_class2 = pcs->sc_class1 ||
-        (count_palette_16 * blk_area8 * 15 > area * 4 && count_intrabc_16 * blk_area8 * 30 > area);
+        (count_palette_16 * blk_area16 * 15 > area * 4 && count_intrabc_16 * blk_area16 * 30 > area);
 
     pcs->sc_class3 = pcs->sc_class1 ||
-        (count_palette_16 * blk_area8 * 8 > area && count_intrabc_16 * blk_area8 * 50 > area);
+        (count_palette_16 * blk_area16 * 8 > area && count_intrabc_16 * blk_area16 * 50 > area);
 
     const int64_t region_area = area >> 2; // area/4 for 2x2 regions
     int           pass        = 0;
 
     for (int i = 0; i < 4; ++i) {
-        if ((counts_8X8.region_palette[i] * blk_area8 * 18 > region_area) &&
-            (counts_8X8.region_intrabc[i] * blk_area8 * 50 > region_area)) {
+        if ((counts_8X8.region_palette[i] * blk_area8 * 10 > region_area) &&
+            (counts_8X8.region_intrabc[i] * blk_area8 * 25 > region_area)) {
             pass++;
         }
     }
     pcs->sc_class4 = (pass >= 3) && (count_palette_8 * blk_area8 * 5 > area);
-    pcs->sc_class5 = (pass >= 2) &&
-        ((count_palette_8 * blk_area8 * 18 > area) && (count_intrabc_8 * blk_area8 * 50 > area));
-
+    pcs->sc_class5 = (pass >= 3) &&
+        ((count_palette_8 * blk_area8 * 10 > area) && (count_intrabc_8 * blk_area8 * 23 > area));
 #if DEBUG_AA_SCM
     fprintf(stats_file,
             "block count palette: %" PRId64 ", count intrabc: %" PRId64 ", count photo: %" PRId64 ", total: %d\n",
@@ -1424,6 +1429,70 @@ void svt_aom_is_screen_content(PictureParentControlSet* pcs) {
         (counts_2 * blk_h * blk_w * 20 > input_pic->width * input_pic->height);
 }
 
+#define FRAME_LUMA_DOMINANT_SAMPLE_STEP 8
+#define FRAME_LUMA_DOMINANT_CORE_THR 16
+#define FRAME_LUMA_DOMINANT_TAIL_THR 18
+#define FRAME_LUMA_DOMINANT_MIN_CORE_PCT 85
+#define FRAME_LUMA_DOMINANT_MIN_TAIL_PCT 95
+#define FRAME_LUMA_DOMINANT_NEUTRAL_THR 6
+#define FRAME_LUMA_DOMINANT_UV_DIFF_THR 4
+#define FRAME_LUMA_DOMINANT_MIN_NEUTRAL_PCT 75
+
+bool svt_aom_is_input_luma_dominant(const EbPictureBufferDesc* input_pic) {
+    if (!input_pic || input_pic->color_format == EB_YUV400 || !input_pic->u_buffer || !input_pic->v_buffer) {
+        return false;
+    }
+
+    const uint32_t uv_w = input_pic->width >> 1;
+    const uint32_t uv_h = input_pic->height >> 1;
+
+    if (!uv_w || !uv_h) {
+        return false;
+    }
+
+    uint32_t sample_cnt  = 0;
+    uint32_t core_cnt    = 0;
+    uint32_t tail_cnt    = 0;
+    uint32_t neutral_cnt = 0;
+
+    const uint32_t core_thr_sq = FRAME_LUMA_DOMINANT_CORE_THR * FRAME_LUMA_DOMINANT_CORE_THR;
+    const uint32_t tail_thr_sq = FRAME_LUMA_DOMINANT_TAIL_THR * FRAME_LUMA_DOMINANT_TAIL_THR;
+
+    for (uint32_t y = 0; y < uv_h; y += FRAME_LUMA_DOMINANT_SAMPLE_STEP) {
+        const uint8_t* const ub = input_pic->u_buffer + y * input_pic->u_stride;
+        const uint8_t* const vb = input_pic->v_buffer + y * input_pic->v_stride;
+
+        for (uint32_t x = 0; x < uv_w; x += FRAME_LUMA_DOMINANT_SAMPLE_STEP) {
+            const int32_t  du            = (int32_t)ub[x] - 128;
+            const int32_t  dv            = (int32_t)vb[x] - 128;
+            const int32_t  uv            = (int32_t)ub[x] - (int32_t)vb[x];
+            const uint32_t chroma_mag_sq = (uint32_t)(du * du + dv * dv);
+            const int32_t  abs_du        = du < 0 ? -du : du;
+            const int32_t  abs_dv        = dv < 0 ? -dv : dv;
+            const int32_t  abs_uv        = uv < 0 ? -uv : uv;
+
+            // Most samples must stay inside a tight near-neutral chroma region,
+            // and almost all samples must stay inside a slightly looser region.
+            if (chroma_mag_sq <= core_thr_sq) {
+                core_cnt++;
+            }
+            if (chroma_mag_sq <= tail_thr_sq) {
+                tail_cnt++;
+            }
+            if (abs_du <= FRAME_LUMA_DOMINANT_NEUTRAL_THR && abs_dv <= FRAME_LUMA_DOMINANT_NEUTRAL_THR &&
+                abs_uv <= FRAME_LUMA_DOMINANT_UV_DIFF_THR) {
+                neutral_cnt++;
+            }
+
+            sample_cnt++;
+        }
+    }
+
+    return sample_cnt && core_cnt * 100 >= sample_cnt * FRAME_LUMA_DOMINANT_MIN_CORE_PCT &&
+        (tail_cnt * 100 >= sample_cnt * FRAME_LUMA_DOMINANT_MIN_TAIL_PCT ||
+         neutral_cnt * 100 >= sample_cnt * FRAME_LUMA_DOMINANT_MIN_NEUTRAL_PCT);
+}
+
 /************************************************
  * 1/4 & 1/16 input picture downsampling (filtering)
  ************************************************/
@@ -1493,7 +1562,7 @@ void svt_aom_pad_input_pictures(SequenceControlSet* scs, EbPictureBufferDesc* in
     uint32_t comp_stride_y  = input_pic->y_stride / 4;
     uint32_t comp_stride_uv = input_pic->u_stride / 4;
 
-    if (scs->static_config.encoder_bit_depth > EB_EIGHT_BIT) {
+    if (SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > EB_EIGHT_BIT) {
         if (input_pic->y_buffer_bit_inc) {
             svt_aom_generate_padding_compressed_10bit(input_pic->y_buffer_bit_inc,
                                                       comp_stride_y,
@@ -1525,7 +1594,7 @@ void svt_aom_pad_input_pictures(SequenceControlSet* scs, EbPictureBufferDesc* in
     }
 
     // PAD the bit inc buffer in 10bit
-    if (scs->static_config.encoder_bit_depth > EB_EIGHT_BIT) {
+    if (SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > EB_EIGHT_BIT) {
         if (input_pic->u_buffer_bit_inc) {
             svt_aom_generate_padding_compressed_10bit(input_pic->u_buffer_bit_inc,
                                                       comp_stride_uv,
@@ -1545,6 +1614,298 @@ void svt_aom_pad_input_pictures(SequenceControlSet* scs, EbPictureBufferDesc* in
         }
     }
 }
+
+#if CONFIG_ENABLE_VMAF
+/*********************************************************************************
+ *
+ * @brief
+ *  Determines the per-frame unsharp mask sharpening strength for TUNE_VMAF.
+ *
+ * @par Description:
+ *  The strength is assembled from independent signals, each isolated in its own
+ *  helper, then combined:
+ *
+ *  1. vmaf_get_spatial_amount: caps the amount by MAD tiers -- a low floor for
+ *     near-flat frames, then stepping up with activity toward the cap.
+ *
+ *  2. vmaf_get_qp_amount: maps the base encoding QP to a target amount -- full
+ *     strength at low QP, easing down monotonically as QP rises, then holding a
+ *     floor at higher QP, since heavy compression masks fine detail regardless.
+ *
+ *  3. vmaf_get_coherence_factor: reduces the amount on low gradient-coherence
+ *     (noise/grain) frames, which cost the most PSNR per unit VMAF.
+ *
+ *  4. vmaf_compute_combined_amount: pulls the pieces together by blending the
+ *     per-QP and spatial amounts; the coherence factor then scales the result.
+ *
+ ********************************************************************************/
+
+static float vmaf_get_spatial_amount(uint32_t avg_mad) {
+    if (avg_mad < 2) {
+        return 0.15f;
+    } else if (avg_mad < 5) {
+        return 0.22f;
+    } else if (avg_mad < 12) {
+        return 0.28f;
+    } else {
+        return 0.30f;
+    }
+}
+
+static float vmaf_get_qp_amount(uint32_t base_qp) {
+    if (base_qp >= 35) {
+        return 0.3f;
+    }
+    return 0.5f - (base_qp / 35.0f) * (0.5f - 0.3f);
+}
+
+static float vmaf_get_coherence_factor(float gcoh) {
+    if (gcoh < 0.40f) {
+        return 0.80f;
+    } else if (gcoh < 0.60f) {
+        return 0.9f;
+    } else {
+        return 1.0f;
+    }
+}
+
+static float vmaf_compute_combined_amount(PictureParentControlSet* pcs, uint32_t avg_mad, float gcoh) {
+    float per_qp     = vmaf_get_qp_amount(pcs->scs->static_config.qp);
+    float spatial    = vmaf_get_spatial_amount(avg_mad);
+    float coh_factor = vmaf_get_coherence_factor(gcoh);
+
+    float combined_amount = (per_qp + spatial) / 2.0f;
+    return combined_amount * coh_factor;
+}
+
+/*********************************************************************************
+ *
+ * @brief
+ *  Computes a per-frame noise gate multiplier that scales down the sharpening
+ *  amount on noisy frames so the unsharp mask does not amplify noise.
+ *
+ * @par Description:
+ *  Estimates the noise level of the luma plane using a Laplacian-based
+ *  estimator. The raw noise estimate is passed through a log1p compression
+ *  to reduce sensitivity to outliers, then mapped to a gate multiplier in
+ *  the range [gate_floor, 1.0]:
+ *
+ *    - Below gate_start : multiplier = 1.0  (no reduction, clean frame)
+ *    - Between gate_start and gate_end : multiplier decreases linearly
+ *    - Above gate_end   : multiplier = gate_floor (maximum reduction)
+ *
+ *  The resulting multiplier is applied directly to the sharpening amount,
+ *  so noisy frames receive proportionally less sharpening to prevent the
+ *  unsharp mask from amplifying noise instead of enhancing real detail.
+ *
+ ********************************************************************************/
+static float vmaf_get_noise_gate(PictureParentControlSet* pcs) {
+    EbPictureBufferDesc* pic = pcs->enhanced_pic;
+
+    const uint8_t* y          = pic->y_buffer;
+    int32_t        noise_fp16 = svt_estimate_noise_fp16(
+        y, (uint16_t)pic->width, (uint16_t)pic->height, (uint16_t)pic->y_stride);
+    if (noise_fp16 < 0) {
+        return 1.0f;
+    }
+
+    int32_t noise_log1p = svt_aom_noise_log1p_fp16(noise_fp16);
+
+    const int32_t gate_start = 40000;
+    const int32_t gate_end   = 80000;
+    const float   gate_floor = 0.3f;
+
+    if (noise_log1p <= gate_start) {
+        return 1.0f;
+    }
+    if (noise_log1p >= gate_end) {
+        return gate_floor;
+    }
+
+    float t = (float)(noise_log1p - gate_start) / (float)(gate_end - gate_start);
+    return 1.0f - t * (1.0f - gate_floor);
+}
+
+/*********************************************************************************
+ *
+ * @brief
+ *  Computes the per-frame delta clip: the cap on how far the unsharp mask may
+ *  push any single pixel, which limits ringing on strong edges.
+ *
+ * @par Description:
+ *  Starts from a QP-based budget (higher QP / lower bitrate frames tolerate a
+ *  larger delta) and then tightens it on busy frames, where strong edges
+ *  dominate and cost the most PSNR per unit of VMAF gain: it clips 4 below
+ *  qp_delta on busy frames, and uses the full qp_delta otherwise.
+ *
+ ********************************************************************************/
+static int32_t vmaf_get_delta_clip(int32_t base_qp, int busy_frame) {
+    int32_t qp_delta;
+    if (base_qp <= 42) {
+        qp_delta = 8;
+    } else if (base_qp <= 51) {
+        qp_delta = 9;
+    } else if (base_qp <= 57) {
+        qp_delta = 10;
+    } else {
+        qp_delta = 12;
+    }
+
+    return busy_frame ? qp_delta - 4 : qp_delta;
+}
+
+/*********************************************************************************
+ *
+ * @brief
+ *  Applies a separable cascaded box blur to the luma plane to produce the
+ *  reference blur for the unsharp mask.
+ *
+ * @par Description:
+ *  Uses a separable box blur: instead of a full 2D kernel, the filter is split
+ *  into a horizontal pass that processes each row independently, followed by a
+ *  vertical pass over those outputs. Each direction runs two consecutive box
+ *  stages (steps_x = steps_y = 2); cascading two box filters approximates a
+ *  Gaussian while a running accumulator keeps the cost constant per pixel (no
+ *  multiplies). The horizontal pass stores uint32_t intermediates that the
+ *  vertical pass then smooths into the final blurred plane used by the unsharp
+ *  mask.
+ *
+ ********************************************************************************/
+static void vmaf_box_blur_frame(const uint8_t* luma_plane, int stride, uint8_t* blur_plane, int width, int height,
+                                int16_t* const hring[5]) {
+    const int steps_x = 2;
+    const int steps_y = 2;
+
+    int16_t* r[5] = {hring[0], hring[1], hring[2], hring[3], hring[4]};
+    for (int k = 0; k < 4; k++) {
+        int row = k - steps_y;
+        row     = row < 0 ? 0 : (row >= height ? height - 1 : row);
+        svt_vmaf_hpass_row(luma_plane + (size_t)row * stride, width, r[k]);
+    }
+
+    for (int m = 0; m < height; m++) {
+        int row = m + steps_y;
+        row     = row >= height ? height - 1 : row;
+        svt_vmaf_hpass_row(luma_plane + (size_t)row * stride, width, r[4]);
+
+        svt_vmaf_vpass_row(r[0], r[1], r[2], r[3], r[4], blur_plane + (size_t)m * width, width, steps_x);
+
+        int16_t* oldest = r[0];
+        r[0]            = r[1];
+        r[1]            = r[2];
+        r[2]            = r[3];
+        r[3]            = r[4];
+        r[4]            = oldest;
+    }
+}
+
+/*********************************************************************************
+ * Inspired by libaom's unsharp_rect() in av1/encoder/tune_vmaf.c
+ *
+ * @brief
+ *  Applies the unsharp mask to the full luma plane row by row.
+ *
+ * @par Description:
+ *  For each row, computes the detail signal as the difference between the
+ *  original and blurred luma, scales it by the sharpening amount, and adds it
+ *  back to the original. Before scaling, the per-pixel delta is clamped to
+ *  delta_clip to limit ringing and distortion on strong edges. The result is
+ *  written directly into the destination buffer.
+ *
+ ********************************************************************************/
+static void vmaf_unsharp_apply_frame(const uint8_t* src, const uint8_t* blur_plane, uint8_t* dst, int width, int height,
+                                     int stride, int sharp_amount, int32_t delta_clip) {
+    for (int y = 0; y < height; y++) {
+        svt_vmaf_apply_unsharp_row(
+            src + y * stride, blur_plane + y * width, dst + y * stride, width, sharp_amount, delta_clip);
+    }
+}
+
+/*********************************************************************************
+ *
+ * @brief
+ *  Entry point for the TUNE_VMAF luma preprocessing pipeline applied once
+ *  per input frame before encoding.
+ *
+ * @par Description:
+ *  Runs the full preprocessing sequence on the luma plane, all in place:
+ *    1. Computes the adaptive sharpening amount from the per-QP, spatial-
+ *       activity and gradient-coherence signals, then scales it down with the
+ *       noise gate on noisy frames.
+ *    2. Blurs the luma with vmaf_box_blur_frame to build the low-pass
+ *       reference the unsharp mask needs.
+ *    3. Derives the per-pixel delta clip with vmaf_get_delta_clip, from the
+ *       QP and how busy the frame is, to bound PSNR loss on strong edges.
+ *    4. Applies the unsharp mask with vmaf_unsharp_apply_frame, writing the
+ *       sharpened luma back over the source.
+ *
+ ********************************************************************************/
+static void vmaf_preprocess_frame(PictureAnalysisContext* pa_ctx, PictureParentControlSet* pcs) {
+    const EbSvtAv1EncConfiguration* config = &pcs->scs->static_config;
+    pcs->vmaf_sharpening_amount            = 0;
+    // Sharpening modifies the source and must not run for lossless coding.
+    if (config->lossless || (config->rate_control_mode == 0 && config->qp == 0 && !config->use_qp_file)) {
+        return;
+    }
+    EbPictureBufferDesc* pic_ptr    = pcs->enhanced_pic;
+    const int            pic_width  = pic_ptr->width;
+    const int            pic_height = pic_ptr->height;
+    const int            y_stride   = pic_ptr->y_stride;
+
+    /* Step 1: compute the per-frame sharpening amount, then gate it down on noisy frames. */
+    uint32_t avg_mad      = svt_vmaf_compute_avg_mad(pic_ptr->y_buffer, pic_width, pic_height, y_stride);
+    float    gcoh         = svt_vmaf_compute_gradient_coherence(pic_ptr->y_buffer, pic_width, pic_height, y_stride);
+    int      sharp_amount = (int)(vmaf_compute_combined_amount(pcs, avg_mad, gcoh) * 32768.0f);
+    sharp_amount          = (int)(sharp_amount * vmaf_get_noise_gate(pcs));
+    pcs->vmaf_sharpening_amount = sharp_amount;
+
+    /* Step 2: build the low-pass reference by box-blurring the luma plane. */
+    const int padded_width = pic_width + 2 * 2; /* 2 * steps_x */
+    if (pa_ctx->vmaf_padded_w < padded_width) {
+        for (int i = 0; i < 5; i++) {
+            EB_FREE_ARRAY(pa_ctx->vmaf_hring[i]);
+        }
+        pa_ctx->vmaf_padded_w = 0;
+        for (int i = 0; i < 5; i++) {
+            EB_MALLOC_ARRAY_NO_CHECK(pa_ctx->vmaf_hring[i], padded_width);
+        }
+        if (!pa_ctx->vmaf_hring[0] || !pa_ctx->vmaf_hring[1] || !pa_ctx->vmaf_hring[2] || !pa_ctx->vmaf_hring[3] ||
+            !pa_ctx->vmaf_hring[4]) {
+            return;
+        }
+        pa_ctx->vmaf_padded_w = padded_width;
+    }
+
+    const int blur_pixels = pic_width * pic_height;
+    if (pa_ctx->vmaf_blur_pixels < blur_pixels) {
+        EB_FREE_ARRAY(pa_ctx->vmaf_blur_plane);
+        pa_ctx->vmaf_blur_pixels = 0;
+        EB_MALLOC_ARRAY_NO_CHECK(pa_ctx->vmaf_blur_plane, (size_t)blur_pixels);
+        if (!pa_ctx->vmaf_blur_plane) {
+            return;
+        }
+        pa_ctx->vmaf_blur_pixels = blur_pixels;
+    }
+
+    uint8_t* luma       = pic_ptr->y_buffer;
+    uint8_t* blur_plane = pa_ctx->vmaf_blur_plane;
+    vmaf_box_blur_frame(luma, y_stride, blur_plane, pic_width, pic_height, pa_ctx->vmaf_hring);
+
+    /* Step 3: flag busy frames (under 85% flat pixels) and derive the per-pixel delta clip. */
+    const int32_t  flat_detail_thr   = 12;
+    const uint32_t pixel_count       = (uint32_t)(pic_width * pic_height);
+    const uint32_t flat_pixel_target = pixel_count * 85 / 100;
+    const uint32_t flat_pixel_count  = svt_vmaf_count_detail_le(
+        luma, blur_plane, pic_width, pic_height, y_stride, flat_detail_thr);
+    const int is_busy_frame = (flat_pixel_count < flat_pixel_target);
+
+    const int32_t delta_clip = vmaf_get_delta_clip((int32_t)pcs->scs->static_config.qp, is_busy_frame);
+    pcs->vmaf_max_delta      = delta_clip;
+
+    /* Step 4: apply the unsharp mask in place, writing the sharpened luma back over the source. */
+    vmaf_unsharp_apply_frame(luma, blur_plane, luma, pic_width, pic_height, y_stride, sharp_amount, delta_clip);
+}
+#endif // CONFIG_ENABLE_VMAF
 
 /* Picture Analysis Kernel */
 
@@ -1572,9 +1933,8 @@ void svt_aom_pad_input_pictures(SequenceControlSet* scs, EbPictureBufferDesc* in
  *then used to compute statistics
  *
  ********************************************************************************/
-void* svt_aom_picture_analysis_kernel(void* input_ptr) {
-    EbThreadContext*         thread_ctx = (EbThreadContext*)input_ptr;
-    PictureAnalysisContext*  pa_ctx     = (PictureAnalysisContext*)thread_ctx->priv;
+EbErrorType svt_aom_picture_analysis_kernel_iter(void* context) {
+    PictureAnalysisContext*  pa_ctx = (PictureAnalysisContext*)context;
     PictureParentControlSet* pcs;
 
     EbObjectWrapper*             in_results_wrapper_ptr;
@@ -1582,104 +1942,125 @@ void* svt_aom_picture_analysis_kernel(void* input_ptr) {
     EbObjectWrapper*             out_results_wrapper;
     EbPaReferenceObject*         pa_ref_obj_;
 
-    EbPictureBufferDesc* input_padded_pic;
     EbPictureBufferDesc* input_pic;
 
-    for (;;) {
-        // Get Input Full Object
-        EB_GET_FULL_OBJECT(pa_ctx->resource_coordination_results_input_fifo_ptr, &in_results_wrapper_ptr);
+    // Get Input Full Object
+    EB_GET_FULL_OBJECT(pa_ctx->resource_coordination_results_input_fifo_ptr, &in_results_wrapper_ptr);
 
-        in_results_ptr = (ResourceCoordinationResults*)in_results_wrapper_ptr->object_ptr;
-        pcs            = (PictureParentControlSet*)in_results_ptr->pcs_wrapper->object_ptr;
+    in_results_ptr = (ResourceCoordinationResults*)in_results_wrapper_ptr->object_ptr;
+    pcs            = (PictureParentControlSet*)in_results_ptr->pcs_wrapper->object_ptr;
 
-        // Mariana : save enhanced picture ptr, move this from here
-        pcs->enhanced_unscaled_pic = pcs->enhanced_pic;
+    pcs->is_luma_dominant_input = false;
 
-        // There is no need to do processing for overlay picture. Overlay and AltRef share the same
-        // results.
-        if (!pcs->is_overlay) {
-            SequenceControlSet* scs = pcs->scs;
-            input_pic               = pcs->enhanced_pic;
-            {
-                // Padding for input pictures
-                svt_aom_pad_input_pictures(scs, input_pic);
+    // Mariana : save enhanced picture ptr, move this from here
+    pcs->enhanced_unscaled_pic = pcs->enhanced_pic;
 
-                // Pre processing operations performed on the input picture
-                svt_aom_picture_pre_processing_operations(pcs, scs);
-
-                if (input_pic->color_format >= EB_YUV422) {
-                    // Jing: Do the conversion of 422/444=>420 here since it's multi-threaded kernel
-                    //       Reuse the Y, only add cb/cr in the newly created buffer desc
-                    //       NOTE: since denoise may change the src, so this part is after svt_aom_picture_pre_processing_operations()
-                    pcs->chroma_downsampled_pic->y_buffer = input_pic->y_buffer;
-                    svt_aom_down_sample_chroma(input_pic, pcs->chroma_downsampled_pic);
-                } else {
-                    pcs->chroma_downsampled_pic = input_pic;
-                }
-
-                //not passing through the DS pool, so 1/4 and 1/16 are not used
-                pcs->ds_pics.picture_ptr           = input_pic;
-                pcs->ds_pics.quarter_picture_ptr   = NULL;
-                pcs->ds_pics.sixteenth_picture_ptr = NULL;
-                pcs->ds_pics.picture_number        = pcs->picture_number;
-
-                // Original path
-                // Get PA ref, copy 8bit luma to pa_ref->input_padded_pic
-                pa_ref_obj_                 = (EbPaReferenceObject*)pcs->pa_ref_pic_wrapper->object_ptr;
-                pa_ref_obj_->picture_number = pcs->picture_number;
-                input_padded_pic            = pa_ref_obj_->input_padded_pic;
-                if (!scs->allintra) {
-                    // 1/4 & 1/16 input picture downsampling through filtering
-                    svt_aom_downsample_filtering_input_picture(pcs,
-                                                               input_padded_pic,
-                                                               pa_ref_obj_->quarter_downsampled_picture_ptr,
-                                                               pa_ref_obj_->sixteenth_downsampled_picture_ptr);
-
-                    pcs->ds_pics.quarter_picture_ptr   = pa_ref_obj_->quarter_downsampled_picture_ptr;
-                    pcs->ds_pics.sixteenth_picture_ptr = pa_ref_obj_->sixteenth_downsampled_picture_ptr;
-                }
+    // There is no need to do processing for overlay picture. Overlay and AltRef share the same
+    // results.
+    if (!pcs->is_overlay) {
+        SequenceControlSet* scs = pcs->scs;
+        input_pic               = pcs->enhanced_pic;
+        EbPictureBufferDesc* input_padded_pic;
+        {
+            if (scs->static_config.tune == TUNE_VMAF) {
+#if CONFIG_ENABLE_VMAF
+                vmaf_preprocess_frame(pa_ctx, pcs);
+#endif
             }
-            // Gathering statistics of input picture, including Variance Calculation, Histogram Bins
-            {
-                svt_aom_gathering_picture_statistics(
-                    scs, pcs, input_padded_pic, pa_ref_obj_->sixteenth_downsampled_picture_ptr);
+            // Padding for input pictures
+            svt_aom_pad_input_pictures(scs, input_pic);
 
-                pa_ref_obj_->avg_luma = pcs->avg_luma;
+            // Pre processing operations performed on the input picture
+            svt_aom_picture_pre_processing_operations(pcs, scs);
+
+            if (input_pic->color_format >= EB_YUV422) {
+                // Jing: Do the conversion of 422/444=>420 here since it's multi-threaded kernel
+                //       Reuse the Y, only add cb/cr in the newly created buffer desc
+                //       NOTE: since denoise may change the src, so this part is after svt_aom_picture_pre_processing_operations()
+                pcs->chroma_downsampled_pic->y_buffer = input_pic->y_buffer;
+                svt_aom_down_sample_chroma(input_pic, pcs->chroma_downsampled_pic);
+            } else {
+                pcs->chroma_downsampled_pic = input_pic;
             }
 
-            // If running multi-threaded mode, perform SC detection in svt_aom_picture_analysis_kernel, else in svt_aom_picture_decision_kernel
-            if (scs->static_config.level_of_parallelism != 1) {
-                switch (scs->static_config.screen_content_mode) {
-                case 0:
-                    pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = 0;
-                    break;
-                case 1:
-                    pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = 1;
-                    break;
-                case 2:
-                    // SC Detection is OFF for 4K and higher
-                    if (scs->input_resolution <= INPUT_SIZE_1080p_RANGE) {
-                        svt_aom_is_screen_content(pcs);
-                    }
-                    break;
-                case 3:
-                    svt_aom_is_screen_content_antialiasing_aware(pcs);
-                    break;
-                }
+            //not passing through the DS pool, so 1/4 and 1/16 are not used
+            pcs->ds_pics.picture_ptr           = input_pic;
+            pcs->ds_pics.quarter_picture_ptr   = NULL;
+            pcs->ds_pics.sixteenth_picture_ptr = NULL;
+            pcs->ds_pics.picture_number        = pcs->picture_number;
+
+            // Original path
+            // Get PA ref, copy 8bit luma to pa_ref->input_padded_pic
+            pa_ref_obj_                 = (EbPaReferenceObject*)pcs->pa_ref_pic_wrapper->object_ptr;
+            pa_ref_obj_->picture_number = pcs->picture_number;
+            input_padded_pic            = pa_ref_obj_->input_padded_pic;
+            if (!scs->allintra) {
+                // 1/4 & 1/16 input picture downsampling through filtering
+                svt_aom_downsample_filtering_input_picture(pcs,
+                                                           input_padded_pic,
+                                                           pa_ref_obj_->quarter_downsampled_picture_ptr,
+                                                           pa_ref_obj_->sixteenth_downsampled_picture_ptr);
+
+                pcs->ds_pics.quarter_picture_ptr   = pa_ref_obj_->quarter_downsampled_picture_ptr;
+                pcs->ds_pics.sixteenth_picture_ptr = pa_ref_obj_->sixteenth_downsampled_picture_ptr;
             }
         }
+        // Gathering statistics of input picture, including Variance Calculation, Histogram Bins
+        {
+            svt_aom_gathering_picture_statistics(
+                scs, pcs, input_padded_pic, pa_ref_obj_->sixteenth_downsampled_picture_ptr);
 
-        // Get Empty Results Object
-        svt_get_empty_object(pa_ctx->picture_analysis_results_output_fifo_ptr, &out_results_wrapper);
+            pa_ref_obj_->avg_luma = pcs->avg_luma;
+        }
 
-        PictureAnalysisResults* out_results = (PictureAnalysisResults*)out_results_wrapper->object_ptr;
-        out_results->pcs_wrapper            = in_results_ptr->pcs_wrapper;
+        // If running multi-threaded mode, perform SC detection in svt_aom_picture_analysis_kernel, else in svt_aom_picture_decision_kernel
+        if (scs->static_config.level_of_parallelism != 1) {
+            switch (scs->static_config.screen_content_mode) {
+            case 0:
+                pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = pcs->sc_class5 = 0;
+                break;
+            case 1:
+                pcs->sc_class0 = pcs->sc_class1 = pcs->sc_class2 = pcs->sc_class3 = pcs->sc_class4 = pcs->sc_class5 = 1;
+                break;
+            case 2:
+                // SC Detection is OFF for 4K and higher
+                if (scs->input_resolution <= INPUT_SIZE_1080p_RANGE) {
+                    svt_aom_is_screen_content(pcs);
+                }
+                break;
+            case 3:
+                svt_aom_is_screen_content_antialiasing_aware(pcs);
+                break;
+            }
+            // Luma-dominant detection in MT mode
+            if (scs->detect_luma_dominant_input) {
+                pcs->is_luma_dominant_input = svt_aom_is_input_luma_dominant(pcs->chroma_downsampled_pic);
+            }
+        }
+    }
 
-        // Release the Input Results
-        svt_release_object(in_results_wrapper_ptr);
+    // Get Empty Results Object
+    svt_get_empty_object(pa_ctx->picture_analysis_results_output_fifo_ptr, &out_results_wrapper);
 
-        // Post the Full Results Object
-        svt_post_full_object(out_results_wrapper);
+    PictureAnalysisResults* out_results = (PictureAnalysisResults*)out_results_wrapper->object_ptr;
+    out_results->pcs_wrapper            = in_results_ptr->pcs_wrapper;
+
+    // Release the Input Results
+    svt_release_object(in_results_wrapper_ptr);
+
+    // Post the Full Results Object
+    svt_post_full_object(out_results_wrapper);
+
+    return EB_ErrorNone;
+}
+
+void* svt_aom_picture_analysis_kernel(void* input_ptr) {
+    EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
+    for (;;) {
+        EbErrorType err = svt_aom_picture_analysis_kernel_iter(thread_ctx->priv);
+        if (err == EB_NoErrorFifoShutdown) {
+            return NULL;
+        }
     }
     return NULL;
 }

@@ -19,6 +19,24 @@ typedef int64_t TranHigh;
 
 #define AOM_QM_BITS 5
 
+// quant_shift is always a power of two, so the second multiply-high in
+// quantize() collapses to a right shift:
+//   (q * quant_shift) >> (16 - log_scale) == q >> (16 - log_scale - ctz(qs))
+// q is non-negative here (abs + round, then clamped), so a logical shift is
+// correct.
+//
+// svt_aom_invert_quant writes shift = 1 << (16 - floor(log2(dequant))), and both
+// qlookup tables start at dequant == 4, so shift is at most 1 << 14 and never
+// truncates to 0 in int16. svt_ctz therefore never sees 0. Lanes 2..7 are
+// replicated from lane 1 by the quantizer setup ("8: SIMD width").
+static INLINE __m256i init_quant_shift_amt(const int16_t* quant_shift_ptr, const int add_shift) {
+    int32_t sh[8];
+    for (int i = 0; i < 8; i++) {
+        sh[i] = 16 - add_shift - (int32_t)svt_ctz((unsigned)(uint16_t)quant_shift_ptr[i]);
+    }
+    return _mm256_loadu_si256((const __m256i*)sh);
+}
+
 static INLINE void update_qp(__m256i* qp) {
     int32_t i;
     for (i = 0; i < 5; ++i) {
@@ -69,6 +87,71 @@ static INLINE void clamp_epi32(__m256i* x, __m256i min, __m256i max) {
     *x = _mm256_max_epi32(*x, min);
 }
 
+// int16 quantize: 16 coefficients per __m256i. Ported from the Arm int16 path
+// (av1_quantize_neon.c). Valid for 8-bit content, where the forward transform
+// produces coefficients that fit int16 (they are widened to int32 only on
+// store), and where dqcoeff = qcoeff * dequant also fits.
+//
+// qs16 lanes hold zbin, round, quant, dequant and the power-of-two shift amount.
+static INLINE void quantize16(const __m256i* qs16, __m256i c0, __m256i c1, const int16_t* iscan_ptr, TranLow* qcoeff,
+                              TranLow* dqcoeff, __m256i* eob16) {
+    const __m256i zero = _mm256_setzero_si256();
+    // packs_epi32 emits per-128-bit-lane, so the permute restores coefficient order
+    const __m256i cpk = _mm256_permute4x64_epi64(_mm256_packs_epi32(c0, c1), 0xD8);
+
+    const __m256i abs  = _mm256_abs_epi16(cpk);
+    const __m256i skip = _mm256_cmpgt_epi16(qs16[0], abs);
+    if (EB_LIKELY(_mm256_movemask_epi8(skip) != (int)0xFFFFFFFF)) {
+        __m256i q = _mm256_adds_epi16(abs, qs16[1]);
+        q         = _mm256_add_epi16(q, _mm256_mulhi_epi16(q, qs16[2]));
+        q         = _mm256_sra_epi16(q, _mm256_castsi256_si128(qs16[4]));
+        q         = _mm256_andnot_si256(skip, q);
+
+        // log_scale is 0 on this path (see the caller's gate), so there is no
+        // post-shift; at log_scale > 0 the pre-shift product would overflow
+        // int16 anyway, which is why the caller restricts it.
+        const __m256i dq = _mm256_mullo_epi16(q, qs16[3]);
+
+        q                 = _mm256_sign_epi16(q, cpk);
+        const __m256i dqs = _mm256_sign_epi16(dq, cpk);
+
+        const __m256i qlo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(q));
+        const __m256i qhi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(q, 1));
+        const __m256i dlo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(dqs));
+        const __m256i dhi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(dqs, 1));
+        _mm256_store_si256((__m256i*)(qcoeff + 0), qlo);
+        _mm256_store_si256((__m256i*)(qcoeff + 8), qhi);
+        _mm256_store_si256((__m256i*)(dqcoeff + 0), dlo);
+        _mm256_store_si256((__m256i*)(dqcoeff + 8), dhi);
+
+        const __m256i iscan   = _mm256_loadu_si256((const __m256i*)iscan_ptr);
+        const __m256i nz      = _mm256_cmpeq_epi16(_mm256_cmpeq_epi16(dqs, zero), zero);
+        __m256i       cur_eob = _mm256_sub_epi16(iscan, nz);
+        cur_eob               = _mm256_and_si256(cur_eob, nz);
+        *eob16                = _mm256_max_epi16(cur_eob, *eob16);
+    } else {
+        _mm256_store_si256((__m256i*)(qcoeff + 0), zero);
+        _mm256_store_si256((__m256i*)(qcoeff + 8), zero);
+        _mm256_store_si256((__m256i*)(dqcoeff + 0), zero);
+        _mm256_store_si256((__m256i*)(dqcoeff + 8), zero);
+    }
+}
+
+// int16 parameter vectors. qs16[4] holds the scalar shift amount in its low
+// 128 bits for _mm256_sra_epi16.
+// AC lanes only, and log_scale 0 only: the int16 path is not taken otherwise,
+// so neither the DC lane nor the log_scale pre-shift of zbin/round applies here.
+static INLINE void init_qs16(const int16_t* zbin_ptr, const int16_t* round_ptr, const int16_t* quant_ptr,
+                             const int16_t* dequant_ptr, const int16_t* quant_shift_ptr, __m256i* qs16) {
+    const int     i  = 1;
+    const int16_t zb = zbin_ptr[i], rd = round_ptr[i];
+    qs16[0] = _mm256_set1_epi16(zb);
+    qs16[1] = _mm256_set1_epi16(rd);
+    qs16[2] = _mm256_set1_epi16(quant_ptr[i]);
+    qs16[3] = _mm256_set1_epi16(dequant_ptr[i]);
+    qs16[4] = _mm256_castsi128_si256(_mm_cvtsi32_si128(16 - (int)svt_ctz((unsigned)(uint16_t)quant_shift_ptr[i])));
+}
+
 static INLINE void quantize(const __m256i* qp, __m256i c, const int16_t* iscan_ptr, TranLow* qcoeff, TranLow* dqcoeff,
                             __m256i* eob, __m256i min, __m256i max, int shift_dq) {
     const __m256i zero   = _mm256_setzero_si256();
@@ -79,11 +162,12 @@ static INLINE void quantize(const __m256i* qp, __m256i c, const int16_t* iscan_p
     if (EB_LIKELY(~nzflag)) {
         __m256i q = _mm256_add_epi32(abs, qp[1]);
         clamp_epi32(&q, min, max);
-        __m256i tmp;
-        mm256_mul_shift_epi32(&q, &qp[2], &tmp, 16);
-        q = _mm256_add_epi32(tmp, q);
+        // q is clamped to [0, 32767] and quant is int16, so q * quant is at most
+        // 32767^2 ~= 1.07e9 and stays inside int32.
+        const __m256i tmp = _mm256_srai_epi32(_mm256_mullo_epi32(q, qp[2]), 16);
+        q                 = _mm256_add_epi32(tmp, q);
 
-        mm256_mul_shift_epi32(&q, &qp[4], &q, 16 - shift_dq);
+        q          = _mm256_srlv_epi32(q, qp[4]);
         __m256i dq = _mm256_mullo_epi32(q, qp[3]);
         dq         = _mm256_srli_epi32(dq, shift_dq);
 
@@ -222,8 +306,19 @@ void svt_aom_quantize_b_avx2(const TranLow* coeff_ptr, intptr_t n_coeffs, const 
     (void)scan;
     const uint32_t step = 8;
 
+    // The int16 loop below advances 8, consumes 16, then advances 8 again, so
+    // the coefficient count must be a multiple of 16. Every AV1 transform area
+    // is. Checked here, before the two leading groups decrement n_coeffs.
+    assert(n_coeffs % 16 == 0);
+
     __m256i qp[5], coeff;
     init_qp_add_shift(zbin_ptr, round_ptr, quant_ptr, dequant_ptr, quant_shift_ptr, qp, log_scale);
+    // svt_aom_invert_quant is the only producer of quant_shift and always writes
+    // 1 << (16 - l), so the shift path in quantize() is always valid. Asserted
+    // rather than branched on, matching av1_quantize_neon.c.
+    assert(quant_shift_ptr[0] == (1 << svt_ctz((unsigned)(uint16_t)quant_shift_ptr[0])));
+    assert(quant_shift_ptr[1] == (1 << svt_ctz((unsigned)(uint16_t)quant_shift_ptr[1])));
+    qp[4] = init_quant_shift_amt(quant_shift_ptr, log_scale);
     coeff = _mm256_load_si256((const __m256i*)coeff_ptr);
 
     __m256i eob = _mm256_setzero_si256();
@@ -232,15 +327,56 @@ void svt_aom_quantize_b_avx2(const TranLow* coeff_ptr, intptr_t n_coeffs, const 
     quantize(qp, coeff, iscan, qcoeff_ptr, dqcoeff_ptr, &eob, min, max, log_scale);
     update_qp(qp);
 
-    while (n_coeffs > step) {
+    // Second group of 8 stays on the int32 path, then the bulk switches to the
+    // int16 kernel (16 coefficients per register). Only the DC coefficient needs
+    // its own shift amount, and AVX2 has no per-lane 16-bit variable shift, so
+    // keeping the first 16 on the int32 path avoids that entirely.
+    if (n_coeffs > step) {
         coeff_ptr += step;
         qcoeff_ptr += step;
         dqcoeff_ptr += step;
         iscan += step;
         n_coeffs -= step;
-
         coeff = _mm256_load_si256((const __m256i*)coeff_ptr);
         quantize(qp, coeff, iscan, qcoeff_ptr, dqcoeff_ptr, &eob, min, max, log_scale);
+    }
+
+    // log_scale 0 only: dqcoeff is |q| * dequant BEFORE the log_scale shift, so
+    // at log_scale > 0 that intermediate is up to 4x the final value and
+    // overflows int16. The int32 path keeps it in 32 bits. NEON restricts its
+    // int16 kernel the same way (quantize_b_logscale0_8).
+    if (log_scale == 0 && n_coeffs > (intptr_t)step) {
+        __m256i qs16[5];
+        init_qs16(zbin_ptr, round_ptr, quant_ptr, dequant_ptr, quant_shift_ptr, qs16);
+        __m256i eob16 = _mm256_setzero_si256();
+        while (n_coeffs > (intptr_t)step) {
+            coeff_ptr += step;
+            qcoeff_ptr += step;
+            dqcoeff_ptr += step;
+            iscan += step;
+            n_coeffs -= step;
+            const __m256i c0 = _mm256_load_si256((const __m256i*)coeff_ptr);
+            const __m256i c1 = _mm256_load_si256((const __m256i*)(coeff_ptr + 8));
+            quantize16(qs16, c0, c1, iscan, qcoeff_ptr, dqcoeff_ptr, &eob16);
+            coeff_ptr += step;
+            qcoeff_ptr += step;
+            dqcoeff_ptr += step;
+            iscan += step;
+            n_coeffs -= step;
+        }
+        const __m256i e32lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(eob16));
+        const __m256i e32hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(eob16, 1));
+        eob                 = _mm256_max_epi32(eob, _mm256_max_epi32(e32lo, e32hi));
+    } else {
+        while (n_coeffs > step) {
+            coeff_ptr += step;
+            qcoeff_ptr += step;
+            dqcoeff_ptr += step;
+            iscan += step;
+            n_coeffs -= step;
+            coeff = _mm256_load_si256((const __m256i*)coeff_ptr);
+            quantize(qp, coeff, iscan, qcoeff_ptr, dqcoeff_ptr, &eob, min, max, log_scale);
+        }
     }
     {
         __m256i eob_s;

@@ -171,6 +171,17 @@ static const std::vector<EncTestSetting> default_enc_settings = {
     {"OverlayTest2", {{"EnableOverlays", "1"}, {"LevelOfParallelism", "1"}}, default_test_vectors},
     {"OverlayTest3", {{"EnableOverlays", "1"}, {"EncoderMode", "5"}}, default_test_vectors},
 
+    // test single-thread kernel dispatch (lp=1, low-delay only)
+    {"SingleThreadLDTest1", {{"LevelOfParallelism", "1"}, {"PredStructure", "1"}}, default_test_vectors},
+
+    // test single-thread kernel dispatch (lp=1, random access)
+    {"SingleThreadRATest1", {{"LevelOfParallelism", "1"}, {"PredStructure", "2"}, {"HierarchicalLevels", "3"}}, parkjoy},
+
+    // stress tests for single-thread mode with complex GOP and many coding tools
+    {"SingleThreadRAStressTest1", {{"LevelOfParallelism", "1"}, {"PredStructure", "2"}, {"HierarchicalLevels", "4"}, {"EncoderMode", "8"}, {"RateControlMode", "0"}, {"CRF", "30"}, {"ScreenContentMode", "2"}}, parkjoy},
+    {"SingleThreadRAStressTest2", {{"LevelOfParallelism", "1"}, {"PredStructure", "2"}, {"HierarchicalLevels", "3"}, {"EncoderMode", "10"}, {"RateControlMode", "1"}, {"TargetBitRate", "200"}}, parkjoy},
+    {"SingleThreadRAStressTest3", {{"LevelOfParallelism", "1"}, {"PredStructure", "2"}, {"HierarchicalLevels", "4"}, {"EncoderMode", "1"}, {"RateControlMode", "0"}, {"CRF", "30"}}, parkjoy},
+
     // test super resolution mode
     {"SuperResTest1", {{"SuperresMode", "2"}}, default_test_vectors},
     {"SuperResTest2", {{"SuperresMode", "4"}}, default_test_vectors},
@@ -736,4 +747,349 @@ static const std::vector<EncTestSetting> generate_aq_mode_1_settings() {
 
 INSTANTIATE_TEST_SUITE_P(SEGMENTTEST, SegmentTest,
                          ::testing::ValuesIn(generate_aq_mode_1_settings()),
+                         EncTestSetting::GetSettingName);
+
+static std::vector<TestFrameEvent> generate_alternating_rate_events() {
+    std::vector<TestFrameEvent> events;
+    for (uint32_t f = 1; f < 100; f++) {
+        uint32_t target_kbps = (f % 2 == 1) ? 299 : 301;
+        events.push_back(std::make_tuple(
+            "RateChange@" + std::to_string(f),
+            f,
+            RATE_CHANGE_EVENT,
+            std::vector<std::string>{std::to_string(target_kbps)}));
+    }
+    return events;
+}
+
+static std::vector<TestVideoVector> rate_change_test_vectors = {
+    std::make_tuple("kirland_640_480_30.yuv", YUV_VIDEO_FILE, IMG_FMT_420, 640,
+                    480, 8, 0, 0, 100),
+};
+
+/* clang-format off */
+static const std::vector<EncTestSetting> rate_change_settings = {
+    // Baseline: no rate change events, static 300 kbps
+    {"RateChangeBaseline",
+     {{"EncoderMode", "11"},
+      {"RealTime", "1"},
+      {"HierarchicalLevels", "0"},
+      {"FrameRateNumerator", "15"},
+      {"FrameRateDenominator", "1"},
+      {"TargetBitRate", "300"},
+      {"RateControlMode", "2"},
+      {"Keyint", "3000"},
+      {"PredStructure", "1"},
+      {"LevelOfParallelism", "1"},
+      {"BufSz", "600"},
+      {"BufInitialSz", "599"},
+      {"BufOptimalSz", "400"},
+      {"UnderShootPct", "100"},
+      {"OverShootPct", "100"}},
+     rate_change_test_vectors},
+    // With rate change: alternate 299/301 on every frame
+    {"RateChangeTest1",
+     {{"EncoderMode", "11"},
+      {"RealTime", "1"},
+      {"HierarchicalLevels", "0"},
+      {"FrameRateNumerator", "15"},
+      {"FrameRateDenominator", "1"},
+      {"TargetBitRate", "300"},
+      {"RateControlMode", "2"},
+      {"Keyint", "3000"},
+      {"PredStructure", "1"},
+      {"LevelOfParallelism", "1"},
+      {"BufSz", "600"},
+      {"BufInitialSz", "599"},
+      {"BufOptimalSz", "400"},
+      {"UnderShootPct", "100"},
+      {"OverShootPct", "100"}},
+     rate_change_test_vectors,
+     generate_alternating_rate_events()},
+};
+/* clang-format on */
+
+class RateChangeOnFlyTest : public SvtAv1E2ETestFramework {
+  protected:
+    void config_test() override {
+        enable_stat = true;
+        enable_config = true;
+        enable_save_bitstream = false;
+        SvtAv1E2ETestFramework::config_test();
+    }
+};
+
+TEST_P(RateChangeOnFlyTest, BitrateWithinVBV) {
+    config_test();
+    for (auto test_vector : enc_setting.test_vectors) {
+        init_test(test_vector);
+        run_encode_process();
+
+        // Compute total compressed bytes from IVF file
+        uint64_t total_output_bytes = 0;
+        if (output_file_ && output_file_->file) {
+            long file_size = ftell(output_file_->file);
+            uint64_t overhead = IVF_STREAM_HEADER_SIZE +
+                                IVF_FRAME_HEADER_SIZE * output_file_->ivf_count;
+            if (file_size > (long)overhead)
+                total_output_bytes = file_size - overhead;
+        }
+
+        // Derive VBV parameters from the test settings
+        const auto &s = enc_setting.setting;
+        const double fps = std::stod(s.at("FrameRateNumerator")) /
+                           std::stod(s.at("FrameRateDenominator"));
+        const double buf_sz_ms = std::stod(s.at("BufSz"));
+        const double target_bps = std::stod(s.at("TargetBitRate")) * 1000.0;
+        const uint32_t num_frames = std::get<8>(test_vector);
+        const double duration_s = num_frames / fps;
+        const double max_bits = (duration_s + buf_sz_ms / 1000.0) * target_bps;
+        const uint64_t total_bits = total_output_bytes * 8;
+        const double actual_kbps = total_bits / duration_s / 1000.0;
+
+        printf("Total output: %llu bytes (%llu bits)\n",
+               (unsigned long long)total_output_bytes,
+               (unsigned long long)total_bits);
+        printf("Max allowed:  %.0f bits (%.1f kbps over %.2fs + %.0fms buf)\n",
+               max_bits,
+               target_bps / 1000.0,
+               duration_s,
+               buf_sz_ms);
+        printf("Actual bitrate: %.1f kbps\n", actual_kbps);
+
+        EXPECT_LE(total_bits, (uint64_t)max_bits)
+            << "Total bits " << total_bits << " exceeds VBV allowance "
+            << (uint64_t)max_bits << " (actual: " << actual_kbps << " kbps)";
+
+        deinit_test();
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(SvtAv1, RateChangeOnFlyTest,
+                         ::testing::ValuesIn(rate_change_settings),
+                         EncTestSetting::GetSettingName);
+
+// Preset (enc_mode) change on-the-fly tests
+// Cycle through presets 9 -> 10 -> 11 -> 10 -> 9, switching every 20 frames
+static std::vector<TestFrameEvent> generate_cycling_preset_events() {
+    std::vector<TestFrameEvent> events;
+    // Preset sequence: 9, 10, 11, 10, 9 (cycle every 20 frames)
+    const int presets[] = {9, 10, 11, 10, 9};
+    const int num_phases = 5;
+    const int frames_per_phase = 20;
+    for (int phase = 0; phase < num_phases; phase++) {
+        uint32_t frame = phase * frames_per_phase;
+        if (frame == 0)
+            frame = 1;  // skip frame 0 (init frame)
+        events.push_back(std::make_tuple(
+            "PresetChange@" + std::to_string(frame) + "=M" +
+                std::to_string(presets[phase]),
+            frame,
+            PRESET_CHANGE_EVENT,
+            std::vector<std::string>{std::to_string(presets[phase])}));
+    }
+    return events;
+}
+
+static std::vector<TestVideoVector> preset_change_test_vectors = {
+    std::make_tuple("kirland_640_480_30.yuv", YUV_VIDEO_FILE, IMG_FMT_420, 640,
+                    480, 8, 0, 0, 100),
+};
+
+/* clang-format off */
+static const std::vector<EncTestSetting> preset_change_settings = {
+    // Baseline: static preset 9, no change events
+    {"PresetChangeBaseline",
+     {{"EncoderMode", "9"},
+      {"RealTime", "1"},
+      {"HierarchicalLevels", "0"},
+      {"FrameRateNumerator", "30"},
+      {"FrameRateDenominator", "1"},
+      {"TargetBitRate", "500"},
+      {"RateControlMode", "2"},
+      {"Keyint", "3000"},
+      {"PredStructure", "1"},
+      {"LevelOfParallelism", "1"},
+      {"BufSz", "1000"},
+      {"BufInitialSz", "600"},
+      {"BufOptimalSz", "600"},
+      {"UnderShootPct", "50"},
+      {"OverShootPct", "50"}},
+     preset_change_test_vectors},
+    // With preset cycling: 9 -> 10 -> 11 -> 10 -> 9
+    {"PresetCycleTest",
+     {{"EncoderMode", "9"},
+      {"RealTime", "1"},
+      {"HierarchicalLevels", "0"},
+      {"FrameRateNumerator", "30"},
+      {"FrameRateDenominator", "1"},
+      {"TargetBitRate", "500"},
+      {"RateControlMode", "2"},
+      {"Keyint", "3000"},
+      {"PredStructure", "1"},
+      {"LevelOfParallelism", "1"},
+      {"BufSz", "1000"},
+      {"BufInitialSz", "600"},
+      {"BufOptimalSz", "600"},
+      {"UnderShootPct", "50"},
+      {"OverShootPct", "50"}},
+     preset_change_test_vectors,
+     generate_cycling_preset_events()},
+};
+/* clang-format on */
+
+class PresetChangeOnFlyTest : public SvtAv1E2ETestFramework {
+  protected:
+    void config_test() override {
+        enable_stat = true;
+        enable_config = true;
+        SvtAv1E2ETestFramework::config_test();
+    }
+};
+
+TEST_P(PresetChangeOnFlyTest, NoCrashPresetCycling) {
+    config_test();
+    for (auto test_vector : enc_setting.test_vectors) {
+        init_test(test_vector);
+        run_encode_process();
+
+        // Verify encoding completed and produced output
+        if (output_file_ && output_file_->file) {
+            long file_size = ftell(output_file_->file);
+            EXPECT_GT(file_size, 0) << "Encoding with preset cycling should "
+                                       "produce non-zero output";
+        }
+
+        deinit_test();
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(SvtAv1, PresetChangeOnFlyTest,
+                         ::testing::ValuesIn(preset_change_settings),
+                         EncTestSetting::GetSettingName);
+
+// Post-encode recode VBV compliance tests for RTC CBR.
+// Encodes with a sharp rate drop to stress VBV, then compares max buffer
+// fullness WITH vs WITHOUT recode to verify the recode path helps.
+static std::vector<TestVideoVector> post_enc_recode_test_vectors = {
+    std::make_tuple("kirland_640_480_30.yuv", YUV_VIDEO_FILE, IMG_FMT_420, 640,
+                    480, 8, 0, 0, 60),
+};
+
+// Simulate the same VBV model as rtc_update_buffer_level in rc_rtc_cbr.c.
+// buffer_level += frame_size; buffer_level -= avg_frame_bandwidth;
+// buffer_level = max(0, buffer_level); overflow if buffer_level >
+// max_buffer_size. Returns the max buffer_level / max_buffer_size ratio
+// observed.
+static double simulate_vbv(const std::vector<uint32_t> &frame_sizes,
+                           double bitrate_bps, double fps, double buf_size_ms,
+                           double buf_initial_ms) {
+    double max_buffer_size = buf_size_ms / 1000.0 * bitrate_bps;
+    double buf_level = (buf_size_ms - buf_initial_ms) / 1000.0 * bitrate_bps;
+    double avg_frame_bandwidth = bitrate_bps / fps;
+    double max_fullness = 0.0;
+
+    for (size_t i = 0; i < frame_sizes.size(); i++) {
+        double frame_bits = frame_sizes[i] * 8.0;
+        buf_level += frame_bits;
+        buf_level -= avg_frame_bandwidth;
+        if (buf_level < 0)
+            buf_level = 0;
+        double fullness = buf_level / max_buffer_size;
+        if (fullness > max_fullness)
+            max_fullness = fullness;
+    }
+    return max_fullness;
+}
+
+// Base test settings shared between recode-enabled and recode-disabled runs
+static EncSetting make_post_enc_base_settings(const std::string &recode_loop) {
+    return {{"EncoderMode", "11"},
+            {"RealTime", "1"},
+            {"HierarchicalLevels", "0"},
+            {"FrameRateNumerator", "30"},
+            {"FrameRateDenominator", "1"},
+            {"TargetBitRate", "50"},
+            {"RateControlMode", "2"},
+            {"Keyint", "3000"},
+            {"PredStructure", "1"},
+            {"LevelOfParallelism", "1"},
+            {"BufSz", "100"},
+            {"BufInitialSz", "66"},
+            {"BufOptimalSz", "50"},
+            {"UnderShootPct", "100"},
+            {"OverShootPct", "100"},
+            {"RecodeLoop", recode_loop}};
+}
+
+/* clang-format off */
+static const std::vector<EncTestSetting> post_enc_recode_settings = {
+    // Recode disabled (baseline) — expected to have worse VBV
+    {"PostEncRecodeDisabled",
+     make_post_enc_base_settings("0"),
+     post_enc_recode_test_vectors},
+    // Recode enabled — expected to have better VBV
+    {"PostEncRecodeEnabled",
+     make_post_enc_base_settings("1"),
+     post_enc_recode_test_vectors},
+};
+/* clang-format on */
+
+class PostEncRecodeTest : public SvtAv1E2ETestFramework {
+  protected:
+    void config_test() override {
+        enable_stat = true;
+        enable_config = true;
+        enable_save_bitstream = true;
+        SvtAv1E2ETestFramework::config_test();
+    }
+};
+
+TEST_P(PostEncRecodeTest, VBVCompliance) {
+    config_test();
+    for (auto test_vector : enc_setting.test_vectors) {
+        init_test(test_vector);
+        run_encode_process();
+
+        ASSERT_GT(frame_sizes_.size(), 0u) << "No frames produced";
+
+        const auto &s = enc_setting.setting;
+        const double fps = std::stod(s.at("FrameRateNumerator")) /
+                           std::stod(s.at("FrameRateDenominator"));
+        const double target_bps = std::stod(s.at("TargetBitRate")) * 1000.0;
+        const double buf_sz_ms = std::stod(s.at("BufSz"));
+        const double buf_initial_ms = std::stod(s.at("BufInitialSz"));
+
+        // Simulate VBV frame-by-frame, skipping frame 0 (I-frame) which
+        // is exempt from recode and can cause large spikes
+        double max_fullness = simulate_vbv(
+            std::vector<uint32_t>(frame_sizes_.begin() + 1, frame_sizes_.end()),
+            target_bps,
+            fps,
+            buf_sz_ms,
+            buf_initial_ms);
+
+        printf("%s: %zu frames, max VBV fullness: %.1f%%\n",
+               enc_setting.name.c_str(),
+               frame_sizes_.size(),
+               max_fullness * 100.0);
+
+        if (s.at("RecodeLoop") != "0") {
+            // Recode-enabled run: must stay within 110%
+            EXPECT_LT(max_fullness, 1.1)
+                << "With recode enabled, VBV overflow exceeded 110%. "
+                << "Max fullness: " << max_fullness * 100.0 << "%";
+        } else {
+            // Recode-disabled run: we expect VBV overflow (fullness > 1.1)
+            EXPECT_GT(max_fullness, 1.1)
+                << "With recode disabled, VBV should overflow at least 110%. "
+                << "Max fullness: " << max_fullness * 100.0 << "%";
+        }
+
+        deinit_test();
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(SvtAv1, PostEncRecodeTest,
+                         ::testing::ValuesIn(post_enc_recode_settings),
                          EncTestSetting::GetSettingName);

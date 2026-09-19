@@ -275,7 +275,7 @@ class DataReaders:
         dir_path: str,
         files_info: Dict[str, List[str]],
         encoder: str,
-        speed: int,
+        speed: str,
         quality: int,
         threads: int,
     ) -> List[Dict]:
@@ -430,7 +430,7 @@ class DataReaders:
         return None
 
     def _build_encoded_directory_path(
-        self, encoder: str, speed: int, quality: int, threads: int
+        self, encoder: str, speed: str, quality: int, threads: int
     ) -> str:
         """
         Build the expected encoded file directory path using config or fallback patterns.
@@ -676,10 +676,28 @@ class DataReaders:
             "input_size",
             "output_size",
             "encoded_path",
+            # present only in explicit macOS /usr/bin/time -l counter mode
+            "real_time",
+            "user_time",
+            "system_time",
+            "instructions_retired",
+            "cycles",
+            "max_rss_bytes",
+            # present only in SVT-only PSNR fast mode (encoder-reported PSNR)
+            "psnr_y",
+            "psnr_cb",
+            "psnr_cr",
         ]
         # Only keep columns that exist in the DataFrame
         columns_to_keep = [col for col in columns_to_keep if col in df.columns]
         df = df[columns_to_keep]
+
+        # PSNR columns exist in the enc CSV only in SVT-only PSNR fast mode. In
+        # the normal pipeline they are present-but-empty; drop them so they don't
+        # collide with the decode/QM CSV's real psnr_* columns during merge.
+        for col in ["psnr_y", "psnr_cb", "psnr_cr"]:
+            if col in df.columns and df[col].isna().all():
+                df = df.drop(columns=[col])
 
         return df
 

@@ -90,6 +90,7 @@ typedef struct EbPaReferenceObjectDescInitData {
     EbPictureBufferDescInitData reference_picture_desc_init_data;
     EbPictureBufferDescInitData quarter_picture_desc_init_data;
     EbPictureBufferDescInitData sixteenth_picture_desc_init_data;
+    EbSvtAv1EncConfiguration*   static_config;
 } EbPaReferenceObjectDescInitData;
 
 typedef struct EbTplReferenceObject {

@@ -61,9 +61,15 @@ typedef struct EntropyCodingContext {
    */
     WienerInfo  wiener_info[MAX_PLANES];
     SgrprojInfo sgrproj_info[MAX_PLANES];
+    uint64_t    tot_qindex; // qindex accumulator
+    uint32_t    valid_area; // valid area accumulator
     // Pre-allocated buffers for av1_write_coeffs_txb_1d (moved off stack)
     uint8_t levels_buf[TX_PAD_2D];
     DECLARE_ALIGNED(16, int8_t, coeff_contexts[MAX_TX_SQUARE]);
+    // Per-coefficient level/sign cache (was a VLA cached_level[eob]/cached_sign[eob] on the
+    // stack, which forced a ___chkstk_darwin probe on every call). Persistent here = no probe.
+    int16_t cached_level[MAX_TX_SQUARE];
+    uint8_t cached_sign[MAX_TX_SQUARE];
 } EntropyCodingContext;
 
 /**************************************

@@ -11,6 +11,7 @@
  */
 
 #include "gtest/gtest.h"
+#include <iostream>
 #include "aom_dsp_rtcd.h"
 #include "definitions.h"
 #include "compute_sad_avx2.h"
@@ -199,19 +200,12 @@ void sadMxN_speed_test(const AomSadFn *const func_table) {
                                                          finish_time_useconds);
 
         EXPECT_EQ(sad_org, sad_opt);
-
-        printf("Average Nanoseconds per Function Call\n");
-        printf("    aom_sad%2ux%2u_c()   : %6.2f\n",
-               width,
-               height,
-               1000000 * time_c / num_loop);
-        printf(
-            "    aom_sad%2ux%2u_opt() : %6.2f   (Comparison: "
-            "%5.2fx)\n",
-            width,
-            height,
-            1000000 * time_o / num_loop,
-            time_c / time_o);
+        std::cerr << "Average Nanoseconds per Function Call\n"
+                  << "    aom_sad" << width << "x" << height
+                  << "_c()   : " << 1000000 * time_c / num_loop << "\n"
+                  << "    aom_sad" << width << "x" << height
+                  << "_opt() : " << 1000000 * time_o / num_loop
+                  << "   (Comparison: " << time_c / time_o << "x)\n";
     }
 
     uninit_data(src_ptr, ref_ptr);
@@ -258,21 +252,15 @@ void sadMxNx4d_speed_test(const AomSadMultiDFn *const func_table) {
                                                          finish_time_seconds,
                                                          finish_time_useconds);
 
-        for (int l = 0; l < 4; l++)
+        for (int l = 0; l < 4; l++) {
             EXPECT_EQ(sad_array_org[l], sad_array_opt[l]);
-
-        printf("Average Nanoseconds per Function Call\n");
-        printf("    aom_sad%2dx%2d_c()   : %6.2f\n",
-               width,
-               height,
-               1000000 * time_c / num_loop);
-        printf(
-            "    aom_sad%2dx%2d_opt() : %6.2f   (Comparison: "
-            "%5.2fx)\n",
-            width,
-            height,
-            1000000 * time_o / num_loop,
-            time_c / time_o);
+        }
+        std::cerr << "Average Nanoseconds per Function Call\n"
+                  << "    aom_sad" << width << "x" << height
+                  << "_c()   : " << 1000000 * time_c / num_loop << "\n"
+                  << "    aom_sad" << width << "x" << height
+                  << "_opt() : " << 1000000 * time_o / num_loop
+                  << "   (Comparison: " << time_c / time_o << "x)\n";
     }
 
     uninit_data(src_ptr, ref_ptr[0]);

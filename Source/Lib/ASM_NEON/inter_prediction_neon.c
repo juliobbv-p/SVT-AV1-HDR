@@ -423,3 +423,46 @@ void svt_av1_calc_target_weighted_pred_left_neon(uint8_t is16bit, MacroBlockD* x
         } while (--row != 0);
     }
 }
+
+void svt_av1_calc_target_weighted_pred_above_neon(uint8_t is16bit, MacroBlockD* xd, int rel_mi_col, uint8_t nb_mi_width,
+                                                  MbModeInfo* nb_mi, void* fun_ctxt) {
+    (void)nb_mi;
+    (void)is16bit;
+
+    struct calc_target_weighted_pred_ctxt* ctxt   = (struct calc_target_weighted_pred_ctxt*)fun_ctxt;
+    const int                              bw     = xd->n4_w << MI_SIZE_LOG2;
+    const uint8_t* const                   mask1d = svt_av1_get_obmc_mask(ctxt->overlap);
+    assert(mask1d != NULL);
+
+    int32_t*       wsrc = ctxt->wsrc_buf + (rel_mi_col * MI_SIZE);
+    int32_t*       mask = ctxt->mask_buf + (rel_mi_col * MI_SIZE);
+    const uint8_t* tmp  = ctxt->tmp + rel_mi_col * MI_SIZE;
+    const int      w    = nb_mi_width * MI_SIZE; // always a multiple of 4
+    assert((w & 3) == 0);
+
+    for (int row = 0; row < ctxt->overlap; ++row) {
+        const uint8_t   m0     = mask1d[row];
+        const uint8x8_t m1_u8  = vdup_n_u8((uint8_t)(AOM_BLEND_A64_MAX_ALPHA - m0));
+        const int32x4_t m0_s32 = vdupq_n_s32(m0);
+
+        int col = 0;
+        for (; col + 8 <= w; col += 8) {
+            const uint8x8_t  t  = vld1_u8(tmp + col);
+            const uint16x8_t wp = vmull_u8(t, m1_u8); // exact: max 255*64=16320 fits u16
+            vst1q_s32(wsrc + col, vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(wp))));
+            vst1q_s32(wsrc + col + 4, vreinterpretq_s32_u32(vmovl_u16(vget_high_u16(wp))));
+            vst1q_s32(mask + col, m0_s32);
+            vst1q_s32(mask + col + 4, m0_s32);
+        }
+        if (col < w) { // remaining exactly 4 (w is a multiple of 4)
+            const uint8x8_t  t  = load_u8_4x1(tmp + col);
+            const uint16x8_t wp = vmull_u8(t, m1_u8);
+            vst1q_s32(wsrc + col, vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(wp))));
+            vst1q_s32(mask + col, m0_s32);
+        }
+
+        wsrc += bw;
+        mask += bw;
+        tmp += ctxt->tmp_stride;
+    }
+}

@@ -73,12 +73,6 @@ typedef struct SequenceControlSet {
     /*!< Sequence header structure, common between the encoder and decoder */
     SeqHeader seq_header;
 
-    /*!< Sequence coding parameters
-            parameters/features are set to be set for the full stream
-            but encoding decisions may still be taken at a picture / sub picture level
-    */
-    /*!< Maximum number of allowed temporal layers */
-    uint32_t max_temporal_layers;
     /*!< Number of delay frames needed to implement future window
          for algorithms such as SceneChange or TemporalFiltering */
     uint32_t scd_delay;
@@ -228,8 +222,12 @@ typedef struct SequenceControlSet {
     ScaleFactors sf_identity;
     VqCtrls      vq_ctrls;
     uint8_t      calc_hist;
+    uint8_t      detect_luma_dominant_input;
     TfControls   tf_params_per_type[3]; // [I_SLICE][BASE][L1]
     MrpCtrls     mrp_ctrls;
+    // Init-time snapshot; runtime PRESET_CHANGE_EVENT clamps mrp_ctrls
+    // list0 counts to MIN(init, runtime). See enc_handle.c.
+    MrpCtrls mrp_ctrls_init;
     /*!< The RC stat generation pass mode (0: The default, 1: optimized)*/
     uint8_t rc_stat_gen_pass_mode;
 #if TUNE_CQP_CHROMA_SSIM
@@ -304,8 +302,6 @@ typedef struct SequenceControlSet {
     QpBasedThScaling qp_based_th_scaling_ctrls;
     // If true, intra_period_length is 0 and every frame is coded with intra tools only
     bool allintra;
-    // If true, use a flat IPP pred structure, where each pic uses only the previous frame as ref
-    bool use_flat_ipp;
     // If true, enables fast anti-alias aware screen detection
     bool fast_aa_aware_screen_detection_mode;
 } SequenceControlSet;

@@ -175,7 +175,7 @@ typedef struct EncTestSetting {
         return str;
     }
 
-    int color_fmt(VideoColorFormat fmt) const {
+    static int color_fmt(VideoColorFormat fmt) {
         switch (fmt) {
         case IMG_FMT_420:
         case IMG_FMT_420P10_PACKED: return 420;
@@ -205,7 +205,7 @@ typedef struct EncTestSetting {
         return str;
     }
 
-    void append_token(std::string& str, const char* n) const {
+    static void append_token(std::string& str, const char* n) {
         str += " ";
         str += get_enc_token(n);
         str += " ";
@@ -225,14 +225,14 @@ typedef struct EncTestSetting {
     }
 
     friend std::ostream& operator<<(std::ostream& os,
-                                    const EncTestSetting& setting) {
-        return os << setting.get_setting_str();
+                                    const EncTestSetting& test_setting) {
+        return os << test_setting.get_setting_str();
     }
     // used in INSTANTIATE_TEST_SUITE_P to append the param info into the test
     // name
     static std::string GetSettingName(
-        const ::testing::TestParamInfo<EncTestSetting> setting) {
-        return setting.param.get_setting_name();
+        const ::testing::TestParamInfo<EncTestSetting> test_param) {
+        return test_param.param.get_setting_name();
     }
 
 } EncTestSetting;

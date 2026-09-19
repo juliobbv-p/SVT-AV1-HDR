@@ -1686,7 +1686,7 @@ EbErrorType svt_av1_alloc_restoration_buffers(PictureControlSet* pcs, Av1Common*
     EbErrorType   return_error = EB_ErrorNone;
     const int32_t num_planes   = 3; // av1_num_planes(cm);
     for (int32_t p = 0; p < num_planes; ++p) {
-        return_error = svt_av1_alloc_restoration_struct(cm, &pcs->rst_info[p], p > 0);
+        return_error |= svt_av1_alloc_restoration_struct(cm, &pcs->rst_info[p], p > 0);
     }
 
     // For striped loop restoration, we divide each row of tiles into "stripes",

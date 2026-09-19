@@ -164,7 +164,8 @@ class RansacTest : public ::testing::TestWithParam<TransformationType> {
      * | m6  m7   1 |
      */
     /* clang-format on */
-    void check_transform_matrix(const AffineMat &mat, const double *params) {
+    static void check_transform_matrix(const AffineMat &mat,
+                                       const double *params) {
         ASSERT_NEAR(mat.m0, params[2], 0.0001f);
         ASSERT_NEAR(mat.m1, params[3], 0.0001f);
         ASSERT_NEAR(mat.m2, params[0], 1.0f);
@@ -175,7 +176,7 @@ class RansacTest : public ::testing::TestWithParam<TransformationType> {
 
     using TransDataFunc = int (*)(SVTRandom &, vector<Point> &, vector<Point> &,
                                   AffineMat &);
-    TransDataFunc get_trans_data_func(TransformationType type) {
+    static TransDataFunc get_trans_data_func(TransformationType type) {
         switch (type) {
         case TRANSLATION: return transform_data_translation;
         case ROTZOOM: return transform_data_zoom_rotate;

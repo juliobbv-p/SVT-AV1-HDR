@@ -129,13 +129,12 @@ class SVTRandom {
     /** calculate and setup bounds of generator */
     void calculate_bounds(const int nbits, const bool is_signed) {
         assert(nbits <= 32);
-        int set_bits =
-            is_signed ? nbits - 1 : (nbits == 32 ? nbits - 1 : nbits);
+        const int set_bits = nbits - (is_signed || nbits == 32);
         int min_bound = 0, max_bound = 0;
         for (int i = 0; i < set_bits; i++)
             max_bound |= (1 << i);
         if (is_signed)
-            min_bound = 0 - (1 << set_bits);
+            min_bound = 0 - (1 << (nbits - 1));
         setup(min_bound, max_bound);
     }
 

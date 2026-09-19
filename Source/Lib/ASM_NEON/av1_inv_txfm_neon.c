@@ -832,8 +832,7 @@ static void inv_txf_add_16x8_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t strid
     }
 }
 
-static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_r, int32_t stride_r, uint8_t* dst_w,
-                                    int32_t stride_w, const TxfmParam* txfm_param, const TranLow* dqcoeff32) {
+static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_w, int32_t stride_w, const TxfmParam* txfm_param) {
     switch (txfm_param->tx_type) {
     case DCT_DCT:
         svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
@@ -872,7 +871,7 @@ static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_r, int32_t st
         svt_dav1d_inv_txfm_add_identity_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
         break;
     default:
-        svt_av1_inv_txfm_add_c(dqcoeff32, dst_r, stride_r, dst_w, stride_w, txfm_param);
+        assert(0);
     }
 }
 
@@ -4585,10 +4584,12 @@ static inline void lowbd_inv_txfm2d_add_no_identity_neon(const int32_t* input, u
 
 void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t stride_r, uint8_t* dst_w,
                                  int32_t stride_w, const TxfmParam* txfm_param) {
+#if CONFIG_ENABLE_LOSSLESS
     if (txfm_param->lossless) {
         svt_av1_inv_txfm_add_c(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
         return;
     }
+#endif
 
     const TxSize tx_size = txfm_param->tx_size;
     DECLARE_ALIGNED(32, int16_t, dqcoeff_16[MAX_TX_SQUARE]);
@@ -4653,6 +4654,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         pack_and_load_buffer_32x32(dqcoeff, in);
         transpose_s16_32x32(in, out);
         store_buffer_s16_32x32(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
             svt_dav1d_inv_txfm_add_dct_dct_32x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4661,12 +4663,17 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        // Non-DCT at large tx (only IDTX per ext-tx set) is unused in RTC; aom fallback compiled out.
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_32x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_16X16:
         pack_and_load_buffer_16x16(dqcoeff, in);
         transpose_s16_16x16(in, out);
         store_buffer_s16_16x16(out, dqcoeff_16);
-        inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, dst_w, stride_w, txfm_param, dqcoeff);
+        inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, txfm_param);
         break;
     case TX_8X8:
         pack_and_load_buffer_8x8(dqcoeff, in);
@@ -4702,6 +4709,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         pack_and_load_buffer_16x32(dqcoeff, in);
         transpose_s16_16x32(in, out);
         store_buffer_s16_16x32(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
             svt_dav1d_inv_txfm_add_dct_dct_16x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4710,11 +4718,16 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_16x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_32X16:
         pack_and_load_buffer_32x16(dqcoeff, in);
         transpose_s16_32x16(in, out);
         store_buffer_s16_32x16(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
             svt_dav1d_inv_txfm_add_dct_dct_32x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4723,61 +4736,90 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_32x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_64X64:
         pack_and_load_buffer_32x32(dqcoeff, in);
         transpose_s16_32x32(in, out);
         store_buffer_s16_32x32(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
         } else {
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_64x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_32X64:
         pack_and_load_buffer_32x32(dqcoeff, in);
         transpose_s16_32x32(in, out);
         store_buffer_s16_32x32(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_32x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
         } else {
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_32x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_64X32:
         pack_and_load_buffer_32x32(dqcoeff, in);
         transpose_s16_32x32(in, out);
         store_buffer_s16_32x32(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
         } else {
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_64x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_16X64:
         pack_and_load_buffer_16x32(dqcoeff, in);
         transpose_s16_16x32(in, out);
         store_buffer_s16_16x32(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_16x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
         } else {
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_16x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_64X16:
         pack_and_load_buffer_32x16(dqcoeff, in);
         transpose_s16_32x16(in, out);
         store_buffer_s16_32x16(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
         } else {
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_64x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
     case TX_4X4:
         pack_and_load_buffer_4x4(dqcoeff, in);
@@ -4801,6 +4843,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         pack_and_load_buffer_32x8(dqcoeff, in);
         transpose_s16_32x8(in, out);
         store_buffer_s16_32x8(out, dqcoeff_16);
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
             svt_dav1d_inv_txfm_add_dct_dct_32x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4809,9 +4852,19 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_av1_lowbd_inv_txfm2d_add_neon(
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
+#else
+        assert(tx_type == DCT_DCT);
+        svt_dav1d_inv_txfm_add_dct_dct_32x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+#endif
         break;
+#if CONFIG_ENABLE_NON_DCT_LARGE_TX
     default:
         svt_av1_lowbd_inv_txfm2d_add_neon(
             dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
+#else
+    default:
+        // Only TX_8X32 reaches here, and it routes to the aom inverse (compiled out in RTC).
+        assert(0);
+#endif
     }
 }

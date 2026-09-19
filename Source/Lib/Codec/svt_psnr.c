@@ -42,7 +42,7 @@ int64_t svt_aom_get_sse(const uint8_t* a, int32_t a_stride, const uint8_t* b, in
     const int32_t dw        = width & 15;
     const int32_t dh        = height & 15;
     int64_t       total_sse = 0;
-    uint32_t      sse       = 0;
+    uint32_t      sse;
     int32_t       x, y;
 
     if (dw > 0) {
@@ -94,9 +94,9 @@ int64_t svt_aom_highbd_get_sse(const uint8_t* a, int32_t a_stride, const uint8_t
                                int32_t height) {
     int64_t       total_sse = 0;
     int32_t       x, y;
-    const int32_t dw  = width % 16;
-    const int32_t dh  = height % 16;
-    uint32_t      sse = 0;
+    const int32_t dw = width % 16;
+    const int32_t dh = height % 16;
+    uint32_t      sse;
     if (dw > 0) {
         sse = (uint32_t)highbd_variance(&a[width - dw], a_stride, &b[width - dw], b_stride, dw, height);
         total_sse += sse;

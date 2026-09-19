@@ -283,7 +283,7 @@ using SUM_SQUARE_FUNC = uint32_t (*)(const int16_t *src);
  */
 class SumSquareTest : public ::testing::TestWithParam<SUM_SQUARE_FUNC> {
   protected:
-    void run_const_test() {
+    static void run_const_test() {
         int16_t mem[256];
         uint32_t res;
         for (int16_t v = 0; v < 256; ++v) {
@@ -297,7 +297,7 @@ class SumSquareTest : public ::testing::TestWithParam<SUM_SQUARE_FUNC> {
         }
     }
 
-    void run_match_test() {
+    static void run_match_test() {
         int32_t mask = (1 << 8) - 1;
         SVTRandom rnd(0, mask);
         int16_t mem[256];

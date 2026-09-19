@@ -20,24 +20,19 @@
  * @author Cidana-Wenyao
  *
  ******************************************************************************/
-#include <cmath>
-#include <cstdlib>
-#include <string>
-
 #include "gtest/gtest.h"
+#include <array>
+#include <tuple>
+#include "common_dsp_rtcd.h"
 #include "definitions.h"
-#include "aom_dsp_rtcd.h"
-#include "random.h"
-#include "util.h"
-#include "utility.h"
-#include "deblocking_filter.h"
 #include "acm_random.h"
 #include "dlf_sse2.h"
 #include "deblocking_common.h"
+#include "util.h"
 
-using libaom_test::ACMRandom;
-using ::testing::make_tuple;
 namespace {
+using libaom_test::ACMRandom;
+using std::make_tuple;
 
 // define the common params
 #define LOOP_PARAM \
@@ -52,16 +47,16 @@ using HbdLpfTestParam =
 using LdbLpfTestParam =
     ::testing::tuple<LbdLoopFilterFunc, LbdLoopFilterFunc, int>;
 
-uint8_t get_outer_thresh(ACMRandom *rnd) {
-    return static_cast<uint8_t>(rnd->PseudoUniform(3 * MAX_LOOP_FILTER + 5));
+uint8_t get_outer_thresh(ACMRandom &rnd) {
+    return static_cast<uint8_t>(rnd.PseudoUniform(3 * MAX_LOOP_FILTER + 5));
 }
 
-uint8_t get_inner_thresh(ACMRandom *rnd) {
-    return static_cast<uint8_t>(rnd->PseudoUniform(MAX_LOOP_FILTER + 1));
+uint8_t get_inner_thresh(ACMRandom &rnd) {
+    return static_cast<uint8_t>(rnd.PseudoUniform(MAX_LOOP_FILTER + 1));
 }
 
-uint8_t get_hev_thresh(ACMRandom *rnd) {
-    return static_cast<uint8_t>(rnd->PseudoUniform(MAX_LOOP_FILTER + 1) >> 4);
+uint8_t get_hev_thresh(ACMRandom &rnd) {
+    return static_cast<uint8_t>(rnd.PseudoUniform(MAX_LOOP_FILTER + 1) >> 4);
 }
 
 /**
@@ -87,81 +82,56 @@ uint8_t get_hev_thresh(ACMRandom *rnd) {
 template <typename Sample, typename FuncType, typename TestParamType>
 class LoopFilterTest : public ::testing::TestWithParam<TestParamType> {
   public:
-    enum LpfType { SINGLE };
-    virtual ~LoopFilterTest() {
-    }
+    virtual void run_lpf(LOOP_PARAM, int bd) = 0;
 
-    void SetUp() override {
-        lpf_tst_ = ::testing::get<0>(this->GetParam());
-        lpf_ref_ = ::testing::get<1>(this->GetParam());
-        bit_depth_ = ::testing::get<2>(this->GetParam());
-        mask_ = (1 << bit_depth_) - 1;
-    }
-
-    void TearDown() override {
-    }
-
-    void init_buffer_with_value(uint8_t *buf, int length, uint8_t val) {
-        for (int i = 0; i < length; ++i)
-            buf[i] = val;
-    }
-
-    virtual void run_lpf(LOOP_PARAM, int bd) {
-        (void)p;
-        (void)blimit;
-        (void)limit;
-        (void)thresh;
-        (void)bd;
-    }
-
-    void init_input(Sample *s, Sample *ref_s, ACMRandom *rnd,
-                    const uint8_t limit, const int mask, const int32_t p,
-                    const int i) {
+    template <size_t Nm>
+    static void init_input(std::array<Sample, Nm> &s,
+                           std::array<Sample, Nm> &ref_s, ACMRandom &rnd,
+                           const uint8_t limit, const int mask, const int32_t p,
+                           const int i) {
         uint16_t tmp_s[kNumCoeffs];
 
         for (int j = 0; j < kNumCoeffs;) {
-            const uint8_t val = rnd->Rand8();
+            const uint8_t val = rnd.Rand8();
             if (val & 0x80) {  // 50% chance to choose a new value.
-                tmp_s[j] = rnd->Rand16();
+                tmp_s[j] = rnd.Rand16();
                 j++;
-            } else {  // 50% chance to repeat previous value in row X times.
-                int k = 0;
-                while (k++ < ((val & 0x1f) + 1) && j < kNumCoeffs) {
-                    if (j < 1) {
-                        tmp_s[j] = rnd->Rand16();
-                    } else if (val & 0x20) {  // Increment by a value within the
-                                              // limit.
-                        tmp_s[j] =
-                            static_cast<uint16_t>(tmp_s[j - 1] + (limit - 1));
-                    } else {  // Decrement by a value within the limit.
-                        tmp_s[j] =
-                            static_cast<uint16_t>(tmp_s[j - 1] - (limit - 1));
-                    }
-                    j++;
+                continue;
+            }  // 50% chance to repeat previous value in row X times.
+
+            for (int k = 0; k++ < ((val & 0x1f) + 1) && j < kNumCoeffs; j++) {
+                if (j < 1) {
+                    tmp_s[j] = rnd.Rand16();
+                } else if (val & 0x20) {  // Increment by a value within the
+                                          // limit.
+                    tmp_s[j] =
+                        static_cast<uint16_t>(tmp_s[j - 1] + (limit - 1));
+                } else {  // Decrement by a value within the limit.
+                    tmp_s[j] =
+                        static_cast<uint16_t>(tmp_s[j - 1] - (limit - 1));
                 }
             }
         }
 
         for (int j = 0; j < kNumCoeffs;) {
-            const uint8_t val = rnd->Rand8();
+            const uint8_t val = rnd.Rand8();
             if (val & 0x80) {
                 j++;
-            } else {  // 50% chance to repeat previous value in column X times.
-                int k = 0;
-                while (k++ < ((val & 0x1f) + 1) && j < kNumCoeffs) {
-                    if (j < 1) {
-                        tmp_s[j] = rnd->Rand16();
-                    } else if (val & 0x20) {  // Increment by a value within the
-                                              // limit.
-                        tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
-                            tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] +
-                            (limit - 1));
-                    } else {  // Decrement by a value within the limit.
-                        tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
-                            tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] -
-                            (limit - 1));
-                    }
-                    j++;
+                continue;
+            }  // 50% chance to repeat previous value in column X times.
+
+            for (int k = 0; k++ < ((val & 0x1f) + 1) && j < kNumCoeffs; j++) {
+                if (j < 1) {
+                    tmp_s[j] = rnd.Rand16();
+                } else if (val & 0x20) {  // Increment by a value within the
+                                          // limit.
+                    tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
+                        tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] +
+                        (limit - 1));
+                } else {  // Decrement by a value within the limit.
+                    tmp_s[(j % 32) * 32 + j / 32] = static_cast<uint16_t>(
+                        tmp_s[((j - 1) % 32) * 32 + (j - 1) / 32] -
+                        (limit - 1));
                 }
             }
         }
@@ -172,40 +142,37 @@ class LoopFilterTest : public ::testing::TestWithParam<TestParamType> {
             } else {
                 s[j] = tmp_s[p * (j % p) + j / p] & mask;
             }
-            ref_s[j] = s[j];
         }
+        ref_s = s;
     }
 
     void run_test() {
-        ACMRandom rnd(ACMRandom::DeterministicSeed());
-        const int count_test_block = 10000;
-        const int32_t p = kNumCoeffs / 32;
-        DECLARE_ALIGNED(16, Sample, tst_s[kNumCoeffs]);
-        DECLARE_ALIGNED(16, Sample, ref_s[kNumCoeffs]);
+        ACMRandom rnd{};
+        constexpr auto count_test_block = 10000;
+        constexpr auto p = kNumCoeffs / 32;
+        alignas(16) std::array<Sample, kNumCoeffs> tst_s;
+        alignas(16) std::array<Sample, kNumCoeffs> ref_s;
         int err_count_total = 0;
         int first_failure = -1;
-        start_tst_ = tst_s + 8 + p * 8;
-        start_ref_ = ref_s + 8 + p * 8;
+        start_tst_ = tst_s.data() + 8 + p * 8;
+        start_ref_ = ref_s.data() + 8 + p * 8;
         for (int i = 0; i < count_test_block; ++i) {
             int err_count = 0;
             // randomly generate the threshold, limits
-            uint8_t tmp = get_outer_thresh(&rnd);
-            DECLARE_ALIGNED(16, uint8_t, blimit[16]);
-            init_buffer_with_value(blimit, 16, tmp);
+            alignas(16) std::array<uint8_t, 16> blimit;
+            blimit.fill(get_outer_thresh(rnd));
 
-            DECLARE_ALIGNED(16, uint8_t, limit[16]);
-            tmp = get_inner_thresh(&rnd);
-            init_buffer_with_value(limit, 16, tmp);
+            alignas(16) std::array<uint8_t, 16> limit;
+            limit.fill(get_inner_thresh(rnd));
 
-            DECLARE_ALIGNED(16, uint8_t, thresh[16]);
-            tmp = get_hev_thresh(&rnd);
-            init_buffer_with_value(thresh, 16, tmp);
+            alignas(16) std::array<uint8_t, 16> thresh;
+            thresh.fill(get_hev_thresh(rnd));
 
             // Initial sample data
-            init_input(tst_s, ref_s, &rnd, *limit, mask_, p, i);
+            init_input(tst_s, ref_s, rnd, limit[0], mask_, p, i);
 
             // run the filters
-            run_lpf(p, blimit, limit, thresh, bit_depth_);
+            run_lpf(p, blimit.data(), limit.data(), thresh.data(), bit_depth_);
 
             // check the result
             for (int j = 0; j < kNumCoeffs; ++j)
@@ -224,34 +191,24 @@ class LoopFilterTest : public ::testing::TestWithParam<TestParamType> {
     }
 
   protected:
-    int bit_depth_;
-    int mask_;
-    FuncType lpf_tst_;
-    FuncType lpf_ref_;
-    Sample *start_ref_;
-    Sample *start_tst_;
-    // loop filter type
-    LpfType lpf_type_;
+    int bit_depth_{TEST_GET_PARAM(2)};
+    int mask_{(1 << bit_depth_) - 1};
+    FuncType lpf_tst_{TEST_GET_PARAM(0)};
+    FuncType lpf_ref_{TEST_GET_PARAM(1)};
+    Sample *start_ref_{nullptr};
+    Sample *start_tst_{nullptr};
     // Horizontally and Vertically need 32x32:
     // 8  Coeffs preceding filtered section
     // 16 Coefs within filtered section
     // 8  Coeffs following filtered section
-    static const int kNumCoeffs = 32 * 32;
+    static constexpr int kNumCoeffs = 32 * 32;
 };
 
 // class to test loop filter with low bitdepth
 class LbdLoopFilterTest
     : public LoopFilterTest<uint8_t, LbdLoopFilterFunc, LdbLpfTestParam> {
   public:
-    LbdLoopFilterTest() {
-        lpf_type_ = SINGLE;
-    }
-
-    virtual ~LbdLoopFilterTest() {
-    }
-
-    void run_lpf(LOOP_PARAM, int bd) override {
-        (void)bd;
+    void run_lpf(LOOP_PARAM, int) override {
         lpf_tst_(start_tst_, p, blimit, limit, thresh);
         lpf_ref_(start_ref_, p, blimit, limit, thresh);
     }
@@ -265,13 +222,6 @@ TEST_P(LbdLoopFilterTest, MatchTestRandomData) {
 class HbdLoopFilterTest
     : public LoopFilterTest<uint16_t, HbdLoopFilterFunc, HbdLpfTestParam> {
   public:
-    HbdLoopFilterTest() {
-        lpf_type_ = SINGLE;
-    }
-
-    virtual ~HbdLoopFilterTest() {
-    }
-
     void run_lpf(LOOP_PARAM, int bd) override {
         lpf_tst_(start_tst_, p, blimit, limit, thresh, bd);
         lpf_ref_(start_ref_, p, blimit, limit, thresh, bd);

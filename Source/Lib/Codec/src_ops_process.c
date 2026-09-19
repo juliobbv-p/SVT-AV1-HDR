@@ -13,6 +13,7 @@
 #include "sequence_control_set.h"
 
 #include "src_ops_process.h"
+#include <stdint.h>
 #include "initial_rc_results.h"
 #include "pic_demux_results.h"
 #ifdef ARCH_X86_64
@@ -113,6 +114,7 @@ EbErrorType svt_aom_tpl_disp_context_ctor(EbThreadContext* thread_ctx, const EbE
 }
 
 /* this function sets up ME refs for a regular pic*/
+#if CONFIG_ENABLE_TPL
 static void tpl_regular_setup_me_refs(PictureParentControlSet* base_pcs, PictureParentControlSet* cur_pcs) {
     for (uint8_t list_index = REF_LIST_0; list_index < TOTAL_NUM_OF_REF_LISTS; list_index++) {
         uint8_t ref_list_count = (list_index == REF_LIST_0) ? cur_pcs->ref_list0_count_try
@@ -147,10 +149,12 @@ static void tpl_regular_setup_me_refs(PictureParentControlSet* base_pcs, Picture
         }
     }
 }
+#endif // CONFIG_ENABLE_TPL
 
 /*
   prepare TPL data fields
 */
+#if CONFIG_ENABLE_TPL
 static void tpl_prep_info(PictureParentControlSet* pcs) {
     for (uint32_t pic_i = 0; pic_i < pcs->tpl_group_size; ++pic_i) {
         PictureParentControlSet* pcs_tpl = pcs->tpl_group[pic_i];
@@ -178,6 +182,7 @@ static void tpl_prep_info(PictureParentControlSet* pcs) {
         }
     }
 }
+#endif // CONFIG_ENABLE_TPL
 
 // Generate lambda factor to tune lambda based on TPL stats
 void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep_cost_base) {
@@ -228,6 +233,7 @@ void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep
     return;
 }
 
+#if CONFIG_ENABLE_TPL
 static AOM_INLINE void get_quantize_error(MacroblockPlane* p, const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff,
                                           TxSize tx_size, uint16_t* eob, int64_t* recon_error, int64_t* sse) {
     const ScanOrder* const scan_order = get_scan_order(tx_size, DCT_DCT);
@@ -380,7 +386,7 @@ static TxSize   tx_size_array[MAX_TPL_MODE]      = {TX_16X16, TX_32X32, TX_64X64
 static TxSize   sub2_tx_size_array[MAX_TPL_MODE] = {TX_16X8, TX_32X16, TX_64X32};
 static TxSize   sub4_tx_size_array[MAX_TPL_MODE] = {TX_16X4, TX_32X8, TX_64X16};
 
-static void svt_tpl_init_mv_cost_params(svt_mv_cost_param* mv_cost_params, const Mv* ref_mv, uint8_t base_q_idx,
+static void svt_tpl_init_mv_cost_params(svt_mv_cost_param* mv_cost_params, const Mv ref_mv, uint8_t base_q_idx,
                                         uint32_t rdmult, uint8_t hbd_md) {
     mv_cost_params->ref_mv        = ref_mv;
     mv_cost_params->full_ref_mv   = get_fullmv_from_mv(ref_mv);
@@ -444,8 +450,8 @@ static void tpl_subpel_search(SequenceControlSet* scs, PictureParentControlSet* 
     mv_limits.col_min  = -(((xd->mi_col + mi_width) * MI_SIZE) + AOM_INTERP_EXTEND);
     mv_limits.row_max  = (cm->mi_rows - xd->mi_row) * MI_SIZE + AOM_INTERP_EXTEND;
     mv_limits.col_max  = (cm->mi_cols - xd->mi_col) * MI_SIZE + AOM_INTERP_EXTEND;
-    svt_av1_set_mv_search_range(&mv_limits, &ref_mv);
-    svt_av1_set_subpel_mv_search_range(&ms_params->mv_limits, (FullMvLimits*)&mv_limits, &ref_mv);
+    svt_av1_set_mv_search_range(&mv_limits, ref_mv);
+    svt_av1_set_subpel_mv_search_range(&ms_params->mv_limits, (FullMvLimits*)&mv_limits, ref_mv);
 
     // Mvcost params
     int32_t qIndex = quantizer_to_qindex[(uint8_t)scs->static_config.qp] +
@@ -453,7 +459,7 @@ static void tpl_subpel_search(SequenceControlSet* scs, PictureParentControlSet* 
     qIndex          = AOMMIN(MAXQ, qIndex);
     uint32_t rdmult = svt_aom_compute_rd_mult_based_on_qindex(EB_EIGHT_BIT, pcs->update_type, qIndex) /
         TPL_RDMULT_SCALING_FACTOR;
-    svt_tpl_init_mv_cost_params(&ms_params->mv_cost_params, &ref_mv, qIndex, rdmult,
+    svt_tpl_init_mv_cost_params(&ms_params->mv_cost_params, ref_mv, qIndex, rdmult,
                                 0); // 10BIT not supported
 
     // Subpel variance params
@@ -487,10 +493,7 @@ static void tpl_subpel_search(SequenceControlSet* scs, PictureParentControlSet* 
     // TODO: should use get_fullmv_from_mv instead of shifting
     best_sp_mv.x       = best_mv->x >> 3;
     best_sp_mv.y       = best_mv->y >> 3;
-    Mv subpel_start_mv = get_mv_from_fullmv(&best_sp_mv);
-
-    int          not_used = 0;
-    unsigned int pred_sse = 0; // not used
+    Mv subpel_start_mv = get_mv_from_fullmv(best_sp_mv);
 
     // Assign which subpel search method to use - always use pruned because tested regular and did not give any gain
     fractional_mv_step_fp* subpel_search_method = svt_av1_find_best_sub_pixel_tree_pruned;
@@ -499,23 +502,15 @@ static void tpl_subpel_search(SequenceControlSet* scs, PictureParentControlSet* 
     ms_params->round_dev_th                     = MAX_SIGNED_VALUE;
     ms_params->skip_diag_refinement             = pcs->tpl_ctrls.subpel_diag_refinement;
     ms_params->var_params.bias_fp               = 0;
-    uint8_t early_exit                          = 0;
-    subpel_search_method(NULL,
-                         xd,
-                         (const struct AV1Common* const)cm,
-                         ms_params,
-                         subpel_start_mv,
-                         &best_sp_mv,
-                         &not_used,
-                         &pred_sse,
-                         qIndex,
-                         block_size,
-                         early_exit);
+    subpel_search_method(
+        NULL, xd, (const struct AV1Common* const)cm, ms_params, subpel_start_mv, &best_sp_mv, block_size);
 
     // Update the MV to the new best
     best_mv->as_int = best_sp_mv.as_int;
 }
+#endif // CONFIG_ENABLE_TPL
 
+#if CONFIG_ENABLE_TPL
 static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceControlSet* scs,
                                              PictureParentControlSet* pcs, int32_t frame_idx, uint32_t sb_index,
                                              int32_t qIndex, uint8_t dispenser_search_level) {
@@ -538,7 +533,6 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
     TplStats             tpl_stats;
 
     DECLARE_ALIGNED(16, uint8_t, predictor8[(const uint32_t)MAX_TPL_SAMPLES_PER_BLOCK * 2]);
-    memset(predictor8, 0, sizeof(predictor8));
     DECLARE_ALIGNED(16, int16_t, src_diff[MAX_TPL_SAMPLES_PER_BLOCK]);
     DECLARE_ALIGNED(32, TranLow, coeff[MAX_TPL_SAMPLES_PER_BLOCK]);
     DECLARE_ALIGNED(32, TranLow, qcoeff[MAX_TPL_SAMPLES_PER_BLOCK]);
@@ -654,14 +648,10 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                     DECLARE_ALIGNED(MAX_TPL_SIZE, uint8_t, left_data[MAX_TX_SIZE * 2 + MAX_TPL_SIZE * 2]);
                     DECLARE_ALIGNED(MAX_TPL_SIZE, uint8_t, above_data[MAX_TX_SIZE * 2 + MAX_TPL_SIZE * 2]);
 
-                    uint8_t* above_row;
-                    uint8_t* left_col;
                     uint8_t* above0_row;
                     uint8_t* left0_col;
                     above0_row = above0_data + MAX_TPL_SIZE;
                     left0_col  = left0_data + MAX_TPL_SIZE;
-                    above_row  = above_data + MAX_TPL_SIZE;
-                    left_col   = left_data + MAX_TPL_SIZE;
 
                     // Fill Neighbor Arrays
                     svt_aom_update_neighbor_samples_array_open_loop_mb(1,
@@ -681,10 +671,12 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                             ? mode_to_angle_map[(PredictionMode)ois_intra_mode]
                             : 0;
 
+                        uint8_t* above_row;
+                        uint8_t* left_col;
                         // Edge filter
                         if (av1_is_directional_mode((PredictionMode)ois_intra_mode)) {
-                            svt_memcpy(left_data, left0_data, sizeof(uint8_t) * (MAX_TX_SIZE * 2 + MAX_TPL_SIZE * 2));
-                            svt_memcpy(above_data, above0_data, sizeof(uint8_t) * (MAX_TX_SIZE * 2 + MAX_TPL_SIZE * 2));
+                            memcpy(left_data, left0_data, sizeof(uint8_t) * (MAX_TX_SIZE * 2 + MAX_TPL_SIZE * 2));
+                            memcpy(above_data, above0_data, sizeof(uint8_t) * (MAX_TX_SIZE * 2 + MAX_TPL_SIZE * 2));
                             above_row = above_data + MAX_TPL_SIZE;
                             left_col  = left_data + MAX_TPL_SIZE;
                             svt_aom_filter_intra_edge(ois_intra_mode,
@@ -729,7 +721,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                             svt_av1_wht_fwd_txfm(
                                 src_diff, size << tpl_ctrls->subsample_tx, coeff, tx_size, pf_shape, 8, 0);
 
-                            intra_cost = svt_aom_satd(coeff, (size * size) >> tpl_ctrls->subsample_tx)
+                            intra_cost = (int64_t)svt_aom_satd(coeff, (size * size) >> tpl_ctrls->subsample_tx)
                                 << tpl_ctrls->subsample_tx;
                         }
 
@@ -771,26 +763,26 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                 const uint32_t rf_idx    = svt_get_ref_frame_type(list_index, ref_pic_index) - 1;
                 const uint32_t me_offset = me_mb_offset * pcs->pa_me_data->max_refs +
                     (list_index ? pcs->pa_me_data->max_l0 : 0) + ref_pic_index;
-                x_curr_mv = (me_results->me_mv_array[me_offset].x) << 3;
-                y_curr_mv = (me_results->me_mv_array[me_offset].y) << 3;
+                x_curr_mv = (me_results->me_mv_array[me_offset].x) * 8;
+                y_curr_mv = (me_results->me_mv_array[me_offset].y) * 8;
 
                 ref_pic_ptr =
                     (EbPictureBufferDesc*)pcs->tpl_data.tpl_ref_ds_ptr_array[list_index][ref_pic_index].picture_ptr;
 
                 if (((int)mb_origin_x + (x_curr_mv >> 3)) < -TPL_PAD) {
-                    x_curr_mv = (-TPL_PAD - mb_origin_x) << 3;
+                    x_curr_mv = (-TPL_PAD - mb_origin_x) * 8;
                 }
 
                 if (((int)mb_origin_x + (int)bsize + (x_curr_mv >> 3)) > (TPL_PAD + (int)ref_pic_ptr->max_width - 1)) {
-                    x_curr_mv = ((TPL_PAD + ref_pic_ptr->max_width - 1) - (mb_origin_x + bsize)) << 3;
+                    x_curr_mv = ((TPL_PAD + ref_pic_ptr->max_width - 1) - (mb_origin_x + bsize)) * 8;
                 }
 
                 if (((int)mb_origin_y + (y_curr_mv >> 3)) < -TPL_PAD) {
-                    y_curr_mv = (-TPL_PAD - mb_origin_y) << 3;
+                    y_curr_mv = (-TPL_PAD - mb_origin_y) * 8;
                 }
 
                 if (((int)mb_origin_y + (int)bsize + (y_curr_mv >> 3)) > (TPL_PAD + (int)ref_pic_ptr->max_height - 1)) {
-                    y_curr_mv = ((TPL_PAD + ref_pic_ptr->max_height - 1) - (mb_origin_y + bsize)) << 3;
+                    y_curr_mv = ((TPL_PAD + ref_pic_ptr->max_height - 1) - (mb_origin_y + bsize)) * 8;
                 }
 
                 Mv best_mv = {{x_curr_mv, y_curr_mv}};
@@ -807,7 +799,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                     DECLARE_ALIGNED(32, uint16_t, tmp_dst_y[MAX_TPL_SAMPLES_PER_BLOCK]);
                     DECLARE_ALIGNED(16, uint8_t, seg_mask[2 * MAX_TPL_SAMPLES_PER_BLOCK]);
                     ConvolveParams conv_params_y = get_conv_params_no_round(
-                        0, 0, 0, tmp_dst_y, MAX_TPL_SIZE, 0 /*is_compound*/, 8 /*bit_depth*/);
+                        0, tmp_dst_y, MAX_TPL_SIZE, 0 /*is_compound*/, 8 /*bit_depth*/);
 
                     svt_aom_enc_make_inter_predictor(scs,
                                                      ref_pic_ptr->y_buffer,
@@ -860,13 +852,13 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                     TxCoeffShape pf_shape = pcs->tpl_ctrls.pf_shape;
                     svt_av1_wht_fwd_txfm(src_diff, size << tpl_ctrls->subsample_tx, coeff, tx_size, pf_shape, 8, 0);
 
-                    inter_cost = svt_aom_satd(coeff, (size * size) >> tpl_ctrls->subsample_tx)
+                    inter_cost = (int64_t)svt_aom_satd(coeff, (size * size) >> tpl_ctrls->subsample_tx)
                         << tpl_ctrls->subsample_tx;
                 }
 
                 if (inter_cost < best_inter_cost) {
                     if (!pcs->tpl_ctrls.use_sad_in_src_search) {
-                        svt_memcpy(best_coeff, coeff, sizeof(best_coeff));
+                        memcpy(best_coeff, coeff, sizeof(best_coeff));
                     }
 
                     best_ref_poc    = pcs->tpl_data.tpl_ref_ds_ptr_array[list_index][ref_pic_index].picture_number;
@@ -895,7 +887,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                         DECLARE_ALIGNED(32, uint16_t, tmp_dst_y[MAX_TPL_SAMPLES_PER_BLOCK]);
                         DECLARE_ALIGNED(16, uint8_t, seg_mask[2 * MAX_TPL_SAMPLES_PER_BLOCK]);
                         ConvolveParams conv_params_y = get_conv_params_no_round(
-                            0, 0, 0, tmp_dst_y, MAX_TPL_SIZE, 0 /*is_compound*/, 8 /*bit_depth*/);
+                            0, tmp_dst_y, MAX_TPL_SIZE, 0 /*is_compound*/, 8 /*bit_depth*/);
 
                         svt_aom_enc_make_inter_predictor(scs,
                                                          ref_pic_ptr->y_buffer,
@@ -944,7 +936,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
 
                 get_quantize_error(&mb_plane, best_coeff, qcoeff, dqcoeff, tx_size, &eob, &recon_error, &sse);
 
-                int rate_cost        = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
+                int64_t rate_cost    = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
                 tpl_stats.srcrf_rate = (rate_cost << TPL_DEP_COST_SCALE_LOG2) << tpl_ctrls->subsample_tx;
                 tpl_stats.srcrf_dist = (recon_error << (TPL_DEP_COST_SCALE_LOG2)) << tpl_ctrls->subsample_tx;
             }
@@ -997,7 +989,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                 DECLARE_ALIGNED(32, uint16_t, tmp_dst_y[MAX_TPL_SAMPLES_PER_BLOCK]);
                 DECLARE_ALIGNED(16, uint8_t, seg_mask[2 * MAX_TPL_SAMPLES_PER_BLOCK]);
                 ConvolveParams conv_params_y = get_conv_params_no_round(
-                    0, 0, 0, tmp_dst_y, MAX_TPL_SIZE, 0 /*is_compound*/, 8 /*bit_depth*/);
+                    0, tmp_dst_y, MAX_TPL_SIZE, 0 /*is_compound*/, 8 /*bit_depth*/);
 
                 svt_aom_enc_make_inter_predictor(scs,
                                                  ref_pic_ptr->y_buffer,
@@ -1029,11 +1021,12 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                                                  false, // is_wm
                                                  NULL); // wm_params
             } else {
-                for (int i = 0; i < (int)size; ++i) {
-                    svt_memcpy(dst_buffer + i * dst_buffer_stride,
-                               ref_pic_ptr->y_buffer + ref_origin_index + i * ref_pic_ptr->y_stride,
-                               sizeof(uint8_t) * (size));
-                }
+                svt_av1_copy_wxh_8bit(ref_pic_ptr->y_buffer + ref_origin_index,
+                                      ref_pic_ptr->y_stride,
+                                      dst_buffer,
+                                      dst_buffer_stride,
+                                      size,
+                                      size);
             }
         } else {
             // intra recon
@@ -1139,7 +1132,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
         uint16_t eob = 0;
 
         get_quantize_error(&mb_plane, coeff, qcoeff, dqcoeff, tx_size, &eob, &recon_error, &sse);
-        int rate_cost = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
+        int64_t rate_cost = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
 
         if (!disable_intra_pred || (pcs->tpl_data.is_ref)) {
             if (eob) {
@@ -1157,21 +1150,21 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                 // If subsampling is used for the TX, need to populate the missing rows in recon with a copy of the neighbouring rows
                 if (tpl_ctrls->subsample_tx == 2) {
                     for (int i = 0; i < (int)size; i += 4) {
-                        svt_memcpy(dst_buffer + (i + 1) * dst_buffer_stride,
-                                   dst_buffer + i * dst_buffer_stride,
-                                   sizeof(uint8_t) * (size));
-                        svt_memcpy(dst_buffer + (i + 2) * dst_buffer_stride,
-                                   dst_buffer + i * dst_buffer_stride,
-                                   sizeof(uint8_t) * (size));
-                        svt_memcpy(dst_buffer + (i + 3) * dst_buffer_stride,
-                                   dst_buffer + i * dst_buffer_stride,
-                                   sizeof(uint8_t) * (size));
+                        memcpy(dst_buffer + (i + 1) * dst_buffer_stride,
+                               dst_buffer + i * dst_buffer_stride,
+                               sizeof(uint8_t) * (size));
+                        memcpy(dst_buffer + (i + 2) * dst_buffer_stride,
+                               dst_buffer + i * dst_buffer_stride,
+                               sizeof(uint8_t) * (size));
+                        memcpy(dst_buffer + (i + 3) * dst_buffer_stride,
+                               dst_buffer + i * dst_buffer_stride,
+                               sizeof(uint8_t) * (size));
                     }
                 } else if (tpl_ctrls->subsample_tx == 1) {
                     for (int i = 0; i < (int)size; i += 2) {
-                        svt_memcpy(dst_buffer + (i + 1) * dst_buffer_stride,
-                                   dst_buffer + i * dst_buffer_stride,
-                                   sizeof(uint8_t) * (size));
+                        memcpy(dst_buffer + (i + 1) * dst_buffer_stride,
+                               dst_buffer + i * dst_buffer_stride,
+                               sizeof(uint8_t) * (size));
                     }
                 }
             }
@@ -1195,6 +1188,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
         result_model_store(pcs, &tpl_stats, mb_origin_x, mb_origin_y, size);
     }
 }
+#endif // CONFIG_ENABLE_TPL
 
 #define TPL_TASKS_MDC_INPUT 0
 #define TPL_TASKS_ENCDEC_INPUT 1
@@ -1316,11 +1310,32 @@ static bool assign_tpl_segments(EncDecSegments* segmentPtr, uint16_t* segmentInO
     return continue_processing_flag;
 }
 
+/*
+  Process all SBs inline for TPL. Used by the single-thread path and the tiles path.
+*/
+#if CONFIG_ENABLE_TPL
+static void tpl_dispenser_st(EncodeContext* enc_ctx, SequenceControlSet* scs, PictureParentControlSet* pcs,
+                             int32_t frame_idx, int32_t qIndex) {
+    for (uint32_t sb_index = 0; sb_index < pcs->b64_total_count; ++sb_index) {
+        B64Geom* b64_geom = &scs->b64_geom[sb_index];
+        tpl_mc_flow_dispenser_sb_generic(
+            enc_ctx,
+            scs,
+            pcs,
+            frame_idx,
+            sb_index,
+            qIndex,
+            (b64_geom->width == 64 && b64_geom->height == 64) ? pcs->tpl_ctrls.dispenser_search_level : 0);
+    }
+}
+#endif // CONFIG_ENABLE_TPL
+
 /************************************************
  * Genrate TPL MC Flow Dispenser  Based on Lookahead
  ** LAD Window: sliding window size
  ************************************************/
 
+#if CONFIG_ENABLE_TPL
 static void tpl_mc_flow_dispenser(EncodeContext* enc_ctx, SequenceControlSet* scs, int32_t* base_rdmult,
                                   PictureParentControlSet* pcs, int32_t frame_idx,
                                   SourceBasedOperationsContext* context_ptr) {
@@ -1356,24 +1371,30 @@ static void tpl_mc_flow_dispenser(EncodeContext* enc_ctx, SequenceControlSet* sc
         {
             // reset number of TPLed sbs per pic
             pcs->tpl_disp_coded_sb_count = 0;
+#if CONFIG_SINGLE_THREAD_KERNEL
+            if (scs->lp == 1) {
+                tpl_dispenser_st(enc_ctx, scs, pcs, frame_idx, qIndex);
+            } else
+#endif
+            {
+                EbObjectWrapper* out_results_wrapper;
 
-            EbObjectWrapper* out_results_wrapper;
+                // TPL dispenser kernel
+                svt_get_empty_object(context_ptr->sbo_output_fifo_ptr, &out_results_wrapper);
 
-            // TPL dispenser kernel
-            svt_get_empty_object(context_ptr->sbo_output_fifo_ptr, &out_results_wrapper);
+                TplDispResults* out_results = (TplDispResults*)out_results_wrapper->object_ptr;
+                // out_results->pcs_wrapper = pcs->p_pcs_wrapper_ptr;
+                out_results->pcs              = pcs;
+                out_results->input_type       = TPL_TASKS_MDC_INPUT;
+                out_results->tile_group_index = /*tile_group_idx*/ 0;
 
-            TplDispResults* out_results = (TplDispResults*)out_results_wrapper->object_ptr;
-            // out_results->pcs_wrapper = pcs->p_pcs_wrapper_ptr;
-            out_results->pcs              = pcs;
-            out_results->input_type       = TPL_TASKS_MDC_INPUT;
-            out_results->tile_group_index = /*tile_group_idx*/ 0;
+                out_results->frame_index = frame_idx;
+                out_results->qIndex      = qIndex;
 
-            out_results->frame_index = frame_idx;
-            out_results->qIndex      = qIndex;
+                svt_post_full_object(out_results_wrapper);
 
-            svt_post_full_object(out_results_wrapper);
-
-            svt_block_on_semaphore(pcs->tpl_disp_done_semaphore); // we can do all in // ?
+                svt_block_on_semaphore(pcs->tpl_disp_done_semaphore); // we can do all in // ?
+            }
         }
     }
 
@@ -1387,6 +1408,7 @@ static void tpl_mc_flow_dispenser(EncodeContext* enc_ctx, SequenceControlSet* sc
 
     return;
 }
+#endif // CONFIG_ENABLE_TPL
 
 static int get_overlap_area(int grid_pos_row, int grid_pos_col, int ref_pos_row, int ref_pos_col, int block,
                             BlockSize bsize) {
@@ -1466,7 +1488,7 @@ static AOM_INLINE void tpl_model_update_b(PictureParentControlSet* ref_pcs_ptr, 
     Av1Common* ref_cm = ref_pcs_ptr->av1_cm;
     TplStats*  ref_tpl_stats_ptr;
 
-    const Mv  full_mv     = get_fullmv_from_mv(&tpl_stats_ptr->mv);
+    const Mv  full_mv     = get_fullmv_from_mv(tpl_stats_ptr->mv);
     const int ref_pos_row = mi_row * MI_SIZE + full_mv.y;
     const int ref_pos_col = mi_col * MI_SIZE + full_mv.x;
 
@@ -1667,6 +1689,7 @@ void svt_aom_generate_r0beta(PictureParentControlSet* pcs) {
 /************************************************
  * Allocate and initialize buffers needed for tpl
  ************************************************/
+#if CONFIG_ENABLE_TPL
 static EbErrorType init_tpl_buffers(EncodeContext* enc_ctx) {
     for (int frame_idx = 0; frame_idx < MAX_TPL_LA_SW; frame_idx++) {
         enc_ctx->poc_map_idx[frame_idx]                = -1;
@@ -1674,10 +1697,12 @@ static EbErrorType init_tpl_buffers(EncodeContext* enc_ctx) {
     }
     return EB_ErrorNone;
 }
+#endif // CONFIG_ENABLE_TPL
 
 /************************************************
 * init tpl tpl_disp_segment_ctrl
 ************************************************/
+#if CONFIG_ENABLE_TPL
 static void init_tpl_segments(SequenceControlSet* scs, PictureParentControlSet* pcs,
                               PictureParentControlSet** pcs_array, int32_t frames_in_sw) {
     for (int32_t frame_idx = 0; frame_idx < frames_in_sw; frame_idx++) {
@@ -1759,6 +1784,7 @@ static void init_tpl_segments(SequenceControlSet* scs, PictureParentControlSet* 
         }
     }
 }
+#endif // CONFIG_ENABLE_TPL
 
 typedef struct TplRefList {
     EbObjectWrapper* ref;
@@ -1770,6 +1796,7 @@ typedef struct TplRefList {
 /************************************************
  * Genrate TPL MC Flow Based on frames in the tpl group
  ************************************************/
+#if CONFIG_ENABLE_TPL
 static EbErrorType tpl_mc_flow(EncodeContext* enc_ctx, SequenceControlSet* scs, PictureParentControlSet* pcs,
                                SourceBasedOperationsContext* context_ptr) {
     int32_t  frames_in_sw         = MIN(MAX_TPL_LA_SW, pcs->tpl_group_size);
@@ -1865,7 +1892,6 @@ static EbErrorType tpl_mc_flow(EncodeContext* enc_ctx, SequenceControlSet* scs, 
                         tpl_ref_list[i].ref                                            = NULL;
                         enc_ctx->mc_flow_rec_picture_buffer[tpl_ref_list[i].frame_idx] = NULL;
                         tpl_ref_list[i].frame_idx                                      = -1;
-                        tpl_ref_list[i].refresh_frame_mask                             = 0;
                         tpl_ref_list[i].is_valid                                       = false;
                     }
                 }
@@ -1928,7 +1954,6 @@ static EbErrorType tpl_mc_flow(EncodeContext* enc_ctx, SequenceControlSet* scs, 
             tpl_ref_list[i].ref                                            = NULL;
             enc_ctx->mc_flow_rec_picture_buffer[tpl_ref_list[i].frame_idx] = NULL;
             tpl_ref_list[i].frame_idx                                      = -1;
-            tpl_ref_list[i].refresh_frame_mask                             = 0;
             tpl_ref_list[i].is_valid                                       = false;
         }
     }
@@ -1955,131 +1980,133 @@ static EbErrorType tpl_mc_flow(EncodeContext* enc_ctx, SequenceControlSet* scs, 
 
     return EB_ErrorNone;
 }
+#endif // CONFIG_ENABLE_TPL
 
 /*
    TPL dispenser kernel
    process one picture of TPL group
 */
 
-void* svt_aom_tpl_disp_kernel(void* input_ptr) {
-    EbThreadContext*     thread_ctx  = (EbThreadContext*)input_ptr;
-    TplDispenserContext* context_ptr = (TplDispenserContext*)thread_ctx->priv;
+EbErrorType svt_aom_tpl_disp_kernel_iter(void* context) {
+    TplDispenserContext* context_ptr = (TplDispenserContext*)context;
     EbObjectWrapper*     in_results_wrapper_ptr;
     TplDispResults*      in_results_ptr;
-    for (;;) {
-        // Get Input Full Object
-        EB_GET_FULL_OBJECT(context_ptr->tpl_disp_input_fifo_ptr, &in_results_wrapper_ptr);
+    // Get Input Full Object
+    EB_GET_FULL_OBJECT(context_ptr->tpl_disp_input_fifo_ptr, &in_results_wrapper_ptr);
 
-        in_results_ptr = (TplDispResults*)in_results_wrapper_ptr->object_ptr;
+    in_results_ptr = (TplDispResults*)in_results_wrapper_ptr->object_ptr;
 
-        PictureParentControlSet* pcs = in_results_ptr->pcs;
+    PictureParentControlSet* pcs = in_results_ptr->pcs;
 
-        SequenceControlSet* scs = (SequenceControlSet*)pcs->scs;
+    SequenceControlSet* scs = (SequenceControlSet*)pcs->scs;
 
-        int32_t frame_idx           = in_results_ptr->frame_index;
-        context_ptr->coded_sb_count = 0;
+    int32_t frame_idx           = in_results_ptr->frame_index;
+    context_ptr->coded_sb_count = 0;
 
-        uint16_t tile_group_width_in_sb = pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
-                                              .tile_group_width_in_sb;
-        EncDecSegments* segments_ptr;
+    uint16_t tile_group_width_in_sb = pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
+                                          .tile_group_width_in_sb;
+    EncDecSegments* segments_ptr;
 
-        segments_ptr = pcs->tpl_disp_segment_ctrl[0 /*context_ptr->tile_group_index*/]; //  1 tile
-        // Segments
-        uint16_t segment_index;
+    segments_ptr = pcs->tpl_disp_segment_ctrl[0 /*context_ptr->tile_group_index*/]; //  1 tile
+    // Segments
+    uint16_t segment_index;
 
-        uint8_t  b64_size        = (uint8_t)scs->b64_size;
-        uint8_t  sb_size_log2    = (uint8_t)svt_log2f(b64_size);
-        uint32_t pic_width_in_sb = (pcs->aligned_width + b64_size - 1) >> sb_size_log2;
+    uint8_t  b64_size        = (uint8_t)scs->b64_size;
+    uint8_t  sb_size_log2    = (uint8_t)svt_log2f(b64_size);
+    uint32_t pic_width_in_sb = (pcs->aligned_width + b64_size - 1) >> sb_size_log2;
 
-        segment_index = 0;
-        // no Tiles path
-        if (scs->static_config.tile_rows == 0 && scs->static_config.tile_columns == 0) {
-            // segments loop
-            while (assign_tpl_segments(
-                       segments_ptr, &segment_index, in_results_ptr, frame_idx, context_ptr->tpl_disp_fb_fifo_ptr) ==
-                   true) {
-                uint32_t x_sb_start_index;
-                uint32_t y_sb_start_index;
-                uint32_t sb_start_index;
-                uint32_t sb_segment_count;
-                uint32_t sb_segment_index;
-                uint32_t segment_row_index;
-                uint32_t segment_band_index;
-                uint32_t segment_band_size;
-                // SB Loop variables
-                uint32_t x_sb_index;
-                uint32_t y_sb_index;
+    segment_index = 0;
+    // no Tiles path
+    if (scs->static_config.tile_rows == 0 && scs->static_config.tile_columns == 0) {
+        // segments loop
+        while (assign_tpl_segments(
+                   segments_ptr, &segment_index, in_results_ptr, frame_idx, context_ptr->tpl_disp_fb_fifo_ptr) ==
+               true) {
+            uint32_t x_sb_start_index;
+            uint32_t y_sb_start_index;
+            uint32_t sb_start_index;
+            uint32_t sb_segment_count;
+            uint32_t sb_segment_index;
+            uint32_t segment_row_index;
+            uint32_t segment_band_index;
+            uint32_t segment_band_size;
+            // SB Loop variables
+            uint32_t x_sb_index;
+            uint32_t y_sb_index;
 
-                x_sb_start_index = segments_ptr->x_start_array[segment_index];
-                y_sb_start_index = segments_ptr->y_start_array[segment_index];
-                sb_start_index   = y_sb_start_index * tile_group_width_in_sb + x_sb_start_index;
-                sb_segment_count = segments_ptr->valid_sb_count_array[segment_index];
+            x_sb_start_index = segments_ptr->x_start_array[segment_index];
+            y_sb_start_index = segments_ptr->y_start_array[segment_index];
+            sb_start_index   = y_sb_start_index * tile_group_width_in_sb + x_sb_start_index;
+            sb_segment_count = segments_ptr->valid_sb_count_array[segment_index];
 
-                segment_row_index  = segment_index / segments_ptr->segment_band_count;
-                segment_band_index = segment_index - segment_row_index * segments_ptr->segment_band_count;
-                segment_band_size  = (segments_ptr->sb_band_count * (segment_band_index + 1) +
-                                     segments_ptr->segment_band_count - 1) /
-                    segments_ptr->segment_band_count;
+            segment_row_index  = segment_index / segments_ptr->segment_band_count;
+            segment_band_index = segment_index - segment_row_index * segments_ptr->segment_band_count;
+            segment_band_size  = (segments_ptr->sb_band_count * (segment_band_index + 1) +
+                                 segments_ptr->segment_band_count - 1) /
+                segments_ptr->segment_band_count;
 
-                for (y_sb_index = y_sb_start_index, sb_segment_index = sb_start_index;
+            for (y_sb_index = y_sb_start_index, sb_segment_index = sb_start_index;
+                 sb_segment_index < sb_start_index + sb_segment_count;
+                 ++y_sb_index) {
+                for (x_sb_index = x_sb_start_index;
+                     x_sb_index < tile_group_width_in_sb && (x_sb_index + y_sb_index < segment_band_size) &&
                      sb_segment_index < sb_start_index + sb_segment_count;
-                     ++y_sb_index) {
-                    for (x_sb_index = x_sb_start_index;
-                         x_sb_index < tile_group_width_in_sb && (x_sb_index + y_sb_index < segment_band_size) &&
-                         sb_segment_index < sb_start_index + sb_segment_count;
-                         ++x_sb_index, ++sb_segment_index) {
-                        uint16_t tile_group_y_sb_start =
-                            pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
-                                .tile_group_sb_start_y;
-                        uint16_t tile_group_x_sb_start =
-                            pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
-                                .tile_group_sb_start_x;
+                     ++x_sb_index, ++sb_segment_index) {
+                    uint16_t tile_group_y_sb_start =
+                        pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
+                            .tile_group_sb_start_y;
+                    uint16_t tile_group_x_sb_start =
+                        pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
+                            .tile_group_sb_start_x;
 
-                        context_ptr->sb_index = (uint16_t)((y_sb_index + tile_group_y_sb_start) * pic_width_in_sb +
-                                                           x_sb_index + tile_group_x_sb_start);
+                    context_ptr->sb_index = (uint16_t)((y_sb_index + tile_group_y_sb_start) * pic_width_in_sb +
+                                                       x_sb_index + tile_group_x_sb_start);
 
-                        // TPL dispenser per SB (64)
-                        B64Geom* b64_geom = &scs->b64_geom[context_ptr->sb_index];
-                        tpl_mc_flow_dispenser_sb_generic(pcs->scs->enc_ctx,
-                                                         scs,
-                                                         pcs,
-                                                         frame_idx,
-                                                         context_ptr->sb_index,
-                                                         in_results_ptr->qIndex,
-                                                         (b64_geom->width == 64 && b64_geom->height == 64)
-                                                             ? pcs->tpl_ctrls.dispenser_search_level
-                                                             : 0);
-                        context_ptr->coded_sb_count++;
-                    }
-
-                    x_sb_start_index = (x_sb_start_index > 0) ? x_sb_start_index - 1 : 0;
+#if CONFIG_ENABLE_TPL
+                    // TPL dispenser per SB (64)
+                    B64Geom* b64_geom = &scs->b64_geom[context_ptr->sb_index];
+                    tpl_mc_flow_dispenser_sb_generic(
+                        pcs->scs->enc_ctx,
+                        scs,
+                        pcs,
+                        frame_idx,
+                        context_ptr->sb_index,
+                        in_results_ptr->qIndex,
+                        (b64_geom->width == 64 && b64_geom->height == 64) ? pcs->tpl_ctrls.dispenser_search_level : 0);
+#endif
+                    context_ptr->coded_sb_count++;
                 }
-            }
 
-            svt_block_on_mutex(pcs->tpl_disp_mutex);
-            pcs->tpl_disp_coded_sb_count += (uint32_t)context_ptr->coded_sb_count;
-            bool last_sb_flag = (pcs->b64_total_count == pcs->tpl_disp_coded_sb_count);
+                x_sb_start_index = (x_sb_start_index > 0) ? x_sb_start_index - 1 : 0;
+            }
+        }
 
-            svt_release_mutex(pcs->tpl_disp_mutex);
-            if (last_sb_flag) {
-                svt_post_semaphore(pcs->tpl_disp_done_semaphore);
-            }
-        } else {
-            // Tiles path does not suupport segments
-            for (uint32_t sb_index = 0; sb_index < pcs->b64_total_count; ++sb_index) {
-                B64Geom* b64_geom = &scs->b64_geom[sb_index];
-                tpl_mc_flow_dispenser_sb_generic(
-                    pcs->scs->enc_ctx,
-                    scs,
-                    pcs,
-                    frame_idx,
-                    sb_index,
-                    in_results_ptr->qIndex,
-                    (b64_geom->width == 64 && b64_geom->height == 64) ? pcs->tpl_ctrls.dispenser_search_level : 0);
-            }
+        svt_block_on_mutex(pcs->tpl_disp_mutex);
+        pcs->tpl_disp_coded_sb_count += (uint32_t)context_ptr->coded_sb_count;
+        bool last_sb_flag = (pcs->b64_total_count == pcs->tpl_disp_coded_sb_count);
+
+        svt_release_mutex(pcs->tpl_disp_mutex);
+        if (last_sb_flag) {
             svt_post_semaphore(pcs->tpl_disp_done_semaphore);
         }
-        svt_release_object(in_results_wrapper_ptr);
+    } else {
+        // Tiles path does not suupport segments
+#if CONFIG_ENABLE_TPL
+        tpl_dispenser_st(pcs->scs->enc_ctx, scs, pcs, frame_idx, in_results_ptr->qIndex);
+#endif
+        svt_post_semaphore(pcs->tpl_disp_done_semaphore);
+    }
+    svt_release_object(in_results_wrapper_ptr);
+    return EB_ErrorNone;
+}
+
+void* svt_aom_tpl_disp_kernel(void* input_ptr) {
+    EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
+    for (;;) {
+        EbErrorType err = svt_aom_tpl_disp_kernel_iter(thread_ctx->priv);
+        if (err == EB_NoErrorFifoShutdown) {
+            return NULL;
+        }
     }
     return NULL;
 }
@@ -2337,49 +2364,59 @@ static void aom_av1_set_mb_ssim_rdmult_scaling(PictureParentControlSet* pcs) {
  * Source-based operations process involves a number of analysis algorithms
  * to identify spatiotemporal characteristics of the input pictures.
  ************************************************/
-void* svt_aom_source_based_operations_kernel(void* input_ptr) {
-    EbThreadContext*              thread_ctx  = (EbThreadContext*)input_ptr;
-    SourceBasedOperationsContext* context_ptr = (SourceBasedOperationsContext*)thread_ctx->priv;
+EbErrorType svt_aom_source_based_operations_kernel_iter(void* context) {
+    SourceBasedOperationsContext* context_ptr = (SourceBasedOperationsContext*)context;
     EbObjectWrapper*              in_results_wrapper_ptr;
 
-    for (;;) {
-        // Get Input Full Object
-        EB_GET_FULL_OBJECT(context_ptr->initial_rate_control_results_input_fifo_ptr, &in_results_wrapper_ptr);
+    // Get Input Full Object
+    EB_GET_FULL_OBJECT(context_ptr->initial_rate_control_results_input_fifo_ptr, &in_results_wrapper_ptr);
 
-        InitialRateControlResults* in_results_ptr = (InitialRateControlResults*)in_results_wrapper_ptr->object_ptr;
-        PictureParentControlSet*   pcs            = (PictureParentControlSet*)in_results_ptr->pcs_wrapper->object_ptr;
-        SequenceControlSet*        scs            = pcs->scs;
-        if (in_results_ptr->superres_recode) {
-            sbo_send_picture_out(context_ptr, pcs, true);
-
-            // Release the Input Results
-            svt_release_object(in_results_wrapper_ptr);
-            continue;
-        }
-
-        // Get TPL ME
-        if (pcs->tpl_ctrls.enable) {
-            // tpl ME can be performed on unscaled frames in super-res q-threshold and auto mode
-            if (!pcs->frame_superres_enabled && pcs->temporal_layer_index == 0) {
-                tpl_prep_info(pcs);
-                tpl_mc_flow(scs->enc_ctx, scs, pcs, context_ptr);
-            }
-            bool release_pa_ref = (scs->static_config.superres_mode <= SUPERRES_RANDOM) ? true : false;
-            // Release Pa Ref if lad_mg is 0 and P slice and not flat struct (not belonging to any TPL group)
-            if (release_pa_ref && /*scs->lad_mg == 0 &&*/ pcs->reference_released == 0) {
-                svt_aom_release_pa_reference_objects(scs, pcs);
-                // printf ("\n PIC \t %d\n",pcs->picture_number);
-            }
-        }
-        /*********************************************Picture-based operations**********************************************************/
-        if (scs->static_config.tune == TUNE_SSIM || scs->static_config.tune == TUNE_IQ ||
-            scs->static_config.tune == TUNE_MS_SSIM) {
-            aom_av1_set_mb_ssim_rdmult_scaling(pcs);
-        }
-        sbo_send_picture_out(context_ptr, pcs, false);
+    InitialRateControlResults* in_results_ptr = (InitialRateControlResults*)in_results_wrapper_ptr->object_ptr;
+    PictureParentControlSet*   pcs            = (PictureParentControlSet*)in_results_ptr->pcs_wrapper->object_ptr;
+    SequenceControlSet*        scs            = pcs->scs;
+    if (in_results_ptr->superres_recode) {
+        sbo_send_picture_out(context_ptr, pcs, true);
 
         // Release the Input Results
         svt_release_object(in_results_wrapper_ptr);
+        return EB_ErrorNone;
+    }
+
+    // Get TPL ME
+    if (pcs->tpl_ctrls.enable) {
+#if CONFIG_ENABLE_TPL
+        // tpl ME can be performed on unscaled frames in super-res q-threshold and auto mode
+        if (!pcs->frame_superres_enabled && pcs->temporal_layer_index == 0) {
+            tpl_prep_info(pcs);
+            tpl_mc_flow(scs->enc_ctx, scs, pcs, context_ptr);
+        }
+#endif
+        bool release_pa_ref = (scs->static_config.superres_mode <= SUPERRES_RANDOM) ? true : false;
+        // Release Pa Ref if lad_mg is 0 and P slice and not flat struct (not belonging to any TPL group)
+        if (release_pa_ref && /*scs->lad_mg == 0 &&*/ pcs->reference_released == 0) {
+            svt_aom_release_pa_reference_objects(scs, pcs);
+            // printf ("\n PIC \t %d\n",pcs->picture_number);
+        }
+    }
+    /*********************************************Picture-based operations**********************************************************/
+    if (scs->static_config.tune == TUNE_SSIM || scs->static_config.tune == TUNE_IQ ||
+        scs->static_config.tune == TUNE_MS_SSIM) {
+        aom_av1_set_mb_ssim_rdmult_scaling(pcs);
+    }
+    sbo_send_picture_out(context_ptr, pcs, false);
+
+    // Release the Input Results
+    svt_release_object(in_results_wrapper_ptr);
+    return EB_ErrorNone;
+}
+
+void* svt_aom_source_based_operations_kernel(void* input_ptr) {
+    EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
+    for (;;) {
+        EbErrorType err = svt_aom_source_based_operations_kernel_iter(thread_ctx->priv);
+        if (err == EB_NoErrorFifoShutdown) {
+            return NULL;
+        }
     }
     return NULL;
 }

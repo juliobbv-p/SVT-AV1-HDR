@@ -162,3 +162,36 @@ HBD_VARIANCE_WXH_10_NEON(64, 128)
 
 HBD_VARIANCE_WXH_10_NEON(128, 64)
 HBD_VARIANCE_WXH_10_NEON(128, 128)
+
+// bit-exact with svt_aom_variance_highbd_c (uint32 sse wraps mod 2^32).
+// Assumes w is a multiple of 4 and |a - b| fits in int16 (high bit depth content is <= 12-bit).
+uint32_t svt_aom_variance_highbd_neon(const uint16_t* a, int a_stride, const uint16_t* b, int b_stride, int w, int h,
+                                      uint32_t* sse) {
+    int32x4_t sum_s32    = vdupq_n_s32(0);
+    int32x4_t sse_s32[2] = {vdupq_n_s32(0), vdupq_n_s32(0)};
+
+    for (int i = 0; i < h; ++i) {
+        int j = 0;
+        for (; j + 8 <= w; j += 8) {
+            const uint16x8_t s    = vld1q_u16(a + j);
+            const uint16x8_t r    = vld1q_u16(b + j);
+            const int16x8_t  diff = vreinterpretq_s16_u16(vsubq_u16(s, r));
+            sum_s32               = vpadalq_s16(sum_s32, diff);
+            sse_s32[0]            = vmlal_s16(sse_s32[0], vget_low_s16(diff), vget_low_s16(diff));
+            sse_s32[1]            = vmlal_s16(sse_s32[1], vget_high_s16(diff), vget_high_s16(diff));
+        }
+        if (j + 4 <= w) {
+            const uint16x4_t s    = vld1_u16(a + j);
+            const uint16x4_t r    = vld1_u16(b + j);
+            const int16x4_t  diff = vreinterpret_s16_u16(vsub_u16(s, r));
+            sum_s32               = vaddw_s16(sum_s32, diff);
+            sse_s32[0]            = vmlal_s16(sse_s32[0], diff, diff);
+        }
+        a += a_stride;
+        b += b_stride;
+    }
+
+    const int sad = vaddvq_s32(sum_s32);
+    *sse          = vaddvq_u32(vaddq_u32(vreinterpretq_u32_s32(sse_s32[0]), vreinterpretq_u32_s32(sse_s32[1])));
+    return *sse - ((int64_t)sad * sad) / (w * h);
+}

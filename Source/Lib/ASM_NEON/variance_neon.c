@@ -92,51 +92,35 @@ static inline void variance_8xh_neon(const uint8_t* src, int src_stride, const u
 
 static inline void variance_16xh_neon(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride, int h,
                                       uint32_t* sse, int* sum) {
-    int16x8_t  sum_s16[2] = {vdupq_n_s16(0), vdupq_n_s16(0)};
-    uint32x4_t sse_u32[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};
+    int16x8_t sum_s16[2] = {vdupq_n_s16(0), vdupq_n_s16(0)};
+    int32x4_t sse_s32[2] = {vdupq_n_s32(0), vdupq_n_s32(0)};
 
     // Number of rows we can process before 'sum_s16' accumulators overflow:
     // 32767 / 255 ~= 128, so 128 16-wide rows.
     assert(h <= 128);
-    assert((h & 1) == 0);
 
     int i = h;
-#if DISABLE_LOOP_UNROLL
-#pragma clang loop unroll(disable)
-#endif
     do {
-        uint8x16_t s0 = vld1q_u8(src);
-        uint8x16_t r0 = vld1q_u8(ref);
-        uint8x16_t s1 = vld1q_u8(src + src_stride);
-        uint8x16_t r1 = vld1q_u8(ref + ref_stride);
+        uint8x16_t s = vld1q_u8(src);
+        uint8x16_t r = vld1q_u8(ref);
 
-        int16x8_t diff0_l = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(s0), vget_low_u8(r0)));
-        int16x8_t diff0_h = vreinterpretq_s16_u16(vsubl_u8(vget_high_u8(s0), vget_high_u8(r0)));
-        int16x8_t diff1_l = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(s1), vget_low_u8(r1)));
-        int16x8_t diff1_h = vreinterpretq_s16_u16(vsubl_u8(vget_high_u8(s1), vget_high_u8(r1)));
+        int16x8_t diff_l = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(s), vget_low_u8(r)));
+        int16x8_t diff_h = vreinterpretq_s16_u16(vsubl_u8(vget_high_u8(s), vget_high_u8(r)));
 
-        sum_s16[0] = vaddq_s16(sum_s16[0], diff0_l);
-        sum_s16[1] = vaddq_s16(sum_s16[1], diff0_h);
-        sum_s16[0] = vaddq_s16(sum_s16[0], diff1_l);
-        sum_s16[1] = vaddq_s16(sum_s16[1], diff1_h);
+        sum_s16[0] = vaddq_s16(sum_s16[0], diff_l);
+        sum_s16[1] = vaddq_s16(sum_s16[1], diff_h);
 
-        uint16x8_t sq0_l = vreinterpretq_u16_s16(vmulq_s16(diff0_l, diff0_l));
-        uint16x8_t sq0_h = vreinterpretq_u16_s16(vmulq_s16(diff0_h, diff0_h));
-        uint16x8_t sq1_l = vreinterpretq_u16_s16(vmulq_s16(diff1_l, diff1_l));
-        uint16x8_t sq1_h = vreinterpretq_u16_s16(vmulq_s16(diff1_h, diff1_h));
+        sse_s32[0] = vmlal_s16(sse_s32[0], vget_low_s16(diff_l), vget_low_s16(diff_l));
+        sse_s32[1] = vmlal_s16(sse_s32[1], vget_high_s16(diff_l), vget_high_s16(diff_l));
+        sse_s32[0] = vmlal_s16(sse_s32[0], vget_low_s16(diff_h), vget_low_s16(diff_h));
+        sse_s32[1] = vmlal_s16(sse_s32[1], vget_high_s16(diff_h), vget_high_s16(diff_h));
 
-        sse_u32[0] = vpadalq_u16(sse_u32[0], sq0_l);
-        sse_u32[1] = vpadalq_u16(sse_u32[1], sq0_h);
-        sse_u32[0] = vpadalq_u16(sse_u32[0], sq1_l);
-        sse_u32[1] = vpadalq_u16(sse_u32[1], sq1_h);
-
-        src += 2 * src_stride;
-        ref += 2 * ref_stride;
-        i -= 2;
-    } while (i != 0);
+        src += src_stride;
+        ref += ref_stride;
+    } while (--i != 0);
 
     *sum = vaddlvq_s16(vaddq_s16(sum_s16[0], sum_s16[1]));
-    *sse = vaddvq_u32(vaddq_u32(sse_u32[0], sse_u32[1]));
+    *sse = (uint32_t)vaddvq_s32(vaddq_s32(sse_s32[0], sse_s32[1]));
 }
 
 static inline void variance_large_neon(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride, int w,
@@ -279,649 +263,515 @@ SUBPEL_VARIANCE_4XH_NEON(16, 2)
 
 #undef SUBPEL_VARIANCE_4XH_NEON
 
-static inline uint8x8_t spv_w8_h_bil(const uint8_t* p, int off, uint8x8_t f0, uint8x8_t f1) {
-    uint8x8_t s0 = vld1_u8(p);
-    uint8x8_t s1 = vld1_u8(p + 1);
-    if (off == 2) {
-        return vrhadd_u8(s0, vhadd_u8(s0, s1));
+static inline void var_w8x2_accum(uint16x8_t* src_sum, uint16x8_t* ref_sum, uint32x4_t* sse0, uint32x4_t* sse1,
+                                  uint8x8_t pred0, uint8x8_t pred1, const uint8_t* ref, int64_t ref_stride) {
+    const uint8x8_t r0 = vld1_u8(ref);
+    const uint8x8_t r1 = vld1_u8(ref + ref_stride);
+
+    *src_sum = vaddw_u8(*src_sum, pred0);
+    *src_sum = vaddw_u8(*src_sum, pred1);
+    *ref_sum = vaddw_u8(*ref_sum, r0);
+    *ref_sum = vaddw_u8(*ref_sum, r1);
+
+    const uint8x8_t abs_diff0 = vabd_u8(pred0, r0);
+    const uint8x8_t abs_diff1 = vabd_u8(pred1, r1);
+    *sse0                     = vpadalq_u16(*sse0, vmull_u8(abs_diff0, abs_diff0));
+    *sse1                     = vpadalq_u16(*sse1, vmull_u8(abs_diff1, abs_diff1));
+}
+
+// Calculate variance from src_sum, ref_sum and sse accumulator vectors.
+static inline unsigned int var_w8_reduce(uint16x8_t src_sum, uint16x8_t ref_sum, uint32x4_t sse0, uint32x4_t sse1,
+                                         int shift, unsigned int* sse_out) {
+    const int16x8_t sum_diff = vreinterpretq_s16_u16(vsubq_u16(src_sum, ref_sum));
+    const int32_t   sum      = vaddlvq_s16(sum_diff);
+    *sse_out                 = vaddvq_u32(vaddq_u32(sse0, sse1));
+    return *sse_out - (uint32_t)(((int64_t)sum * sum) >> shift);
+}
+
+// Emit a fused sub pixel variance function for blocks of width 8 that uses the
+// specified horizontal 2-tap filter.
+#define FUSED_SUBPEL_VAR_8XH_X(X_FILTER_OFFSET, X_FILTER)                                      \
+    static unsigned int fused_subpel_variance_8xh_##X_FILTER_OFFSET(const uint8_t* src,        \
+                                                                    int64_t        src_stride, \
+                                                                    int            h,          \
+                                                                    int            shift,      \
+                                                                    const uint8_t* ref,        \
+                                                                    int64_t        ref_stride, \
+                                                                    unsigned int*  sse_out) {   \
+        uint16x8_t src_sum = vdupq_n_u16(0);                                                   \
+        uint16x8_t ref_sum = vdupq_n_u16(0);                                                   \
+        uint32x4_t sse0    = vdupq_n_u32(0);                                                   \
+        uint32x4_t sse1    = vdupq_n_u32(0);                                                   \
+        do {                                                                                   \
+            const uint8x8_t pred0 = X_FILTER(src);                                             \
+            const uint8x8_t pred1 = X_FILTER(src + src_stride);                                \
+            var_w8x2_accum(&src_sum, &ref_sum, &sse0, &sse1, pred0, pred1, ref, ref_stride);   \
+            src += 2 * src_stride;                                                             \
+            ref += 2 * ref_stride;                                                             \
+            h -= 2;                                                                            \
+        } while (h != 0);                                                                      \
+        return var_w8_reduce(src_sum, ref_sum, sse0, sse1, shift, sse_out);                    \
     }
-    if (off == 6) {
-        return vrhadd_u8(s1, vhadd_u8(s0, s1));
+
+FUSED_SUBPEL_VAR_8XH_X(2, load_interp_3_1_w8)
+FUSED_SUBPEL_VAR_8XH_X(4, load_interp_1_1_w8)
+FUSED_SUBPEL_VAR_8XH_X(6, load_interp_1_3_w8)
+
+// Emit a fused sub pixel variance function for blocks of width 8 that uses the
+// specified 2-tap bilinear filter.
+#define FUSED_SUBPEL_VAR_8XH_XY(X_FILTER_OFFSET, Y_FILTER_OFFSET, X_FILTER, Y_FILTER)                              \
+    static unsigned int fused_subpel_variance_8xh_##X_FILTER_OFFSET##_##Y_FILTER_OFFSET(const uint8_t* src,        \
+                                                                                        int64_t        src_stride, \
+                                                                                        int            h,          \
+                                                                                        int            shift,      \
+                                                                                        const uint8_t* ref,        \
+                                                                                        int64_t        ref_stride, \
+                                                                                        unsigned int*  sse_out) {   \
+        uint16x8_t src_sum = vdupq_n_u16(0);                                                                       \
+        uint16x8_t ref_sum = vdupq_n_u16(0);                                                                       \
+        uint32x4_t sse0    = vdupq_n_u32(0);                                                                       \
+        uint32x4_t sse1    = vdupq_n_u32(0);                                                                       \
+        uint8x8_t  prev    = X_FILTER(src);                                                                        \
+        src += src_stride;                                                                                         \
+        do {                                                                                                       \
+            const uint8x8_t cur0  = X_FILTER(src);                                                                 \
+            const uint8x8_t pred0 = Y_FILTER(prev, cur0);                                                          \
+            const uint8x8_t cur1  = X_FILTER(src + src_stride);                                                    \
+            const uint8x8_t pred1 = Y_FILTER(cur0, cur1);                                                          \
+            var_w8x2_accum(&src_sum, &ref_sum, &sse0, &sse1, pred0, pred1, ref, ref_stride);                       \
+            prev = cur1;                                                                                           \
+            src += 2 * src_stride;                                                                                 \
+            ref += 2 * ref_stride;                                                                                 \
+            h -= 2;                                                                                                \
+        } while (h != 0);                                                                                          \
+        return var_w8_reduce(src_sum, ref_sum, sse0, sse1, shift, sse_out);                                        \
     }
-    uint16x8_t b = vmull_u8(s0, f0);
-    b            = vmlal_u8(b, s1, f1);
-    return vrshrn_n_u16(b, 3);
-}
 
-static inline uint8x8_t spv_w8_v_bil(uint8x8_t a, uint8x8_t b, int off, uint8x8_t f0, uint8x8_t f1) {
-    if (off == 2) {
-        return vrhadd_u8(a, vhadd_u8(a, b));
+#define FUSED_SUBPEL_VAR_8XH(X_FILTER_OFFSET, X_FILTER)                  \
+    FUSED_SUBPEL_VAR_8XH_XY(X_FILTER_OFFSET, 2, X_FILTER, interp_3_1_w8) \
+    FUSED_SUBPEL_VAR_8XH_XY(X_FILTER_OFFSET, 4, X_FILTER, interp_1_1_w8) \
+    FUSED_SUBPEL_VAR_8XH_XY(X_FILTER_OFFSET, 6, X_FILTER, interp_1_3_w8)
+
+FUSED_SUBPEL_VAR_8XH(0, vld1_u8)
+FUSED_SUBPEL_VAR_8XH(2, load_interp_3_1_w8)
+FUSED_SUBPEL_VAR_8XH(4, load_interp_1_1_w8)
+FUSED_SUBPEL_VAR_8XH(6, load_interp_1_3_w8)
+
+#undef FUSED_SUBPEL_VAR_8XH_X
+#undef FUSED_SUBPEL_VAR_8XH_XY
+#undef FUSED_SUBPEL_VAR_8XH
+
+static unsigned int fused_subpel_variance_8xh_generic(const uint8_t* src, int64_t src_stride, int h, int shift,
+                                                      const uint8_t* ref, int64_t ref_stride, unsigned int* sse_out,
+                                                      unsigned int offsets) {
+    const int  xoffset = offsets & 7;
+    const int  yoffset = (offsets >> 3) & 7;
+    uint16x8_t src_sum = vdupq_n_u16(0);
+    uint16x8_t ref_sum = vdupq_n_u16(0);
+    uint32x4_t sse0    = vdupq_n_u32(0);
+    uint32x4_t sse1    = vdupq_n_u32(0);
+
+    if (yoffset == 0) {
+        do {
+            const uint8x8_t pred0 = load_interp_w8(src, xoffset);
+            const uint8x8_t pred1 = load_interp_w8(src + src_stride, xoffset);
+            var_w8x2_accum(&src_sum, &ref_sum, &sse0, &sse1, pred0, pred1, ref, ref_stride);
+            src += 2 * src_stride;
+            ref += 2 * ref_stride;
+            h -= 2;
+        } while (h != 0);
+    } else {
+        const uint8x8_t prev_row  = load_interp_w8(src, xoffset);
+        uint8x16_t      prev_pair = vcombine_u8(prev_row, prev_row);
+        src += src_stride;
+        do {
+            const uint8x16_t cur_pair = load_interp_w8x2(src, src_stride, xoffset);
+            const uint8x16_t adj_pair = vcombine_u8(vget_high_u8(prev_pair), vget_low_u8(cur_pair));
+            const uint8x16_t pred     = interp_w16(adj_pair, cur_pair, yoffset);
+            var_w8x2_accum(&src_sum, &ref_sum, &sse0, &sse1, vget_low_u8(pred), vget_high_u8(pred), ref, ref_stride);
+            prev_pair = cur_pair;
+            src += 2 * src_stride;
+            ref += 2 * ref_stride;
+            h -= 2;
+        } while (h != 0);
     }
-    if (off == 6) {
-        return vrhadd_u8(b, vhadd_u8(a, b));
+
+    return var_w8_reduce(src_sum, ref_sum, sse0, sse1, shift, sse_out);
+}
+
+typedef unsigned int (*SubpelVarFn)(const uint8_t* src, int64_t src_stride, int h, int shift, const uint8_t* ref,
+                                    int64_t ref_stride, unsigned int* sse);
+
+#define FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE(W)                                 \
+    static const SubpelVarFn fused_subpel_variance_##W##xh_fn_table[4][4] = { \
+        {NULL,                                                                \
+         fused_subpel_variance_##W##xh_0_2,                                   \
+         fused_subpel_variance_##W##xh_0_4,                                   \
+         fused_subpel_variance_##W##xh_0_6},                                  \
+        {fused_subpel_variance_##W##xh_2,                                     \
+         fused_subpel_variance_##W##xh_2_2,                                   \
+         fused_subpel_variance_##W##xh_2_4,                                   \
+         fused_subpel_variance_##W##xh_2_6},                                  \
+        {fused_subpel_variance_##W##xh_4,                                     \
+         fused_subpel_variance_##W##xh_4_2,                                   \
+         fused_subpel_variance_##W##xh_4_4,                                   \
+         fused_subpel_variance_##W##xh_4_6},                                  \
+        {fused_subpel_variance_##W##xh_6,                                     \
+         fused_subpel_variance_##W##xh_6_2,                                   \
+         fused_subpel_variance_##W##xh_6_4,                                   \
+         fused_subpel_variance_##W##xh_6_6},                                  \
     }
-    uint16x8_t v = vmull_u8(a, f0);
-    v            = vmlal_u8(v, b, f1);
-    return vrshrn_n_u16(v, 3);
-}
 
-static inline uint8x8_t spv_w8_h_0(const uint8_t* p) {
-    return vld1_u8(p);
-}
+FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE(8);
 
-static inline uint8x8_t spv_w8_h_2(const uint8_t* p) {
-    uint8x8_t s0 = vld1_u8(p);
-    uint8x8_t s1 = vld1_u8(p + 1);
-    return vrhadd_u8(s0, vhadd_u8(s0, s1));
-}
-
-static inline uint8x8_t spv_w8_h_4(const uint8_t* p) {
-    return vrhadd_u8(vld1_u8(p), vld1_u8(p + 1));
-}
-
-static inline uint8x8_t spv_w8_h_6(const uint8_t* p) {
-    uint8x8_t s0 = vld1_u8(p);
-    uint8x8_t s1 = vld1_u8(p + 1);
-    return vrhadd_u8(s1, vhadd_u8(s0, s1));
-}
-
-static inline uint8x8_t spv_w8_v_2(uint8x8_t a, uint8x8_t b) {
-    return vrhadd_u8(a, vhadd_u8(a, b));
-}
-
-static inline uint8x8_t spv_w8_v_4(uint8x8_t a, uint8x8_t b) {
-    return vrhadd_u8(a, b);
-}
-
-static inline uint8x8_t spv_w8_v_6(uint8x8_t a, uint8x8_t b) {
-    return vrhadd_u8(b, vhadd_u8(a, b));
-}
-
-#define SPV_KEY(xoff, yoff) (((xoff) << 3) | (yoff))
-
-#define SPV_W8_ACCUM(pred, refptr)                       \
-    do {                                                 \
-        uint8x8_t  _r  = vld1_u8(refptr);                \
-        uint8x8_t  _ad = vabd_u8((pred), _r);            \
-        uint16x8_t _sq = vmull_u8(_ad, _ad);             \
-        sse_u32        = vpadalq_u16(sse_u32, _sq);      \
-        sum_src_u16    = vpadal_u8(sum_src_u16, (pred)); \
-        sum_ref_u16    = vpadal_u8(sum_ref_u16, _r);     \
-    } while (0)
-
-#define SPV_W8_RUN_H(H, HF)                               \
-    do {                                                  \
-        for (int r = 0; r < (H); ++r) {                   \
-            const uint8_t* sp_row = src + r * src_stride; \
-            const uint8_t* rp_row = ref + r * ref_stride; \
-            uint8x8_t      pred   = HF(sp_row);           \
-            SPV_W8_ACCUM(pred, rp_row);                   \
-        }                                                 \
-    } while (0)
-
-#define SPV_W8_RUN_SW(H, HF, VF)                                \
-    do {                                                        \
-        uint8x8_t Hprev = HF(src);                              \
-        for (int r = 0; r < (H); ++r) {                         \
-            const uint8_t* sp_row = src + (r + 1) * src_stride; \
-            const uint8_t* rp_row = ref + r * ref_stride;       \
-            uint8x8_t      Hcur   = HF(sp_row);                 \
-            uint8x8_t      pred   = VF(Hprev, Hcur);            \
-            SPV_W8_ACCUM(pred, rp_row);                         \
-            Hprev = Hcur;                                       \
-        }                                                       \
-    } while (0)
-
-#define SPV_W8_HGEN(p) spv_w8_h_bil((p), xoffset, f0_x, f1_x)
-#define SPV_W8_VGEN(a, b) spv_w8_v_bil((a), (b), yoffset, f0_y, f1_y)
-
-static NOINLINE unsigned int sub_pixel_variance_w8_neon(const uint8_t* src, int src_stride, int xoffset, int yoffset,
-                                                        const uint8_t* ref, int ref_stride, int h, unsigned int* sse) {
-    int sum;
+static unsigned int sub_pixel_variance_8xh_neon(const uint8_t* src, int src_stride, int xoffset, int yoffset,
+                                                const uint8_t* ref, int ref_stride, int h, unsigned int* sse) {
     if (xoffset == 0 && yoffset == 0) {
+        int sum;
         variance_8xh_neon(src, src_stride, ref, ref_stride, h, sse, &sum);
         return *sse - (uint32_t)(((int64_t)sum * sum) >> svt_ctz(8 * h));
     }
-    uint16x4_t sum_src_u16 = vdup_n_u16(0);
-    uint16x4_t sum_ref_u16 = vdup_n_u16(0);
-    uint32x4_t sse_u32     = vdupq_n_u32(0);
+    if ((xoffset | yoffset) & 1) {
+        return fused_subpel_variance_8xh_generic(
+            src, src_stride, h, svt_ctz(8 * h), ref, ref_stride, sse, (unsigned int)(xoffset | (yoffset << 3)));
+    }
+    const SubpelVarFn f = fused_subpel_variance_8xh_fn_table[xoffset >> 1][yoffset >> 1];
+    return f(src, src_stride, h, svt_ctz(8 * h), ref, ref_stride, sse);
+}
 
-    if (yoffset == 0) {
-        switch (xoffset) {
-        case 2:
-            SPV_W8_RUN_H(h, spv_w8_h_2);
-            break;
-        case 4:
-            SPV_W8_RUN_H(h, spv_w8_h_4);
-            break;
-        case 6:
-            SPV_W8_RUN_H(h, spv_w8_h_6);
-            break;
-        default: {
-            const uint8x8_t f0_x = vdup_n_u8((uint8_t)(8 - xoffset));
-            const uint8x8_t f1_x = vdup_n_u8((uint8_t)xoffset);
-            SPV_W8_RUN_H(h, SPV_W8_HGEN);
-            break;
-        }
-        }
-    } else {
-        const uint8x8_t f0_x = vdup_n_u8((uint8_t)(8 - xoffset));
-        const uint8x8_t f1_x = vdup_n_u8((uint8_t)xoffset);
-        const uint8x8_t f0_y = vdup_n_u8((uint8_t)(8 - yoffset));
-        const uint8x8_t f1_y = vdup_n_u8((uint8_t)yoffset);
-        switch (SPV_KEY(xoffset, yoffset)) {
-        case SPV_KEY(0, 2):
-            SPV_W8_RUN_SW(h, spv_w8_h_0, spv_w8_v_2);
-            break;
-        case SPV_KEY(0, 4):
-            SPV_W8_RUN_SW(h, spv_w8_h_0, spv_w8_v_4);
-            break;
-        case SPV_KEY(0, 6):
-            SPV_W8_RUN_SW(h, spv_w8_h_0, spv_w8_v_6);
-            break;
-        case SPV_KEY(0, 1):
-        case SPV_KEY(0, 3):
-        case SPV_KEY(0, 5):
-        case SPV_KEY(0, 7):
-            SPV_W8_RUN_SW(h, spv_w8_h_0, SPV_W8_VGEN);
-            break;
-        case SPV_KEY(2, 2):
-            SPV_W8_RUN_SW(h, spv_w8_h_2, spv_w8_v_2);
-            break;
-        case SPV_KEY(2, 4):
-            SPV_W8_RUN_SW(h, spv_w8_h_2, spv_w8_v_4);
-            break;
-        case SPV_KEY(2, 6):
-            SPV_W8_RUN_SW(h, spv_w8_h_2, spv_w8_v_6);
-            break;
-        case SPV_KEY(2, 1):
-        case SPV_KEY(2, 3):
-        case SPV_KEY(2, 5):
-        case SPV_KEY(2, 7):
-            SPV_W8_RUN_SW(h, spv_w8_h_2, SPV_W8_VGEN);
-            break;
-        case SPV_KEY(4, 2):
-            SPV_W8_RUN_SW(h, spv_w8_h_4, spv_w8_v_2);
-            break;
-        case SPV_KEY(4, 4):
-            SPV_W8_RUN_SW(h, spv_w8_h_4, spv_w8_v_4);
-            break;
-        case SPV_KEY(4, 6):
-            SPV_W8_RUN_SW(h, spv_w8_h_4, spv_w8_v_6);
-            break;
-        case SPV_KEY(4, 1):
-        case SPV_KEY(4, 3):
-        case SPV_KEY(4, 5):
-        case SPV_KEY(4, 7):
-            SPV_W8_RUN_SW(h, spv_w8_h_4, SPV_W8_VGEN);
-            break;
-        case SPV_KEY(6, 2):
-            SPV_W8_RUN_SW(h, spv_w8_h_6, spv_w8_v_2);
-            break;
-        case SPV_KEY(6, 4):
-            SPV_W8_RUN_SW(h, spv_w8_h_6, spv_w8_v_4);
-            break;
-        case SPV_KEY(6, 6):
-            SPV_W8_RUN_SW(h, spv_w8_h_6, spv_w8_v_6);
-            break;
-        case SPV_KEY(6, 1):
-        case SPV_KEY(6, 3):
-        case SPV_KEY(6, 5):
-        case SPV_KEY(6, 7):
-            SPV_W8_RUN_SW(h, spv_w8_h_6, SPV_W8_VGEN);
-            break;
-        case SPV_KEY(1, 2):
-        case SPV_KEY(3, 2):
-        case SPV_KEY(5, 2):
-        case SPV_KEY(7, 2):
-            SPV_W8_RUN_SW(h, SPV_W8_HGEN, spv_w8_v_2);
-            break;
-        case SPV_KEY(1, 4):
-        case SPV_KEY(3, 4):
-        case SPV_KEY(5, 4):
-        case SPV_KEY(7, 4):
-            SPV_W8_RUN_SW(h, SPV_W8_HGEN, spv_w8_v_4);
-            break;
-        case SPV_KEY(1, 6):
-        case SPV_KEY(3, 6):
-        case SPV_KEY(5, 6):
-        case SPV_KEY(7, 6):
-            SPV_W8_RUN_SW(h, SPV_W8_HGEN, spv_w8_v_6);
-            break;
-        default:
-            SPV_W8_RUN_SW(h, SPV_W8_HGEN, SPV_W8_VGEN);
-            break;
-        }
+#define FUSED_SUBPEL_VARIANCE_8XH_NEON(H)                                                                 \
+    unsigned int svt_aom_sub_pixel_variance8x##H##_neon(const uint8_t* src,                               \
+                                                        int            src_stride,                        \
+                                                        int            xoffset,                           \
+                                                        int            yoffset,                           \
+                                                        const uint8_t* ref,                               \
+                                                        int            ref_stride,                        \
+                                                        unsigned int*  sse) {                              \
+        return sub_pixel_variance_8xh_neon(src, src_stride, xoffset, yoffset, ref, ref_stride, (H), sse); \
     }
 
-    sum  = (int)(uint32_t)vaddv_u16(sum_src_u16) - (int)(uint32_t)vaddv_u16(sum_ref_u16);
-    *sse = vaddvq_u32(sse_u32);
-    return *sse - (uint32_t)(((int64_t)sum * sum) >> svt_ctz(8 * h));
+FUSED_SUBPEL_VARIANCE_8XH_NEON(4)
+FUSED_SUBPEL_VARIANCE_8XH_NEON(8)
+FUSED_SUBPEL_VARIANCE_8XH_NEON(16)
+FUSED_SUBPEL_VARIANCE_8XH_NEON(32)
+
+#undef FUSED_SUBPEL_VARIANCE_8XH_NEON
+
+// Number of accumulators for block width W.
+#define ACCUM(W) (((W) / 16 >= 4) ? 4 : (W) / 16)
+
+// Only 128x128 needs two 64-row chunks to prevent the 16-bit sums overflowing.
+#define HEIGHT_LIMIT(W, H) (((W) == 128 && (H) == 128) ? 64 : (H))
+
+static inline void var_wide_accum(uint16x8_t* src_sum, uint16x8_t* ref_sum, uint32x4_t* sse_lo, uint32x4_t* sse_hi,
+                                  uint8x16_t pred, uint8x16_t r) {
+    *src_sum                  = vpadalq_u8(*src_sum, pred);
+    *ref_sum                  = vpadalq_u8(*ref_sum, r);
+    const uint8x16_t abs_diff = vabdq_u8(pred, r);
+    const uint16x8_t sq_lo    = vmull_u8(vget_low_u8(abs_diff), vget_low_u8(abs_diff));
+    const uint16x8_t sq_hi    = vmull_u8(vget_high_u8(abs_diff), vget_high_u8(abs_diff));
+    *sse_lo                   = vpadalq_u16(*sse_lo, sq_lo);
+    *sse_hi                   = vpadalq_u16(*sse_hi, sq_hi);
 }
 
-#define FUSED_SUBPEL_VARIANCE_W8H_NEON(H)                                                                \
-    unsigned int svt_aom_sub_pixel_variance8x##H##_neon(const uint8_t* src,                              \
-                                                        int            src_stride,                       \
-                                                        int            xoffset,                          \
-                                                        int            yoffset,                          \
-                                                        const uint8_t* ref,                              \
-                                                        int            ref_stride,                       \
-                                                        unsigned int*  sse) {                             \
-        return sub_pixel_variance_w8_neon(src, src_stride, xoffset, yoffset, ref, ref_stride, (H), sse); \
+static inline int32_t var_wide_sum_reduce(const uint16x8_t* src_sum, const uint16x8_t* ref_sum, int n) {
+    uint32_t src_sum_u32 = 0;
+    uint32_t ref_sum_u32 = 0;
+    for (int i = 0; i < n; ++i) {
+        src_sum_u32 += vaddlvq_u16(src_sum[i]);
+        ref_sum_u32 += vaddlvq_u16(ref_sum[i]);
+    }
+    return (int32_t)src_sum_u32 - (int32_t)ref_sum_u32;
+}
+
+static inline int32_t var_wide_sum_flush(uint16x8_t* src_sum, uint16x8_t* ref_sum, int n) {
+    const int32_t sum = var_wide_sum_reduce(src_sum, ref_sum, n);
+    for (int i = 0; i < n; ++i) {
+        src_sum[i] = vdupq_n_u16(0);
+        ref_sum[i] = vdupq_n_u16(0);
+    }
+    return sum;
+}
+
+// Calculate variance from 16-bit sum and split SSE accumulator vectors.
+static inline int32_t var_wide_reduce(const uint16x8_t* src_sum, const uint16x8_t* ref_sum, const uint32x4_t* sse_lo,
+                                      const uint32x4_t* sse_hi, int n, unsigned int* sse_out) {
+    uint32x4_t sse_sum = vaddq_u32(sse_lo[0], sse_hi[0]);
+    for (int i = 1; i < n; ++i) {
+        sse_sum = vaddq_u32(sse_sum, vaddq_u32(sse_lo[i], sse_hi[i]));
+    }
+    *sse_out = vaddvq_u32(sse_sum);
+    return var_wide_sum_reduce(src_sum, ref_sum, n);
+}
+
+// Emit a fused sub pixel variance function for blocks of width W that uses the
+// specified horizontal 2-tap filter.
+#define FUSED_SUBPEL_VAR_WXH_X(W, X_FILTER_OFFSET, X_FILTER)                                       \
+    static unsigned int fused_subpel_variance_##W##xh_##X_FILTER_OFFSET(const uint8_t* src,        \
+                                                                        int64_t        src_stride, \
+                                                                        int            h,          \
+                                                                        int            shift,      \
+                                                                        const uint8_t* ref,        \
+                                                                        int64_t        ref_stride, \
+                                                                        unsigned int*  sse_out) {   \
+        uint16x8_t src_sum[ACCUM(W)];                                                              \
+        uint16x8_t ref_sum[ACCUM(W)];                                                              \
+        uint32x4_t sse_lo[ACCUM(W)];                                                               \
+        uint32x4_t sse_hi[ACCUM(W)];                                                               \
+        for (int i = 0; i < ACCUM(W); ++i) {                                                       \
+            src_sum[i] = vdupq_n_u16(0);                                                           \
+            ref_sum[i] = vdupq_n_u16(0);                                                           \
+            sse_lo[i]  = vdupq_n_u32(0);                                                           \
+            sse_hi[i]  = vdupq_n_u32(0);                                                           \
+        }                                                                                          \
+        int32_t sum = 0;                                                                           \
+        do {                                                                                       \
+            int h_chunk = HEIGHT_LIMIT(W, h);                                                      \
+            h -= h_chunk;                                                                          \
+            do {                                                                                   \
+                const uint8_t* sp_row = src;                                                       \
+                const uint8_t* rp_row = ref;                                                       \
+                for (int t = 0; t < W / 16; ++t) {                                                 \
+                    const uint8x16_t pred = X_FILTER(sp_row + t * 16);                             \
+                    const uint8x16_t r    = vld1q_u8(rp_row + t * 16);                             \
+                    const int        i    = t & (ACCUM(W) - 1);                                    \
+                    var_wide_accum(&src_sum[i], &ref_sum[i], &sse_lo[i], &sse_hi[i], pred, r);     \
+                }                                                                                  \
+                src += src_stride;                                                                 \
+                ref += ref_stride;                                                                 \
+            } while (--h_chunk != 0);                                                              \
+            if (h != 0) {                                                                          \
+                sum += var_wide_sum_flush(src_sum, ref_sum, ACCUM(W));                             \
+            }                                                                                      \
+        } while (h != 0);                                                                          \
+        sum += var_wide_reduce(src_sum, ref_sum, sse_lo, sse_hi, ACCUM(W), sse_out);               \
+        return *sse_out - (uint32_t)(((int64_t)sum * sum) >> shift);                               \
     }
 
-FUSED_SUBPEL_VARIANCE_W8H_NEON(4)
-FUSED_SUBPEL_VARIANCE_W8H_NEON(8)
-FUSED_SUBPEL_VARIANCE_W8H_NEON(16)
-FUSED_SUBPEL_VARIANCE_W8H_NEON(32)
+#define FUSED_SUBPEL_VAR_WXH_X_COMBOS(W)              \
+    FUSED_SUBPEL_VAR_WXH_X(W, 2, load_interp_3_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_X(W, 4, load_interp_1_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_X(W, 6, load_interp_1_3_w16)
 
-#undef FUSED_SUBPEL_VARIANCE_W8H_NEON
-#undef SPV_W8_VGEN
-#undef SPV_W8_HGEN
-#undef SPV_W8_RUN_SW
-#undef SPV_W8_RUN_H
-#undef SPV_W8_ACCUM
-
-// =============================================================================
-// Fused-loop sub_pixel_variance for {16,32,64,128} x H
-// =============================================================================
-//
-// One macro -- FUSED_SUBPEL_VARIANCE_WXH_NEON(W, H) -- emits
-// svt_aom_sub_pixel_variance{W}x{H}_neon for every (W, H) the codebase
-// currently uses with W ∈ {16, 32, 64, 128}. The emitted kernel folds the
-// upstream 3-pass (H-filter → V-filter → variance) chain into a single row
-// loop that holds the H-filter output in NEON registers via a sliding-
-// window state (`Hprev[t]`) and consumes it immediately by the V-filter +
-// SSE/sum accumulation. This eliminates the upstream tmp[] stack frames
-// (up to W·(H+1) bytes for W=128) and the load-after-store dependency
-// chain on Apple Silicon's store-to-load-forwarding path.
-//
-// PER-PIXEL HELPER FAMILY (spv_h_* / spv_v_*)
-//
-// `spv_h_*` and `spv_v_*` are 16-byte tile primitives shared by every
-// (W, H) instantiation. They return a uint8x16_t of filtered pixels for
-// one tile column of the output and chain together horizontally + vertically
-// to produce the final pred byte.
-//
-// Bit-exact with the upstream 2-pass var_filter_block2d_* + variance path:
-//
-//   xoff/yoff == 4  -> (a + b + 1) >> 1                  ≡ vrhaddq_u8(a, b)
-//   xoff/yoff == 2  -> (3a + b + 2) >> 2                 ≡ vrhaddq_u8(a, vhaddq_u8(a, b))
-//   xoff/yoff == 6  -> (a + 3b + 2) >> 2                 ≡ vrhaddq_u8(b, vhaddq_u8(a, b))
-//   other (qpel)    -> (f0*a + f1*b + 4) >> 3            ≡ vrshrn_n_u16(vmlal_u8(vmull_u8(a,f0),b,f1), 3)
-//
-// The urhadd-chain identity uses the inner non-rounding vhaddq_u8 (not
-// vrhaddq_u8). vrhaddq(a, vrhaddq(a,b)) biases high by 1 when (a+b) is odd
-// and 3a+b ≡ 1 mod 4 -- not bit-exact.
-
-// spv_h_bil / spv_v_bil: generic bilinear for any (sub)pixel offset in {1..7}.
-// Used by the OTHER offset class (xoff/yoff ∈ {1, 3, 5, 7}). Includes the
-// urhadd-chain fast paths for off ∈ {2, 6} so the same primitive is safe to
-// call from the hpel / qpel hot paths in dispatch order.
-static inline uint8x16_t spv_h_bil(const uint8_t* p, int off, uint8x8_t f0, uint8x8_t f1) {
-    uint8x16_t s0 = vld1q_u8(p);
-    uint8x16_t s1 = vld1q_u8(p + 1);
-    if (off == 2) {
-        return vrhaddq_u8(s0, vhaddq_u8(s0, s1));
-    }
-    if (off == 6) {
-        return vrhaddq_u8(s1, vhaddq_u8(s0, s1));
-    }
-    uint16x8_t bl = vmull_u8(vget_low_u8(s0), f0);
-    bl            = vmlal_u8(bl, vget_low_u8(s1), f1);
-    uint16x8_t bh = vmull_u8(vget_high_u8(s0), f0);
-    bh            = vmlal_u8(bh, vget_high_u8(s1), f1);
-    return vcombine_u8(vrshrn_n_u16(bl, 3), vrshrn_n_u16(bh, 3));
-}
-
-static inline uint8x16_t spv_v_bil(uint8x16_t a, uint8x16_t b, int off, uint8x8_t f0, uint8x8_t f1) {
-    if (off == 2) {
-        return vrhaddq_u8(a, vhaddq_u8(a, b));
-    }
-    if (off == 6) {
-        return vrhaddq_u8(b, vhaddq_u8(a, b));
-    }
-    uint16x8_t vl = vmull_u8(vget_low_u8(a), f0);
-    vl            = vmlal_u8(vl, vget_low_u8(b), f1);
-    uint16x8_t vh = vmull_u8(vget_high_u8(a), f0);
-    vh            = vmlal_u8(vh, vget_high_u8(b), f1);
-    return vcombine_u8(vrshrn_n_u16(vl, 3), vrshrn_n_u16(vh, 3));
-}
-
-// Per-offset-class specialised hpel / qpel helpers. The per-class branch
-// (off == 0/2/4/6) is lifted out of the row loop into the outer dispatch
-// switch, so each specialised inner loop has zero per-iteration offset
-// branches.
-static inline uint8x16_t spv_h_0(const uint8_t* p) {
-    return vld1q_u8(p);
-}
-
-static inline uint8x16_t spv_h_2(const uint8_t* p) {
-    uint8x16_t s0 = vld1q_u8(p);
-    uint8x16_t s1 = vld1q_u8(p + 1);
-    return vrhaddq_u8(s0, vhaddq_u8(s0, s1));
-}
-
-static inline uint8x16_t spv_h_4(const uint8_t* p) {
-    return vrhaddq_u8(vld1q_u8(p), vld1q_u8(p + 1));
-}
-
-static inline uint8x16_t spv_h_6(const uint8_t* p) {
-    uint8x16_t s0 = vld1q_u8(p);
-    uint8x16_t s1 = vld1q_u8(p + 1);
-    return vrhaddq_u8(s1, vhaddq_u8(s0, s1));
-}
-
-static inline uint8x16_t spv_v_2(uint8x16_t a, uint8x16_t b) {
-    return vrhaddq_u8(a, vhaddq_u8(a, b));
-}
-
-static inline uint8x16_t spv_v_4(uint8x16_t a, uint8x16_t b) {
-    return vrhaddq_u8(a, b);
-}
-
-static inline uint8x16_t spv_v_6(uint8x16_t a, uint8x16_t b) {
-    return vrhaddq_u8(b, vhaddq_u8(a, b));
-}
-
-// SPV_TILES(W): number of 16-byte tile columns per row. 1 / 2 / 4 / 8.
-//
-// SPV_ABSORB_INTERVAL(W): how many rows of int16 sum we can accumulate
-// before risking int16 overflow per lane. Each row contributes up to
-// TILES_PER_ROW × 255 per lane (16-byte tile splits diff into 8-lane
-// halves; lane gets exactly one diff per tile per row). Budget per lane:
-// 32767 / 255 ≈ 128 row-tile-pairs. Power-of-two for compile-time div.
-#define SPV_TILES(W) ((W) / 16)
-#define SPV_NACCUM(W) ((SPV_TILES(W) >= 4) ? 4 : SPV_TILES(W))
-#define SPV_ABSORB_INTERVAL(W) (128 / SPV_TILES(W))
-
-// Per-tile diff → sum/sse accumulator. Reads `pred` (uint8x16_t tile) and
-// 16 bytes of ref at `refptr`. Updates surrounding-scope sum_lo / sum_hi
-// (int16x8_t) and sse_s32_{0..3} (int32x4_t partial accumulators) using the
-// upstream subl+mlal accumulator pattern that the bit-exact match requires.
-#define SPV_ACCUM_TILE(W, pred, refptr)                                   \
-    do {                                                                  \
-        uint8x16_t _r   = vld1q_u8(refptr);                               \
-        uint8x16_t _ad  = vabdq_u8((pred), _r);                           \
-        uint16x8_t _sl  = vmull_u8(vget_low_u8(_ad), vget_low_u8(_ad));   \
-        uint16x8_t _sh  = vmull_u8(vget_high_u8(_ad), vget_high_u8(_ad)); \
-        const int  _i   = t & (SPV_NACCUM(W) - 1);                        \
-        sse_u32_lo[_i]  = vpadalq_u16(sse_u32_lo[_i], _sl);               \
-        sse_u32_hi[_i]  = vpadalq_u16(sse_u32_hi[_i], _sh);               \
-        sum_src_u16[_i] = vpadalq_u8(sum_src_u16[_i], (pred));            \
-        sum_ref_u16[_i] = vpadalq_u8(sum_ref_u16[_i], _r);                \
-    } while (0)
-
-// Periodic absorb of the int16 sum accumulators into the int32 sum
-// accumulators. The condition `SPV_ABSORB_INTERVAL(W) < (H)` is compile-
-// time, so the entire branch evaporates for any (W, H) with H below the
-// budget (e.g. every W=16 case, and every W=32 case with H ≤ 64).
-#define SPV_MAYBE_ABSORB(W, H, R)                                                        \
-    do {                                                                                 \
-        if (SPV_ABSORB_INTERVAL(W) < (H) && (((R) + 1) % SPV_ABSORB_INTERVAL(W)) == 0) { \
-            for (int _i = 0; _i < SPV_NACCUM(W); ++_i) {                                 \
-                sum_src_u32[_i] = vpadalq_u16(sum_src_u32[_i], sum_src_u16[_i]);         \
-                sum_ref_u32[_i] = vpadalq_u16(sum_ref_u32[_i], sum_ref_u16[_i]);         \
-                sum_src_u16[_i] = vdupq_n_u16(0);                                        \
-                sum_ref_u16[_i] = vdupq_n_u16(0);                                        \
-            }                                                                            \
-        }                                                                                \
-    } while (0)
-
-// H-only row body (yoffset == 0 path). One pass through src for every output
-// row; no Hprev sliding-window state required.
-#define SPV_RUN_H(W, H, HF)                               \
-    do {                                                  \
-        for (int r = 0; r < (H); ++r) {                   \
-            const uint8_t* sp_row = src + r * src_stride; \
-            const uint8_t* rp_row = ref + r * ref_stride; \
-            for (int t = 0; t < SPV_TILES(W); ++t) {      \
-                uint8x16_t pred = HF(sp_row + t * 16);    \
-                SPV_ACCUM_TILE(W, pred, rp_row + t * 16); \
-            }                                             \
-            SPV_MAYBE_ABSORB(W, H, r);                    \
-        }                                                 \
-    } while (0)
-
-// Sliding-window row body (yoffset != 0 path). Hprev[t] is one q-reg per
-// tile column; on entry it holds H-filter(src row 0, tile t). Each output
-// row computes Hcur, blends, accumulates, and rotates Hprev[t] <- Hcur.
-#define SPV_RUN_SW(W, H, HF, VF)                                \
-    do {                                                        \
-        uint8x16_t Hprev[SPV_TILES(W)];                         \
-        for (int t = 0; t < SPV_TILES(W); ++t) {                \
-            Hprev[t] = HF(src + t * 16);                        \
-        }                                                       \
-        for (int r = 0; r < (H); ++r) {                         \
-            const uint8_t* sp_row = src + (r + 1) * src_stride; \
-            const uint8_t* rp_row = ref + r * ref_stride;       \
-            for (int t = 0; t < SPV_TILES(W); ++t) {            \
-                uint8x16_t Hcur = HF(sp_row + t * 16);          \
-                uint8x16_t pred = VF(Hprev[t], Hcur);           \
-                SPV_ACCUM_TILE(W, pred, rp_row + t * 16);       \
-                Hprev[t] = Hcur;                                \
-            }                                                   \
-            SPV_MAYBE_ABSORB(W, H, r);                          \
-        }                                                       \
-    } while (0)
-
-// Generic eighth-pel helpers that close over xoffset / yoffset / f0_x / f1_x
-// / f0_y / f1_y in the surrounding scope. The compiler inlines these and
-// folds the off==2/6 fast-path branches against the closed-over constant.
-#define SPV_HGEN_TILE(p) spv_h_bil((p), xoffset, f0_x, f1_x)
-#define SPV_VGEN_TILE(a, b) spv_v_bil((a), (b), yoffset, f0_y, f1_y)
-
-// FUSED_SUBPEL_VARIANCE_WXH_NEON(W, H)
-//
-// Emits svt_aom_sub_pixel_variance{W}x{H}_neon for the given (W, H) ∈
-// {(16,16), (16,32), (16,64), (32,8), (32,16), (32,32), (32,64),
-//  (64,16), (64,32), (64,64), (64,128), (128,64), (128,128)}.
-//
-// The macro body is structured as:
-//   1. (0, 0) short-circuit to the integer-variance kernel.
-//   2. yoffset == 0 fast path -- pure H-filter loop, no sliding window.
-//   3. yoffset != 0 path -- sliding-window H+V loop, outer dispatch on
-//      (xoffset class, yoffset class) via xc*5 + yc.
-// Each branch uses the spv_h_* / spv_v_* tile helpers above with per-tile
-// SPV_ACCUM_TILE accumulation into int16 sum + 4-way int32 sse partials.
-// The int16 sum is periodically absorbed into int32 sum partials (no-op
-// for narrow / shallow cases by constant folding).
-#define FUSED_SUBPEL_VARIANCE_WX_NEON(W)                                                    \
-    static NOINLINE unsigned int sub_pixel_variance_w##W##_neon(const uint8_t* src,         \
-                                                                int            src_stride,  \
-                                                                int            xoffset,     \
-                                                                int            yoffset,     \
-                                                                const uint8_t* ref,         \
-                                                                int            ref_stride,  \
-                                                                int            h,           \
-                                                                unsigned int*  sse) {        \
-        int sum;                                                                            \
-        if (xoffset == 0 && yoffset == 0) {                                                 \
-            variance_##W##xh_neon(src, src_stride, ref, ref_stride, h, sse, &sum);          \
-            return *sse - (uint32_t)(((int64_t)sum * sum) >> svt_ctz((W) * h));             \
-        }                                                                                   \
-        uint16x8_t sum_src_u16[SPV_NACCUM(W)];                                              \
-        uint16x8_t sum_ref_u16[SPV_NACCUM(W)];                                              \
-        uint32x4_t sum_src_u32[SPV_NACCUM(W)];                                              \
-        uint32x4_t sum_ref_u32[SPV_NACCUM(W)];                                              \
-        uint32x4_t sse_u32_lo[SPV_NACCUM(W)];                                               \
-        uint32x4_t sse_u32_hi[SPV_NACCUM(W)];                                               \
-        for (int i = 0; i < SPV_NACCUM(W); ++i) {                                           \
-            sum_src_u16[i] = vdupq_n_u16(0);                                                \
-            sum_ref_u16[i] = vdupq_n_u16(0);                                                \
-            sum_src_u32[i] = vdupq_n_u32(0);                                                \
-            sum_ref_u32[i] = vdupq_n_u32(0);                                                \
-            sse_u32_lo[i]  = vdupq_n_u32(0);                                                \
-            sse_u32_hi[i]  = vdupq_n_u32(0);                                                \
-        }                                                                                   \
-                                                                                            \
-        if (yoffset == 0) {                                                                 \
-            switch (xoffset) {                                                              \
-            case 2:                                                                         \
-                SPV_RUN_H(W, h, spv_h_2);                                                   \
-                break;                                                                      \
-            case 4:                                                                         \
-                SPV_RUN_H(W, h, spv_h_4);                                                   \
-                break;                                                                      \
-            case 6:                                                                         \
-                SPV_RUN_H(W, h, spv_h_6);                                                   \
-                break;                                                                      \
-            default: {                                                                      \
-                const uint8x8_t f0_x = vdup_n_u8((uint8_t)(8 - xoffset));                   \
-                const uint8x8_t f1_x = vdup_n_u8((uint8_t)xoffset);                         \
-                SPV_RUN_H(W, h, SPV_HGEN_TILE);                                             \
-                break;                                                                      \
-            }                                                                               \
-            }                                                                               \
-        } else {                                                                            \
-            const uint8x8_t f0_x = vdup_n_u8((uint8_t)(8 - xoffset));                       \
-            const uint8x8_t f1_x = vdup_n_u8((uint8_t)xoffset);                             \
-            const uint8x8_t f0_y = vdup_n_u8((uint8_t)(8 - yoffset));                       \
-            const uint8x8_t f1_y = vdup_n_u8((uint8_t)yoffset);                             \
-            switch (SPV_KEY(xoffset, yoffset)) {                                            \
-            case SPV_KEY(0, 2):                                                             \
-                SPV_RUN_SW(W, h, spv_h_0, spv_v_2);                                         \
-                break;                                                                      \
-            case SPV_KEY(0, 4):                                                             \
-                SPV_RUN_SW(W, h, spv_h_0, spv_v_4);                                         \
-                break;                                                                      \
-            case SPV_KEY(0, 6):                                                             \
-                SPV_RUN_SW(W, h, spv_h_0, spv_v_6);                                         \
-                break;                                                                      \
-            case SPV_KEY(0, 1):                                                             \
-            case SPV_KEY(0, 3):                                                             \
-            case SPV_KEY(0, 5):                                                             \
-            case SPV_KEY(0, 7):                                                             \
-                SPV_RUN_SW(W, h, spv_h_0, SPV_VGEN_TILE);                                   \
-                break;                                                                      \
-            case SPV_KEY(2, 2):                                                             \
-                SPV_RUN_SW(W, h, spv_h_2, spv_v_2);                                         \
-                break;                                                                      \
-            case SPV_KEY(2, 4):                                                             \
-                SPV_RUN_SW(W, h, spv_h_2, spv_v_4);                                         \
-                break;                                                                      \
-            case SPV_KEY(2, 6):                                                             \
-                SPV_RUN_SW(W, h, spv_h_2, spv_v_6);                                         \
-                break;                                                                      \
-            case SPV_KEY(2, 1):                                                             \
-            case SPV_KEY(2, 3):                                                             \
-            case SPV_KEY(2, 5):                                                             \
-            case SPV_KEY(2, 7):                                                             \
-                SPV_RUN_SW(W, h, spv_h_2, SPV_VGEN_TILE);                                   \
-                break;                                                                      \
-            case SPV_KEY(4, 2):                                                             \
-                SPV_RUN_SW(W, h, spv_h_4, spv_v_2);                                         \
-                break;                                                                      \
-            case SPV_KEY(4, 4):                                                             \
-                SPV_RUN_SW(W, h, spv_h_4, spv_v_4);                                         \
-                break;                                                                      \
-            case SPV_KEY(4, 6):                                                             \
-                SPV_RUN_SW(W, h, spv_h_4, spv_v_6);                                         \
-                break;                                                                      \
-            case SPV_KEY(4, 1):                                                             \
-            case SPV_KEY(4, 3):                                                             \
-            case SPV_KEY(4, 5):                                                             \
-            case SPV_KEY(4, 7):                                                             \
-                SPV_RUN_SW(W, h, spv_h_4, SPV_VGEN_TILE);                                   \
-                break;                                                                      \
-            case SPV_KEY(6, 2):                                                             \
-                SPV_RUN_SW(W, h, spv_h_6, spv_v_2);                                         \
-                break;                                                                      \
-            case SPV_KEY(6, 4):                                                             \
-                SPV_RUN_SW(W, h, spv_h_6, spv_v_4);                                         \
-                break;                                                                      \
-            case SPV_KEY(6, 6):                                                             \
-                SPV_RUN_SW(W, h, spv_h_6, spv_v_6);                                         \
-                break;                                                                      \
-            case SPV_KEY(6, 1):                                                             \
-            case SPV_KEY(6, 3):                                                             \
-            case SPV_KEY(6, 5):                                                             \
-            case SPV_KEY(6, 7):                                                             \
-                SPV_RUN_SW(W, h, spv_h_6, SPV_VGEN_TILE);                                   \
-                break;                                                                      \
-            case SPV_KEY(1, 2):                                                             \
-            case SPV_KEY(3, 2):                                                             \
-            case SPV_KEY(5, 2):                                                             \
-            case SPV_KEY(7, 2):                                                             \
-                SPV_RUN_SW(W, h, SPV_HGEN_TILE, spv_v_2);                                   \
-                break;                                                                      \
-            case SPV_KEY(1, 4):                                                             \
-            case SPV_KEY(3, 4):                                                             \
-            case SPV_KEY(5, 4):                                                             \
-            case SPV_KEY(7, 4):                                                             \
-                SPV_RUN_SW(W, h, SPV_HGEN_TILE, spv_v_4);                                   \
-                break;                                                                      \
-            case SPV_KEY(1, 6):                                                             \
-            case SPV_KEY(3, 6):                                                             \
-            case SPV_KEY(5, 6):                                                             \
-            case SPV_KEY(7, 6):                                                             \
-                SPV_RUN_SW(W, h, SPV_HGEN_TILE, spv_v_6);                                   \
-                break;                                                                      \
-            default:                                                                        \
-                SPV_RUN_SW(W, h, SPV_HGEN_TILE, SPV_VGEN_TILE);                             \
-                break;                                                                      \
-            }                                                                               \
-        }                                                                                   \
-                                                                                            \
-        for (int i = 1; i < SPV_NACCUM(W); ++i) {                                           \
-            sse_u32_lo[0]  = vaddq_u32(sse_u32_lo[0], sse_u32_lo[i]);                       \
-            sse_u32_hi[0]  = vaddq_u32(sse_u32_hi[0], sse_u32_hi[i]);                       \
-            sum_src_u16[0] = vaddq_u16(sum_src_u16[0], sum_src_u16[i]);                     \
-            sum_ref_u16[0] = vaddq_u16(sum_ref_u16[0], sum_ref_u16[i]);                     \
-            sum_src_u32[0] = vaddq_u32(sum_src_u32[0], sum_src_u32[i]);                     \
-            sum_ref_u32[0] = vaddq_u32(sum_ref_u32[0], sum_ref_u32[i]);                     \
-        }                                                                                   \
-        sum_src_u32[0] = vpadalq_u16(sum_src_u32[0], sum_src_u16[0]);                       \
-        sum_ref_u32[0] = vpadalq_u16(sum_ref_u32[0], sum_ref_u16[0]);                       \
-        sum            = (int)vaddvq_u32(sum_src_u32[0]) - (int)vaddvq_u32(sum_ref_u32[0]); \
-        *sse           = vaddvq_u32(vaddq_u32(sse_u32_lo[0], sse_u32_hi[0]));               \
-        return *sse - (uint32_t)(((int64_t)sum * sum) >> svt_ctz((W) * h));                 \
+// Emit a fused sub pixel variance function for blocks of width W that uses the
+// specified 2-tap bilinear filter.
+#define FUSED_SUBPEL_VAR_WXH_XY(W, X_FILTER_OFFSET, Y_FILTER_OFFSET, X_FILTER, Y_FILTER)                               \
+    static unsigned int fused_subpel_variance_##W##xh_##X_FILTER_OFFSET##_##Y_FILTER_OFFSET(const uint8_t* src,        \
+                                                                                            int64_t        src_stride, \
+                                                                                            int            h,          \
+                                                                                            int            shift,      \
+                                                                                            const uint8_t* ref,        \
+                                                                                            int64_t        ref_stride, \
+                                                                                            unsigned int*  sse_out) {   \
+        uint16x8_t src_sum[ACCUM(W)];                                                                                  \
+        uint16x8_t ref_sum[ACCUM(W)];                                                                                  \
+        uint32x4_t sse_lo[ACCUM(W)];                                                                                   \
+        uint32x4_t sse_hi[ACCUM(W)];                                                                                   \
+        uint8x16_t prev[W / 16];                                                                                       \
+        uint8x16_t cur[W / 16];                                                                                        \
+        for (int i = 0; i < ACCUM(W); ++i) {                                                                           \
+            src_sum[i] = vdupq_n_u16(0);                                                                               \
+            ref_sum[i] = vdupq_n_u16(0);                                                                               \
+            sse_lo[i]  = vdupq_n_u32(0);                                                                               \
+            sse_hi[i]  = vdupq_n_u32(0);                                                                               \
+        }                                                                                                              \
+        int32_t sum = 0;                                                                                               \
+        for (int t = 0; t < W / 16; ++t) {                                                                             \
+            prev[t] = X_FILTER(src + t * 16);                                                                          \
+        }                                                                                                              \
+        src += src_stride;                                                                                             \
+        do {                                                                                                           \
+            int h_chunk = HEIGHT_LIMIT(W, h);                                                                          \
+            h -= h_chunk;                                                                                              \
+            do {                                                                                                       \
+                for (int t = 0; t < W / 16; ++t) {                                                                     \
+                    cur[t]                = X_FILTER(src + t * 16);                                                    \
+                    const uint8x16_t pred = Y_FILTER(prev[t], cur[t]);                                                 \
+                    const uint8x16_t r    = vld1q_u8(ref + t * 16);                                                    \
+                    const int        i    = t & (ACCUM(W) - 1);                                                        \
+                    var_wide_accum(&src_sum[i], &ref_sum[i], &sse_lo[i], &sse_hi[i], pred, r);                         \
+                }                                                                                                      \
+                src += src_stride;                                                                                     \
+                ref += ref_stride;                                                                                     \
+                for (int t = 0; t < W / 16; ++t) {                                                                     \
+                    prev[t]               = X_FILTER(src + t * 16);                                                    \
+                    const uint8x16_t pred = Y_FILTER(cur[t], prev[t]);                                                 \
+                    const uint8x16_t r    = vld1q_u8(ref + t * 16);                                                    \
+                    const int        i    = t & (ACCUM(W) - 1);                                                        \
+                    var_wide_accum(&src_sum[i], &ref_sum[i], &sse_lo[i], &sse_hi[i], pred, r);                         \
+                }                                                                                                      \
+                src += src_stride;                                                                                     \
+                ref += ref_stride;                                                                                     \
+                h_chunk -= 2;                                                                                          \
+            } while (h_chunk != 0);                                                                                    \
+            if (h != 0) {                                                                                              \
+                sum += var_wide_sum_flush(src_sum, ref_sum, ACCUM(W));                                                 \
+            }                                                                                                          \
+        } while (h != 0);                                                                                              \
+        sum += var_wide_reduce(src_sum, ref_sum, sse_lo, sse_hi, ACCUM(W), sse_out);                                   \
+        return *sse_out - (uint32_t)(((int64_t)sum * sum) >> shift);                                                   \
     }
 
-FUSED_SUBPEL_VARIANCE_WX_NEON(16)
-FUSED_SUBPEL_VARIANCE_WX_NEON(32)
-FUSED_SUBPEL_VARIANCE_WX_NEON(64)
-FUSED_SUBPEL_VARIANCE_WX_NEON(128)
-
-#define FUSED_SUBPEL_VARIANCE_WXH_NEON(W, H)                                                                 \
-    unsigned int svt_aom_sub_pixel_variance##W##x##H##_neon(const uint8_t* src,                              \
-                                                            int            src_stride,                       \
-                                                            int            xoffset,                          \
-                                                            int            yoffset,                          \
-                                                            const uint8_t* ref,                              \
-                                                            int            ref_stride,                       \
-                                                            unsigned int*  sse) {                             \
-        return sub_pixel_variance_w##W##_neon(src, src_stride, xoffset, yoffset, ref, ref_stride, (H), sse); \
+// Emit a fused sub pixel variance function for the specified block width W. The
+// function is generic in the sense that it can use any 2-tap bilinear filter.
+#define FUSED_SUBPEL_VAR_WXH_GENERIC(W)                                                            \
+    static unsigned int fused_subpel_variance_##W##xh_generic(const uint8_t* src,                  \
+                                                              int64_t        src_stride,           \
+                                                              int            h,                    \
+                                                              int            shift,                \
+                                                              const uint8_t* ref,                  \
+                                                              int64_t        ref_stride,           \
+                                                              unsigned int*  sse_out,              \
+                                                              unsigned int   offsets) {              \
+        const int  xoffset = offsets & 7;                                                          \
+        const int  yoffset = (offsets >> 3) & 7;                                                   \
+        uint16x8_t src_sum[ACCUM(W)];                                                              \
+        uint16x8_t ref_sum[ACCUM(W)];                                                              \
+        uint32x4_t sse_lo[ACCUM(W)];                                                               \
+        uint32x4_t sse_hi[ACCUM(W)];                                                               \
+        for (int i = 0; i < ACCUM(W); ++i) {                                                       \
+            src_sum[i] = vdupq_n_u16(0);                                                           \
+            ref_sum[i] = vdupq_n_u16(0);                                                           \
+            sse_lo[i]  = vdupq_n_u32(0);                                                           \
+            sse_hi[i]  = vdupq_n_u32(0);                                                           \
+        }                                                                                          \
+        int32_t sum = 0;                                                                           \
+        if (yoffset == 0) {                                                                        \
+            do {                                                                                   \
+                int h_chunk = HEIGHT_LIMIT(W, h);                                                  \
+                h -= h_chunk;                                                                      \
+                do {                                                                               \
+                    for (int t = 0; t < W / 16; ++t) {                                             \
+                        const uint8x16_t pred = load_interp_w16(src + t * 16, xoffset);            \
+                        const uint8x16_t r    = vld1q_u8(ref + t * 16);                            \
+                        const int        i    = t & (ACCUM(W) - 1);                                \
+                        var_wide_accum(&src_sum[i], &ref_sum[i], &sse_lo[i], &sse_hi[i], pred, r); \
+                    }                                                                              \
+                    src += src_stride;                                                             \
+                    ref += ref_stride;                                                             \
+                } while (--h_chunk != 0);                                                          \
+                if (h != 0) {                                                                      \
+                    sum += var_wide_sum_flush(src_sum, ref_sum, ACCUM(W));                         \
+                }                                                                                  \
+            } while (h != 0);                                                                      \
+        } else {                                                                                   \
+            uint8x16_t prev[W / 16];                                                               \
+            for (int t = 0; t < W / 16; ++t) {                                                     \
+                prev[t] = load_interp_w16(src + t * 16, xoffset);                                  \
+            }                                                                                      \
+            src += src_stride;                                                                     \
+            do {                                                                                   \
+                int h_chunk = HEIGHT_LIMIT(W, h);                                                  \
+                h -= h_chunk;                                                                      \
+                do {                                                                               \
+                    for (int t = 0; t < W / 16; ++t) {                                             \
+                        const uint8x16_t cur  = load_interp_w16(src + t * 16, xoffset);            \
+                        const uint8x16_t pred = interp_w16(prev[t], cur, yoffset);                 \
+                        const uint8x16_t r    = vld1q_u8(ref + t * 16);                            \
+                        const int        i    = t & (ACCUM(W) - 1);                                \
+                        var_wide_accum(&src_sum[i], &ref_sum[i], &sse_lo[i], &sse_hi[i], pred, r); \
+                        prev[t] = cur;                                                             \
+                    }                                                                              \
+                    src += src_stride;                                                             \
+                    ref += ref_stride;                                                             \
+                } while (--h_chunk != 0);                                                          \
+                if (h != 0) {                                                                      \
+                    sum += var_wide_sum_flush(src_sum, ref_sum, ACCUM(W));                         \
+                }                                                                                  \
+            } while (h != 0);                                                                      \
+        }                                                                                          \
+        sum += var_wide_reduce(src_sum, ref_sum, sse_lo, sse_hi, ACCUM(W), sse_out);               \
+        return *sse_out - (uint32_t)(((int64_t)sum * sum) >> shift);                               \
     }
 
-FUSED_SUBPEL_VARIANCE_WXH_NEON(16, 4)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(16, 8)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(16, 16)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(16, 32)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(16, 64)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(32, 8)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(32, 16)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(32, 32)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(32, 64)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(64, 16)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(64, 32)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(64, 64)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(64, 128)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(128, 64)
-FUSED_SUBPEL_VARIANCE_WXH_NEON(128, 128)
+#define FUSED_SUBPEL_VAR_WXH_XY_COMBOS(W)                                 \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 0, 2, vld1q_u8, interp_3_1_w16)            \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 0, 4, vld1q_u8, interp_1_1_w16)            \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 0, 6, vld1q_u8, interp_1_3_w16)            \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 2, 2, load_interp_3_1_w16, interp_3_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 2, 4, load_interp_3_1_w16, interp_1_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 2, 6, load_interp_3_1_w16, interp_1_3_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 4, 2, load_interp_1_1_w16, interp_3_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 4, 4, load_interp_1_1_w16, interp_1_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 4, 6, load_interp_1_1_w16, interp_1_3_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 6, 2, load_interp_1_3_w16, interp_3_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 6, 4, load_interp_1_3_w16, interp_1_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(W, 6, 6, load_interp_1_3_w16, interp_1_3_w16)
 
-#undef FUSED_SUBPEL_VARIANCE_WXH_NEON
-#undef FUSED_SUBPEL_VARIANCE_WX_NEON
-#undef SPV_VGEN_TILE
-#undef SPV_HGEN_TILE
-#undef SPV_RUN_SW
-#undef SPV_RUN_H
-#undef SPV_MAYBE_ABSORB
-#undef SPV_ACCUM_TILE
-#undef SPV_ABSORB_INTERVAL
-#undef SPV_NACCUM
-#undef SPV_TILES
-#undef SPV_KEY
+#define FUSED_SUBPEL_VAR_WXH(W)      \
+    FUSED_SUBPEL_VAR_WXH_GENERIC(W)  \
+    FUSED_SUBPEL_VAR_WXH_X_COMBOS(W) \
+    FUSED_SUBPEL_VAR_WXH_XY_COMBOS(W)
+
+FUSED_SUBPEL_VAR_WXH(16)
+FUSED_SUBPEL_VAR_WXH(32)
+FUSED_SUBPEL_VAR_WXH(64)
+FUSED_SUBPEL_VAR_WXH(128)
+
+#undef FUSED_SUBPEL_VAR_WXH_X
+#undef FUSED_SUBPEL_VAR_WXH_X_COMBOS
+#undef FUSED_SUBPEL_VAR_WXH_XY
+#undef FUSED_SUBPEL_VAR_WXH_XY_COMBOS
+#undef FUSED_SUBPEL_VAR_WXH_GENERIC
+#undef FUSED_SUBPEL_VAR_WXH
+
+FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE(16);
+FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE(32);
+FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE(64);
+FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE(128);
+
+#undef FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE
+
+// Emit svt_aom_sub_pixel_variance{W}x{H}_neon for supported (W, H)
+// pairs. Filter offset (0,0) uses the variance fast path. Even/even filter
+// offsets dispatch through width-specific tables; odd offsets use a generic
+// loop. Shift is computed at compile time via svt_ctz((W) * (H)).
+#define SUBPEL_VARIANCE_WXH_NEON(W, H)                                                              \
+    unsigned int svt_aom_sub_pixel_variance##W##x##H##_neon(const uint8_t* src,                     \
+                                                            int            src_stride,              \
+                                                            int            xoffset,                 \
+                                                            int            yoffset,                 \
+                                                            const uint8_t* ref,                     \
+                                                            int            ref_stride,              \
+                                                            unsigned int*  sse) {                    \
+        if (xoffset == 0 && yoffset == 0) {                                                         \
+            int sum;                                                                                \
+            variance_##W##xh_neon(src, src_stride, ref, ref_stride, (H), sse, &sum);                \
+            return *sse - (uint32_t)(((int64_t)sum * sum) >> svt_ctz((W) * (H)));                   \
+        }                                                                                           \
+        if ((xoffset | yoffset) & 1) {                                                              \
+            return fused_subpel_variance_##W##xh_generic(src,                                       \
+                                                         src_stride,                                \
+                                                         (H),                                       \
+                                                         svt_ctz((W) * (H)),                        \
+                                                         ref,                                       \
+                                                         ref_stride,                                \
+                                                         sse,                                       \
+                                                         (unsigned int)(xoffset | (yoffset << 3))); \
+        }                                                                                           \
+        const SubpelVarFn f = fused_subpel_variance_##W##xh_fn_table[xoffset >> 1][yoffset >> 1];   \
+        return f(src, src_stride, (H), svt_ctz((W) * (H)), ref, ref_stride, sse);                   \
+    }
+
+SUBPEL_VARIANCE_WXH_NEON(16, 4)
+SUBPEL_VARIANCE_WXH_NEON(16, 8)
+SUBPEL_VARIANCE_WXH_NEON(16, 16)
+SUBPEL_VARIANCE_WXH_NEON(16, 32)
+SUBPEL_VARIANCE_WXH_NEON(16, 64)
+SUBPEL_VARIANCE_WXH_NEON(32, 8)
+SUBPEL_VARIANCE_WXH_NEON(32, 16)
+SUBPEL_VARIANCE_WXH_NEON(32, 32)
+SUBPEL_VARIANCE_WXH_NEON(32, 64)
+SUBPEL_VARIANCE_WXH_NEON(64, 16)
+SUBPEL_VARIANCE_WXH_NEON(64, 32)
+SUBPEL_VARIANCE_WXH_NEON(64, 64)
+SUBPEL_VARIANCE_WXH_NEON(64, 128)
+SUBPEL_VARIANCE_WXH_NEON(128, 64)
+SUBPEL_VARIANCE_WXH_NEON(128, 128)
+
+#undef SUBPEL_VARIANCE_WXH_NEON
+#undef HEIGHT_LIMIT
+#undef ACCUM
 
 unsigned int svt_aom_mse16x16_neon(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride) {
     uint32x4_t sse_u32[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};

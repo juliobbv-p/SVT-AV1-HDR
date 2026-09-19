@@ -37,8 +37,8 @@ typedef struct {
     int row_max;
 } SubpelMvLimits;
 
-#pragma pack(push, 1)
-
+// Keep natural alignment: x/y are read as int16_t through pointers into Mv arrays
+// (e.g. clip_mv_on_pic_boundary), so the type must not be byte-packed.
 typedef union Mv {
     struct {
         int16_t x;
@@ -47,8 +47,6 @@ typedef union Mv {
 
     uint32_t as_int; /* facilitates faster equality tests and copies */
 } Mv;
-
-#pragma pack(pop)
 
 typedef struct CandidateMv {
     Mv      this_mv;
@@ -59,13 +57,13 @@ typedef struct CandidateMv {
 #define GET_MV_RAWPEL(x) (((x) + 3 + ((x) >= 0)) >> 3)
 #define GET_MV_SUBPEL(x) ((x) * 8)
 
-static AOM_INLINE Mv get_fullmv_from_mv(const Mv* subpel_mv) {
-    const Mv full_mv = {{(int16_t)GET_MV_RAWPEL(subpel_mv->x), (int16_t)GET_MV_RAWPEL(subpel_mv->y)}};
+static AOM_INLINE Mv get_fullmv_from_mv(const Mv subpel_mv) {
+    const Mv full_mv = {{(int16_t)GET_MV_RAWPEL(subpel_mv.x), (int16_t)GET_MV_RAWPEL(subpel_mv.y)}};
     return full_mv;
 }
 
-static AOM_INLINE Mv get_mv_from_fullmv(const Mv* full_mv) {
-    const Mv subpel_mv = {{(int16_t)GET_MV_SUBPEL(full_mv->x), (int16_t)GET_MV_SUBPEL(full_mv->y)}};
+static AOM_INLINE Mv get_mv_from_fullmv(const Mv full_mv) {
+    const Mv subpel_mv = {{(int16_t)GET_MV_SUBPEL(full_mv.x), (int16_t)GET_MV_SUBPEL(full_mv.y)}};
     return subpel_mv;
 }
 

@@ -18,14 +18,12 @@
  * @author Cidana-Wenyao
  *
  ******************************************************************************/
-#include <math.h>
-#include <stdlib.h>
+#include <algorithm>
+#include <array>
 #include <random>
 #include "cabac_context_model.h"
 #include "bitstream_unit.h"
 #include "bitreader.h"
-#include "definitions.h"
-#include "pic_buffer_desc.h"
 #include "gtest/gtest.h"
 #include "random.h"
 
@@ -43,7 +41,7 @@
  * - aom_stop_encode
  *
  * Test strategy:
- * Verify by writing bits/values and reading bits/values in paris,
+ * Verify by writing bits/values and reading bits/values in pairs,
  * and compare the values read out and values written.
  *
  * Expected result:
@@ -64,42 +62,87 @@
  */
 using svt_av1_test_tool::SVTRandom;
 namespace {
-const int deterministic_seeds = 0xa42b;
+constexpr int deterministic_seeds = 0xa42b;
 class BitstreamWriterTest : public ::testing::Test {
+    template <size_t Nm>
+    void generate_random_bits(std::array<uint8_t, Nm> &test_bits,
+                              const int bit_gen_method) {
+        std::bernoulli_distribution bit_dist(0.5);
+
+        // setup test bits
+        switch (bit_gen_method) {
+        case 0:
+        case 1: test_bits.fill(bit_gen_method); break;
+        default:
+            std::generate(test_bits.begin(), test_bits.end(), [&]() {
+                return bit_dist(gen_);
+            });
+        }
+    }
+
+    template <size_t Nm>
+    void generate_random_prob(std::array<uint8_t, Nm> &probas,
+                              const int prob_gen_method) {
+        switch (prob_gen_method) {
+            // extreme probas
+        case 0: probas.fill(0); break;
+        case 1: probas.fill(255); break;
+        case 2: probas.fill(128); break;
+        case 3:
+            // uniform distribution between 0 ~ 255
+            std::generate(probas.begin(), probas.end(), [&]() {
+                return static_cast<uint8_t>(normal_probs_.random());
+            });
+            break;
+        case 4:
+            // low probability
+            std::generate(probas.begin(), probas.end(), [&]() {
+                return static_cast<uint8_t>(low_probs_.random());
+            });
+            break;
+        case 5:
+            // high probability
+            std::generate(probas.begin(), probas.end(), [&]() {
+                return 255 - static_cast<uint8_t>(low_probs_.random());
+            });
+            break;
+        case 6:
+        default:
+            std::bernoulli_distribution flip_dist(0.5);
+            // mix high and low probability
+            std::generate(probas.begin(), probas.end(), [&]() {
+                bool flip = flip_dist(gen_);
+                return flip ? static_cast<uint8_t>(low_probs_.random())
+                            : (255 - static_cast<uint8_t>(low_probs_.random()));
+            });
+            break;
+        }
+    }
+
   public:
-    BitstreamWriterTest() : gen_(deterministic_seeds) {
-        normal_probs_ = new SVTRandom(0, 255);
-        low_probs_ = new SVTRandom(0, 32);
-    }
-
-    ~BitstreamWriterTest() {
-        delete normal_probs_;
-        delete low_probs_;
-    }
-
     void write_random_bits(int loop) {
         // generate various proba
         for (int prob_gen_method = 0; prob_gen_method < 7; ++prob_gen_method) {
-            const int total_bits = 1000;
-            uint8_t probas[total_bits];
+            constexpr int total_bits = 1000;
+            std::array<uint8_t, total_bits> probas;
 
             // setup random probability in [0, 255)
-            generate_random_prob(probas, total_bits, prob_gen_method);
+            generate_random_prob(probas, prob_gen_method);
 
             for (int bit_gen_method = 0; bit_gen_method < 3; ++bit_gen_method) {
-                const int buffer_size = 10000;
-                AomWriter bw;
-                OutputBitstreamUnit output_bitstream_ptr;
+                constexpr int buffer_size = 10000;
                 uint8_t bw_buffer[buffer_size];
+                OutputBitstreamUnit output_bitstream_ptr;
                 output_bitstream_ptr.buffer_av1 = bw_buffer;
                 output_bitstream_ptr.buffer_begin_av1 = bw_buffer;
                 output_bitstream_ptr.size = buffer_size;
-                uint8_t test_bits[total_bits];
+                std::array<uint8_t, total_bits> test_bits;
 
                 // setup random bits 0/1
-                generate_random_bits(test_bits, total_bits, bit_gen_method);
+                generate_random_bits(test_bits, bit_gen_method);
 
                 // encode the bits
+                AomWriter bw;
                 aom_start_encode(&bw, &output_bitstream_ptr);
                 for (int i = 0; i < total_bits; ++i) {
                     int p = (0x7FFFFF - (probas[i] << 15) + probas[i]) >> 8;
@@ -108,8 +151,7 @@ class BitstreamWriterTest : public ::testing::Test {
                 aom_stop_encode(&bw);
 
                 // read out the bits and verify
-                aom_reader br;
-                memset(&br, 0, sizeof(br));
+                aom_reader br{};
                 aom_reader_init(&br, bw_buffer, bw.pos);
                 for (int i = 0; i < total_bits; ++i) {
                     GTEST_ASSERT_EQ(aom_read(&br, probas[i], nullptr),
@@ -123,74 +165,13 @@ class BitstreamWriterTest : public ::testing::Test {
     }
 
   private:
-    void generate_random_prob(uint8_t *const probas, const int total_probas,
-                              const int prob_gen_method) {
-        std::bernoulli_distribution flip_dist(0.5);
-
-        switch (prob_gen_method) {
-            // extreme probas
-        case 0: memset(probas, 0, total_probas * sizeof(probas[0])); break;
-        case 1:
-            for (int i = 0; i < total_probas; ++i)
-                probas[i] = 255;
-            break;
-            //
-        case 2:
-            for (int i = 0; i < total_probas; ++i)
-                probas[i] = 128;
-            break;
-        case 3:
-            // uniform distribution between 0 ~ 255
-            for (int i = 0; i < total_probas; ++i)
-                probas[i] = (uint8_t)normal_probs_->random();
-            break;
-        case 4:
-            // low probability
-            for (int i = 0; i < total_probas; ++i)
-                probas[i] = (uint8_t)low_probs_->random();
-            break;
-        case 5:
-            // high probability
-            for (int i = 0; i < total_probas; ++i)
-                probas[i] = 255 - (uint8_t)low_probs_->random();
-            break;
-        case 6:
-        default:
-            // mix high and low probability
-            for (int i = 0; i < total_probas; ++i) {
-                bool flip = flip_dist(gen_);
-                probas[i] = flip ? (uint8_t)low_probs_->random()
-                                 : 255 - (uint8_t)low_probs_->random();
-            }
-            break;
-        }
-    }
-
-    void generate_random_bits(uint8_t *const test_bits, const int total_bits,
-                              const int bit_gen_method) {
-        std::bernoulli_distribution bit_dist(0.5);
-
-        // setup test bits
-        switch (bit_gen_method) {
-        case 0:
-        case 1:
-            memset(
-                test_bits, bit_gen_method, total_bits * sizeof(test_bits[0]));
-            break;
-        default:
-            for (int i = 0; i < total_bits; ++i)
-                test_bits[i] = bit_dist(gen_);
-        }
-    }
-
-  private:
-    SVTRandom *normal_probs_;
-    SVTRandom *low_probs_;
-    std::mt19937 gen_;
+    SVTRandom normal_probs_{0, 255};
+    SVTRandom low_probs_{0, 32};
+    std::mt19937 gen_{deterministic_seeds};
 };
 
 TEST_F(BitstreamWriterTest, write_bits_random) {
-    const int num_tests = 100;
+    constexpr int num_tests = 100;
     for (int i = 0; i < num_tests; ++i)
         write_random_bits(i);
 }
@@ -200,21 +181,20 @@ TEST(Entropy_BitstreamWriter, write_literal_extreme_int) {
     constexpr int32_t max_int = std::numeric_limits<int32_t>::max();
     constexpr int32_t min_int = std::numeric_limits<int32_t>::min();
 
-    const int buffer_size = 1024;
+    constexpr int buffer_size = 1024;
     OutputBitstreamUnit output_bitstream_ptr;
     uint8_t stream_buffer[buffer_size];
     output_bitstream_ptr.buffer_av1 = stream_buffer;
     output_bitstream_ptr.buffer_begin_av1 = stream_buffer;
     output_bitstream_ptr.size = buffer_size;
-    AomWriter bw;
+    AomWriter bw{};
 
     aom_start_encode(&bw, &output_bitstream_ptr);
     aom_write_literal(&bw, max_int, 32);
     aom_write_literal(&bw, min_int, 32);
     aom_stop_encode(&bw);
 
-    aom_reader br;
-    memset(&br, 0, sizeof(br));
+    aom_reader br{};
     aom_reader_init(&br, stream_buffer, bw.pos);
     EXPECT_EQ(aom_read_literal(&br, 32, nullptr), max_int)
         << "read max_int fail";
@@ -223,25 +203,23 @@ TEST(Entropy_BitstreamWriter, write_literal_extreme_int) {
 }
 
 TEST(Entropy_BitstreamWriter, write_symbol_no_update) {
-    AomWriter bw;
-    memset(&bw, 0, sizeof(bw));
+    AomWriter bw{};
 
-    const int buffer_size = 1024;
+    constexpr int buffer_size = 1024;
     OutputBitstreamUnit output_bitstream_ptr;
     uint8_t stream_buffer[buffer_size];
     output_bitstream_ptr.buffer_av1 = stream_buffer;
     output_bitstream_ptr.buffer_begin_av1 = stream_buffer;
     output_bitstream_ptr.size = buffer_size;
     // get default cdf
-    const int base_qindex = 20;
-    FRAME_CONTEXT fc;
-    memset(&fc, 0, sizeof(fc));
+    constexpr int base_qindex = 20;
+    FRAME_CONTEXT fc{};
     svt_av1_default_coef_probs(&fc, base_qindex);
 
     // write random bit sequences and expect read out
     // the same random sequences.
     std::bernoulli_distribution rnd(0.5);
-    std::mt19937 gen(deterministic_seeds);
+    std::mt19937 gen{deterministic_seeds};
 
     aom_start_encode(&bw, &output_bitstream_ptr);
     for (int i = 0; i < 500; ++i) {
@@ -254,8 +232,7 @@ TEST(Entropy_BitstreamWriter, write_symbol_no_update) {
     rnd.reset();
     gen.seed(deterministic_seeds);
 
-    aom_reader br;
-    memset(&br, 0, sizeof(br));
+    aom_reader br{};
     aom_reader_init(&br, stream_buffer, bw.pos);
     for (int i = 0; i < 500; ++i) {
         ASSERT_EQ(aom_read_symbol(&br, fc.txb_skip_cdf[0][0], 2, nullptr),
@@ -266,10 +243,9 @@ TEST(Entropy_BitstreamWriter, write_symbol_no_update) {
 }
 
 TEST(Entropy_BitstreamWriter, write_symbol_with_update) {
-    AomWriter bw;
-    memset(&bw, 0, sizeof(bw));
+    AomWriter bw{};
 
-    const int buffer_size = 1024;
+    constexpr int buffer_size = 1024;
     OutputBitstreamUnit output_bitstream_ptr;
     uint8_t stream_buffer[buffer_size];
     output_bitstream_ptr.buffer_av1 = stream_buffer;
@@ -278,9 +254,8 @@ TEST(Entropy_BitstreamWriter, write_symbol_with_update) {
     bw.allow_update_cdf = 1;
 
     // get default cdf
-    const int base_qindex = 20;
-    FRAME_CONTEXT fc;
-    memset(&fc, 0, sizeof(fc));
+    constexpr int base_qindex = 20;
+    FRAME_CONTEXT fc{};
 
     svt_av1_default_coef_probs(&fc, base_qindex);
 
@@ -300,8 +275,7 @@ TEST(Entropy_BitstreamWriter, write_symbol_with_update) {
     rnd.reset();
     gen.seed(deterministic_seeds);
 
-    aom_reader br;
-    memset(&br, 0, sizeof(br));
+    aom_reader br{};
     aom_reader_init(&br, stream_buffer, bw.pos);
     br.allow_update_cdf = 1;
     svt_av1_default_coef_probs(&fc, base_qindex);  // reset cdf

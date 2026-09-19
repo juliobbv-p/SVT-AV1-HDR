@@ -299,15 +299,8 @@ static inline uint32x4_t compute_horiz_directions_neon(int16x8_t lines[8], uint3
     return costs[0];
 }
 
-uint8_t svt_aom_cdef_find_dir_neon(const uint16_t* img, int32_t stride, int32_t* var, int32_t coeff_shift) {
-    uint32_t  cost[8];
-    uint32_t  best_cost = 0;
-    int       best_dir  = 0;
-    int16x8_t lines[8];
-    for (int i = 0; i < 8; i++) {
-        uint16x8_t s = vld1q_u16(&img[i * stride]);
-        lines[i]     = vreinterpretq_s16_u16(vsubq_u16(vshlq_u16(s, vdupq_n_s16(-coeff_shift)), vdupq_n_u16(128)));
-    }
+static inline uint8_t cdef_dir_from_lines_neon(int16x8_t lines[8], int32_t* var) {
+    uint32_t cost[8];
 
     // Compute "mostly vertical" directions.
     uint32x4_t cost47 = compute_vert_directions_neon(lines, cost + 4);
@@ -318,10 +311,10 @@ uint8_t svt_aom_cdef_find_dir_neon(const uint16_t* img, int32_t stride, int32_t*
     // Find max cost as well as its index to get best_dir.
     // The max cost needs to be propagated in the whole vector to find its
     // position in the original cost vectors cost03 and cost47.
-    uint32x4_t cost07     = vmaxq_u32(cost03, cost47);
-    best_cost             = vmaxvq_u32(cost07);
-    uint32x4_t   max_cost = vdupq_n_u32(best_cost);
-    uint8x16x2_t costs    = {
+    uint32x4_t   cost07    = vmaxq_u32(cost03, cost47);
+    uint32_t     best_cost = vmaxvq_u32(cost07);
+    uint32x4_t   max_cost  = vdupq_n_u32(best_cost);
+    uint8x16x2_t costs     = {
         {vreinterpretq_u8_u32(vceqq_u32(max_cost, cost03)), vreinterpretq_u8_u32(vceqq_u32(max_cost, cost47))}};
     // idx = { 28, 24, 20, 16, 12, 8, 4, 0 };
     uint8x8_t idx = vreinterpret_u8_u64(vcreate_u64(0x0004080c1014181cULL));
@@ -330,7 +323,7 @@ uint8_t svt_aom_cdef_find_dir_neon(const uint16_t* img, int32_t stride, int32_t*
     uint64_t      a   = vget_lane_u64(vreinterpret_u64_u8(tbl), 0);
     unsigned long id;
     svt_clzll(id, a);
-    best_dir = id >> 3;
+    int best_dir = id >> 3;
 
     // Difference between the optimal variance and the variance along the
     // orthogonal direction. Again, the sum(x^2) terms cancel out.
@@ -341,6 +334,26 @@ uint8_t svt_aom_cdef_find_dir_neon(const uint16_t* img, int32_t stride, int32_t*
     return best_dir;
 }
 
+uint8_t svt_aom_cdef_find_dir_neon(const uint16_t* img, int32_t stride, int32_t* var, int32_t coeff_shift) {
+    int16x8_t lines[8];
+    for (int i = 0; i < 8; i++) {
+        uint16x8_t s = vld1q_u16(&img[i * stride]);
+        lines[i]     = vreinterpretq_s16_u16(vsubq_u16(vshlq_u16(s, vdupq_n_s16(-coeff_shift)), vdupq_n_u16(128)));
+    }
+    return cdef_dir_from_lines_neon(lines, var);
+}
+
+// 8-bit-input variant (reads uint8 recon/buffer directly, no 8->16 widen in the
+// caller). Bit-exact to svt_aom_cdef_find_dir_neon for identical pixel values.
+uint8_t svt_aom_cdef_find_dir_8bit_neon(const uint8_t* img, int32_t stride, int32_t* var, int32_t coeff_shift) {
+    int16x8_t lines[8];
+    for (int i = 0; i < 8; i++) {
+        uint16x8_t s = vmovl_u8(vld1_u8(&img[i * stride]));
+        lines[i]     = vreinterpretq_s16_u16(vsubq_u16(vshlq_u16(s, vdupq_n_s16(-coeff_shift)), vdupq_n_u16(128)));
+    }
+    return cdef_dir_from_lines_neon(lines, var);
+}
+
 void svt_aom_cdef_find_dir_dual_neon(const uint16_t* img1, const uint16_t* img2, int stride, int32_t* var_out_1st,
                                      int32_t* var_out_2nd, int32_t coeff_shift, uint8_t* out_dir_1st_8x8,
                                      uint8_t* out_dir_2nd_8x8) {
@@ -349,4 +362,11 @@ void svt_aom_cdef_find_dir_dual_neon(const uint16_t* img1, const uint16_t* img2,
 
     // Process second 8x8.
     *out_dir_2nd_8x8 = svt_aom_cdef_find_dir_neon(img2, stride, var_out_2nd, coeff_shift);
+}
+
+void svt_aom_cdef_find_dir_dual_8bit_neon(const uint8_t* img1, const uint8_t* img2, int stride, int32_t* var_out_1st,
+                                          int32_t* var_out_2nd, int32_t coeff_shift, uint8_t* out_dir_1st_8x8,
+                                          uint8_t* out_dir_2nd_8x8) {
+    *out_dir_1st_8x8 = svt_aom_cdef_find_dir_8bit_neon(img1, stride, var_out_1st, coeff_shift);
+    *out_dir_2nd_8x8 = svt_aom_cdef_find_dir_8bit_neon(img2, stride, var_out_2nd, coeff_shift);
 }

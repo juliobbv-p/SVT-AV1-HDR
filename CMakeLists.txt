@@ -16,7 +16,7 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
                     "Please use the Build folder or create your own.")
 endif()
 
-project(svt-av1 VERSION 4.1.0
+project(svt-av1 VERSION 4.2.0
     LANGUAGES C CXX)
 
 set(VERSION_TAG "")
@@ -53,6 +53,29 @@ option(COMPILE_C_ONLY "Compile only C code with no simds (autodetect, default of
 option(MINIMAL_BUILD "Enable minimal build" OFF)
 if(MINIMAL_BUILD)
     add_definitions(-DMINIMAL_BUILD=1)
+    # Per-function/data sections so the linker can dead-strip unused code.
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
+    # Drop unwind tables, stack canaries and fortify wrappers (offline encoder).
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-stack-protector")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-stack-protector")
+    # C++ TUs: no exceptions/RTTI in this C-dominant codebase. Skipped for unit
+    # tests, which use gtest and require exception support.
+    if(NOT BUILD_TESTING)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions -fno-rtti")
+    endif()
+    # Use CMAKE_*_FLAGS (not add_definitions) so -U precedes -D on the command
+    # line; otherwise GCC warns "_FORTIFY_SOURCE redefined" vs its built-in.
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0")
+    if(APPLE)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-dead_strip -Wl,-no_compact_unwind")
+        if(NOT DEFINED ENV{NO_STRIP})
+            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-x")
+        endif()
+    else()
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--gc-sections")
+    endif()
 endif()
 
 option(LOG_QUIET "Disable all logging from encoder" OFF)
@@ -229,6 +252,14 @@ option(BUILD_SHARED_LIBS "Build shared libraries (DLLs)." ON)
 message(STATUS "BUILD_SHARED_LIBS: ${BUILD_SHARED_LIBS}")
 
 option(BUILD_TESTING "Build SvtAv1UnitTests, SvtAv1ApiTests, and SvtAv1E2ETests unit tests")
+if(BUILD_TESTING)
+    # Unit tests rely on C reference functions (they call
+    # svt_aom_setup_*_rtcd_internal(0) to populate the C path), so the
+    # guaranteed-SIMD C-stripping/devirtualization must be disabled here.
+    # Applied globally and before add_subdirectory(Source/Lib) so it reaches
+    # the SvtAv1Enc library compile that the tests link against.
+    add_definitions(-DSVT_AV1_UNIT_TEST_BUILD=1)
+endif()
 option(COVERAGE "Generate coverage report")
 if(NOT MSVC)
     option(SVT_AV1_PGO "Enable profile guided optimization. Creates the RunPGO and CompilePGO targets")
@@ -238,8 +269,10 @@ if(NOT MSVC)
     mark_as_advanced(SVT_INTERNAL_PGO_GENERATE SVT_INTERNAL_PGO_USE)
     set(SVT_AV1_PGO_DIR "${CMAKE_BINARY_DIR}" CACHE PATH "Path to the directory passed to -fprofile-dir for use with profile guided optimization")
     set(SVT_AV1_PGO_CUSTOM_VIDEOS "" CACHE STRING "Semi-colon separated list of directories with y4m videos to run PGO on instead of objective-1-fast")
+    option(SVT_AV1_NVTX "Compile NVTX3 ranges + thread names for NVIDIA Nsight Systems profiling (CPU sampling, PMU events, OS runtime, thread states)" OFF)
 else()
     set(SVT_AV1_PGO OFF)
+    set(SVT_AV1_NVTX OFF)
 endif()
 
 if(MSVC AND SVT_AV1_PGO)
@@ -432,7 +465,10 @@ else()
     if(MINGW)
         check_flags_add(C -mxsave -fno-asynchronous-unwind-tables)
     else()
-        check_both_flags_add(-fstack-protector-strong)
+        option(ENABLE_STACK_PROTECTOR "Build with -fstack-protector-strong" ON)
+        if(ENABLE_STACK_PROTECTOR)
+            check_both_flags_add(-fstack-protector-strong)
+        endif()
         if(NOT EMSCRIPTEN)
             check_both_flags_add(PREPEND -fno-stack-clash-protection)
         endif()

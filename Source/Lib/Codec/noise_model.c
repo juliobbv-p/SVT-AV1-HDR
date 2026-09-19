@@ -123,15 +123,9 @@ static void equation_system_clear(AomEquationSystem* eqns) {
 
 static void equation_system_copy(AomEquationSystem* dst, const AomEquationSystem* src) {
     const int32_t n = dst->n;
-    if (svt_memcpy != NULL) {
-        svt_memcpy(dst->A, src->A, sizeof(*dst->A) * n * n);
-        svt_memcpy(dst->x, src->x, sizeof(*dst->x) * n);
-        svt_memcpy(dst->b, src->b, sizeof(*dst->b) * n);
-    } else {
-        svt_memcpy_c(dst->A, src->A, sizeof(*dst->A) * n * n);
-        svt_memcpy_c(dst->x, src->x, sizeof(*dst->x) * n);
-        svt_memcpy_c(dst->b, src->b, sizeof(*dst->b) * n);
-    }
+    SVT_MEMCPY(dst->A, src->A, sizeof(*dst->A) * n * n);
+    SVT_MEMCPY(dst->x, src->x, sizeof(*dst->x) * n);
+    SVT_MEMCPY(dst->b, src->b, sizeof(*dst->b) * n);
 }
 
 static int32_t equation_system_init(AomEquationSystem* eqns, int32_t n) {
@@ -159,13 +153,8 @@ static int32_t equation_system_solve(AomEquationSystem* eqns) {
         free(A);
         return 0;
     }
-    if (svt_memcpy != NULL) {
-        svt_memcpy(A, eqns->A, sizeof(*eqns->A) * n * n);
-        svt_memcpy(b, eqns->b, sizeof(*eqns->b) * n);
-    } else {
-        svt_memcpy_c(A, eqns->A, sizeof(*eqns->A) * n * n);
-        svt_memcpy_c(b, eqns->b, sizeof(*eqns->b) * n);
-    }
+    SVT_MEMCPY(A, eqns->A, sizeof(*eqns->A) * n * n);
+    SVT_MEMCPY(b, eqns->b, sizeof(*eqns->b) * n);
     ret = linsolve(n, A, eqns->n, b, eqns->x);
     free(b);
     free(A);
@@ -289,11 +278,7 @@ int32_t svt_aom_noise_strength_solver_solve(AomNoiseStrengthSolver* solver) {
         SVT_ERROR("Unable to allocate copy of A\n");
         return 0;
     }
-    if (svt_memcpy != NULL) {
-        svt_memcpy(A, old_a, sizeof(*A) * n * n);
-    } else {
-        svt_memcpy_c(A, old_a, sizeof(*A) * n * n);
-    }
+    SVT_MEMCPY(A, old_a, sizeof(*A) * n * n);
 
     for (int32_t i = 0; i < n; ++i) {
         const int32_t i_lo = AOMMAX(0, i - 1);
@@ -663,11 +648,7 @@ int32_t svt_aom_noise_model_init(AomNoiseModel* model, const AomNoiseModelParams
         SVT_ERROR("Invalid noise param: lag = %d must be <= %d\n", params.lag, k_max_lag);
         return 0;
     }
-    if (svt_memcpy != NULL) {
-        svt_memcpy(&model->params, &params, sizeof(params));
-    } else {
-        svt_memcpy_c(&model->params, &params, sizeof(params));
-    }
+    SVT_MEMCPY(&model->params, &params, sizeof(params));
 
     for (int c = 0; c < 3; ++c) {
         if (!noise_state_init(&model->combined_state[c], n + (c > 0), bit_depth)) {
@@ -2180,8 +2161,8 @@ static void denoise_and_model_dctor(EbPtr p) {
 EbErrorType svt_aom_denoise_and_model_ctor(AomDenoiseAndModel* object_ptr, EbPtr object_init_data_ptr) {
     DenoiseAndModelInitData* init_data_ptr = (DenoiseAndModelInitData*)object_init_data_ptr;
     EbErrorType              return_error  = EB_ErrorNone;
-    uint32_t                 use_highbd    = init_data_ptr->encoder_bit_depth > EB_EIGHT_BIT ? 1 : 0;
-    ResolutionRange          input_resolution;
+    uint32_t        use_highbd = SVT_EFFECTIVE_BIT_DEPTH(init_data_ptr->encoder_bit_depth) > EB_EIGHT_BIT ? 1 : 0;
+    ResolutionRange input_resolution;
 
     int32_t chroma_sub_log2[2] = {1, 1}; //todo: send chroma subsampling
     chroma_sub_log2[0]         = (init_data_ptr->encoder_color_format == EB_YUV444 ? 0 : 1);
@@ -2203,7 +2184,7 @@ EbErrorType svt_aom_denoise_and_model_ctor(AomDenoiseAndModel* object_ptr, EbPtr
 
     object_ptr->block_size  = denoise_block_size;
     object_ptr->noise_level = (float)(init_data_ptr->noise_level / 10.0);
-    object_ptr->bit_depth   = init_data_ptr->encoder_bit_depth > EB_EIGHT_BIT ? 10 : 8;
+    object_ptr->bit_depth   = SVT_EFFECTIVE_BIT_DEPTH(init_data_ptr->encoder_bit_depth) > EB_EIGHT_BIT ? 10 : 8;
 
     object_ptr->width     = init_data_ptr->width;
     object_ptr->height    = init_data_ptr->height;
@@ -2231,7 +2212,8 @@ EbErrorType svt_aom_denoise_and_model_ctor(AomDenoiseAndModel* object_ptr, EbPtr
 
 static int32_t denoise_and_model_realloc_if_necessary(struct AomDenoiseAndModel* ctx, EbPictureBufferDesc* sd,
                                                       int32_t use_highbd) {
-    int32_t chroma_sub_log2[2] = {1, 1}; //todo: send chroma subsampling
+    const int     chroma_ss          = sd->color_format == EB_YUV444 ? 0 : 1;
+    const int32_t chroma_sub_log2[2] = {chroma_ss, chroma_ss};
 
     free(ctx->flat_blocks);
     ctx->flat_blocks = NULL;
@@ -2265,9 +2247,9 @@ static int32_t denoise_and_model_realloc_if_necessary(struct AomDenoiseAndModel*
 
 static void unpack_2d_pic(uint8_t* packed[3], EbPictureBufferDesc* outputPicturePtr) {
     uint16_t luma_width    = (uint16_t)(outputPicturePtr->width);
-    uint16_t chroma_width  = luma_width >> 1;
+    uint16_t chroma_width  = luma_width >> (outputPicturePtr->color_format == EB_YUV444 ? 0 : 1);
     uint16_t luma_height   = (uint16_t)(outputPicturePtr->height);
-    uint16_t chroma_height = luma_height >> 1;
+    uint16_t chroma_height = luma_height >> (outputPicturePtr->color_format == EB_YUV444 ? 0 : 1);
 
     svt_unpack_and_2bcompress((uint16_t*)(packed[0]),
                               outputPicturePtr->y_stride,
@@ -2301,7 +2283,8 @@ int32_t svt_aom_denoise_and_model_run(struct AomDenoiseAndModel* ctx, EbPictureB
                                       int32_t use_highbd) {
     const int32_t block_size = ctx->block_size;
     uint8_t*      raw_data[3];
-    int32_t       chroma_sub_log2[2] = {1, 1}; //todo: send chroma subsampling
+    const int     chroma_ss          = sd->color_format == EB_YUV444 ? 0 : 1;
+    int32_t       chroma_sub_log2[2] = {chroma_ss, chroma_ss};
     int32_t       strides[3]         = {sd->y_stride, sd->u_stride, sd->v_stride};
 
     if (!denoise_and_model_realloc_if_necessary(ctx, sd, use_highbd)) {
@@ -2366,19 +2349,11 @@ int32_t svt_aom_denoise_and_model_run(struct AomDenoiseAndModel* ctx, EbPictureB
 
         if (ctx->denoise_apply) {
             if (!use_highbd) {
-                if (svt_memcpy != NULL) {
-                    svt_memcpy(raw_data[0], ctx->denoised[0], (strides[0] * sd->height) << use_highbd);
-                    svt_memcpy(
-                        raw_data[1], ctx->denoised[1], (strides[1] * (sd->height >> chroma_sub_log2[0])) << use_highbd);
-                    svt_memcpy(
-                        raw_data[2], ctx->denoised[2], (strides[2] * (sd->height >> chroma_sub_log2[0])) << use_highbd);
-                } else {
-                    svt_memcpy_c(raw_data[0], ctx->denoised[0], (strides[0] * sd->height) << use_highbd);
-                    svt_memcpy_c(
-                        raw_data[1], ctx->denoised[1], (strides[1] * (sd->height >> chroma_sub_log2[0])) << use_highbd);
-                    svt_memcpy_c(
-                        raw_data[2], ctx->denoised[2], (strides[2] * (sd->height >> chroma_sub_log2[0])) << use_highbd);
-                }
+                SVT_MEMCPY(raw_data[0], ctx->denoised[0], (strides[0] * sd->height) << use_highbd);
+                SVT_MEMCPY(
+                    raw_data[1], ctx->denoised[1], (strides[1] * (sd->height >> chroma_sub_log2[0])) << use_highbd);
+                SVT_MEMCPY(
+                    raw_data[2], ctx->denoised[2], (strides[2] * (sd->height >> chroma_sub_log2[0])) << use_highbd);
             } else {
                 unpack_2d_pic(ctx->denoised, sd);
             }

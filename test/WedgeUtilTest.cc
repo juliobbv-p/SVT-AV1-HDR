@@ -23,10 +23,13 @@
  *
  ******************************************************************************/
 #include "gtest/gtest.h"
+#include <algorithm>
+#include <array>
+#include "common_dsp_rtcd.h"
 #include "common_utils.h"
-#include "utility.h"
 #include "aom_dsp_rtcd.h"
 #include "random.h"
+#include "svt_malloc.h"
 #include "util.h"
 
 using svt_av1_test_tool::SVTRandom;
@@ -35,52 +38,47 @@ namespace {
 // Choose the mask sign for a compound predictor.
 class WedgeUtilTest : public ::testing::Test {
   public:
-    void SetUp() override {
-        r0 = (int16_t *)svt_aom_memalign(32, MAX_SB_SQUARE * sizeof(int16_t));
-        r1 = (int16_t *)svt_aom_memalign(32, MAX_SB_SQUARE * sizeof(int16_t));
-        m = (uint8_t *)svt_aom_memalign(32, MAX_SB_SQUARE);
+    void *operator new(size_t size) {
+        if (void *ptr = svt_aom_memalign(alignof(WedgeUtilTest), size))
+            return ptr;
+        throw std::bad_alloc();
     }
 
-    void TearDown() override {
-        svt_aom_free(r0);
-        svt_aom_free(r1);
-        svt_aom_free(m);
+    void operator delete(void *ptr) {
+        svt_aom_free(ptr);
     }
 
   protected:
-    uint8_t *m;       /* mask */
-    int16_t *r0, *r1; /* two predicted residual */
+    alignas(32) std::array<uint8_t, MAX_SB_SQUARE> m{}; /* mask */
+    /* two predicted residual */
+    alignas(32) std::array<int16_t, MAX_SB_SQUARE> r0{}, r1{};
 };
 
 // test svt_av1_wedge_sign_from_residuals
-using WedgeSignFromResidualsFunc = int8_t (*)(const int16_t *ds,
-                                              const uint8_t *m, int N,
-                                              int64_t limit);
+using WedgeSignFromResidualsFunc =
+    decltype(&svt_av1_wedge_sign_from_residuals_c);
 
-#define MAX_MASK_VALUE (1 << WEDGE_WEIGHT_BITS)
+constexpr auto MAX_MASK_VALUE = 1 << WEDGE_WEIGHT_BITS;
 
 class WedgeSignFromResidualsTest
     : public WedgeUtilTest,
       public ::testing::WithParamInterface<WedgeSignFromResidualsFunc> {
   protected:
-    WedgeSignFromResidualsTest() : test_func_(GetParam()) {
-    }
-
     void wedge_sign_test(int N, int k) {
-        DECLARE_ALIGNED(32, int16_t, ds[MAX_SB_SQUARE]);
+        alignas(32) std::array<int16_t, MAX_SB_SQUARE> ds{};
         // pre-compute limit
         // MAX_MASK_VALUE/2 * (sum(r0**2) - sum(r1**2))
         int64_t limit;
-        limit = (int64_t)svt_aom_sum_squares_i16_c(r0, N);
-        limit -= (int64_t)svt_aom_sum_squares_i16_c(r1, N);
+        limit = (int64_t)svt_aom_sum_squares_i16_c(r0.data(), N);
+        limit -= (int64_t)svt_aom_sum_squares_i16_c(r1.data(), N);
         limit *= (1 << WEDGE_WEIGHT_BITS) / 2;
 
         // calculate ds: r0**2 - r1**2
         for (int i = 0; i < N; ++i)
             ds[i] = clamp(r0[i] * r0[i] - r1[i] * r1[i], INT16_MIN, INT16_MAX);
         const int8_t ref_sign =
-            svt_av1_wedge_sign_from_residuals_c(ds, m, N, limit);
-        const int8_t tst_sign = test_func_(ds, m, N, limit);
+            svt_av1_wedge_sign_from_residuals_c(ds.data(), m.data(), N, limit);
+        const int8_t tst_sign = test_func_(ds.data(), m.data(), N, limit);
         ASSERT_EQ(ref_sign, tst_sign)
             << "unit test for svt_av1_wedge_sign_from_residuals fail at "
                "iteration "
@@ -88,10 +86,10 @@ class WedgeSignFromResidualsTest
     }
 
     void MaskSignRandomTest() {
-        const int iterations = 10000;
-        SVTRandom rnd(13, true);             // max residual is 13-bit
-        SVTRandom m_rnd(0, MAX_MASK_VALUE);  // [0, MAX_MASK_VALUE]
-        SVTRandom n_rnd(1, 8191 / 64);  // required by assembly implementation
+        constexpr int iterations = 10000;
+        SVTRandom rnd{13, true};             // max residual is 13-bit
+        SVTRandom m_rnd{0, MAX_MASK_VALUE};  // [0, MAX_MASK_VALUE]
+        SVTRandom n_rnd{1, 8191 / 64};  // required by assembly implementation
 
         for (int k = 0; k < iterations; ++k) {
             // populate the residual buffer randomly
@@ -109,42 +107,32 @@ class WedgeSignFromResidualsTest
     }
 
     void MaskSignExtremeTest() {
-        const int int_13bit_max = (1 << 12) - 1;
-        SVTRandom rnd(13, true);             // max residual is 13-bit
-        SVTRandom m_rnd(0, MAX_MASK_VALUE);  // [0, MAX_MASK_VALUE]
-        SVTRandom n_rnd(1, 8191 / 64);  // required by assembly implementation
+        constexpr int int_13bit_max = (1 << 12) - 1;
+        SVTRandom rnd{13, true};             // max residual is 13-bit
+        SVTRandom m_rnd{0, MAX_MASK_VALUE};  // [0, MAX_MASK_VALUE]
+        SVTRandom n_rnd{1, 8191 / 64};  // required by assembly implementation
 
         for (int k = 0; k < 4; ++k) {
             switch (k) {
             case 0:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = 0;
-                    r1[i] = int_13bit_max;
-                }
+                r0.fill(0);
+                r1.fill(int_13bit_max);
                 break;
             case 1:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = int_13bit_max;
-                    r1[i] = 0;
-                }
+                r0.fill(int_13bit_max);
+                r1.fill(0);
                 break;
             case 2:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = -int_13bit_max;
-                    r1[i] = 0;
-                }
+                r0.fill(-int_13bit_max);
+                r1.fill(0);
                 break;
             case 3:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = 0;
-                    r1[i] = -int_13bit_max;
-                }
+                r0.fill(0);
+                r1.fill(-int_13bit_max);
                 break;
-            default: assert(0); break;
             }
 
-            for (int i = 0; i < MAX_SB_SQUARE; ++i)
-                m[i] = MAX_MASK_VALUE;
+            m.fill(MAX_MASK_VALUE);
 
             // N should be multiple of 64, required by
             // svt_av1_wedge_sign_from_residuals_avx2
@@ -154,7 +142,7 @@ class WedgeSignFromResidualsTest
         }
     }
 
-    WedgeSignFromResidualsFunc test_func_;
+    WedgeSignFromResidualsFunc test_func_{GetParam()};
 };
 
 TEST_P(WedgeSignFromResidualsTest, RandomTest) {
@@ -188,22 +176,19 @@ INSTANTIATE_TEST_SUITE_P(
 #endif  // ARCH_AARCH64
 
 // test svt_av1_wedge_compute_delta_squares
-using WedgeComputeDeltaSquaresFunc = void (*)(int16_t *d, const int16_t *a,
-                                              const int16_t *b, int N);
+using WedgeComputeDeltaSquaresFunc =
+    decltype(&svt_av1_wedge_compute_delta_squares_c);
 
 class WedgeComputeDeltaSquaresTest
     : public WedgeUtilTest,
       public ::testing::WithParamInterface<WedgeComputeDeltaSquaresFunc> {
   protected:
-    WedgeComputeDeltaSquaresTest() : test_func_(GetParam()) {
-    }
-
     void ComputeDeltaSquareTest() {
-        const int iterations = 10000;
-        SVTRandom rnd(13, true);  // max residual is 13-bit
-        SVTRandom n_rnd(1, MAX_SB_SQUARE / 64);
-        DECLARE_ALIGNED(32, int16_t, ref_diff[MAX_SB_SQUARE]);
-        DECLARE_ALIGNED(32, int16_t, tst_diff[MAX_SB_SQUARE]);
+        constexpr int iterations = 10000;
+        SVTRandom rnd{13, true};  // max residual is 13-bit
+        SVTRandom n_rnd{1, MAX_SB_SQUARE / 64};
+        alignas(32) std::array<int16_t, MAX_SB_SQUARE> ref_diff;
+        alignas(32) std::array<int16_t, MAX_SB_SQUARE> tst_diff;
 
         for (int k = 0; k < iterations; ++k) {
             // populate the residual buffer randomly
@@ -211,15 +196,16 @@ class WedgeComputeDeltaSquaresTest
                 r0[i] = rnd.random();
                 r1[i] = rnd.random();
             }
-            memset(ref_diff, 0, sizeof(ref_diff));
-            memset(tst_diff, 0, sizeof(ref_diff));
+            ref_diff.fill(0);
+            tst_diff.fill(0);
 
             // N should be multiple of 64, required by
             // svt_av1_wedge_compute_delta_squares
             const int N = 64 * n_rnd.random();
 
-            svt_av1_wedge_compute_delta_squares_c(ref_diff, r0, r1, N);
-            test_func_(tst_diff, r0, r1, N);
+            svt_av1_wedge_compute_delta_squares_c(
+                ref_diff.data(), r0.data(), r1.data(), N);
+            test_func_(tst_diff.data(), r0.data(), r1.data(), N);
 
             // check the output
             for (int i = 0; i < N; ++i) {
@@ -232,7 +218,7 @@ class WedgeComputeDeltaSquaresTest
         }
     }
 
-    WedgeComputeDeltaSquaresFunc test_func_;
+    WedgeComputeDeltaSquaresFunc test_func_{GetParam()};
 };
 
 // element-by-element calculate the difference of square
@@ -253,22 +239,17 @@ INSTANTIATE_TEST_SUITE_P(
 #endif  // ARCH_AARCH64
 
 // test svt_av1_wedge_sse_from_residuals
-using WedgeSseFromResidualsFunc = uint64_t (*)(const int16_t *r1,
-                                               const int16_t *d,
-                                               const uint8_t *m, int N);
+using WedgeSseFromResidualsFunc = decltype(&svt_av1_wedge_sse_from_residuals_c);
 
 class WedgeSseFromResidualsTest
     : public WedgeUtilTest,
       public ::testing::WithParamInterface<WedgeSseFromResidualsFunc> {
   protected:
-    WedgeSseFromResidualsTest() : test_func_(GetParam()) {
-    }
-
     void SseFromResidualRandomTest() {
-        const int iterations = 10000;
-        SVTRandom rnd(13, true);             // max residual is 13-bit
-        SVTRandom m_rnd(0, MAX_MASK_VALUE);  // [0, MAX_MASK_VALUE]
-        SVTRandom n_rnd(1, MAX_SB_SQUARE / 64);
+        constexpr int iterations = 10000;
+        SVTRandom rnd{13, true};             // max residual is 13-bit
+        SVTRandom m_rnd{0, MAX_MASK_VALUE};  // [0, MAX_MASK_VALUE]
+        SVTRandom n_rnd{1, MAX_SB_SQUARE / 64};
 
         for (int k = 0; k < iterations; ++k) {
             // populate the residual buffer randomly
@@ -282,8 +263,9 @@ class WedgeSseFromResidualsTest
             // svt_av1_wedge_sse_from_residuals
             const int N = 64 * n_rnd.random();
 
-            uint64_t ref_sse = svt_av1_wedge_sse_from_residuals_c(r0, r1, m, N);
-            uint64_t tst_sse = test_func_(r0, r1, m, N);
+            uint64_t ref_sse = svt_av1_wedge_sse_from_residuals_c(
+                r0.data(), r1.data(), m.data(), N);
+            uint64_t tst_sse = test_func_(r0.data(), r1.data(), m.data(), N);
 
             // check output
             ASSERT_EQ(ref_sse, tst_sse)
@@ -294,49 +276,40 @@ class WedgeSseFromResidualsTest
     }
 
     void SseFromResidualExtremeTest() {
-        const int int_13bit_max = (1 << 12) - 1;
-        SVTRandom rnd(13, true);             // max residual is 13-bit
-        SVTRandom m_rnd(0, MAX_MASK_VALUE);  // [0, MAX_MASK_VALUE]
-        SVTRandom n_rnd(1, MAX_SB_SQUARE / 64);
+        constexpr int int_13bit_max = (1 << 12) - 1;
+        SVTRandom rnd{13, true};             // max residual is 13-bit
+        SVTRandom m_rnd{0, MAX_MASK_VALUE};  // [0, MAX_MASK_VALUE]
+        SVTRandom n_rnd{1, MAX_SB_SQUARE / 64};
 
         for (int k = 0; k < 4; ++k) {
             switch (k) {
             case 0:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = 0;
-                    r1[i] = int_13bit_max;
-                }
+                r0.fill(0);
+                r1.fill(int_13bit_max);
                 break;
             case 1:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = int_13bit_max;
-                    r1[i] = 0;
-                }
+                r0.fill(int_13bit_max);
+                r1.fill(0);
                 break;
             case 2:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = -int_13bit_max;
-                    r1[i] = 0;
-                }
+                r0.fill(-int_13bit_max);
+                r1.fill(0);
                 break;
             case 3:
-                for (int i = 0; i < MAX_SB_SQUARE; ++i) {
-                    r0[i] = 0;
-                    r1[i] = -int_13bit_max;
-                }
+                r0.fill(0);
+                r1.fill(-int_13bit_max);
                 break;
-            default: assert(0); break;
             }
 
-            for (int i = 0; i < MAX_SB_SQUARE; ++i)
-                m[i] = MAX_MASK_VALUE;
+            m.fill(MAX_MASK_VALUE);
 
             // N should be multiple of 64, required by
             // svt_av1_wedge_sse_from_residuals
             const int N = 64 * n_rnd.random();
 
-            uint64_t ref_sse = svt_av1_wedge_sse_from_residuals_c(r0, r1, m, N);
-            uint64_t tst_sse = test_func_(r0, r1, m, N);
+            uint64_t ref_sse = svt_av1_wedge_sse_from_residuals_c(
+                r0.data(), r1.data(), m.data(), N);
+            uint64_t tst_sse = test_func_(r0.data(), r1.data(), m.data(), N);
 
             // check output
             ASSERT_EQ(ref_sse, tst_sse)
@@ -346,7 +319,7 @@ class WedgeSseFromResidualsTest
         }
     }
 
-    WedgeSseFromResidualsFunc test_func_;
+    WedgeSseFromResidualsFunc test_func_{GetParam()};
 };
 
 // calculate the sse of two prediction combined with mask m
@@ -380,43 +353,34 @@ INSTANTIATE_TEST_SUITE_P(
 #endif
 #endif  // ARCH_AARCH64
 
-typedef uint64_t (*AomSumSquaresI16Func)(const int16_t *, uint32_t);
-typedef ::testing::tuple<BlockSize, AomSumSquaresI16Func> AomHSumSquaresParam;
+using AomSumSquaresI16Func = decltype(&svt_aom_sum_squares_i16_c);
+using AomHSumSquaresParam = ::testing::tuple<BlockSize, AomSumSquaresI16Func>;
 
 class AomSumSquaresTest : public ::testing::TestWithParam<AomHSumSquaresParam> {
   public:
-    AomSumSquaresTest() : rnd_(0, 255) {};
-    virtual ~AomSumSquaresTest() {
-    }
-
-    void TearDown() override {
-    }
-
     void run_test() {
         const int block_size = TEST_GET_PARAM(0);
-        AomSumSquaresI16Func test_impl = TEST_GET_PARAM(1);
+        const AomSumSquaresI16Func test_impl = TEST_GET_PARAM(1);
         const int width = block_size_wide[block_size];
         const int height = block_size_high[block_size];
-        DECLARE_ALIGNED(16, uint16_t, src_[MAX_SB_SQUARE]);
-        const int run_times = 100;
+        alignas(16) std::array<int16_t, MAX_SB_SQUARE> src_{};
+        constexpr int run_times = 100;
         for (int i = 0; i < run_times; ++i) {
-            memset(src_, 0, sizeof(src_));
-            for (int j = 0; j < width * height; j++) {
-                src_[j] = rnd_.random();
-            }
+            std::generate_n(src_.begin(), width * height, [this]() {
+                return rnd_.random();
+            });
 
-            uint64_t res_ref_ = svt_aom_sum_squares_i16_c((const int16_t *)src_,
-                                                          width * height);
+            uint64_t res_ref_ =
+                svt_aom_sum_squares_i16_c(src_.data(), width * height);
 
-            uint64_t res_tst_ =
-                test_impl((const int16_t *)src_, width * height);
+            uint64_t res_tst_ = test_impl(src_.data(), width * height);
 
             ASSERT_EQ(res_ref_, res_tst_);
         }
     }
 
   private:
-    SVTRandom rnd_;
+    SVTRandom rnd_{0, 255};
 };
 
 TEST_P(AomSumSquaresTest, MatchTest) {

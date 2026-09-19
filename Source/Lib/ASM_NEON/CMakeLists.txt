@@ -15,6 +15,7 @@
 add_library(ASM_NEON OBJECT)
 target_sources(
   ASM_NEON
+  PUBLIC ac_bias_neon.c
   PUBLIC aom_convolve8_neon.c
   PUBLIC aom_sum_squares_neon.c
   PUBLIC av1_inv_txfm_neon.c
@@ -29,8 +30,8 @@ target_sources(
   PUBLIC cfl_neon.c
   PUBLIC compound_convolve_neon.c
   PUBLIC compute_sad_neon.c
-  PUBLIC ssim_neon.c
   PUBLIC sad_x4d_neon.c
+  PUBLIC ssim_neon.c
   PUBLIC convolve_neon.c
   PUBLIC convolve_scale_neon.c
   PUBLIC corner_match_neon.c
@@ -39,6 +40,7 @@ target_sources(
   PUBLIC deblocking_filter_intrinsic_neon.c
   PUBLIC encodetxb_neon.c
   PUBLIC hadamard_path_neon.c
+  PUBLIC highbd_ac_bias_neon.c
   PUBLIC highbd_blend_a64_mask_neon.c
   PUBLIC highbd_convolve_neon.c
   PUBLIC highbd_convolve_scale_neon.c
@@ -59,6 +61,7 @@ target_sources(
   PUBLIC inter_prediction_neon.c
   PUBLIC intra_prediction_neon.c
   PUBLIC itx.S
+  PUBLIC lowbd_fwd_txfm2d_neon.c
   PUBLIC mem_neon.c
   PUBLIC obmc_sad_neon.c
   PUBLIC obmc_variance_neon.c
@@ -66,6 +69,7 @@ target_sources(
   PUBLIC pic_analysis_neon.c
   PUBLIC pickrst_neon.c
   PUBLIC picture_operators_intrinsic_neon.c
+  PUBLIC resize_neon.c
   PUBLIC restoration_pick_neon.c
   PUBLIC sad_neon.c
   PUBLIC selfguided_neon.c

@@ -26,6 +26,8 @@ struct ModeDecisionContext;
 EbErrorType clip_mv(uint32_t blk_org_x, uint32_t blk_org_y, int16_t* mv_x, int16_t* mv_y, uint32_t picture_width,
                     uint32_t picture_height, uint32_t tb_size);
 void        svt_aom_init_xd(PictureControlSet* pcs, struct ModeDecisionContext* ctx);
+void        svt_aom_compute_inter_mode_ctx_light(struct ModeDecisionContext* ctx, BlkStruct* blk_ptr,
+                                                 MvReferenceFrame ref_frame, PictureControlSet* pcs);
 void svt_aom_generate_av1_mvp_table(struct ModeDecisionContext* ctx, BlkStruct* blk_ptr, const BlockGeom* blk_geom,
                                     uint16_t blk_org_x, uint16_t blk_org_y, MvReferenceFrame* ref_frames,
                                     uint32_t tot_refs, PictureControlSet* pcs);
@@ -49,10 +51,10 @@ static INLINE bool has_overlappable_candidates(const BlkStruct* blk_ptr) {
 void svt_av1_count_overlappable_neighbors(const PictureControlSet* pcs, BlkStruct* blk_ptr, const BlockSize bsize,
                                           int32_t mi_row, int32_t mi_col);
 
-void svt_av1_find_best_ref_mvs_from_stack(int allow_hp, CandidateMv ref_mv_stack[][MAX_REF_MV_STACK_SIZE],
-                                          MacroBlockD* xd, MvReferenceFrame ref_frame, Mv* nearest_mv, Mv* near_mv,
-                                          int is_integer);
-int svt_aom_is_dv_valid(const Mv dv, const MacroBlockD* xd, int mi_row, int mi_col, BlockSize bsize, int mib_size_log2);
+void svt_av1_find_best_ref_mvs_from_stack(CandidateMv ref_mv_stack[][MAX_REF_MV_STACK_SIZE], MacroBlockD* xd,
+                                          MvReferenceFrame ref_frame, Mv* nearest_mv, Mv* near_mv);
+int  svt_aom_is_dv_valid(const Mv dv, const MacroBlockD* xd, int mi_row, int mi_col, BlockSize bsize, int mib_size_log2,
+                         int chroma_ss);
 
 Mv svt_aom_gm_get_motion_vector_enc(const WarpedMotionParams* gm, int32_t allow_hp, BlockSize bsize, int32_t mi_col,
                                     int32_t mi_row, int32_t is_integer);

@@ -115,23 +115,24 @@ void svt_ext_sad_calculation_8x8_16x16_avx2_intrin(uint8_t* src, uint32_t src_st
  * Requirement: block_height < 64
  * General version for SAD computing that support any block width and height
 *******************************************************************************/
-void sad_loop_kernel_generalized_avx2(uint8_t*  src, // input parameter, source samples Ptr
-                                      uint32_t  src_stride, // input parameter, source stride
-                                      uint8_t*  ref, // input parameter, reference samples Ptr
-                                      uint32_t  ref_stride, // input parameter, reference stride
-                                      uint32_t  block_height, // input parameter, block height (M)
-                                      uint32_t  block_width, // input parameter, block width (N)
-                                      uint64_t* best_sad, int16_t* x_search_center, int16_t* y_search_center,
-                                      uint32_t src_stride_raw, // input parameter, source stride (no line skipping)
-                                      int16_t search_area_width, int16_t search_area_height, __m128i leftover_mask) {
+static void sad_loop_kernel_generalized_avx2(
+    uint8_t*  src, // input parameter, source samples Ptr
+    uint32_t  src_stride, // input parameter, source stride
+    uint8_t*  ref, // input parameter, reference samples Ptr
+    uint32_t  ref_stride, // input parameter, reference stride
+    uint32_t  block_height, // input parameter, block height (M)
+    uint32_t  block_width, // input parameter, block width (N)
+    uint64_t* best_sad, int16_t* x_search_center, int16_t* y_search_center,
+    uint32_t src_stride_raw, // input parameter, source stride (no line skipping)
+    int16_t search_area_width, int16_t search_area_height, __m128i leftover_mask) {
     int16_t        i, j;
     uint32_t       k, l;
     const uint8_t *p_ref, *p_src;
     __m128i        s0, s1, s2, s3, s4, s5;
     __m256i        ss0, ss1, ss2, ss3, ss4, ss5, ss6, ss7;
     __m256i        ss8, ss9, ss10, ss11;
-    uint32_t       low_sum   = 0xffffff;
-    uint32_t       tem_sum_1 = 0;
+    uint32_t       low_sum = 0xffffff;
+    uint32_t       tem_sum_1;
     int16_t        x_best = *x_search_center, y_best = *y_search_center;
     uint32_t       leftover = search_area_width & 7;
 
@@ -309,8 +310,6 @@ void sad_loop_kernel_generalized_avx2(uint8_t*  src, // input parameter, source 
                     ss0  = _mm256_insertf128_si256(_mm256_setzero_si256(), s4, 0x1);
                     ss10 = _mm256_adds_epu16(ss10, ss0);
                 }
-                p_src += src_stride;
-                p_ref += ref_stride;
             }
 
             ss0 = _mm256_adds_epu16(_mm256_adds_epu16(ss3, ss4), _mm256_adds_epu16(ss5, ss6));
@@ -516,8 +515,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         s0 = _mm_lddqu_si128((__m128i*)p_ref);
                         s2 = _mm_cvtsi32_si128(*(uint32_t*)p_src);
                         s3 = _mm_adds_epu16(s3, _mm_mpsadbw_epu8(s0, s2, 0));
-                        p_src += src_stride << 1;
-                        p_ref += ref_stride << 1;
                     }
 
                     s3        = _mm_minpos_epu16(s3);
@@ -548,8 +545,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         s0 = _mm_lddqu_si128((__m128i*)p_ref);
                         s2 = _mm_cvtsi32_si128(*(uint32_t*)p_src);
                         s3 = _mm_adds_epu16(s3, _mm_mpsadbw_epu8(s0, s2, 0));
-                        p_src += src_stride << 1;
-                        p_ref += ref_stride << 1;
                     }
 
                     s3        = _mm_or_si128(s3, s8);
@@ -693,8 +688,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         s0 = _mm_lddqu_si128((__m128i*)p_ref);
                         s2 = _mm_cvtsi32_si128(*(uint32_t*)p_src);
                         s3 = _mm_adds_epu16(s3, _mm_mpsadbw_epu8(s0, s2, 0));
-                        p_src += src_stride << 1;
-                        p_ref += ref_stride << 1;
                     }
 
                     DECLARE_ALIGNED(16, uint16_t, tsum[8]);
@@ -739,8 +732,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         s0 = _mm_lddqu_si128((__m128i*)p_ref);
                         s2 = _mm_cvtsi32_si128(*(uint32_t*)p_src);
                         s3 = _mm_adds_epu16(s3, _mm_mpsadbw_epu8(s0, s2, 0));
-                        p_src += src_stride << 1;
-                        p_ref += ref_stride << 1;
                     }
 
                     s3 = _mm_or_si128(s3, s8);
@@ -874,8 +865,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         s2 = _mm_loadl_epi64((__m128i*)p_src);
                         s3 = _mm_adds_epu16(s3, _mm_mpsadbw_epu8(s0, s2, 0));
                         s4 = _mm_adds_epu16(s4, _mm_mpsadbw_epu8(s0, s2, 5));
-                        p_src += src_stride << 1;
-                        p_ref += ref_stride << 1;
                     }
 
                     s3        = _mm_adds_epu16(s3, s4);
@@ -910,8 +899,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         s2 = _mm_loadl_epi64((__m128i*)p_src);
                         s3 = _mm_adds_epu16(s3, _mm_mpsadbw_epu8(s0, s2, 0));
                         s4 = _mm_adds_epu16(s4, _mm_mpsadbw_epu8(s0, s2, 5));
-                        p_src += src_stride << 1;
-                        p_ref += ref_stride << 1;
                     }
 
                     s3        = _mm_adds_epu16(s3, s4);
@@ -962,8 +949,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss3 = _mm256_adds_epu16(ss3, _mm256_mpsadbw_epu8(ss0, ss2, 0));
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
-                        p_src += 2 * src_stride;
-                        p_ref += 2 * ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(_mm256_adds_epu16(ss3, ss4), ss5);
@@ -1008,8 +993,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss3 = _mm256_adds_epu16(ss3, _mm256_mpsadbw_epu8(ss0, ss2, 0));
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
-                        p_src += 2 * src_stride;
-                        p_ref += 2 * ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(_mm256_adds_epu16(ss3, ss4), ss5);
@@ -1058,8 +1041,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss3 = _mm256_adds_epu16(ss3, _mm256_mpsadbw_epu8(ss0, ss2, 0));
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
-                        p_src += 2 * src_stride;
-                        p_ref += 2 * ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(_mm256_adds_epu16(ss3, ss4), ss5);
@@ -1118,8 +1099,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss3 = _mm256_adds_epu16(ss3, _mm256_mpsadbw_epu8(ss0, ss2, 0));
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
-                        p_src += 2 * src_stride;
-                        p_ref += 2 * ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(_mm256_adds_epu16(ss3, ss4), ss5);
@@ -1183,8 +1162,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss3 = _mm256_adds_epu16(ss3, _mm256_mpsadbw_epu8(ss0, ss2, 0));
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
-                        p_src += 2 * src_stride;
-                        p_ref += 2 * ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(ss3, ss4);
@@ -1249,8 +1226,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss3 = _mm256_adds_epu16(ss3, _mm256_mpsadbw_epu8(ss0, ss2, 0));
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
-                        p_src += 2 * src_stride;
-                        p_ref += 2 * ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(ss3, ss4);
@@ -1537,8 +1512,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
                         ss6 = _mm256_adds_epu16(ss6, _mm256_mpsadbw_epu8(ss1, ss2, 63)); // 111 111
-                        p_src += src_stride;
-                        p_ref += ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(_mm256_adds_epu16(ss3, ss4), _mm256_adds_epu16(ss5, ss6));
@@ -1599,8 +1572,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
                         ss6 = _mm256_adds_epu16(ss6, _mm256_mpsadbw_epu8(ss1, ss2, 63)); // 111 111
-                        p_src += src_stride;
-                        p_ref += ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(_mm256_adds_epu16(ss3, ss4), _mm256_adds_epu16(ss5, ss6));
@@ -1666,8 +1637,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
                         ss6 = _mm256_adds_epu16(ss6, _mm256_mpsadbw_epu8(ss1, ss2, 63)); // 111 111
-                        p_src += src_stride;
-                        p_ref += ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(ss3, ss4);
@@ -1735,8 +1704,6 @@ void svt_sad_loop_kernel_avx2_intrin(uint8_t*  src, // input parameter, source s
                         ss4 = _mm256_adds_epu16(ss4, _mm256_mpsadbw_epu8(ss0, ss2, 45)); // 101 101
                         ss5 = _mm256_adds_epu16(ss5, _mm256_mpsadbw_epu8(ss1, ss2, 18)); // 010 010
                         ss6 = _mm256_adds_epu16(ss6, _mm256_mpsadbw_epu8(ss1, ss2, 63)); // 111 111
-                        p_src += src_stride;
-                        p_ref += ref_stride;
                     }
 
                     ss3       = _mm256_adds_epu16(ss3, ss4);
@@ -4601,22 +4568,22 @@ uint32_t svt_aom_sad_16bit_kernel_avx2(uint16_t* src, // input parameter, source
     tem_sum_1 = _mm_extract_epi32(s, k);                                \
     best_mv.x = mvx + (search_position_start_x + j + offset + k) * 8;   \
     best_mv.y = mvy + (search_position_start_y + i) * 8;                \
-    tem_sum_1 += svt_aom_fp_mv_err_cost(&best_mv, mv_cost_params);      \
+    tem_sum_1 += svt_aom_fp_mv_err_cost(best_mv, mv_cost_params);       \
     if (tem_sum_1 < low_sum) {                                          \
         low_sum = tem_sum_1;                                            \
         x_best  = mvx + (search_position_start_x + j + offset + k) * 8; \
         y_best  = mvy + (search_position_start_y + i) * 8;              \
     }
 
-#define UPDATE_BEST_PME_16(s, k)                                   \
-    tem_sum_1 = _mm_extract_epi16(s, k);                           \
-    best_mv.x = mvx + (search_position_start_x + j + k) * 8;       \
-    best_mv.y = mvy + (search_position_start_y + i) * 8;           \
-    tem_sum_1 += svt_aom_fp_mv_err_cost(&best_mv, mv_cost_params); \
-    if (tem_sum_1 < low_sum) {                                     \
-        low_sum = tem_sum_1;                                       \
-        x_best  = mvx + (search_position_start_x + j + k) * 8;     \
-        y_best  = mvy + (search_position_start_y + i) * 8;         \
+#define UPDATE_BEST_PME_16(s, k)                                  \
+    tem_sum_1 = _mm_extract_epi16(s, k);                          \
+    best_mv.x = mvx + (search_position_start_x + j + k) * 8;      \
+    best_mv.y = mvy + (search_position_start_y + i) * 8;          \
+    tem_sum_1 += svt_aom_fp_mv_err_cost(best_mv, mv_cost_params); \
+    if (tem_sum_1 < low_sum) {                                    \
+        low_sum = tem_sum_1;                                      \
+        x_best  = mvx + (search_position_start_x + j + k) * 8;    \
+        y_best  = mvy + (search_position_start_y + i) * 8;        \
     }
 
 void svt_pme_sad_loop_kernel_avx2(const svt_mv_cost_param* mv_cost_params,

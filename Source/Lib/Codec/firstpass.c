@@ -80,9 +80,9 @@ static EbErrorType realloc_stats_out(SequenceControlSet* scs, FirstPassStatsOut*
     return EB_ErrorNone;
 }
 
+// The caller must already hold stats_buf_ctx->stats_in_write_mutex.
 static AOM_INLINE void output_stats(SequenceControlSet* scs, const FIRSTPASS_STATS* stats, uint64_t frame_number) {
     FirstPassStatsOut* stats_out = &scs->enc_ctx->stats_out;
-    svt_block_on_mutex(scs->enc_ctx->stat_file_mutex);
     if (realloc_stats_out(scs, stats_out, frame_number) != EB_ErrorNone) {
         SVT_ERROR("realloc_stats_out request %d entries failed failed\n", frame_number);
     } else {
@@ -127,7 +127,6 @@ static AOM_INLINE void output_stats(SequenceControlSet* scs, const FIRSTPASS_STA
         fclose(fpfile);
     }
 #endif
-    svt_release_mutex(scs->enc_ctx->stat_file_mutex);
 }
 
 void svt_av1_twopass_zero_stats(FIRSTPASS_STATS* section) {

@@ -388,7 +388,7 @@ static void cache_based_centroid_refinement(int* data, int rows, int cols, int n
 void search_palette_luma(PictureControlSet* pcs, ModeDecisionContext* ctx, PaletteInfo* palette_cand,
                          uint8_t* palette_size_array, uint32_t* tot_palette_cands) {
     int  colors;
-    bool is16bit = ctx->hbd_md > 0;
+    bool is16bit = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) > 0;
 
     EbPictureBufferDesc* src_pic = is16bit ? pcs->input_frame16bit : pcs->ppcs->enhanced_pic;
 
@@ -414,6 +414,39 @@ void search_palette_luma(PictureControlSet* pcs, ModeDecisionContext* ctx, Palet
     if (colors <= 1 || colors > 64) {
         return;
     }
+#if FTR_RTC_INTER_PALETTE
+    // Top-8-coverage gate (inter frames only): a palette holds at most PALETTE_MAX_SIZE colors. If the
+    // most-common values don't cover enough of the block, it's a gradient/anti-aliased region that
+    // palette only quantizes lossily -> skip the search. colors <= PALETTE_MAX_SIZE is exact, so it's
+    // bypassed. count_buf already holds the per-value pixel counts.
+    if (pcs->slice_type != I_SLICE && colors > PALETTE_MAX_SIZE) {
+        // Require the PALETTE_MAX_SIZE most-common values to cover >= RTC_INTER_PALETTE_COV_TH% of the
+        // block. Swept over 8 screen-content clips at 50/55/60/65/70/80: every clip's optimum falls
+        // in 55-65, and 55 is the highest value that stays free on sharp text (Debugging -0.01,
+        // MobileDeviceScreenSharing never fires) while collecting the anti-aliased-content gain.
+#define RTC_INTER_PALETTE_COV_TH 55
+        const int nvals                 = is16bit ? (1 << bit_depth) : 256;
+        int       top[PALETTE_MAX_SIZE] = {0}; // PALETTE_MAX_SIZE largest per-value counts, descending
+        for (int v = 0; v < nvals; v++) {
+            const int cnt = count_buf[v];
+            if (cnt > top[PALETTE_MAX_SIZE - 1]) {
+                int j = PALETTE_MAX_SIZE - 1;
+                while (j > 0 && top[j - 1] < cnt) {
+                    top[j] = top[j - 1];
+                    j--;
+                }
+                top[j] = cnt;
+            }
+        }
+        int top8 = 0;
+        for (int i = 0; i < PALETTE_MAX_SIZE; i++) {
+            top8 += top[i];
+        }
+        if (top8 * 100 < rows * cols * RTC_INTER_PALETTE_COV_TH) {
+            return;
+        }
+    }
+#endif
 
     const int max_n = AOMMIN(colors, PALETTE_MAX_SIZE);
     const int min_n = PALETTE_MIN_SIZE;
@@ -437,26 +470,21 @@ void search_palette_luma(PictureControlSet* pcs, ModeDecisionContext* ctx, Palet
             }
         }
     }
-
-    uint16_t  color_cache[2 * PALETTE_MAX_SIZE];
-    const int n_cache = svt_get_palette_cache_y(ctx->blk_ptr->av1xd, color_cache);
-
-    //  Extract dominant colors
-    int top_colors[PALETTE_MAX_SIZE] = {0};
-    for (int i = 0; i < max_n; ++i) {
-        int max_count = 0;
-        for (int j = 0; j < (1 << palette_bit_depth); ++j) {
-            if (count_buf[j] > max_count) {
-                max_count     = count_buf[j];
-                top_colors[i] = j;
-            }
-        }
-        count_buf[top_colors[i]] = 0;
-    }
-
     //  Dominant-color search
     uint8_t dominant_color_step = pcs->ppcs->palette_ctrls.dominant_color_step;
     if (dominant_color_step != (uint8_t)~0) {
+        //  Extract dominant colors
+        int top_colors[PALETTE_MAX_SIZE] = {0};
+        for (int i = 0; i < max_n; ++i) {
+            int max_count = 0;
+            for (int j = 0; j < (1 << palette_bit_depth); ++j) {
+                if (count_buf[j] > max_count) {
+                    max_count     = count_buf[j];
+                    top_colors[i] = j;
+                }
+            }
+            count_buf[top_colors[i]] = 0;
+        }
         for (int n = max_n; n >= min_n; n -= dominant_color_step) {
             for (int i = 0; i < n; ++i) {
                 centroids[i] = top_colors[i];
@@ -472,8 +500,8 @@ void search_palette_luma(PictureControlSet* pcs, ModeDecisionContext* ctx, Palet
                          data,
                          centroids,
                          n,
-                         color_cache,
-                         n_cache,
+                         NULL,
+                         0,
                          palette_bit_depth);
 
             if (palette_size_array[cand_index] >= PALETTE_MIN_SIZE) {
@@ -485,6 +513,8 @@ void search_palette_luma(PictureControlSet* pcs, ModeDecisionContext* ctx, Palet
     // K-means search
     uint8_t kmean_color_step = pcs->ppcs->palette_ctrls.kmean_color_step;
     if (kmean_color_step != (uint8_t)~0) {
+        uint16_t  color_cache[2 * PALETTE_MAX_SIZE];
+        const int n_cache = svt_get_palette_cache_y(ctx->blk_ptr->av1xd, color_cache);
         for (int n = max_n; n >= min_n; n -= kmean_color_step) {
             if (colors == PALETTE_MIN_SIZE) {
                 centroids[0] = lb;
@@ -493,8 +523,13 @@ void search_palette_luma(PictureControlSet* pcs, ModeDecisionContext* ctx, Palet
                 for (int i = 0; i < n; ++i) {
                     centroids[i] = lb + (2 * i + 1) * (ub - lb) / n / 2;
                 }
-
-                av1_k_means(data, centroids, palette_cand[*tot_palette_cands].color_idx_map, rows * cols, n, 1, 50);
+                av1_k_means(data,
+                            centroids,
+                            palette_cand[*tot_palette_cands].color_idx_map,
+                            rows * cols,
+                            n,
+                            1,
+                            pcs->ppcs->palette_ctrls.k_means_max_itr);
             }
             if (pcs->ppcs->palette_ctrls.centroid_refinement) {
                 cache_based_centroid_refinement(data,

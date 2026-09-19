@@ -1997,8 +1997,44 @@ class EstimateNoiseTestFP
             int32_t tst_out =
                 tst_func(src_ptr, width, height, stride, encoder_bit_depth);
 
-            EXPECT_EQ(ref_out, tst_out);
+            EXPECT_EQ(ref_out, tst_out) << "width " << width << " height "
+                                        << height << " stride " << stride;
         }
+    }
+
+    void SpeedTest() {
+        const int run_times = 100;
+        stride = width + 16;
+
+        uint64_t ref_s, ref_us, mid_s, mid_us, tst_s, tst_us;
+        int32_t ref_out = 0, tst_out = 0;
+
+        svt_av1_get_time(&ref_s, &ref_us);
+        for (int j = 0; j < run_times; j++)
+            ref_out =
+                ref_func(src_ptr, width, height, stride, encoder_bit_depth);
+        svt_av1_get_time(&mid_s, &mid_us);
+        for (int j = 0; j < run_times; j++)
+            tst_out =
+                tst_func(src_ptr, width, height, stride, encoder_bit_depth);
+        svt_av1_get_time(&tst_s, &tst_us);
+
+        // Random content does not hit the unreliable (num < SMOOTH_THRESHOLD)
+        // path, so C and SIMD must agree here.
+        EXPECT_EQ(ref_out, tst_out);
+
+        double ref_time = svt_av1_compute_overall_elapsed_time_ms(
+            ref_s, ref_us, mid_s, mid_us);
+        double tst_time = svt_av1_compute_overall_elapsed_time_ms(
+            mid_s, mid_us, tst_s, tst_us);
+        printf(
+            "c_time=%lf \t simd_time=%lf \t "
+            "gain=%lf\t width=%d\t height=%d \n",
+            ref_time / run_times,
+            tst_time / run_times,
+            ref_time / tst_time,
+            width,
+            height);
     }
 
     void GenRandomData(int size) {
@@ -2025,14 +2061,29 @@ TEST_P(EstimateNoiseTestFP, fixed_point) {
     RunTest();
 }
 
+using EstimateNoiseSpeedTestFP = EstimateNoiseTestFP;
+TEST_P(EstimateNoiseSpeedTestFP, DISABLED_Speed) {
+    SpeedTest();
+}
+
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 using EstimateNoiseTestFPHbd = EstimateNoiseTestFP;
 
 TEST_P(EstimateNoiseTestFPHbd, fixed_point) {
     RunTest();
 }
+
+using EstimateNoiseSpeedTestFPHbd = EstimateNoiseTestFP;
+TEST_P(EstimateNoiseSpeedTestFPHbd, DISABLED_Speed) {
+    SpeedTest();
+}
 #endif
 
+// Small frames where the interior pixel count (width-2)*(height-2) is below
+// SMOOTH_THRESHOLD (16). This forces the "num < SMOOTH_THRESHOLD" branch
+// (unreliable estimate) regardless of content, exercising the early return.
+// 5x3 -> 3 interior; 17x3 -> 15 interior (also hits the NEON 8-/4-wide
+// remainder branches).
 #ifdef ARCH_X86_64
 
 INSTANTIATE_TEST_SUITE_P(
@@ -2043,6 +2094,20 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(2160, 1080, 720, 600, 480, 240, 237),
                        ::testing::Values(8)));
 
+INSTANTIATE_TEST_SUITE_P(
+    AVX2_Unreliable, EstimateNoiseTestFP,
+    ::testing::Combine(::testing::Values(estimate_noise_fp16_c_wrapper),
+                       ::testing::Values(estimate_noise_fp16_avx2_wrapper),
+                       ::testing::Values(5, 17), ::testing::Values(3),
+                       ::testing::Values(8)));
+
+INSTANTIATE_TEST_SUITE_P(
+    AVX2, EstimateNoiseSpeedTestFP,
+    ::testing::Combine(::testing::Values(estimate_noise_fp16_c_wrapper),
+                       ::testing::Values(estimate_noise_fp16_avx2_wrapper),
+                       ::testing::Values(3840), ::testing::Values(2160),
+                       ::testing::Values(8)));
+
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 INSTANTIATE_TEST_SUITE_P(
     AVX2, EstimateNoiseTestFPHbd,
@@ -2050,6 +2115,20 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(svt_estimate_noise_highbd_fp16_avx2),
                        ::testing::Values(3840, 1920, 1280, 800, 640, 360, 357),
                        ::testing::Values(2160, 1080, 720, 600, 480, 240, 237),
+                       ::testing::Values(10)));
+
+INSTANTIATE_TEST_SUITE_P(
+    AVX2_Unreliable, EstimateNoiseTestFPHbd,
+    ::testing::Combine(::testing::Values(svt_estimate_noise_highbd_fp16_c),
+                       ::testing::Values(svt_estimate_noise_highbd_fp16_avx2),
+                       ::testing::Values(5, 17), ::testing::Values(3),
+                       ::testing::Values(10)));
+
+INSTANTIATE_TEST_SUITE_P(
+    AVX2, EstimateNoiseSpeedTestFPHbd,
+    ::testing::Combine(::testing::Values(svt_estimate_noise_highbd_fp16_c),
+                       ::testing::Values(svt_estimate_noise_highbd_fp16_avx2),
+                       ::testing::Values(3840), ::testing::Values(2160),
                        ::testing::Values(10)));
 #endif
 
@@ -2065,6 +2144,20 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(2160, 1080, 720, 600, 480, 240, 237),
                        ::testing::Values(8)));
 
+INSTANTIATE_TEST_SUITE_P(
+    NEON_Unreliable, EstimateNoiseTestFP,
+    ::testing::Combine(::testing::Values(estimate_noise_fp16_c_wrapper),
+                       ::testing::Values(estimate_noise_fp16_neon_wrapper),
+                       ::testing::Values(5, 17), ::testing::Values(3),
+                       ::testing::Values(8)));
+
+INSTANTIATE_TEST_SUITE_P(
+    NEON, EstimateNoiseSpeedTestFP,
+    ::testing::Combine(::testing::Values(estimate_noise_fp16_c_wrapper),
+                       ::testing::Values(estimate_noise_fp16_neon_wrapper),
+                       ::testing::Values(3840), ::testing::Values(2160),
+                       ::testing::Values(8)));
+
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 INSTANTIATE_TEST_SUITE_P(
     NEON, EstimateNoiseTestFPHbd,
@@ -2072,6 +2165,20 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(svt_estimate_noise_highbd_fp16_neon),
                        ::testing::Values(3840, 1920, 1280, 800, 640, 360, 357),
                        ::testing::Values(2160, 1080, 720, 600, 480, 240, 237),
+                       ::testing::Values(10)));
+
+INSTANTIATE_TEST_SUITE_P(
+    NEON_Unreliable, EstimateNoiseTestFPHbd,
+    ::testing::Combine(::testing::Values(svt_estimate_noise_highbd_fp16_c),
+                       ::testing::Values(svt_estimate_noise_highbd_fp16_neon),
+                       ::testing::Values(5, 17), ::testing::Values(3),
+                       ::testing::Values(10)));
+
+INSTANTIATE_TEST_SUITE_P(
+    NEON, EstimateNoiseSpeedTestFPHbd,
+    ::testing::Combine(::testing::Values(svt_estimate_noise_highbd_fp16_c),
+                       ::testing::Values(svt_estimate_noise_highbd_fp16_neon),
+                       ::testing::Values(3840), ::testing::Values(2160),
                        ::testing::Values(10)));
 #endif
 

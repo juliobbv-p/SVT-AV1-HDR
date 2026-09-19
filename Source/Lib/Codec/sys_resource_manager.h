@@ -13,6 +13,7 @@
 #ifndef EbSystemResource_h
 #define EbSystemResource_h
 
+#include "EbConfigMacros.h"
 #include "object.h"
 #ifdef __cplusplus
 extern "C" {
@@ -112,6 +113,10 @@ typedef struct EbMuxingQueue {
     EbCircularBuffer* process_queue;
     uint32_t          process_total_count;
     EbFifo**          process_fifo_ptr_array;
+#if CONFIG_SINGLE_THREAD_KERNEL
+    bool  single_thread_mode; // bypass semaphores/mutexes at lp=1
+    void* st_dispatcher; // SvtKernelDispatcher* for pumping when pool is empty
+#endif
 #if SRM_REPORT
     uint32_t curr_count; //run time fullness
     uint8_t  log; //if set monitor out the queue size
@@ -219,7 +224,8 @@ EbErrorType svt_object_inc_live_count(EbObjectWrapper* wrapper_ptr, uint32_t inc
      *********************************************************************/
 EbErrorType svt_system_resource_ctor(EbSystemResource* resource_ptr, uint32_t object_total_count,
                                      uint32_t producer_process_total_count, uint32_t consumer_process_total_count,
-                                     EbCreator object_ctor, EbPtr object_init_data_ptr, EbDctor object_destroyer);
+                                     EbCreator object_ctor, EbPtr object_init_data_ptr, EbDctor object_destroyer,
+                                     bool single_thread);
 
 /*********************************************************************
      * svt_system_resource_get_producer_fifo
@@ -329,8 +335,19 @@ EbErrorType svt_shutdown_process(const EbSystemResource* resource_ptr);
     do {                                                                       \
         EbErrorType err = svt_get_full_object(full_fifo_ptr, wrapper_dbl_ptr); \
         if (err == EB_NoErrorFifoShutdown)                                     \
-            return NULL;                                                       \
+            return EB_NoErrorFifoShutdown;                                     \
     } while (0)
+
+#if CONFIG_SINGLE_THREAD_KERNEL
+// Check if a consumer FIFO has pending items (single-thread mode only).
+// In ST mode, svt_post_full_object pushes directly to the consumer FIFO,
+// so checking the FIFO's linked list is sufficient.
+bool svt_fifo_has_items_st(EbFifo* fifo_ptr);
+
+// Enable single-thread mode on a system resource and set the dispatcher
+// for pumping when pools are empty. Bypasses all semaphore/mutex operations.
+void svt_system_resource_set_single_thread_mode(EbSystemResource* resource_ptr, void* dispatcher);
+#endif
 
 #ifdef __cplusplus
 }

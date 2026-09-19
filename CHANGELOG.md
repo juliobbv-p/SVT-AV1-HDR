@@ -1,6 +1,53 @@
 # Changelog
 
-## [4.1] - 2026-03-16
+## [4.2.0] - 2026-07-14
+
+VOD / Random Access
+
+- Added TUNE-VMAF mode targeting ~15% VMAF BD-rate improvement at minimal PSNR loss
+- Implemented single-thread processing mode with RA handling
+- RA preset tuning and bitrate optimization for M3-M5
+- New CLI options: `--cqp`, `--enable-intrabc`, `--hbd-mds`, `--enable-kf-tf`
+- Added raw OBU output format as an alternative to IVF
+- Signal `initial_display_delay` in sequence header to fix A/V sync on seek
+
+RTC / Low Delay
+
+- Added CBR rate control with Kalman-filter QP estimation, cyclic refresh, and frame re-encode
+- Added on-the-fly MG size, preset, bitrate, and frame rate changes
+- Added reference frame management API with LTR support and two-layer RPS structure
+- Exposed `--max-intra-bitrate-pct` and `--max-inter-bitrate-pct` parameters
+- Improved compression efficiency vs. cycle tradeoff across RTC presets
+- Optimized memory footprint for RTC mode with small resolutions
+- Further speed and quality tuning for RTC
+
+Encoder (general)
+
+- Refactored entropy coding: direct tile-buffer writes, arithmetic coder simplifications, coefficient shaving
+- CDEF optimizations: 8-bit boundary-aware filter, persistent scratch buffers, luma/chroma specialization
+- MD and ME optimizations (LPD1 early-skip, VLPD0 fast path, static-block ME bypass)
+- Optimized still-image screen content detection
+- Optimized TPL dispatch when TPL is disabled
+- Added `ENABLE_STACK_PROTECTOR` CMake option to prevent the stack protector flag from being added
+
+Arm
+
+- Added lowbd (8-bit) int16 forward transform NEON kernels (4x4 through 32x32)
+- Added Neon SAD, quantize-matrix, SSIM, VMAF, variance, and pixel projection error kernels
+- Added SVE2 VMAF kernels and hardware CRC-32C for hash-based ME
+- Optimized convolution, full distortion, and SAD calculation functions
+
+Bug fixes and documentation
+
+- Fixed superres recode crash, RESIZE_DYNAMIC under `--rtc`, RTC candidate-count overflow, recon output, and memory leak
+- Fixed signed left-shift UB, OOB reads, and race conditions in rate control
+- Added NVTX/Nsight Systems profiling hooks, PPC toolchain, and macOS universal binary support
+- Addressed cppcheck warnings and rewrote affected unit tests
+- Addressed USAN and MSAN warnings
+- Reduced OBMC stack usage to fix a crash with PGO
+- General code cleanup, documentation updates, and test improvements
+
+## [4.1] - 2026-03-23
 
 Encoder
 
@@ -24,13 +71,15 @@ Bug fixes and documentation
 - Add mutexes to fix hangs when running multiple instances of the encoder in one process (!2603, !2605, !2619)
 - Fix motion calculation for cyclic QP refresh (!2613)
 - Fixed a Debug vs Release mismatch (!2618)
-- Fixed some new warnings with newer GCC versions (!2621)
+- Fixed some new warnings with newer GCC versions (!2621, !2636)
 - Changed Temporal Filtering distortion calculation to not include padding (!2623)
 - Cleanup some dead unit tests (!2626)
 - Benchmark framework improvements (!2627)
 - CI/CD improvements (!2628)
 - Fixed some niche crashes (!2629)
-- General code and doc cleanup (!2606, !2607, !2609, !2611, !2616, !2617, !2624, !2631)
+- Readd missing PredStructure enum without SVT_AV1 prefix (!2635)
+- Rename svt_log to prevent conflict with SVT-JPEG-XS (!2634)
+- General code and doc cleanup (!2606, !2607, !2609, !2611, !2616, !2617, !2624, !2631, !2633, !2637)
 
 ## [4.0.1] - 2026-01-27
 

@@ -9,13 +9,14 @@
 * PATENTS file, you can obtain it at https://www.aomedia.org/license/patent-license.
 */
 
-#include "aom_dsp_rtcd.h"
-#include "picture_operators_c.h"
 #include <stdint.h>
 #include <stdio.h>
-#include "utility.h"
-#include "common_dsp_rtcd.h"
+
 #include "ac_bias.h"
+#include "aom_dsp_rtcd.h"
+#include "common_dsp_rtcd.h"
+#include "picture_operators_c.h"
+#include "utility.h"
 #include "block_structures.h"
 
 /*********************************
@@ -175,94 +176,6 @@ void svt_aom_hadamard_8x8_c(const int16_t* src_diff, ptrdiff_t src_stride, int32
     }
 }
 
-static void hadamard_highbd_col8_first_pass(const int16_t* src_diff, ptrdiff_t src_stride, int16_t* coeff) {
-    int16_t b0 = src_diff[0 * src_stride] + src_diff[1 * src_stride];
-    int16_t b1 = src_diff[0 * src_stride] - src_diff[1 * src_stride];
-    int16_t b2 = src_diff[2 * src_stride] + src_diff[3 * src_stride];
-    int16_t b3 = src_diff[2 * src_stride] - src_diff[3 * src_stride];
-    int16_t b4 = src_diff[4 * src_stride] + src_diff[5 * src_stride];
-    int16_t b5 = src_diff[4 * src_stride] - src_diff[5 * src_stride];
-    int16_t b6 = src_diff[6 * src_stride] + src_diff[7 * src_stride];
-    int16_t b7 = src_diff[6 * src_stride] - src_diff[7 * src_stride];
-
-    int16_t c0 = b0 + b2;
-    int16_t c1 = b1 + b3;
-    int16_t c2 = b0 - b2;
-    int16_t c3 = b1 - b3;
-    int16_t c4 = b4 + b6;
-    int16_t c5 = b5 + b7;
-    int16_t c6 = b4 - b6;
-    int16_t c7 = b5 - b7;
-
-    coeff[0] = c0 + c4;
-    coeff[7] = c1 + c5;
-    coeff[3] = c2 + c6;
-    coeff[4] = c3 + c7;
-    coeff[2] = c0 - c4;
-    coeff[6] = c1 - c5;
-    coeff[1] = c2 - c6;
-    coeff[5] = c3 - c7;
-}
-
-// src_diff: 16 bit, dynamic range [-32760, 32760]
-// coeff: 19 bit
-static void hadamard_highbd_col8_second_pass(const int16_t* src_diff, ptrdiff_t src_stride, int32_t* coeff) {
-    int32_t b0 = src_diff[0 * src_stride] + src_diff[1 * src_stride];
-    int32_t b1 = src_diff[0 * src_stride] - src_diff[1 * src_stride];
-    int32_t b2 = src_diff[2 * src_stride] + src_diff[3 * src_stride];
-    int32_t b3 = src_diff[2 * src_stride] - src_diff[3 * src_stride];
-    int32_t b4 = src_diff[4 * src_stride] + src_diff[5 * src_stride];
-    int32_t b5 = src_diff[4 * src_stride] - src_diff[5 * src_stride];
-    int32_t b6 = src_diff[6 * src_stride] + src_diff[7 * src_stride];
-    int32_t b7 = src_diff[6 * src_stride] - src_diff[7 * src_stride];
-
-    int32_t c0 = b0 + b2;
-    int32_t c1 = b1 + b3;
-    int32_t c2 = b0 - b2;
-    int32_t c3 = b1 - b3;
-    int32_t c4 = b4 + b6;
-    int32_t c5 = b5 + b7;
-    int32_t c6 = b4 - b6;
-    int32_t c7 = b5 - b7;
-
-    coeff[0] = c0 + c4;
-    coeff[7] = c1 + c5;
-    coeff[3] = c2 + c6;
-    coeff[4] = c3 + c7;
-    coeff[2] = c0 - c4;
-    coeff[6] = c1 - c5;
-    coeff[1] = c2 - c6;
-    coeff[5] = c3 - c7;
-}
-
-// The order of the output coeff of the hadamard is not important. For
-// optimization purposes the final transpose may be skipped.
-void svt_aom_highbd_hadamard_8x8_c(const int16_t* src_diff, ptrdiff_t src_stride, int32_t* coeff) {
-    int      idx;
-    int16_t  buffer[64];
-    int32_t  buffer2[64];
-    int16_t* tmp_buf = &buffer[0];
-    for (idx = 0; idx < 8; ++idx) {
-        // src_diff: 13 bit
-        // buffer: 16 bit, dynamic range [-32760, 32760]
-        hadamard_highbd_col8_first_pass(src_diff, src_stride, tmp_buf);
-        tmp_buf += 8;
-        ++src_diff;
-    }
-
-    tmp_buf = &buffer[0];
-    for (idx = 0; idx < 8; ++idx) {
-        // buffer: 16 bit
-        // buffer2: 19 bit, dynamic range [-262080, 262080]
-        hadamard_highbd_col8_second_pass(tmp_buf, 8, buffer2 + 8 * idx);
-        ++tmp_buf;
-    }
-
-    for (idx = 0; idx < 64; ++idx) {
-        coeff[idx] = (int32_t)buffer2[idx];
-    }
-}
-
 // In place 16x16 2D Hadamard transform
 void svt_aom_hadamard_16x16_c(const int16_t* src_diff, ptrdiff_t src_stride, int32_t* coeff) {
     int idx;
@@ -322,16 +235,100 @@ void svt_aom_hadamard_32x32_c(const int16_t* src_diff, ptrdiff_t src_stride, int
     }
 }
 
+int svt_av1_hadamard_satd_4x4_c(const uint8_t* src, ptrdiff_t src_stride, const uint8_t* pred, ptrdiff_t pred_stride) {
+    DECLARE_ALIGNED(16, int16_t, diff[4 * 4]);
+    DECLARE_ALIGNED(16, int32_t, coeff[4 * 4]);
+    svt_aom_subtract_block(4, 4, diff, 4, src, src_stride, pred, pred_stride);
+    svt_aom_hadamard_4x4(diff, 4, coeff);
+    return svt_aom_satd(coeff, 4 * 4);
+}
+
+int svt_av1_hadamard_satd_8x8_c(const uint8_t* src, ptrdiff_t src_stride, const uint8_t* pred, ptrdiff_t pred_stride) {
+    DECLARE_ALIGNED(16, int16_t, diff[8 * 8]);
+    DECLARE_ALIGNED(16, int32_t, coeff[8 * 8]);
+    svt_aom_subtract_block(8, 8, diff, 8, src, src_stride, pred, pred_stride);
+    svt_aom_hadamard_8x8(diff, 8, coeff);
+    return svt_aom_satd(coeff, 8 * 8);
+}
+
+int svt_av1_hadamard_satd_16x16_c(const uint8_t* src, ptrdiff_t src_stride, const uint8_t* pred,
+                                  ptrdiff_t pred_stride) {
+    DECLARE_ALIGNED(16, int16_t, diff[16 * 16]);
+    DECLARE_ALIGNED(16, int32_t, coeff[16 * 16]);
+    svt_aom_subtract_block(16, 16, diff, 16, src, src_stride, pred, pred_stride);
+    svt_aom_hadamard_16x16(diff, 16, coeff);
+    return svt_aom_satd(coeff, 16 * 16);
+}
+
+int svt_av1_hadamard_satd_32x32_c(const uint8_t* src, ptrdiff_t src_stride, const uint8_t* pred,
+                                  ptrdiff_t pred_stride) {
+    DECLARE_ALIGNED(16, int16_t, diff[32 * 32]);
+    DECLARE_ALIGNED(16, int32_t, coeff[32 * 32]);
+    svt_aom_subtract_block(32, 32, diff, 32, src, src_stride, pred, pred_stride);
+    svt_aom_hadamard_32x32(diff, 32, coeff);
+    return svt_aom_satd(coeff, 32 * 32);
+}
+
+// Specializing on the (power-of-two) block width lets the compiler emit inline
+// vector stores per row instead of calling libc memcpy for every one of the
+// millions of tiny block copies. Cross-platform: the compiler picks the right
+// stores for each target; the rare non-power-of-two width falls back to memcpy.
+#define SVT_COPY_WXH_ROWS(PTYPE, NBYTES)  \
+    for (uint32_t j = 0; j < height; j++) \
+    memcpy((PTYPE*)dst + j * dst_stride, (const PTYPE*)src + j * src_stride, (NBYTES))
+
 void svt_av1_copy_wxh_8bit_c(uint8_t* src, uint32_t src_stride, uint8_t* dst, uint32_t dst_stride, uint32_t height,
                              uint32_t width) {
-    for (uint32_t j = 0; j < height; j++) {
-        svt_memcpy_c(dst + j * dst_stride, src + j * src_stride, width);
+    switch (width) {
+    case 4:
+        SVT_COPY_WXH_ROWS(uint8_t, 4);
+        break;
+    case 8:
+        SVT_COPY_WXH_ROWS(uint8_t, 8);
+        break;
+    case 16:
+        SVT_COPY_WXH_ROWS(uint8_t, 16);
+        break;
+    case 32:
+        SVT_COPY_WXH_ROWS(uint8_t, 32);
+        break;
+    case 64:
+        SVT_COPY_WXH_ROWS(uint8_t, 64);
+        break;
+    case 128:
+        SVT_COPY_WXH_ROWS(uint8_t, 128);
+        break;
+    default:
+        SVT_COPY_WXH_ROWS(uint8_t, width);
+        break;
     }
 }
 
 void svt_av1_copy_wxh_16bit_c(uint16_t* src, uint32_t src_stride, uint16_t* dst, uint32_t dst_stride, uint32_t height,
                               uint32_t width) {
-    for (uint32_t j = 0; j < height; j++) {
-        svt_memcpy_c(dst + j * dst_stride, src + j * src_stride, width * 2);
+    switch (width) {
+    case 4:
+        SVT_COPY_WXH_ROWS(uint16_t, 4 * 2);
+        break;
+    case 8:
+        SVT_COPY_WXH_ROWS(uint16_t, 8 * 2);
+        break;
+    case 16:
+        SVT_COPY_WXH_ROWS(uint16_t, 16 * 2);
+        break;
+    case 32:
+        SVT_COPY_WXH_ROWS(uint16_t, 32 * 2);
+        break;
+    case 64:
+        SVT_COPY_WXH_ROWS(uint16_t, 64 * 2);
+        break;
+    case 128:
+        SVT_COPY_WXH_ROWS(uint16_t, 128 * 2);
+        break;
+    default:
+        SVT_COPY_WXH_ROWS(uint16_t, width * 2);
+        break;
     }
 }
+
+#undef SVT_COPY_WXH_ROWS

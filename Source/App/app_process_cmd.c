@@ -24,6 +24,7 @@
 #include "app_context.h"
 #include "app_config.h"
 #include "EbSvtAv1ErrorCodes.h"
+#include "EbSvtAv1Metadata.h"
 #include "app_input_y4m.h"
 #include "svt_time.h"
 
@@ -384,6 +385,49 @@ static EbErrorType test_update_qp_info(uint64_t pic_num, EbBufferHeaderType* hea
     return EB_ErrorNone;
 }
 #endif
+#if FTR_PRESET_ON_FLY_SAMPLE
+// test_update_preset_info: sample test case for changing the preset (enc_mode) on the fly.
+// Cycles through faster presets every 'interval' frames.
+// The initial enc_mode (set via --preset) is the minimum (slowest) allowed;
+// PRESET_CHANGE_EVENT can only make it equal or larger (faster).
+static EbErrorType test_update_preset_info(uint64_t pic_num, int8_t init_enc_mode, EbBufferHeaderType* header_ptr) {
+    int    interval = 120;
+    int8_t new_mode;
+    if (pic_num == 0) {
+        return EB_ErrorNone;
+    } else if (pic_num % (4 * interval) == 0) {
+        new_mode = init_enc_mode; // back to initial (slowest)
+    } else if (pic_num % (3 * interval) == 0) {
+        new_mode = (int8_t)CLIP3(init_enc_mode, MAX_ENC_PRESET, init_enc_mode + 3);
+    } else if (pic_num % (2 * interval) == 0) {
+        new_mode = (int8_t)CLIP3(init_enc_mode, MAX_ENC_PRESET, init_enc_mode + 1);
+    } else if (pic_num % interval == 0) {
+        new_mode = (int8_t)CLIP3(init_enc_mode, MAX_ENC_PRESET, init_enc_mode + 2);
+    } else {
+        return EB_ErrorNone;
+    }
+    SvtAv1PresetInfo* data   = (SvtAv1PresetInfo*)malloc(sizeof(SvtAv1PresetInfo));
+    data->enc_mode           = new_mode;
+    EbPrivDataNode* new_node = (EbPrivDataNode*)malloc(sizeof(EbPrivDataNode));
+    new_node->size           = sizeof(SvtAv1PresetInfo);
+    new_node->node_type      = PRESET_CHANGE_EVENT;
+    new_node->data           = data;
+    new_node->next           = NULL;
+
+    // append to tail
+    if (header_ptr->p_app_private == NULL) {
+        header_ptr->p_app_private = new_node;
+    } else {
+        EbPrivDataNode* last = header_ptr->p_app_private;
+        while (last->next != NULL) {
+            last = last->next;
+        }
+        last->next = new_node;
+    }
+
+    return EB_ErrorNone;
+}
+#endif
 #if FTR_FRAME_RATE_ON_FLY_SAMPLE
 // test_update_frame_rate_info: sample test case for updating the rate info on the fly
 static EbErrorType test_update_frame_rate_info(uint64_t pic_num, EbBufferHeaderType* header_ptr) {
@@ -523,6 +567,54 @@ static EbErrorType test_update_input_pic_def(uint64_t pic_num, EbBufferHeaderTyp
     new_node->next               = NULL;
     app_cfg->input_padded_width  = data->input_luma_width;
     app_cfg->input_padded_height = data->input_luma_height;
+
+    // append to tail
+    if (header_ptr->p_app_private == NULL) {
+        header_ptr->p_app_private = new_node;
+    } else {
+        EbPrivDataNode* last = header_ptr->p_app_private;
+        while (last->next != NULL) {
+            last = last->next;
+        }
+        last->next = new_node;
+    }
+
+    return EB_ErrorNone;
+}
+#endif
+#if FTR_MG_SIZE_ON_FLY_SAMPLE
+// test_update_mg_size_info: sample test case for updating the MG size on the fly
+static EbErrorType test_update_mg_size_info(uint64_t pic_num, EbBufferHeaderType* header_ptr) {
+    SvtAv1MgSizeInfo* data;
+    int               interval = 20;
+    if (pic_num == 0) {
+        return EB_ErrorNone;
+    } else if (pic_num % (6 * interval) == 0) {
+        data                      = (SvtAv1MgSizeInfo*)malloc(sizeof(SvtAv1MgSizeInfo));
+        data->hierarchical_levels = 2;
+    } else if (pic_num % (5 * interval) == 0) {
+        data                      = (SvtAv1MgSizeInfo*)malloc(sizeof(SvtAv1MgSizeInfo));
+        data->hierarchical_levels = 0;
+    } else if (pic_num % (4 * interval) == 0) {
+        data                      = (SvtAv1MgSizeInfo*)malloc(sizeof(SvtAv1MgSizeInfo));
+        data->hierarchical_levels = 1;
+    } else if (pic_num % (3 * interval) == 0) {
+        data                      = (SvtAv1MgSizeInfo*)malloc(sizeof(SvtAv1MgSizeInfo));
+        data->hierarchical_levels = 0;
+    } else if (pic_num % (2 * interval) == 0) {
+        data                      = (SvtAv1MgSizeInfo*)malloc(sizeof(SvtAv1MgSizeInfo));
+        data->hierarchical_levels = 2;
+    } else if (pic_num % interval == 0) {
+        data                      = (SvtAv1MgSizeInfo*)malloc(sizeof(SvtAv1MgSizeInfo));
+        data->hierarchical_levels = 1;
+    } else {
+        return EB_ErrorNone;
+    }
+    EbPrivDataNode* new_node = (EbPrivDataNode*)malloc(sizeof(EbPrivDataNode));
+    new_node->size           = sizeof(SvtAv1MgSizeInfo);
+    new_node->node_type      = MG_SIZE_CHANGE_EVENT;
+    new_node->data           = data;
+    new_node->next           = NULL;
 
     // append to tail
     if (header_ptr->p_app_private == NULL) {
@@ -693,11 +785,17 @@ void process_input_buffer(EncChannel* channel) {
             test_update_rate_info(header_ptr->pts, header_ptr);
             //  test_update_qp_info(header_ptr->pts, header_ptr);
 #endif
+#if FTR_PRESET_ON_FLY_SAMPLE
+            test_update_preset_info(header_ptr->pts, app_cfg->config.enc_mode, header_ptr);
+#endif
 #if FTR_FRAME_RATE_ON_FLY_SAMPLE
             test_update_frame_rate_info(header_ptr->pts, header_ptr);
 #endif
 #if FTR_PER_FRAME_QUALITY_SAMPLE
             test_update_psnr_per_frame_info(header_ptr->pts, header_ptr);
+#endif
+#if FTR_MG_SIZE_ON_FLY_SAMPLE
+            test_update_mg_size_info(header_ptr->pts, header_ptr);
 #endif
             retrieve_roi_map_event(app_cfg->roi_map, header_ptr->pts, header_ptr);
 #ifdef LIBDOVI_FOUND
@@ -825,7 +923,7 @@ static void normal_read_input_frames(EbConfig* app_cfg, uint8_t is_16bit, EbBuff
         read_y4m_frame_delimiter(app_cfg->input_file, app_cfg->error_log_file);
     }
     uint64_t luma_read_size   = (uint64_t)input_padded_width * input_padded_height << is_16bit;
-    uint64_t chroma_read_size = chroma_width * chroma_height << is_16bit;
+    size_t   chroma_read_size = (size_t)chroma_width * chroma_height << is_16bit;
     uint64_t read_size        = luma_read_size + 2 * chroma_read_size;
 
     uint8_t* eb_input_ptr = input_ptr->luma;
@@ -1067,11 +1165,14 @@ void process_output_stream_buffer(EncChannel* channel, EncApp* enc_app, int32_t*
 
                 // Write Stream Data to file
                 if (stream_file) {
-                    if (app_cfg->performance_context.frame_count == 1 && !(flags & EB_BUFFERFLAG_IS_ALT_REF)) {
-                        write_ivf_stream_header(
-                            app_cfg, app_cfg->frames_to_be_encoded == -1 ? 0 : (int32_t)app_cfg->frames_to_be_encoded);
+                    if (app_cfg->output_format == OUTPUT_FORMAT_IVF) {
+                        if (app_cfg->performance_context.frame_count == 1 && !(flags & EB_BUFFERFLAG_IS_ALT_REF)) {
+                            write_ivf_stream_header(
+                                app_cfg,
+                                app_cfg->frames_to_be_encoded == -1 ? 0 : (int32_t)app_cfg->frames_to_be_encoded);
+                        }
+                        write_ivf_frame_header(app_cfg, header_ptr->n_filled_len);
                     }
-                    write_ivf_frame_header(app_cfg, header_ptr->n_filled_len);
                     fwrite(header_ptr->p_buffer, 1, header_ptr->n_filled_len, stream_file);
                 }
 
@@ -1226,21 +1327,70 @@ void process_output_recon_buffer(EncChannel* channel) {
         channel->exit_cond_recon = APP_ExitConditionError;
         return;
     } else if (recon_status != EB_NoErrorEmptyQueue) {
+        uint8_t* write_ptr = header_ptr->p_buffer;
+        size_t   write_len = header_ptr->n_filled_len;
+        uint8_t* packed    = NULL;
+
+        // A resized frame is reconstructed at its coded size in the top-left of a full-resolution
+        // buffer; FRAME_SIZE metadata holds the true coded dimensions. Repack it tightly so the recon
+        // file is the coded picture rather than a corner of a full-resolution canvas.
+        const SvtMetadataFrameSizeT* fs = NULL;
+        if (header_ptr->metadata) {
+            for (size_t mi = 0; mi < header_ptr->metadata->sz; ++mi) {
+                const SvtMetadataT* md = header_ptr->metadata->metadata_array[mi];
+                if (md && md->type == EB_AV1_METADATA_TYPE_FRAME_SIZE) {
+                    fs = (const SvtMetadataFrameSizeT*)md->payload;
+                    break;
+                }
+            }
+        }
+        if (fs && (fs->disp_width != fs->width || fs->disp_height != fs->height)) {
+            const uint32_t bps           = (app_cfg->config.encoder_bit_depth > 8) ? 2 : 1;
+            const uint32_t luma_stride   = (uint32_t)fs->stride * bps;
+            const uint32_t chroma_stride = (uint32_t)((fs->stride + fs->subsampling_x) >> fs->subsampling_x) * bps;
+            const uint32_t cw            = ((uint32_t)fs->disp_width + fs->subsampling_x) >> fs->subsampling_x;
+            const uint32_t ch            = ((uint32_t)fs->disp_height + fs->subsampling_y) >> fs->subsampling_y;
+            const uint32_t y_row         = (uint32_t)fs->disp_width * bps;
+            const uint32_t c_row         = cw * bps;
+            const size_t   packed_len    = (size_t)y_row * fs->disp_height + 2 * (size_t)c_row * ch;
+            packed                       = (uint8_t*)malloc(packed_len);
+            if (packed) {
+                const uint8_t* y_src = header_ptr->p_buffer;
+                const uint8_t* u_src = y_src + (size_t)luma_stride * fs->height;
+                const uint8_t* v_src = u_src +
+                    (size_t)chroma_stride * (((uint32_t)fs->height + fs->subsampling_y) >> fs->subsampling_y);
+                uint8_t* dst = packed;
+                for (uint32_t r = 0; r < fs->disp_height; ++r, dst += y_row) {
+                    memcpy(dst, y_src + (size_t)r * luma_stride, y_row);
+                }
+                for (uint32_t r = 0; r < ch; ++r, dst += c_row) {
+                    memcpy(dst, u_src + (size_t)r * chroma_stride, c_row);
+                }
+                for (uint32_t r = 0; r < ch; ++r, dst += c_row) {
+                    memcpy(dst, v_src + (size_t)r * chroma_stride, c_row);
+                }
+                write_ptr = packed;
+                write_len = packed_len;
+            }
+        }
+
         //Sets the File position to the beginning of the file.
         rewind(app_cfg->recon_file);
         uint64_t frame_num = header_ptr->pts;
         while (frame_num > 0) {
-            fseek_return_val = fseeko(app_cfg->recon_file, header_ptr->n_filled_len, SEEK_CUR);
+            fseek_return_val = fseeko(app_cfg->recon_file, write_len, SEEK_CUR);
 
             if (fseek_return_val != 0) {
                 fprintf(stderr, "Error in fseeko  returnVal %i\n", fseek_return_val);
+                free(packed);
                 channel->exit_cond_recon = APP_ExitConditionError;
                 return;
             }
             frame_num = frame_num - 1;
         }
 
-        fwrite(header_ptr->p_buffer, 1, header_ptr->n_filled_len, app_cfg->recon_file);
+        fwrite(write_ptr, 1, write_len, app_cfg->recon_file);
+        free(packed);
 
         // Update Output Port Activity State
         return_value = (header_ptr->flags & EB_BUFFERFLAG_EOS) ? APP_ExitConditionFinished : APP_ExitConditionNone;

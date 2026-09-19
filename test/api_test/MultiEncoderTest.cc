@@ -165,8 +165,7 @@ static void shutdown_encoder(EbComponentType *encoder_handle) {
 static bool encode_frames(EbComponentType *encoder_handle,
                           DummyVideoSource &video_source, int num_frames,
                           int id) {
-    EbBufferHeaderType input_header;
-    memset(&input_header, 0, sizeof(input_header));
+    EbBufferHeaderType input_header{};
     input_header.size = sizeof(EbBufferHeaderType);
 
     // Encode frames
@@ -205,8 +204,7 @@ static bool encode_frames(EbComponentType *encoder_handle,
 
 // Send EOS and drain remaining packets
 static void flush_encoder(EbComponentType *encoder_handle) {
-    EbBufferHeaderType eos_header;
-    memset(&eos_header, 0, sizeof(eos_header));
+    EbBufferHeaderType eos_header{};
     eos_header.size = sizeof(EbBufferHeaderType);
     eos_header.flags = EB_BUFFERFLAG_EOS;
     eos_header.pic_type = EB_AV1_INVALID_PICTURE;
@@ -219,7 +217,7 @@ static void flush_encoder(EbComponentType *encoder_handle) {
         EbErrorType ret =
             svt_av1_enc_get_packet(encoder_handle, &output_header, 1);
 
-        if (ret == EB_NoErrorEmptyQueue || ret != EB_ErrorNone) {
+        if (ret != EB_ErrorNone) {
             break;
         }
 
@@ -286,8 +284,7 @@ TEST(MultiEncoderTest, ConcurrentEncoders) {
         }
 
         EbComponentType *encoder_handle = nullptr;
-        EbSvtAv1EncConfiguration config;
-        memset(&config, 0, sizeof(config));
+        EbSvtAv1EncConfiguration config{};
 
         if (!init_encoder(&encoder_handle, &config, encoder_id)) {
             video_source.close_source();
@@ -333,8 +330,7 @@ TEST(MultiEncoderTest, RepeatedInitDeinit) {
         }
 
         EbComponentType *encoder_handle = nullptr;
-        EbSvtAv1EncConfiguration config;
-        memset(&config, 0, sizeof(config));
+        EbSvtAv1EncConfiguration config{};
 
         if (!init_encoder(&encoder_handle, &config, encoder_id)) {
             video_source.close_source();
@@ -392,8 +388,7 @@ TEST(MultiEncoderTest, UnsynchronizedRecreation) {
             }
 
             EbComponentType *encoder_handle = nullptr;
-            EbSvtAv1EncConfiguration config;
-            memset(&config, 0, sizeof(config));
+            EbSvtAv1EncConfiguration config{};
 
             // Add delay to desynchronize threads
             int delay_ms = (thread_id * 7 + cycle * 3) % 50;
@@ -459,8 +454,7 @@ TEST(MultiEncoderTest, VaryingBlockGeometrySizes) {
             }
 
             EbComponentType *encoder_handle = nullptr;
-            EbSvtAv1EncConfiguration config;
-            memset(&config, 0, sizeof(config));
+            EbSvtAv1EncConfiguration config{};
 
             // Add delay to desynchronize threads
             int delay_ms = (thread_id * 11 + cycle * 7) % 30;

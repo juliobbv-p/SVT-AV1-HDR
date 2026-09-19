@@ -50,6 +50,7 @@ License 1.0. See [LICENSE](LICENSE.md) and [PATENTS](PATENTS.md) for details.
 **Presentations**
 - [Big Apple Video 2019](https://www.youtube.com/watch?v=lXqOaYNo8m0)
 - [Video @ Scale 2021](https://atscaleconference.com/videos/highly-efficient-svt-av1-based-solutions-for-vod-applications/?contact-form-id=124119&contact-form-sent=163268&contact-form-hash=d4bb3fd420fae91cd39c11bdb69f970a05a152a9&_wpnonce=bba8096d24#contact-form-124119)
+- [ICIP 2024](https://aomedia.org/docs/Software_Implementation_Working_Group_Update_ICIP2024.pdf)
 
 **Papers and Blogs**
 - [Netflix Blog 2020](https://netflixtechblog.com/svt-av1-an-open-source-av1-encoder-and-decoder-ad295d9b5ca2)
@@ -60,7 +61,9 @@ License 1.0. See [LICENSE](LICENSE.md) and [PATENTS](PATENTS.md) for details.
 - [Adaptive Steaming Common Test Conditions](https://aomedia.org/docs/SIWG-D001o.pdf)
 - [ICIP 2023](https://arxiv.org/abs/2307.05208)
 - [SPIE 2024](https://www.spiedigitallibrary.org/conference-proceedings-of-spie/13137/131370W/Benchmarking-hardware-and-software-encoder-quality-and-performance/10.1117/12.3031754.full)
-- [ICIP 2024](https://aomedia.org/docs/Software_Implementation_Working_Group_Update_ICIP2024.pdf)
+
+**Awards**
+- [IBC 2025 Innovation Award - Content Everywhere](https://aomedia.org/blog%20posts/SVT-AV1-Wins-IBC-2025-Innovation-Award-in-Content-Everywhere-Category/)
 
 **Design Documents**
 - [Encoder Design](Docs/svt-av1-encoder-design.md)

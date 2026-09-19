@@ -29,6 +29,7 @@ target_sources(
   PUBLIC pic_analysis_neon_dotprod.c
   PUBLIC sad_neon_dotprod.c
   PUBLIC sse_neon_dotprod.c
+  PUBLIC temporal_filtering_neon_dotprod.c
   PUBLIC variance_neon_dotprod.c)
 
 target_include_directories(

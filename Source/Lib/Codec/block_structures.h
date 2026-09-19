@@ -104,6 +104,9 @@ typedef struct MbModeInfo {
 } MbModeInfo;
 
 static AOM_INLINE int has_second_ref(const BlockModeInfo* block_mi) {
+    if (!CONFIG_ENABLE_INTER_COMPOUND) {
+        return 0; // compound off -> const-folds, cascades DCE
+    }
     return block_mi->ref_frame[1] > INTRA_FRAME;
 }
 
@@ -113,7 +116,9 @@ static AOM_INLINE int has_uni_comp_refs(const BlockModeInfo* block_mi) {
 }
 
 static AOM_INLINE int is_intrabc_block(const BlockModeInfo* block_mi) {
-    return block_mi->use_intrabc;
+    // IBC is off in camera RTC (CONFIG_ENABLE_INTRA_BC=0) -> const-folds to 0, cascading DCE of the
+    // intrabc hash search and intrabc convolve/entropy paths.
+    return CONFIG_ENABLE_INTRA_BC && block_mi->use_intrabc;
 }
 
 static AOM_INLINE int is_inter_block(const BlockModeInfo* block_mi) {

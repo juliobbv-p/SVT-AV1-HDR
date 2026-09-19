@@ -487,7 +487,6 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
                                     const InterpFilterParams* const filter_params_y, const int32_t subpel_y_q4,
                                     uint8_t* dst, const int32_t dst_stride) {
     const int16_t* im = im_block;
-    int32_t        y  = h;
 
     if (w == 2) {
         __m128i coeffs_128[2], s_32[4], ss_128[2];
@@ -502,7 +501,7 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
         const __m128i src12 = _mm_unpacklo_epi32(s_32[1], s_32[2]);
 
         ss_128[0] = _mm_unpacklo_epi16(src01, src12);
-
+        int32_t y = h;
         do {
             const __m128i res = xy_y_convolve_4tap_2x2_sse2(im, s_32, ss_128, coeffs_128);
             xy_y_round_store_2x2_sse2(res, dst, dst_stride);
@@ -528,7 +527,7 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
             s_256[1] = _mm256_setr_m128i(s_64[1], s_64[2]);
 
             ss_256[0] = _mm256_unpacklo_epi16(s_256[0], s_256[1]);
-
+            int32_t y = h;
             do {
                 const __m256i res = xy_y_convolve_4tap_4x2_avx2(im, s_64, ss_256, coeffs_256);
                 xy_y_round_store_4x2_avx2(res, dst, dst_stride);
@@ -548,6 +547,7 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
                 ss_256[0] = _mm256_unpacklo_epi16(s_256[0], s_256[1]);
                 ss_256[2] = _mm256_unpackhi_epi16(s_256[0], s_256[1]);
 
+                int32_t y = h;
                 do {
                     xy_y_convolve_4tap_8x2_avx2(im, ss_256, coeffs_256, r);
                     xy_y_round_store_8x2_avx2(r, dst, dst_stride);
@@ -556,6 +556,7 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
                     y -= 2;
                 } while (y);
             } else {
+                int32_t y = h;
                 do {
                     xy_y_convolve_4tap_8x2_half_pel_avx2(im, coeffs_256, s_256, r);
                     xy_y_round_store_8x2_avx2(r, dst, dst_stride);
@@ -579,7 +580,7 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
 
                 tt_256[0] = _mm256_unpacklo_epi16(s_256[1], s_256[2]);
                 tt_256[2] = _mm256_unpackhi_epi16(s_256[1], s_256[2]);
-
+                int32_t y = h;
                 do {
                     xy_y_convolve_4tap_16x2_avx2(im, s_256, ss_256, tt_256, coeffs_256, r);
                     xy_y_round_store_16x2_avx2(r, dst, dst_stride);
@@ -589,7 +590,7 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
                 } while (y);
             } else {
                 __m256i r[4];
-
+                int32_t y = h;
                 do {
                     xy_y_convolve_4tap_16x2_half_pelavx2(im, s_256, coeffs_256, r);
                     xy_y_round_store_16x2_avx2(r, dst, dst_stride);
@@ -611,7 +612,7 @@ void convolve_2d_sr_ver_4tap_avx512(const int16_t* const im_block, const int32_t
 
             loadu_unpack_16bit_32x3_avx512(im, s_512, ss_512, tt_512);
 
-            y = h;
+            int32_t y = h;
             do {
                 xy_y_convolve_4tap_width32x2_avx512(im, s_512, ss_512, tt_512, coeffs_512, r);
                 xy_y_round_store_32x2_avx512(r + 0, r + 2, dst, dst_stride);
@@ -1095,20 +1096,20 @@ void svt_av1_convolve_2d_copy_sr_avx512(const uint8_t* src, int32_t src_stride, 
 
     if (w == 2) {
         do {
-            svt_memcpy(dst, src, 2 * sizeof(*src));
+            memcpy(dst, src, 2 * sizeof(*src));
             src += src_stride;
             dst += dst_stride;
-            svt_memcpy(dst, src, 2 * sizeof(*src));
+            memcpy(dst, src, 2 * sizeof(*src));
             src += src_stride;
             dst += dst_stride;
             h -= 2;
         } while (h);
     } else if (w == 4) {
         do {
-            svt_memcpy(dst, src, 4 * sizeof(*src));
+            memcpy(dst, src, 4 * sizeof(*src));
             src += src_stride;
             dst += dst_stride;
-            svt_memcpy(dst, src, 4 * sizeof(*src));
+            memcpy(dst, src, 4 * sizeof(*src));
             src += src_stride;
             dst += dst_stride;
             h -= 2;

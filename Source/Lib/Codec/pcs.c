@@ -77,10 +77,9 @@ EbErrorType segmentation_map_ctor(SegmentationNeighborMap* seg_neighbor_map, uin
 }
 
 static void me_sb_results_dctor(EbPtr p) {
-    MeSbResults* obj = (MeSbResults*)p;
-    EB_FREE_ARRAY(obj->me_candidate_array);
-    EB_FREE_ARRAY(obj->me_mv_array);
-    EB_FREE_ARRAY(obj->total_me_candidate_index);
+    // me_mv_array / me_candidate_array / total_me_candidate_index are borrowed from per-parent-PCS
+    // pools (freed in the parent-PCS dctor).
+    (void)p;
 }
 
 /*
@@ -93,7 +92,8 @@ void svt_aom_get_max_allocated_me_refs(uint8_t ref_count_used_list0, uint8_t ref
         (ref_count_used_list0 - 1) + (ref_count_used_list1 == 3 ? 1 : 0);
 }
 
-EbErrorType svt_aom_me_sb_results_ctor(MeSbResults* obj_ptr, PictureControlSetInitData* init_data_ptr) {
+EbErrorType svt_aom_me_sb_results_ctor(MeSbResults* obj_ptr, PictureControlSetInitData* init_data_ptr,
+                                       MotionEstimationData* me_data, uint16_t sb_index, uint16_t all_sb) {
     obj_ptr->dctor = me_sb_results_dctor;
 
     uint8_t max_ref_to_alloc, max_cand_to_alloc;
@@ -104,28 +104,32 @@ EbErrorType svt_aom_me_sb_results_ctor(MeSbResults* obj_ptr, PictureControlSetIn
     ResolutionRange resolution;
     svt_aom_derive_input_resolution(&resolution, init_data_ptr->picture_width * init_data_ptr->picture_height);
     uint8_t number_of_pus = svt_aom_get_enable_me_16x16(init_data_ptr->enc_mode)
-        ? svt_aom_get_enable_me_8x8(
-              init_data_ptr->enc_mode, resolution, init_data_ptr->static_config.rtc, init_data_ptr->use_flat_ipp)
+        ? svt_aom_get_enable_me_8x8(init_data_ptr->enc_mode, resolution, init_data_ptr->static_config.rtc)
             ? SQUARE_PU_COUNT
             : MAX_SB64_PU_COUNT_NO_8X8
         : MAX_SB64_PU_COUNT_WO_16X16;
 
-    EB_MALLOC_ARRAY(obj_ptr->me_mv_array, number_of_pus * max_ref_to_alloc);
-    EB_MALLOC_ARRAY(obj_ptr->me_candidate_array, number_of_pus * max_cand_to_alloc);
-
-    EB_MALLOC_ARRAY(obj_ptr->total_me_candidate_index, number_of_pus);
+    // All SBs resolve to identical number_of_pus, so back the whole me_results array with one
+    // allocation each (created on the first SB) and hand each SB a slice.
+    if (sb_index == 0) {
+        EB_MALLOC_ARRAY(me_data->me_sb_mv_pool, (size_t)all_sb * number_of_pus * max_ref_to_alloc);
+        EB_MALLOC_ARRAY(me_data->me_sb_cand_pool, (size_t)all_sb * number_of_pus * max_cand_to_alloc);
+        EB_MALLOC_ARRAY(me_data->me_sb_totidx_pool, (size_t)all_sb * number_of_pus);
+    }
+    obj_ptr->me_mv_array              = me_data->me_sb_mv_pool + (size_t)sb_index * number_of_pus * max_ref_to_alloc;
+    obj_ptr->me_candidate_array       = me_data->me_sb_cand_pool + (size_t)sb_index * number_of_pus * max_cand_to_alloc;
+    obj_ptr->total_me_candidate_index = me_data->me_sb_totidx_pool + (size_t)sb_index * number_of_pus;
     return EB_ErrorNone;
 }
 
 void recon_coef_dctor(EbPtr p) {
     EncDecSet* obj = (EncDecSet*)p;
-
     EB_DELETE(obj->recon_pic_16bit);
     EB_DELETE(obj->recon_pic);
-    for (uint16_t sb_index = 0; sb_index < obj->init_b64_total_count; ++sb_index) {
-        EB_DELETE(obj->quantized_coeff[sb_index]); // OMK2
-    }
-    EB_DELETE_PTR_ARRAY(obj->quantized_coeff, obj->init_b64_total_count);
+    // quantized_coeff[] descriptors are borrowed from the pool; free the pool backing +
+    // descriptor storage once, then the (alias) pointer array.
+    svt_aom_pic_buf_desc_pool_dctor(&obj->quantized_coeff_pool);
+    EB_FREE_ARRAY(obj->quantized_coeff);
 }
 
 static void picture_control_set_dctor(EbPtr p) {
@@ -179,6 +183,10 @@ static void picture_control_set_dctor(EbPtr p) {
         EB_DELETE_PTR_ARRAY(obj->md_txfm_context_array[depth], tile_cnt);
     }
     EB_DELETE_PTR_ARRAY(obj->sb_ptr_array, obj->sb_total_count_unscaled);
+    // Per-SB pools backing the SuperBlock final_blk_arr / av1xd / ptree (borrowed by each SB).
+    EB_FREE_ARRAY(obj->sb_final_blk_arr_pool);
+    EB_FREE_ARRAY(obj->sb_av1xd_pool);
+    EB_FREE_ARRAY(obj->sb_ptree_pool);
     EB_FREE_ARRAY(obj->sb_intra);
     EB_FREE_ARRAY(obj->sb_skip);
     EB_FREE_ARRAY(obj->sb_64x64_mvp);
@@ -205,6 +213,15 @@ static void picture_control_set_dctor(EbPtr p) {
     EB_FREE_ARRAY(obj->mse_seg[1]);
     EB_FREE_ARRAY(obj->skip_cdef_seg);
     EB_FREE_ARRAY(obj->cdef_dir_data);
+    EB_FREE_ARRAY(obj->cdef_fb_list);
+    EB_FREE_ARRAY(obj->cdef_sb_index);
+    EB_FREE_ARRAY(obj->cdef_mse_ptr[0]);
+    EB_FREE_ARRAY(obj->cdef_mse_ptr[1]);
+    svt_aom_free(obj->cdef_row_cdef);
+    for (int cdef_p = 0; cdef_p < 3; cdef_p++) {
+        svt_aom_free(obj->cdef_linebuf[cdef_p]);
+        svt_aom_free(obj->cdef_colbuf[cdef_p]);
+    }
     EB_FREE_ARRAY(obj->mi_grid_base);
     EB_FREE_ARRAY(obj->mip);
     EB_FREE_ARRAY(obj->md_rate_est_ctx);
@@ -243,7 +260,7 @@ recon_coef_update_param: update the parameters in EncDecSet for changing the res
 */
 EbErrorType recon_coef_update_param(EncDecSet* object_ptr, SequenceControlSet* scs) {
     EbPictureBufferDescInitData input_pic_buf_desc_init_data;
-    bool                        is_16bit = scs->encoder_bit_depth > 8 ? true : false;
+    bool                        is_16bit = SVT_EFFECTIVE_BIT_DEPTH(scs->encoder_bit_depth) > 8 ? true : false;
     // Init Picture Init data
     input_pic_buf_desc_init_data.max_width          = scs->max_input_luma_width;
     input_pic_buf_desc_init_data.max_height         = scs->max_input_luma_height;
@@ -263,7 +280,7 @@ EbErrorType recon_coef_update_param(EncDecSet* object_ptr, SequenceControlSet* s
         svt_recon_picture_buffer_desc_update(object_ptr->recon_pic, (EbPtr)&input_pic_buf_desc_init_data);
     } else {
         svt_recon_picture_buffer_desc_update(object_ptr->recon_pic, (EbPtr)&input_pic_buf_desc_init_data);
-        if (scs->is_16bit_pipeline) {
+        if (SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline)) {
             input_pic_buf_desc_init_data.bit_depth = EB_SIXTEEN_BIT;
             svt_recon_picture_buffer_desc_update(object_ptr->recon_pic_16bit, (EbPtr)&input_pic_buf_desc_init_data);
         }
@@ -315,7 +332,7 @@ static EbErrorType recon_coef_ctor(EncDecSet* object_ptr, EbPtr object_init_data
         EB_NEW(object_ptr->recon_pic, // OMK
                svt_recon_picture_buffer_desc_ctor,
                (EbPtr)&input_pic_buf_desc_init_data);
-        if (init_data_ptr->is_16bit_pipeline) {
+        if (SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline)) {
             input_pic_buf_desc_init_data.bit_depth = EB_SIXTEEN_BIT;
             EB_NEW(
                 object_ptr->recon_pic_16bit, svt_recon_picture_buffer_desc_ctor, (EbPtr)&input_pic_buf_desc_init_data);
@@ -340,29 +357,31 @@ static EbErrorType recon_coef_ctor(EncDecSet* object_ptr, EbPtr object_init_data
     coeff_init_data.color_format       = init_data_ptr->color_format;
     coeff_init_data.border             = 0;
     coeff_init_data.split_mode         = false;
-    coeff_init_data.is_16bit_pipeline  = init_data_ptr->is_16bit_pipeline;
+    coeff_init_data.is_16bit_pipeline  = SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline);
+    // One backing allocation for all per-SB coeff descriptors (was one alloc per SB).
+    EbErrorType pool_err = svt_aom_pic_buf_desc_pool_ctor(
+        &object_ptr->quantized_coeff_pool, &coeff_init_data, object_ptr->init_b64_total_count);
+    if (pool_err != EB_ErrorNone) {
+        return pool_err;
+    }
     for (sb_index = 0; sb_index < object_ptr->init_b64_total_count; ++sb_index) {
-        EB_NEW(object_ptr->quantized_coeff[sb_index], //OMK2
-               svt_picture_buffer_desc_ctor,
-               (EbPtr)&coeff_init_data);
+        object_ptr->quantized_coeff[sb_index] = &object_ptr->quantized_coeff_pool.descs[sb_index];
     }
 
     return EB_ErrorNone;
 }
 
 uint32_t svt_aom_get_out_buffer_size(uint32_t picture_width, uint32_t picture_height) {
-    uint32_t frame_size = picture_width * picture_height * 3 / 2; //assuming 4:2:0;
-    if (frame_size > INPUT_SIZE_4K_TH) {
-        return frame_size;
-    } else {
-        return BITSTREAM_BUFFER_SIZE(picture_width * picture_height);
-    }
+    // Compressed frames are far smaller than the raw 4:2:0 frame, so start the bitstream
+    // capacity at raw/4. The entropy writer grows on demand if a (pathological, very low-QP)
+    // frame ever exceeds it, so this stays correct while cutting the previous over-provisioning.
+    return picture_width * picture_height * 3 / 2 / 4; // raw 4:2:0 frame size / 4
 }
 
 /*
 pcs_update_param: update the parameters in PictureParentControlSet for changing the resolution on the fly
 */
-EbErrorType pcs_update_param(PictureControlSet* pcs) {
+EbErrorType pcs_update_param(PictureControlSet* pcs, int8_t enc_mode) {
     SequenceControlSet* scs      = pcs->scs;
     const bool          rtc_tune = scs->static_config.rtc;
     const bool          allintra = scs->allintra;
@@ -373,7 +392,7 @@ EbErrorType pcs_update_param(PictureControlSet* pcs) {
     uint16_t sb_origin_x;
     uint16_t sb_origin_y;
 
-    bool is_16bit = scs->encoder_bit_depth > 8 ? true : false;
+    bool is_16bit = SVT_EFFECTIVE_BIT_DEPTH(scs->encoder_bit_depth) > 8 ? true : false;
     // Init Picture Init data
     EbPictureBufferDescInitData coeff_buffer_desc_init_data;
     uint16_t                    padding = scs->super_block_size + 32;
@@ -386,17 +405,15 @@ EbErrorType pcs_update_param(PictureControlSet* pcs) {
 
     coeff_buffer_desc_init_data.border            = padding;
     coeff_buffer_desc_init_data.split_mode        = false;
-    coeff_buffer_desc_init_data.is_16bit_pipeline = scs->is_16bit_pipeline;
-    if ((is_16bit) || (scs->is_16bit_pipeline)) {
+    coeff_buffer_desc_init_data.is_16bit_pipeline = SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline);
+    if ((is_16bit) || (SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline))) {
         svt_picture_buffer_desc_update(pcs->input_frame16bit, (EbPtr)&coeff_buffer_desc_init_data);
     }
-    if (allintra       ? svt_aom_get_enable_restoration_allintra(scs->static_config.enc_mode,
-                                                           scs->static_config.enable_restoration_filtering)
-            : rtc_tune ? svt_aom_get_enable_restoration_rtc(scs->static_config.enc_mode,
-                                                            scs->static_config.enable_restoration_filtering,
+    if (allintra ? svt_aom_get_enable_restoration_allintra(enc_mode, scs->static_config.enable_restoration_filtering)
+            : rtc_tune ? svt_aom_get_enable_restoration_rtc(scs->static_config.enable_restoration_filtering,
                                                             scs->input_resolution,
                                                             scs->static_config.fast_decode)
-                       : svt_aom_get_enable_restoration_default(scs->static_config.enc_mode,
+                       : svt_aom_get_enable_restoration_default(enc_mode,
                                                                 scs->static_config.enable_restoration_filtering,
                                                                 scs->input_resolution,
                                                                 scs->static_config.fast_decode)) {
@@ -481,7 +498,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
 
     coeff_buffer_desc_init_data.border            = padding;
     coeff_buffer_desc_init_data.split_mode        = false;
-    coeff_buffer_desc_init_data.is_16bit_pipeline = init_data_ptr->is_16bit_pipeline;
+    coeff_buffer_desc_init_data.is_16bit_pipeline = SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline);
     object_ptr->color_format                      = init_data_ptr->color_format;
     object_ptr->temp_lf_recon_pic_16bit           = NULL;
     object_ptr->temp_lf_recon_pic                 = NULL;
@@ -489,8 +506,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     bool enable_restoration                       = allintra
                               ? svt_aom_get_enable_restoration_allintra(init_data_ptr->enc_mode,
                                                   init_data_ptr->static_config.enable_restoration_filtering)
-                              : rtc_tune ? svt_aom_get_enable_restoration_rtc(init_data_ptr->enc_mode,
-                                                        init_data_ptr->static_config.enable_restoration_filtering,
+                              : rtc_tune ? svt_aom_get_enable_restoration_rtc(init_data_ptr->static_config.enable_restoration_filtering,
                                                         init_data_ptr->input_resolution,
                                                         init_data_ptr->static_config.fast_decode)
                                          : svt_aom_get_enable_restoration_default(init_data_ptr->enc_mode,
@@ -501,7 +517,9 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
         set_restoration_unit_size(
             init_data_ptr->picture_width, init_data_ptr->picture_height, 1, 1, object_ptr->rst_info);
 
-        return_error = svt_av1_alloc_restoration_buffers(object_ptr, init_data_ptr->av1_cm);
+        if (svt_av1_alloc_restoration_buffers(object_ptr, init_data_ptr->av1_cm) != EB_ErrorNone) {
+            return EB_ErrorInsufficientResources;
+        }
 
         int32_t ntiles[2];
         for (int32_t is_uv = 0; is_uv < 2; ++is_uv) {
@@ -513,7 +531,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
         EB_CALLOC_ARRAY(object_ptr->rusi_picture[2], ntiles[1]);
     }
 
-    if ((is_16bit) || (init_data_ptr->is_16bit_pipeline)) {
+    if ((is_16bit) || (SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline))) {
         EB_NEW(object_ptr->input_frame16bit, svt_picture_buffer_desc_ctor, (EbPtr)&coeff_buffer_desc_init_data);
     }
     // Entropy Coder
@@ -564,6 +582,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
                init_data_ptr->static_config.rtc,
                allintra,
                object_ptr);
+
         // Increment the Order in coding order (Raster Scan Order)
         sb_origin_y = (sb_origin_x == picture_sb_w - 1) ? sb_origin_y + 1 : sb_origin_y;
         sb_origin_x = (sb_origin_x == picture_sb_w - 1) ? 0 : sb_origin_x + 1;
@@ -571,10 +590,10 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     // MD Rate Estimation Array
     EB_MALLOC_ARRAY(object_ptr->md_rate_est_ctx, 1);
     memset(object_ptr->md_rate_est_ctx, 0, sizeof(MdRateEstimationContext));
-    if (init_data_ptr->hbd_md == DEFAULT) {
+    if (SVT_EFFECTIVE_HBD_MD(init_data_ptr->hbd_md) == DEFAULT) {
         object_ptr->hbd_md = init_data_ptr->hbd_md = 2;
     } else {
-        object_ptr->hbd_md = init_data_ptr->hbd_md;
+        object_ptr->hbd_md = SVT_EFFECTIVE_HBD_MD(init_data_ptr->hbd_md);
     }
     // Mode Decision Neighbor Arrays
     uint8_t depth;
@@ -585,14 +604,14 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
         EB_ALLOC_PTR_ARRAY(object_ptr->md_cr_dc_sign_level_coeff_na[depth], total_tile_cnt);
         EB_ALLOC_PTR_ARRAY(object_ptr->md_cb_dc_sign_level_coeff_na[depth], total_tile_cnt);
         EB_ALLOC_PTR_ARRAY(object_ptr->md_txfm_context_array[depth], total_tile_cnt);
-        if (init_data_ptr->hbd_md != EB_10_BIT_MD) {
+        if (SVT_EFFECTIVE_HBD_MD(init_data_ptr->hbd_md) != EB_10_BIT_MD) {
             EB_ALLOC_PTR_ARRAY(object_ptr->md_luma_recon_na[depth], total_tile_cnt);
             EB_ALLOC_PTR_ARRAY(object_ptr->md_tx_depth_1_luma_recon_na[depth], total_tile_cnt);
             EB_ALLOC_PTR_ARRAY(object_ptr->md_tx_depth_2_luma_recon_na[depth], total_tile_cnt);
             EB_ALLOC_PTR_ARRAY(object_ptr->md_cb_recon_na[depth], total_tile_cnt);
             EB_ALLOC_PTR_ARRAY(object_ptr->md_cr_recon_na[depth], total_tile_cnt);
         }
-        if (init_data_ptr->hbd_md > EB_8_BIT_MD) {
+        if (SVT_EFFECTIVE_HBD_MD(init_data_ptr->hbd_md) > EB_8_BIT_MD) {
             EB_ALLOC_PTR_ARRAY(object_ptr->md_luma_recon_na_16bit[depth], total_tile_cnt);
             EB_ALLOC_PTR_ARRAY(object_ptr->md_tx_depth_1_luma_recon_na_16bit[depth], total_tile_cnt);
             EB_ALLOC_PTR_ARRAY(object_ptr->md_tx_depth_2_luma_recon_na_16bit[depth], total_tile_cnt);
@@ -664,7 +683,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
             if (return_error == EB_ErrorInsufficientResources) {
                 return EB_ErrorInsufficientResources;
             }
-            if (init_data_ptr->hbd_md != EB_10_BIT_MD) {
+            if (SVT_EFFECTIVE_HBD_MD(init_data_ptr->hbd_md) != EB_10_BIT_MD) {
                 InitData data[] = {
 
                     {
@@ -714,7 +733,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
                     return EB_ErrorInsufficientResources;
                 }
             }
-            if (init_data_ptr->hbd_md > EB_8_BIT_MD) {
+            if (SVT_EFFECTIVE_HBD_MD(init_data_ptr->hbd_md) > EB_8_BIT_MD) {
                 InitData data[] = {{
                                        &object_ptr->md_luma_recon_na_16bit[depth][tile_idx],
                                        na_max_pic_w,
@@ -781,7 +800,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     EB_ALLOC_PTR_ARRAY(object_ptr->cr_dc_sign_level_coeff_na, total_tile_cnt);
     EB_ALLOC_PTR_ARRAY(object_ptr->cb_dc_sign_level_coeff_na, total_tile_cnt);
     EB_ALLOC_PTR_ARRAY(object_ptr->txfm_context_array, total_tile_cnt);
-    if ((is_16bit) || (init_data_ptr->is_16bit_pipeline)) {
+    if ((is_16bit) || (SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline))) {
         EB_ALLOC_PTR_ARRAY(object_ptr->ep_luma_recon_na_16bit, total_tile_cnt);
         EB_ALLOC_PTR_ARRAY(object_ptr->ep_cb_recon_na_16bit, total_tile_cnt);
         EB_ALLOC_PTR_ARRAY(object_ptr->ep_cr_recon_na_16bit, total_tile_cnt);
@@ -936,7 +955,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
             return EB_ErrorInsufficientResources;
         }
 
-        if ((is_16bit) || (init_data_ptr->is_16bit_pipeline)) {
+        if ((is_16bit) || (SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline))) {
             InitData data[] = {
                 {
                     &object_ptr->ep_luma_recon_na_16bit[tile_idx],
@@ -1001,6 +1020,10 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     EB_MALLOC_ARRAY(object_ptr->mse_seg[1], object_ptr->b64_total_count);
     EB_MALLOC_ARRAY(object_ptr->skip_cdef_seg, object_ptr->b64_total_count);
     EB_MALLOC_ARRAY(object_ptr->cdef_dir_data, object_ptr->b64_total_count);
+    EB_MALLOC_ARRAY(object_ptr->cdef_fb_list, object_ptr->b64_total_count);
+    EB_MALLOC_ARRAY(object_ptr->cdef_sb_index, object_ptr->b64_total_count);
+    EB_MALLOC_ARRAY(object_ptr->cdef_mse_ptr[0], object_ptr->b64_total_count);
+    EB_MALLOC_ARRAY(object_ptr->cdef_mse_ptr[1], object_ptr->b64_total_count);
     EB_CREATE_MUTEX(object_ptr->rest_search_mutex);
 
     //the granularity is 4x4
@@ -1015,7 +1038,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
             break;
         }
         uint8_t nsq_geom_lvl = allintra ? svt_aom_get_nsq_geom_level_allintra(init_data_ptr->enc_mode)
-            : rtc_tune                  ? svt_aom_get_nsq_geom_level_rtc(init_data_ptr->enc_mode)
+            : rtc_tune                  ? svt_aom_get_nsq_geom_level_rtc()
                                         : svt_aom_get_nsq_geom_level_default(init_data_ptr->enc_mode, coeff_lvl);
         // nsq_geom_lvl level 0 means NSQ shapes are disallowed so don't adjust based on the level
         if (nsq_geom_lvl) {
@@ -1031,15 +1054,21 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     }
 
     disallow_4x4 = allintra ? MIN(disallow_4x4, svt_aom_get_disallow_4x4_allintra(init_data_ptr->enc_mode))
-        : rtc_tune          ? MIN(disallow_4x4, svt_aom_get_disallow_4x4_rtc(init_data_ptr->enc_mode))
+        : rtc_tune          ? MIN(disallow_4x4, svt_aom_get_disallow_4x4_rtc())
                             : MIN(disallow_4x4, svt_aom_get_disallow_4x4_default(init_data_ptr->enc_mode));
 
+    if (init_data_ptr->color_format == EB_YUV444) {
+        disallow_4x4 = false;
+    }
     object_ptr->disallow_4x4_all_frames = disallow_4x4;
     disallow_8x8                        = allintra ? MIN(disallow_8x8, svt_aom_get_disallow_8x8_allintra())
                                : rtc_tune          ? MIN(disallow_8x8,
                          svt_aom_get_disallow_8x8_rtc(
                              init_data_ptr->enc_mode, init_data_ptr->picture_width, init_data_ptr->picture_height))
                                                    : MIN(disallow_8x8, svt_aom_get_disallow_8x8_default());
+    if (init_data_ptr->color_format == EB_YUV444) {
+        disallow_8x8 = false;
+    }
     object_ptr->disallow_8x8_all_frames = disallow_8x8;
     /* If 4x4 blocks are disallowed for all frames, the the MI blocks only need to be allocated for
     8x8 blocks.  The mi_grid will still be 4x4 so that the data can be accessed the same way throughout
@@ -1156,7 +1185,6 @@ static void picture_parent_control_set_dctor(EbPtr ptr) {
     EB_DESTROY_MUTEX(obj->tpl_disp_mutex);
     uint16_t tile_cnt = 1; /*obj->tile_row_count * obj->tile_column_count;*/
     EB_DELETE_PTR_ARRAY(obj->tpl_disp_segment_ctrl, tile_cnt);
-    EB_DESTROY_MUTEX(obj->pcs_total_rate_mutex);
     if (obj->dg_detector) {
         EB_DELETE(obj->dg_detector);
     }
@@ -1176,7 +1204,7 @@ EbErrorType ppcs_update_param(PictureParentControlSet* ppcs) {
         input_pic_buf_desc_init_data.bit_depth          = 8; //Should be 8bit
         input_pic_buf_desc_init_data.buffer_enable_mask = PICTURE_BUFFER_DESC_CHROMA_MASK;
         input_pic_buf_desc_init_data.border             = scs->border;
-        input_pic_buf_desc_init_data.color_format       = EB_YUV420; //set to 420 for MD
+        input_pic_buf_desc_init_data.color_format       = EB_YUV420; // chroma-complexity analysis only
         input_pic_buf_desc_init_data.split_mode         = false;
         svt_picture_buffer_desc_update(ppcs->chroma_downsampled_pic, (EbPtr)&input_pic_buf_desc_init_data);
     }
@@ -1278,7 +1306,7 @@ static EbErrorType picture_parent_control_set_ctor(PictureParentControlSet* obje
 
     EB_MALLOC_ARRAY(object_ptr->rc_me_distortion, object_ptr->b64_total_count);
     EB_MALLOC_ARRAY(object_ptr->rc_me_allow_gm, object_ptr->b64_total_count);
-    EB_MALLOC_ARRAY(object_ptr->me_64x64_distortion, object_ptr->b64_total_count);
+    EB_CALLOC_ARRAY(object_ptr->me_64x64_distortion, object_ptr->b64_total_count);
     EB_MALLOC_ARRAY(object_ptr->me_32x32_distortion, object_ptr->b64_total_count);
     EB_MALLOC_ARRAY(object_ptr->me_16x16_distortion, object_ptr->b64_total_count);
     EB_MALLOC_ARRAY(object_ptr->me_8x8_distortion, object_ptr->b64_total_count);
@@ -1306,12 +1334,14 @@ static EbErrorType picture_parent_control_set_ctor(PictureParentControlSet* obje
 
     EB_MALLOC_ARRAY(object_ptr->av1_cm->frame_to_show, 1);
 
-    object_ptr->av1_cm->use_highbitdepth = ((init_data_ptr->bit_depth > 8) || (init_data_ptr->is_16bit_pipeline)) ? 1
-                                                                                                                  : 0;
-    object_ptr->av1_cm->bit_depth        = init_data_ptr->bit_depth;
-    object_ptr->av1_cm->color_format     = init_data_ptr->color_format;
-    object_ptr->av1_cm->subsampling_x    = subsampling_x;
-    object_ptr->av1_cm->subsampling_y    = subsampling_y;
+    object_ptr->av1_cm->use_highbitdepth                 = ((init_data_ptr->bit_depth > 8) ||
+                                            (SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline)))
+                        ? 1
+                        : 0;
+    object_ptr->av1_cm->bit_depth                        = init_data_ptr->bit_depth;
+    object_ptr->av1_cm->color_format                     = init_data_ptr->color_format;
+    object_ptr->av1_cm->subsampling_x                    = subsampling_x;
+    object_ptr->av1_cm->subsampling_y                    = subsampling_y;
     object_ptr->av1_cm->frm_size.frame_width             = init_data_ptr->picture_width - init_data_ptr->non_m8_pad_w;
     object_ptr->av1_cm->frm_size.frame_height            = init_data_ptr->picture_height - init_data_ptr->non_m8_pad_h;
     object_ptr->av1_cm->frm_size.superres_upscaled_width = init_data_ptr->picture_width - init_data_ptr->non_m8_pad_w;
@@ -1358,16 +1388,6 @@ static EbErrorType picture_parent_control_set_ctor(PictureParentControlSet* obje
     object_ptr->overshoot_seen  = 0;
     object_ptr->undershoot_seen = 0;
     object_ptr->low_cr_seen     = 0;
-    EB_CREATE_MUTEX(object_ptr->pcs_total_rate_mutex);
-    ResolutionRange resolution;
-    svt_aom_derive_input_resolution(&resolution, init_data_ptr->picture_width * init_data_ptr->picture_height);
-    object_ptr->enable_me_16x16 = svt_aom_get_enable_me_16x16(init_data_ptr->enc_mode);
-
-    // 8x8 can only be used if 16x16 is enabled
-    object_ptr->enable_me_8x8 = object_ptr->enable_me_16x16
-        ? svt_aom_get_enable_me_8x8(
-              init_data_ptr->enc_mode, resolution, init_data_ptr->static_config.rtc, init_data_ptr->use_flat_ipp)
-        : 0;
     EB_NEW(object_ptr->dg_detector, svt_aom_dg_detector_seg_ctor);
     return return_error;
 }
@@ -1375,6 +1395,10 @@ static EbErrorType picture_parent_control_set_ctor(PictureParentControlSet* obje
 static void me_dctor(EbPtr p) {
     MotionEstimationData* obj = (MotionEstimationData*)p;
     EB_DELETE_PTR_ARRAY(obj->me_results, obj->init_b64_total_count);
+    // Per-SB ME pools backing the MeSbResults arrays (borrowed by each SB).
+    EB_FREE_ARRAY(obj->me_sb_mv_pool);
+    EB_FREE_ARRAY(obj->me_sb_cand_pool);
+    EB_FREE_ARRAY(obj->me_sb_totidx_pool);
     if (obj->tpl_stats) {
         EB_FREE_2D(obj->tpl_stats);
     }
@@ -1422,7 +1446,12 @@ static EbErrorType me_ctor(MotionEstimationData* object_ptr, EbPtr object_init_d
         EB_ALLOC_PTR_ARRAY(object_ptr->me_results, sb_total_count);
 
         for (uint16_t sb_index = 0; sb_index < sb_total_count; ++sb_index) {
-            EB_NEW(object_ptr->me_results[sb_index], svt_aom_me_sb_results_ctor, init_data_ptr);
+            EB_NEW(object_ptr->me_results[sb_index],
+                   svt_aom_me_sb_results_ctor,
+                   init_data_ptr,
+                   object_ptr,
+                   sb_index,
+                   sb_total_count);
         }
     }
     uint16_t adaptive_picture_width_in_mb  = (uint16_t)((init_data_ptr->picture_width + 15) / 16);

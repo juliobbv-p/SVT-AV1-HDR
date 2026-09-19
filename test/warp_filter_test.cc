@@ -10,33 +10,21 @@
  * https://www.aomedia.org/license/patent-license.
  */
 #include "gtest/gtest.h"
+#include "util.h"
 #include "warp_filter_test_util.h"
 
 using libaom_test::AV1HighbdWarpFilter::AV1HighbdWarpFilterTest;
 using libaom_test::AV1WarpFilter::AV1WarpFilterTest;
-using std::make_tuple;
 using std::tuple;
-using svt_av1_test_tool::SVTRandom;
 
 namespace {
 
 TEST_P(AV1WarpFilterTest, CheckOutput) {
     RunCheckOutput(std::get<3>(TEST_GET_PARAM(0)));
 }
-TEST_P(AV1WarpFilterTest, DISABLED_Speed) {
-    RunSpeedTest(std::get<3>(TEST_GET_PARAM(0)));
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    C, AV1WarpFilterTest,
-    libaom_test::AV1WarpFilter::BuildParams(svt_av1_warp_affine_c));
 
 TEST_P(AV1HighbdWarpFilterTest, CheckOutput) {
     RunCheckOutput(std::get<4>(TEST_GET_PARAM(0)));
-}
-
-TEST_P(AV1HighbdWarpFilterTest, DISABLED_Speed) {
-    RunSpeedTest(std::get<4>(TEST_GET_PARAM(0)));
 }
 
 #ifdef ARCH_X86_64

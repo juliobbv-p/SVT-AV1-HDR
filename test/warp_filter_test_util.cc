@@ -10,40 +10,41 @@
  * https://www.aomedia.org/license/patent-license.
  */
 #include "definitions.h"
-#include "unit_test_utility.h"
+#include "util.h"
 #include "warped_motion.h"
 #include "warp_filter_test_util.h"
 #include "convolve.h"
+#include <array>
+#include <vector>
 
 using std::make_tuple;
 using std::tuple;
 
-namespace libaom_test {
-
-static const int quant_dist_lookup_table[2][4][2] = {
+namespace {
+constexpr int quant_dist_lookup_table[2][4][2] = {
     {{9, 7}, {11, 5}, {12, 4}, {13, 3}},
     {{7, 9}, {5, 11}, {4, 12}, {3, 13}},
 };
 
-int32_t random_warped_param(svt_av1_test_tool::SVTRandom *rnd, int bits) {
+int32_t random_warped_param(svt_av1_test_tool::SVTRandom &rnd, int bits) {
     // 1 in 8 chance of generating zero (arbitrarily chosen)
-    if (((rnd->Rand8()) & 7) == 0)
+    if (((rnd.Rand8()) & 7) == 0)
         return 0;
     // Otherwise, enerate uniform values in the range
     // [-(1 << bits), 1] U [1, 1<<bits]
-    int32_t v = 1 + (rnd->Rand16() & ((1 << bits) - 1));
-    if ((rnd->Rand8()) & 1)
+    int32_t v = 1 + (rnd.Rand16() & ((1 << bits) - 1));
+    if ((rnd.Rand8()) & 1)
         return -v;
     return v;
 }
 
-void generate_warped_model(svt_av1_test_tool::SVTRandom *rnd, int32_t *mat,
-                           int16_t *alpha, int16_t *beta, int16_t *gamma,
-                           int16_t *delta, const int is_alpha_zero,
-                           const int is_beta_zero, const int is_gamma_zero,
-                           const int is_delta_zero) {
+void generate_warped_model(svt_av1_test_tool::SVTRandom &rnd,
+                           std::array<int32_t, 8> &mat, int16_t &alpha,
+                           int16_t &beta, int16_t &gamma, int16_t &delta,
+                           const int is_alpha_zero, const int is_beta_zero,
+                           const int is_gamma_zero, const int is_delta_zero) {
     while (1) {
-        int rnd8 = rnd->Rand8() & 3;
+        int rnd8 = rnd.Rand8() & 3;
         mat[0] = random_warped_param(rnd, WARPEDMODEL_PREC_BITS + 6);
         mat[1] = random_warped_param(rnd, WARPEDMODEL_PREC_BITS + 6);
         mat[2] = (random_warped_param(rnd, WARPEDMODEL_PREC_BITS - 3)) +
@@ -77,42 +78,44 @@ void generate_warped_model(svt_av1_test_tool::SVTRandom *rnd, int32_t *mat,
         // for the warp filter.
         assert(mat[2] != 0);
 
-        *alpha = static_cast<int16_t>(
+        alpha = static_cast<int16_t>(
             clamp(mat[2] - (1 << WARPEDMODEL_PREC_BITS), INT16_MIN, INT16_MAX));
-        *beta = static_cast<int16_t>(clamp(mat[3], INT16_MIN, INT16_MAX));
-        *gamma = static_cast<int16_t>(
+        beta = static_cast<int16_t>(clamp(mat[3], INT16_MIN, INT16_MAX));
+        gamma = static_cast<int16_t>(
             clamp(((int64_t)mat[4] * (1 << WARPEDMODEL_PREC_BITS)) / mat[2],
                   INT16_MIN,
                   INT16_MAX));
-        *delta = static_cast<int16_t>(clamp(
+        delta = static_cast<int16_t>(clamp(
             mat[5] - (((int64_t)mat[3] * mat[4] + (mat[2] / 2)) / mat[2]) -
                 (1 << WARPEDMODEL_PREC_BITS),
             INT16_MIN,
             INT16_MAX));
 
-        if ((4 * abs(*alpha) + 7 * abs(*beta) >=
-             (1 << WARPEDMODEL_PREC_BITS)) ||
-            (4 * abs(*gamma) + 4 * abs(*delta) >= (1 << WARPEDMODEL_PREC_BITS)))
+        if ((4 * abs(alpha) + 7 * abs(beta) >= (1 << WARPEDMODEL_PREC_BITS)) ||
+            (4 * abs(gamma) + 4 * abs(delta) >= (1 << WARPEDMODEL_PREC_BITS)))
             continue;
 
-        *alpha = ROUND_POWER_OF_TWO_SIGNED(*alpha, WARP_PARAM_REDUCE_BITS) *
-                 (1 << WARP_PARAM_REDUCE_BITS);
-        *beta = ROUND_POWER_OF_TWO_SIGNED(*beta, WARP_PARAM_REDUCE_BITS) *
+        alpha = ROUND_POWER_OF_TWO_SIGNED(alpha, WARP_PARAM_REDUCE_BITS) *
                 (1 << WARP_PARAM_REDUCE_BITS);
-        *gamma = ROUND_POWER_OF_TWO_SIGNED(*gamma, WARP_PARAM_REDUCE_BITS) *
-                 (1 << WARP_PARAM_REDUCE_BITS);
-        *delta = ROUND_POWER_OF_TWO_SIGNED(*delta, WARP_PARAM_REDUCE_BITS) *
-                 (1 << WARP_PARAM_REDUCE_BITS);
+        beta = ROUND_POWER_OF_TWO_SIGNED(beta, WARP_PARAM_REDUCE_BITS) *
+               (1 << WARP_PARAM_REDUCE_BITS);
+        gamma = ROUND_POWER_OF_TWO_SIGNED(gamma, WARP_PARAM_REDUCE_BITS) *
+                (1 << WARP_PARAM_REDUCE_BITS);
+        delta = ROUND_POWER_OF_TWO_SIGNED(delta, WARP_PARAM_REDUCE_BITS) *
+                (1 << WARP_PARAM_REDUCE_BITS);
 
         // We have a valid model, so finish
         return;
     }
 }
+}  // namespace
+
+namespace libaom_test {
 
 namespace AV1WarpFilter {
 ::testing::internal::ParamGenerator<WarpTestParams> BuildParams(
     warp_affine_func filter) {
-    WarpTestParam params[] = {
+    const WarpTestParam params[] = {
         make_tuple(4, 4, 50000, filter),
         make_tuple(8, 8, 50000, filter),
         make_tuple(64, 64, 1000, filter),
@@ -126,162 +129,54 @@ namespace AV1WarpFilter {
                               ::testing::Values(0, 1));
 }
 
-AV1WarpFilterTest::~AV1WarpFilterTest() {
-}
-void AV1WarpFilterTest::SetUp() {
-    rnd_ = new svt_av1_test_tool::SVTRandom(0, (1 << 8) - 1);
-}
-
-void AV1WarpFilterTest::TearDown() {
-    delete rnd_;
-}
-
-void AV1WarpFilterTest::RunSpeedTest(warp_affine_func test_impl) {
-    const int w = 128, h = 128;
-    const int border = 16;
-    const int stride = w + 2 * border;
-    WarpTestParam params = TEST_GET_PARAM(0);
-    const int out_w = std::get<0>(params), out_h = std::get<1>(params);
-    const int is_alpha_zero = TEST_GET_PARAM(1);
-    const int is_beta_zero = TEST_GET_PARAM(2);
-    const int is_gamma_zero = TEST_GET_PARAM(3);
-    const int is_delta_zero = TEST_GET_PARAM(4);
-    int sub_x, sub_y;
-    const int bd = 8;
-    const int32_t ref = 0;
-
-    uint8_t *input_ = new uint8_t[h * stride];
-    uint8_t *input = input_ + border;
-
-    // The warp functions always write rows with widths that are multiples of 8.
-    // So to avoid a buffer overflow, we may need to pad rows to a multiple
-    // of 8.
-    int output_n = ((out_w + 7) & ~7) * out_h;
-    uint8_t *output = new uint8_t[output_n];
-    int32_t mat[8];
-    int16_t alpha, beta, gamma, delta;
-    ConvBufType *dsta = new ConvBufType[output_n];
-    generate_warped_model(rnd_,
-                          mat,
-                          &alpha,
-                          &beta,
-                          &gamma,
-                          &delta,
-                          is_alpha_zero,
-                          is_beta_zero,
-                          is_gamma_zero,
-                          is_delta_zero);
-
-    for (int r = 0; r < h; ++r)
-        for (int c = 0; c < w; ++c)
-            input[r * stride + c] = rnd_->Rand8();
-    for (int r = 0; r < h; ++r) {
-        memset(input + r * stride - border, input[r * stride], border);
-        memset(input + r * stride + w, input[r * stride + (w - 1)], border);
-    }
-
-    sub_x = 0;
-    sub_y = 0;
-    int do_average = 0;
-
-    ConvolveParams conv_params =
-        get_conv_params_no_round(ref, do_average, 0, dsta, out_w, 1, bd);
-    conv_params.use_jnt_comp_avg = 0;
-
-    const int num_loops = 1000000000 / (out_w + out_h);
-    double elapsed_time;
-    uint64_t start_time_seconds, start_time_useconds;
-    uint64_t finish_time_seconds, finish_time_useconds;
-
-    svt_av1_get_time(&start_time_seconds, &start_time_useconds);
-
-    for (int i = 0; i < num_loops; ++i)
-        test_impl(mat,
-                  input,
-                  w,
-                  h,
-                  stride,
-                  output,
-                  32,
-                  32,
-                  out_w,
-                  out_h,
-                  out_w,
-                  sub_x,
-                  sub_y,
-                  &conv_params,
-                  alpha,
-                  beta,
-                  gamma,
-                  delta);
-
-    svt_av1_get_time(&finish_time_seconds, &finish_time_useconds);
-    elapsed_time =
-        svt_av1_compute_overall_elapsed_time_ms(start_time_seconds,
-                                                start_time_useconds,
-                                                finish_time_seconds,
-                                                finish_time_useconds);
-    printf("warp %3dx%-3d: %7.2f ns\n",
-           out_w,
-           out_h,
-           1000.0 * elapsed_time / num_loops);
-
-    delete[] input_;
-    delete[] output;
-    delete[] dsta;
-}
-
-void AV1WarpFilterTest::RunCheckOutput(warp_affine_func test_impl) {
-    const int w = 128, h = 128;
-    const int border = 16;
-    const int stride = w + 2 * border;
-    WarpTestParam params = TEST_GET_PARAM(0);
+void AV1WarpFilterTest::RunCheckOutput(const warp_affine_func test_impl) {
+    constexpr int w = 128, h = 128;
+    constexpr int border = 16;
+    constexpr int stride = w + 2 * border;
+    const auto params = TEST_GET_PARAM(0);
     const int is_alpha_zero = TEST_GET_PARAM(1);
     const int is_beta_zero = TEST_GET_PARAM(2);
     const int is_gamma_zero = TEST_GET_PARAM(3);
     const int is_delta_zero = TEST_GET_PARAM(4);
     const int out_w = std::get<0>(params), out_h = std::get<1>(params);
     const int num_iters = std::get<2>(params);
-    int i, j, sub_x, sub_y;
-    const int bd = 8;
-    const int32_t ref = 0;
+    int j;
+    constexpr int bd = 8;
 
     // The warp functions always write rows with widths that are multiples of 8.
     // So to avoid a buffer overflow, we may need to pad rows to a multiple
     // of 8.
-    int output_n = ((out_w + 7) & ~7) * out_h;
-    uint8_t *input_ = new uint8_t[h * stride];
-    uint8_t *input = input_ + border;
-    uint8_t *output = new uint8_t[output_n];
-    uint8_t *output2 = new uint8_t[output_n];
-    int32_t mat[8];
+    const int output_n = ((out_w + 7) & ~7) * out_h;
+    std::vector<uint8_t> input_(h * stride);
+    uint8_t *input = input_.data() + border;
+    std::vector<uint8_t> output(output_n);
+    std::vector<uint8_t> output2(output_n);
+    std::array<int32_t, 8> mat;
     int16_t alpha, beta, gamma, delta;
-    ConvolveParams conv_params = get_conv_params(ref, 0, 0, bd);
-    ConvBufType *dsta = new ConvBufType[output_n];
-    ConvBufType *dstb = new ConvBufType[output_n];
-    for (i = 0; i < output_n; ++i) {
-        output[i] = output2[i] = rnd_->Rand8();
-        dsta[i] = dstb[i] = 0;
+    std::vector<ConvBufType> dsta(output_n, 0);
+    std::vector<ConvBufType> dstb(output_n, 0);
+    for (int i = 0; i < output_n; ++i) {
+        output[i] = output2[i] = rnd_.Rand8();
     }
 
-    for (i = 0; i < num_iters; ++i) {
+    for (int i = 0; i < num_iters; ++i) {
         // Generate an input block and extend its borders horizontally
         for (int r = 0; r < h; ++r)
             for (int c = 0; c < w; ++c)
-                input[r * stride + c] = rnd_->Rand8();
+                input[r * stride + c] = rnd_.Rand8();
         for (int r = 0; r < h; ++r) {
             memset(input + r * stride - border, input[r * stride], border);
             memset(input + r * stride + w, input[r * stride + (w - 1)], border);
         }
-        const int use_no_round = rnd_->Rand8() & 1;
-        for (sub_x = 0; sub_x < 2; ++sub_x)
-            for (sub_y = 0; sub_y < 2; ++sub_y) {
+        const int use_no_round = rnd_.Rand8() & 1;
+        for (int sub_x = 0; sub_x < 2; ++sub_x)
+            for (int sub_y = 0; sub_y < 2; ++sub_y) {
                 generate_warped_model(rnd_,
                                       mat,
-                                      &alpha,
-                                      &beta,
-                                      &gamma,
-                                      &delta,
+                                      alpha,
+                                      beta,
+                                      gamma,
+                                      delta,
                                       is_alpha_zero,
                                       is_beta_zero,
                                       is_gamma_zero,
@@ -291,11 +186,12 @@ void AV1WarpFilterTest::RunCheckOutput(warp_affine_func test_impl) {
                     for (int jj = 0; jj < 5; ++jj) {
                         for (int do_average = 0; do_average <= 1;
                              ++do_average) {
+                            ConvolveParams conv_params;
                             if (use_no_round) {
                                 conv_params = get_conv_params_no_round(
-                                    ref, do_average, 0, dsta, out_w, 1, bd);
+                                    do_average, dsta.data(), out_w, 1, bd);
                             } else {
-                                conv_params = get_conv_params(ref, 0, 0, bd);
+                                conv_params = get_conv_params(0, bd);
                             }
                             if (jj >= 4) {
                                 conv_params.use_jnt_comp_avg = 0;
@@ -306,12 +202,12 @@ void AV1WarpFilterTest::RunCheckOutput(warp_affine_func test_impl) {
                                 conv_params.bck_offset =
                                     quant_dist_lookup_table[ii][jj][1];
                             }
-                            svt_av1_warp_affine_c(mat,
+                            svt_av1_warp_affine_c(mat.data(),
                                                   input,
                                                   w,
                                                   h,
                                                   stride,
-                                                  output,
+                                                  output.data(),
                                                   32,
                                                   32,
                                                   out_w,
@@ -326,7 +222,7 @@ void AV1WarpFilterTest::RunCheckOutput(warp_affine_func test_impl) {
                                                   delta);
                             if (use_no_round) {
                                 conv_params = get_conv_params_no_round(
-                                    ref, do_average, 0, dstb, out_w, 1, bd);
+                                    do_average, dstb.data(), out_w, 1, bd);
                             }
                             if (jj >= 4) {
                                 conv_params.use_jnt_comp_avg = 0;
@@ -337,12 +233,12 @@ void AV1WarpFilterTest::RunCheckOutput(warp_affine_func test_impl) {
                                 conv_params.bck_offset =
                                     quant_dist_lookup_table[ii][jj][1];
                             }
-                            test_impl(mat,
+                            test_impl(mat.data(),
                                       input,
                                       w,
                                       h,
                                       stride,
-                                      output2,
+                                      output2.data(),
                                       32,
                                       32,
                                       out_w,
@@ -381,11 +277,6 @@ void AV1WarpFilterTest::RunCheckOutput(warp_affine_func test_impl) {
                 }
             }
     }
-    delete[] input_;
-    delete[] output;
-    delete[] output2;
-    delete[] dsta;
-    delete[] dstb;
 }
 }  // namespace AV1WarpFilter
 
@@ -411,176 +302,19 @@ namespace AV1HighbdWarpFilter {
                               ::testing::Values(0, 1));
 }
 
-AV1HighbdWarpFilterTest::~AV1HighbdWarpFilterTest() {
-}
-void AV1HighbdWarpFilterTest::SetUp() {
-    rnd_ = new svt_av1_test_tool::SVTRandom(0, (1 << 10) - 1);
-}
-
-void AV1HighbdWarpFilterTest::TearDown() {
-    delete rnd_;
-}
-
-void AV1HighbdWarpFilterTest::RunSpeedTest(highbd_warp_affine_func test_impl) {
-    const int w = 128, h = 128;
-    const int border = 16;
-    const int stride8b = w + 2 * border;
-    const int stride2b = w + 2 * border;
-    HighbdWarpTestParam param = TEST_GET_PARAM(0);
-    const int is_alpha_zero = TEST_GET_PARAM(1);
-    const int is_beta_zero = TEST_GET_PARAM(2);
-    const int is_gamma_zero = TEST_GET_PARAM(3);
-    const int is_delta_zero = TEST_GET_PARAM(4);
-    const int out_w = std::get<0>(param), out_h = std::get<1>(param);
-    const int bd = std::get<3>(param);
-    const int32_t ref = 0;
-    const int mask = (1 << bd) - 1;
-    int sub_x, sub_y;
-
-    // The warp functions always write rows with widths that are multiples of 8.
-    // So to avoid a buffer overflow, we may need to pad rows to a multiple
-    // of 8.
-    int output_n = ((out_w + 7) & ~7) * out_h;
-    uint8_t *input8b_ = new uint8_t[h * stride8b];
-    uint8_t *input8b = input8b_ + border;
-    uint8_t *input2b_ = new uint8_t[h * stride2b];
-    uint8_t *input2b = input2b_ + border;
-    uint16_t *output = new uint16_t[output_n];
-    int32_t mat[8];
-    int16_t alpha, beta, gamma, delta;
-    ConvolveParams conv_params = get_conv_params(ref, 0, 0, bd);
-    ConvBufType *dsta = new ConvBufType[output_n];
-
-    generate_warped_model(rnd_,
-                          mat,
-                          &alpha,
-                          &beta,
-                          &gamma,
-                          &delta,
-                          is_alpha_zero,
-                          is_beta_zero,
-                          is_gamma_zero,
-                          is_delta_zero);
-    // Generate an input block and extend its borders horizontally
-    for (int r = 0; r < h; ++r)
-        for (int c = 0; c < w; ++c) {
-            uint16_t val = rnd_->Rand16() & mask;
-            input8b[r * stride8b + c] = val >> 2;
-            input2b[r * stride2b + c] = (val & 3) << 6;
-        }
-    for (int r = 0; r < h; ++r) {
-        for (int c = 0; c < border; ++c) {
-            input8b[r * stride8b - border + c] = input8b[r * stride8b];
-            input8b[r * stride8b + w + c] = input8b[r * stride8b + (w - 1)];
-            input2b[r * stride2b - border + c] = input2b[r * stride2b];
-            input2b[r * stride2b + w + c] = input2b[r * stride2b + (w - 1)];
-        }
-    }
-
-    sub_x = 0;
-    sub_y = 0;
-    int do_average = 0;
-    conv_params.use_jnt_comp_avg = 0;
-    conv_params =
-        get_conv_params_no_round(ref, do_average, 0, dsta, out_w, 1, bd);
-
-    const int num_loops = 50000000 / (out_w * out_h);
-    double elapsed_time_tst;
-    double elapsed_time_ref;
-    uint64_t start_time_seconds_tst, start_time_useconds_tst;
-    uint64_t finish_time_seconds_tst, finish_time_useconds_tst;
-    uint64_t start_time_seconds_ref, start_time_useconds_ref;
-    uint64_t finish_time_seconds_ref, finish_time_useconds_ref;
-
-    svt_av1_get_time(&start_time_seconds_tst, &start_time_useconds_tst);
-
-    for (int i = 0; i < num_loops; ++i)
-        test_impl(mat,
-                  input8b,
-                  input2b,
-                  w,
-                  h,
-                  stride8b,
-                  stride2b,
-                  output,
-                  32,
-                  32,
-                  out_w,
-                  out_h,
-                  out_w,
-                  sub_x,
-                  sub_y,
-                  bd,
-                  &conv_params,
-                  alpha,
-                  beta,
-                  gamma,
-                  delta);
-
-    svt_av1_get_time(&finish_time_seconds_tst, &finish_time_useconds_tst);
-    elapsed_time_tst =
-        svt_av1_compute_overall_elapsed_time_ms(start_time_seconds_tst,
-                                                start_time_useconds_tst,
-                                                finish_time_seconds_tst,
-                                                finish_time_useconds_tst);
-
-    svt_av1_get_time(&start_time_seconds_ref, &start_time_useconds_ref);
-
-    for (int i = 0; i < num_loops; ++i)
-        svt_av1_highbd_warp_affine_c(mat,
-                                     input8b,
-                                     input2b,
-                                     w,
-                                     h,
-                                     stride8b,
-                                     stride2b,
-                                     output,
-                                     32,
-                                     32,
-                                     out_w,
-                                     out_h,
-                                     out_w,
-                                     sub_x,
-                                     sub_y,
-                                     bd,
-                                     &conv_params,
-                                     alpha,
-                                     beta,
-                                     gamma,
-                                     delta);
-
-    svt_av1_get_time(&finish_time_seconds_ref, &finish_time_useconds_ref);
-    elapsed_time_ref =
-        svt_av1_compute_overall_elapsed_time_ms(start_time_seconds_ref,
-                                                start_time_useconds_ref,
-                                                finish_time_seconds_ref,
-                                                finish_time_useconds_ref);
-
-    printf("highbd warp %3dx%-3d: %7.2fx faster\n",
-           out_w,
-           out_h,
-           elapsed_time_ref / elapsed_time_tst);
-
-    delete[] input8b_;
-    delete[] input2b_;
-    delete[] output;
-    delete[] dsta;
-}
-
 void AV1HighbdWarpFilterTest::RunCheckOutput(
-    highbd_warp_affine_func test_impl) {
-    const int w = 128, h = 128;
-    const int border = 16;
-    const int stride8b = w + 2 * border;
-    const int stride2b = w + 2 * border;
-    HighbdWarpTestParam param = TEST_GET_PARAM(0);
+    const highbd_warp_affine_func test_impl) {
+    constexpr int w = 128, h = 128;
+    constexpr int border = 16;
+    constexpr int stride8b = w + 2 * border;
+    constexpr int stride2b = w + 2 * border;
+    const auto param = TEST_GET_PARAM(0);
     const int is_alpha_zero = TEST_GET_PARAM(1);
     const int is_beta_zero = TEST_GET_PARAM(2);
     const int is_gamma_zero = TEST_GET_PARAM(3);
     const int is_delta_zero = TEST_GET_PARAM(4);
     const int out_w = std::get<0>(param), out_h = std::get<1>(param);
     const int bd = std::get<3>(param);
-    const int32_t ref = 0;
     const int num_iters = std::get<2>(param);
     const int mask = (1 << bd) - 1;
     int i, j, sub_x, sub_y;
@@ -589,27 +323,26 @@ void AV1HighbdWarpFilterTest::RunCheckOutput(
     // So to avoid a buffer overflow, we may need to pad rows to a multiple
     // of 8.
     int output_n = ((out_w + 7) & ~7) * out_h;
-    uint8_t *input8b_ = new uint8_t[h * stride8b];
-    uint8_t *input8b = input8b_ + border;
-    uint8_t *input2b_ = new uint8_t[h * stride2b];
-    uint8_t *input2b = input2b_ + border;
-    uint16_t *output = new uint16_t[output_n];
-    uint16_t *output2 = new uint16_t[output_n];
-    int32_t mat[8];
+    std::vector<uint8_t> input8b_(h * stride8b);
+    uint8_t *input8b = input8b_.data() + border;
+    std::vector<uint8_t> input2b_(h * stride2b);
+    uint8_t *input2b = input2b_.data() + border;
+    std::vector<uint16_t> output(output_n);
+    std::vector<uint16_t> output2(output_n);
+    std::array<int32_t, 8> mat;
     int16_t alpha, beta, gamma, delta;
-    ConvolveParams conv_params = get_conv_params(ref, 0, 0, bd);
-    ConvBufType *dsta = new ConvBufType[output_n];
-    ConvBufType *dstb = new ConvBufType[output_n];
+    ConvolveParams conv_params;
+    std::vector<ConvBufType> dsta(output_n, 0);
+    std::vector<ConvBufType> dstb(output_n, 0);
     for (i = 0; i < output_n; ++i) {
-        output[i] = output2[i] = rnd_->Rand16();
-        dsta[i] = dstb[i] = 0;
+        output[i] = output2[i] = rnd_.Rand16();
     }
 
     for (i = 0; i < num_iters; ++i) {
         // Generate an input block and extend its borders horizontally
         for (int r = 0; r < h; ++r)
             for (int c = 0; c < w; ++c) {
-                uint16_t val = rnd_->Rand16() & mask;
+                uint16_t val = rnd_.Rand16() & mask;
                 input8b[r * stride8b + c] = val >> 2;
                 input2b[r * stride2b + c] = (val & 3) << 6;
             }
@@ -621,15 +354,15 @@ void AV1HighbdWarpFilterTest::RunCheckOutput(
                 input2b[r * stride2b + w + c] = input2b[r * stride2b + (w - 1)];
             }
         }
-        const int use_no_round = rnd_->Rand8() & 1;
+        const int use_no_round = rnd_.Rand8() & 1;
         for (sub_x = 0; sub_x < 2; ++sub_x)
             for (sub_y = 0; sub_y < 2; ++sub_y) {
                 generate_warped_model(rnd_,
                                       mat,
-                                      &alpha,
-                                      &beta,
-                                      &gamma,
-                                      &delta,
+                                      alpha,
+                                      beta,
+                                      gamma,
+                                      delta,
                                       is_alpha_zero,
                                       is_beta_zero,
                                       is_gamma_zero,
@@ -640,9 +373,9 @@ void AV1HighbdWarpFilterTest::RunCheckOutput(
                              ++do_average) {
                             if (use_no_round) {
                                 conv_params = get_conv_params_no_round(
-                                    ref, do_average, 0, dsta, out_w, 1, bd);
+                                    do_average, dsta.data(), out_w, 1, bd);
                             } else {
-                                conv_params = get_conv_params(ref, 0, 0, bd);
+                                conv_params = get_conv_params(0, bd);
                             }
                             if (jj >= 4) {
                                 conv_params.use_jnt_comp_avg = 0;
@@ -654,14 +387,14 @@ void AV1HighbdWarpFilterTest::RunCheckOutput(
                                     quant_dist_lookup_table[ii][jj][1];
                             }
 
-                            svt_av1_highbd_warp_affine_c(mat,
+                            svt_av1_highbd_warp_affine_c(mat.data(),
                                                          input8b,
                                                          input2b,
                                                          w,
                                                          h,
                                                          stride8b,
                                                          stride2b,
-                                                         output,
+                                                         output.data(),
                                                          32,
                                                          32,
                                                          out_w,
@@ -679,7 +412,7 @@ void AV1HighbdWarpFilterTest::RunCheckOutput(
                                 // TODO(angiebird): Change this to test_impl
                                 // once we have SIMD implementation
                                 conv_params = get_conv_params_no_round(
-                                    ref, do_average, 0, dstb, out_w, 1, bd);
+                                    do_average, dstb.data(), out_w, 1, bd);
                             }
                             if (jj >= 4) {
                                 conv_params.use_jnt_comp_avg = 0;
@@ -690,14 +423,14 @@ void AV1HighbdWarpFilterTest::RunCheckOutput(
                                 conv_params.bck_offset =
                                     quant_dist_lookup_table[ii][jj][1];
                             }
-                            test_impl(mat,
+                            test_impl(mat.data(),
                                       input8b,
                                       input2b,
                                       w,
                                       h,
                                       stride8b,
                                       stride2b,
-                                      output2,
+                                      output2.data(),
                                       32,
                                       32,
                                       out_w,
@@ -738,13 +471,6 @@ void AV1HighbdWarpFilterTest::RunCheckOutput(
                 }
             }
     }
-
-    delete[] input8b_;
-    delete[] input2b_;
-    delete[] output;
-    delete[] output2;
-    delete[] dsta;
-    delete[] dstb;
 }
 }  // namespace AV1HighbdWarpFilter
 }  // namespace libaom_test

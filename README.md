@@ -19,7 +19,7 @@ Some popular use case examples:
 - Prioritize even further detail retention over artifact prevention (tune VQ):  
   `--tune 0 --crf xx (any, start with 35) --preset x (2 to 6 recommended)`
 - Prioritize film grain retention (tune Film Grain):  
-  `--tune 5 --crf xx (20 to 40 recommended, start with 30) --preset x (2 *HIGHLY* recommended)`
+  `--tune 6 --crf xx (20 to 40 recommended, start with 30) --preset x (1 or 2 *HIGHLY* recommended)`
 - Still image coding (tune IQ + AVIF):  
   `--tune 3 --crf xx (any, start with 30) --preset x (2 to 6 recommended) --avif 1`
 
@@ -46,11 +46,19 @@ For additional docs (build instructions, documentation, usage, etc.), see the [S
 
 A custom curve specifically designed for HDR video and images with a Perceptual Quantizer (PQ) transfer. It can manually be turned on by setting `--variance-boost-curve 3`, or automatically by setting the corresponding CICP value `--transfer-characteristics 16`.
 
-- `Film Grain tune (tune 5)`
+- `Film Grain tune (tune 6)`
 
-An opinionated tune optimized for film grain retention and temporal consistency. The recommended CRF range to use tune 5 is 20 to 40.
+An opinionated tune optimized for film grain retention and temporal consistency. The recommended CRF range to use tune 6 is 20 to 40.
 
-Tune 5 is equivalent to setting these parameters: `--tune 0 --enable-tf 0 --enable-restoration 0 --enable-cdef 0 --complex-hvs 1 --tx-bias 1 --ac-bias 4.00`.
+Tune 6 is equivalent to setting these parameters: `--tune 0 --enable-tf 0 --enable-restoration 0 --enable-cdef 0 --complex-hvs 1 --tx-bias 1 --ac-bias 4.00`.
+
+- `High Profile / 4:4:4`
+
+Allows encoding in High Profile, 4:4:4 (no chroma subsampling). Perfect for screen recordings and high-quality AVIFs. Enabled automatically when source is a 4:4:4 Y4M or with `--color-format 444` if it's a raw YUV.
+
+- `QM-PSNR` *0 and 1*
+
+Uses quantization matrices in the distortion computation for RD search, providing visual gains especially for images. A feature from libaom. Default is 1 for tune IQ, 0 otherwise.
 
 - `--cdef-scaling` *1 (0.06x) to 30 (2x)*
 
@@ -70,7 +78,7 @@ Apply noise to chroma planes based on the luma plane. When enabled, chroma noise
 
 - `--noise-size` *-1 to 13*
 
-Set grain size for generated noise table, default is -1 (auto, based on input resolution). 
+Set grain size for generated noise table, default is -1 (auto, based on input resolution).
 
 ### From SVT-AV1-PSY
 
@@ -122,11 +130,11 @@ A new tune, optimized for still images based on SSIMULACRA2 performance on the C
 
 Provides a more versatile and granular way to set CRF. Range has been extended to 70 (from 63) to help with ultra-low bitrate encodes, and can now be set in quarter-step (0.25) increments.
 
-- `--hbd-mds` *0 to 2*
+- `--hbd-mds` *-1 to 2* (**[Merged to Mainline](https://gitlab.com/AOMediaCodec/SVT-AV1/-/merge_requests/2644)**)
 
 This setting is short for High Bit Depth - Mode DecisionS. It controls the bit-depth at which internal operations are performed at.
 
-0 follows the default preset behavior, 1 forces 10-bit mode decision for everything, 2 is adaptive 8/10-bit mode decision based on the scenario. Default is 0, following default preset behavior.
+-1 follows the default preset behavior, 0 forces 8-bit mode decision for everything, 1 forces 10-bit, 2 is adaptive 8/10-bit based on scenario. Default is -1, following default preset behavior.
 
 - `Presets -2 & -3`
 

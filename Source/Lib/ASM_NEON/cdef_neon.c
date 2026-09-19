@@ -16,90 +16,87 @@
 #include "definitions.h"
 #include "mem_neon.h"
 
-static inline void mse_4xn_8bit_neon(const uint8_t* src, const uint8_t* dst, const int32_t dstride, uint32x4_t* sse,
-                                     uint8_t height, uint8_t subsampling_factor) {
-    do {
-        const uint8x8_t s = load_u8_4x2(src, 4 * subsampling_factor);
-        const uint8x8_t d = load_u8_4x2(dst, dstride * subsampling_factor);
-
-        const uint16x8_t abs = vabdl_u8(d, s);
-
-        *sse = vmlal_u16(*sse, vget_low_u16(abs), vget_low_u16(abs));
-        *sse = vmlal_u16(*sse, vget_high_u16(abs), vget_high_u16(abs));
-
-        src += 2 * 4 * subsampling_factor; // with * 2 rows per iter * subsampling
-        dst += 2 * dstride * subsampling_factor;
-        height -= 2 * subsampling_factor;
-    } while (height != 0);
+/* 8-bit MSE (no FEAT_DotProd): abs-diff fits u8 and d*d fits u16 (255^2=65025), so use
+ * vabdq_u8 (16-lane abs in one op) + vmull_u8/vmull2 (square 8 lanes each into u16) +
+ * vpadalq_u16 (widen-add into u32). ~17% fewer inner ops than vabdl_u8 + 2x vmlal_u16.
+ * 4-way block unroll for ILP. */
+static inline uint32x4_t mse_block_8w_neon_v2(uint32x4_t acc, const uint8_t* s, const uint8_t* d, int32_t dstride,
+                                              int bh, int sub) {
+    uint32x4_t b0 = vdupq_n_u32(0), b1 = vdupq_n_u32(0);
+    for (int h = 0; h < bh; h += 2 * sub) {
+        const uint8x16_t sv = vcombine_u8(vld1_u8(s), vld1_u8(s + sub * 8));
+        const uint8x16_t dv = vcombine_u8(vld1_u8(d), vld1_u8(d + sub * dstride));
+        const uint8x16_t ab = vabdq_u8(dv, sv);
+        b0                  = vpadalq_u16(b0, vmull_u8(vget_low_u8(ab), vget_low_u8(ab)));
+        b1                  = vpadalq_u16(b1, vmull_u8(vget_high_u8(ab), vget_high_u8(ab)));
+        s += 8 * 2 * sub;
+        d += 2 * sub * dstride;
+    }
+    return vaddq_u32(acc, vaddq_u32(b0, b1));
 }
 
-static inline void mse_8xn_8bit_neon(const uint8_t* src, const uint8_t* dst, const int32_t dstride, uint32x4_t* sse,
-                                     uint8_t height, uint8_t subsampling_factor) {
-    uint32x4_t mse0 = vdupq_n_u32(0);
-    uint32x4_t mse1 = vdupq_n_u32(0);
-
-    do {
-        const uint8x8_t s0 = vld1_u8(src);
-        const uint8x8_t s1 = vld1_u8(src + subsampling_factor * 8);
-        const uint8x8_t d0 = vld1_u8(dst);
-        const uint8x8_t d1 = vld1_u8(dst + subsampling_factor * dstride);
-
-        const uint16x8_t abs0 = vabdl_u8(d0, s0);
-        const uint16x8_t abs1 = vabdl_u8(d1, s1);
-
-        mse0 = vmlal_u16(mse0, vget_low_u16(abs0), vget_low_u16(abs0));
-        mse0 = vmlal_u16(mse0, vget_high_u16(abs0), vget_high_u16(abs0));
-        mse1 = vmlal_u16(mse1, vget_low_u16(abs1), vget_low_u16(abs1));
-        mse1 = vmlal_u16(mse1, vget_high_u16(abs1), vget_high_u16(abs1));
-
-        src += 8 * 2 * subsampling_factor;
-        dst += 2 * subsampling_factor * dstride;
-        height -= 2 * subsampling_factor;
-    } while (height != 0);
-    *sse = vaddq_u32(*sse, mse0);
-    *sse = vaddq_u32(*sse, mse1);
+static inline uint32x4_t mse_block_4w_neon_v2(uint32x4_t acc, const uint8_t* s, const uint8_t* d, int32_t dstride,
+                                              int bh, int sub) {
+    uint32x4_t b0 = vdupq_n_u32(0), b1 = vdupq_n_u32(0);
+    for (int h = 0; h < bh; h += 4 * sub) {
+        const uint8x16_t sv = load_u8_4x4(s, 4 * sub);
+        const uint8x16_t dv = load_u8_4x4(d, dstride * sub);
+        const uint8x16_t ab = vabdq_u8(dv, sv);
+        b0                  = vpadalq_u16(b0, vmull_u8(vget_low_u8(ab), vget_low_u8(ab)));
+        b1                  = vpadalq_u16(b1, vmull_u8(vget_high_u8(ab), vget_high_u8(ab)));
+        s += 4 * 4 * sub;
+        d += 4 * sub * dstride;
+    }
+    return vaddq_u32(acc, vaddq_u32(b0, b1));
 }
 
 uint64_t svt_aom_compute_cdef_dist_8bit_neon(const uint8_t* dst8, int32_t dstride, const uint8_t* src8,
                                              const CdefList* dlist, int32_t cdef_count, BlockSize bsize,
                                              int32_t coeff_shift, uint8_t subsampling_factor) {
-    uint64_t sum;
-    int32_t  bi, bx, by;
+    uint32x4_t a0 = vdupq_n_u32(0), a1 = vdupq_n_u32(0), a2 = vdupq_n_u32(0), a3 = vdupq_n_u32(0);
 
-    uint32x4_t mse = vdupq_n_u32(0);
+    const int bw  = (bsize == BLOCK_8X8 || bsize == BLOCK_8X4) ? 8 : 4;
+    const int bh  = (bsize == BLOCK_8X8 || bsize == BLOCK_4X8) ? 8 : 4;
+    const int sub = subsampling_factor;
+    const int blk = bw * bh;
 
-    if (bsize == BLOCK_8X8) {
-        for (bi = 0; bi < cdef_count; bi++) {
-            by = dlist[bi].by;
-            bx = dlist[bi].bx;
-            mse_8xn_8bit_neon(src8, dst8 + 8 * by * dstride + 8 * bx, dstride, &mse, 8, subsampling_factor);
-            src8 += 8 * 8;
+    int bi = 0;
+    if (bw == 8) {
+        for (; bi + 4 <= cdef_count; bi += 4) {
+            const uint8_t* s = src8 + bi * blk;
+            a0               = mse_block_8w_neon_v2(
+                a0, s + 0 * blk, dst8 + bh * dlist[bi + 0].by * dstride + 8 * dlist[bi + 0].bx, dstride, bh, sub);
+            a1 = mse_block_8w_neon_v2(
+                a1, s + 1 * blk, dst8 + bh * dlist[bi + 1].by * dstride + 8 * dlist[bi + 1].bx, dstride, bh, sub);
+            a2 = mse_block_8w_neon_v2(
+                a2, s + 2 * blk, dst8 + bh * dlist[bi + 2].by * dstride + 8 * dlist[bi + 2].bx, dstride, bh, sub);
+            a3 = mse_block_8w_neon_v2(
+                a3, s + 3 * blk, dst8 + bh * dlist[bi + 3].by * dstride + 8 * dlist[bi + 3].bx, dstride, bh, sub);
         }
-    } else if (bsize == BLOCK_4X8) {
-        for (bi = 0; bi < cdef_count; bi++) {
-            by = dlist[bi].by;
-            bx = dlist[bi].bx;
-            mse_4xn_8bit_neon(src8, dst8 + 8 * by * dstride + 4 * bx, dstride, &mse, 8, subsampling_factor);
-            src8 += 4 * 8;
-        }
-    } else if (bsize == BLOCK_8X4) {
-        for (bi = 0; bi < cdef_count; bi++) {
-            by = dlist[bi].by;
-            bx = dlist[bi].bx;
-            mse_8xn_8bit_neon(src8, dst8 + 4 * by * dstride + 8 * bx, dstride, &mse, 4, subsampling_factor);
-            src8 += 8 * 4;
+        for (; bi < cdef_count; bi++) {
+            a0 = mse_block_8w_neon_v2(
+                a0, src8 + bi * blk, dst8 + bh * dlist[bi].by * dstride + 8 * dlist[bi].bx, dstride, bh, sub);
         }
     } else {
-        assert(bsize == BLOCK_4X4);
-        for (bi = 0; bi < cdef_count; bi++) {
-            by = dlist[bi].by;
-            bx = dlist[bi].bx;
-            mse_4xn_8bit_neon(src8, dst8 + 4 * by * dstride + 4 * bx, dstride, &mse, 4, subsampling_factor);
-            src8 += 4 * 4;
+        for (; bi + 4 <= cdef_count; bi += 4) {
+            const uint8_t* s = src8 + bi * blk;
+            a0               = mse_block_4w_neon_v2(
+                a0, s + 0 * blk, dst8 + bh * dlist[bi + 0].by * dstride + 4 * dlist[bi + 0].bx, dstride, bh, sub);
+            a1 = mse_block_4w_neon_v2(
+                a1, s + 1 * blk, dst8 + bh * dlist[bi + 1].by * dstride + 4 * dlist[bi + 1].bx, dstride, bh, sub);
+            a2 = mse_block_4w_neon_v2(
+                a2, s + 2 * blk, dst8 + bh * dlist[bi + 2].by * dstride + 4 * dlist[bi + 2].bx, dstride, bh, sub);
+            a3 = mse_block_4w_neon_v2(
+                a3, s + 3 * blk, dst8 + bh * dlist[bi + 3].by * dstride + 4 * dlist[bi + 3].bx, dstride, bh, sub);
+        }
+        for (; bi < cdef_count; bi++) {
+            a0 = mse_block_4w_neon_v2(
+                a0, src8 + bi * blk, dst8 + bh * dlist[bi].by * dstride + 4 * dlist[bi].bx, dstride, bh, sub);
         }
     }
 
-    sum = vaddlvq_u32(mse);
+    const uint32x4_t mse = vaddq_u32(vaddq_u32(a0, a1), vaddq_u32(a2, a3));
+    const uint64_t   sum = vaddlvq_u32(mse);
     return sum >> 2 * coeff_shift;
 }
 

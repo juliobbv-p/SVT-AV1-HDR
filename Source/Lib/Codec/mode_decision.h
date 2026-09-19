@@ -112,16 +112,16 @@ typedef EbErrorType (*EbAv1FullCostFunc)(PictureControlSet* pcs, struct ModeDeci
 /**************************************
     * Extern Function Declarations
     **************************************/
-EbErrorType svt_aom_mode_decision_cand_bf_ctor(ModeDecisionCandidateBuffer* buffer_ptr, EbBitDepth max_bitdepth,
-                                               uint8_t sb_size, uint32_t buffer_mask,
+EbErrorType svt_aom_mode_decision_cand_bf_ctor(ModeDecisionCandidateBuffer* buffer_ptr, EbPictureBufferDesc* pred,
+                                               EbPictureBufferDesc* rec_coeff, EbPictureBufferDesc* quant,
                                                EbPictureBufferDesc* temp_residual, EbPictureBufferDesc* temp_recon_ptr,
                                                uint64_t* fast_cost, uint64_t* full_cost, uint64_t* full_cost_ssim_ptr);
 
 EbErrorType svt_aom_mode_decision_scratch_cand_bf_ctor(ModeDecisionCandidateBuffer* buffer_ptr, uint8_t sb_size,
-                                                       EbBitDepth max_bitdepth);
+                                                       EbColorFormat color_format, EbBitDepth max_bitdepth);
 
-uint32_t product_full_mode_decision_light_pd0(struct ModeDecisionContext* ctx, BlkStruct* blk_ptr,
-                                              ModeDecisionCandidateBuffer** buffer_ptr_array);
+uint32_t product_full_mode_decision_pd0(struct ModeDecisionContext* ctx, BlkStruct* blk_ptr,
+                                        ModeDecisionCandidateBuffer** buffer_ptr_array);
 
 void        svt_aom_product_full_mode_decision_light_pd1(PictureControlSet* pcs, struct ModeDecisionContext* ctx,
                                                          ModeDecisionCandidateBuffer* cand_bf);
@@ -136,10 +136,13 @@ EbErrorType generate_md_stage_0_cand(PictureControlSet* pcs, struct ModeDecision
                                      const struct PC_TREE* const pc_tree, uint32_t* fast_candidate_total_count);
 void        generate_md_stage_0_cand_light_pd1(struct ModeDecisionContext* ctx, uint32_t* fast_candidate_total_count,
                                                PictureControlSet* pcs);
-EbErrorType generate_md_stage_0_cand_light_pd0(struct ModeDecisionContext* ctx, uint32_t* fast_candidate_total_count,
-                                               PictureControlSet* pcs);
+EbErrorType generate_md_stage_0_cand_pd0(struct ModeDecisionContext* ctx, uint32_t* fast_candidate_total_count,
+                                         PictureControlSet* pcs);
 
 static INLINE int svt_aom_is_interintra_allowed_bsize(const BlockSize bsize) {
+    if (!CONFIG_ENABLE_INTER_INTRA) {
+        return 0; // inter-intra off -> const-folds, cascades DCE
+    }
     return (bsize >= BLOCK_8X8) && (bsize <= BLOCK_32X32);
 }
 

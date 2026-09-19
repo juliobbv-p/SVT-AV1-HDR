@@ -57,3 +57,33 @@ Then it will generate the decoded files and run the quality metric computation, 
 Lastly it'll generate the final report.
 
 Encoding, decoding and summary maybe performed on separate machines, see summary.py for details.
+
+
+### OPTIMIZED SVT-AV1-ONLY PSNR PATH
+
+When every codec under test is an SVT-AV1 encoder **and** the only requested
+metric is PSNR (`allowed_metrics: ["psnr"]`), `run_comparison.sh` automatically
+switches to a faster path:
+
+- The encoder is run with `--enable-stat-report 1` and PSNR is read straight
+  from its summary output, so the dav1d **decode and VMAF steps are skipped**.
+- The encoder's "Average PSNR (using per-frame PSNR)" is the same quantity VMAF
+  reports as its pooled-mean PSNR, so BD-rate results match the full pipeline
+  (verified to within ~0.005 dB, i.e. the encoder's 2-decimal print rounding).
+- BD-rate computation and CSV/PDF reporting are unchanged (reused as-is).
+
+Detection and dispatch are automatic; a NOTE banner is printed when the fast
+path is used. To run it manually:
+
+```
+python3 encode.py  <config> --svt-psnr-fast
+python3 summary.py <config> --svt_psnr_fast
+```
+
+Notes:
+- Set `anchor_encoder` in the config to one of the SVT codecs present in the run
+  (the standard config anchor is used for BD-rate).
+- The reported `encode_time` **includes** the in-encoder PSNR cost
+  (~10-15% over a metric-free encode). Use the standard pipeline if you need
+  clean encoder-speed numbers.
+- Detection logic lives in `scripts/detect_svt_psnr_fast.py`.

@@ -251,8 +251,8 @@ class Unpack2bCompress
     }
 
   protected:
-    void check_output(uint32_t width, uint32_t height, uint8_t *out_1,
-                      uint8_t *out_2, uint32_t out_stride) {
+    static void check_output(uint32_t width, uint32_t height, uint8_t *out_1,
+                             uint8_t *out_2, uint32_t out_stride) {
         int fail_count = 0;
         for (uint32_t j = 0; j < height; j++) {
             for (uint32_t k = 0; k < width; k++) {

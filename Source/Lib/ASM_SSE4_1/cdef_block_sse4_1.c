@@ -966,3 +966,50 @@ void svt_aom_copy_rect8_8bit_to_16bit_sse4_1(uint16_t* dst, int32_t dstride, con
         }
     }
 }
+
+// Native 8-bit direction search. Identical math to svt_aom_cdef_find_dir_sse4_1
+// above; only the load differs (widen uint8 -> int16 before the shift and the
+// -128 bias), so the block never has to be expanded into a uint16 buffer first.
+uint8_t svt_aom_cdef_find_dir_8bit_sse4_1(const uint8_t* img, int32_t stride, int32_t* var, int32_t coeff_shift) {
+    int32_t cost[8];
+    int32_t best_cost = 0;
+    uint8_t best_dir  = 0;
+
+    const __m128i shift_reg = _mm_cvtsi32_si128(coeff_shift);
+    const __m128i c128      = _mm_set1_epi16(128);
+    __m128i       lines[8];
+    for (int i = 0; i < 8; i++) {
+        const __m128i src = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)&img[i * stride]));
+        lines[i]          = _mm_sub_epi16(_mm_sra_epi16(src, shift_reg), c128);
+    }
+
+    /* Compute "mostly vertical" directions. */
+    compute_directions(lines, cost + 4);
+
+    array_reverse_transpose_8x8(lines, lines);
+
+    /* Compute "mostly horizontal" directions. */
+    compute_directions(lines, cost);
+
+    for (int i = 0; i < 8; i++) {
+        if (cost[i] > best_cost) {
+            best_cost = cost[i];
+            best_dir  = (uint8_t)i;
+        }
+    }
+
+    /* Difference between the optimal variance and the variance along the
+       orthogonal direction. Again, the sum(x^2) terms cancel out. */
+    *var = best_cost - cost[(best_dir + 4) & 7];
+    /* We'd normally divide by 840, but dividing by 1024 is close enough
+       for what we're going to do with this. */
+    *var >>= 10;
+    return best_dir;
+}
+
+// 128 bits cannot hold both blocks, so the dual entry point is two single searches.
+void svt_aom_cdef_find_dir_dual_8bit_sse4_1(const uint8_t* img1, const uint8_t* img2, int stride, int32_t* var1,
+                                            int32_t* var2, int32_t coeff_shift, uint8_t* out1, uint8_t* out2) {
+    *out1 = svt_aom_cdef_find_dir_8bit_sse4_1(img1, stride, var1, coeff_shift);
+    *out2 = svt_aom_cdef_find_dir_8bit_sse4_1(img2, stride, var2, coeff_shift);
+}

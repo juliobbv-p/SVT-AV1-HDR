@@ -627,9 +627,8 @@ void svt_enc_msb_pack2d_avx2_intrin_al(uint8_t* in8_bit_buffer, uint32_t in8_str
     }
 }
 
-void svt_full_distortion_kernel32_bits_avx2(int32_t* coeff, uint32_t coeff_stride, int32_t* recon_coeff,
-                                            uint32_t recon_coeff_stride, uint64_t distortion_result[DIST_CALC_TOTAL],
-                                            uint32_t area_width, uint32_t area_height) {
+void svt_full_distortion_kernel32_bits_avx2(int32_t* coeff, int32_t* recon_coeff, uint32_t stride, uint32_t area_width,
+                                            uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]) {
     uint32_t row_count;
     __m256i  sum1 = _mm256_setzero_si256();
     __m256i  sum2 = _mm256_setzero_si256();
@@ -639,26 +638,38 @@ void svt_full_distortion_kernel32_bits_avx2(int32_t* coeff, uint32_t coeff_strid
     do {
         int32_t* coeff_temp       = coeff;
         int32_t* recon_coeff_temp = recon_coeff;
+        uint32_t col              = area_width;
 
-        uint32_t col_count = area_width / 4;
-        do {
-            __m128i x0, y0;
-            __m256i x, y, z;
-            x0   = _mm_loadu_si128((__m128i*)(coeff_temp));
-            y0   = _mm_loadu_si128((__m128i*)(recon_coeff_temp));
-            x    = _mm256_cvtepi32_epi64(x0);
-            y    = _mm256_cvtepi32_epi64(y0);
-            z    = _mm256_mul_epi32(x, x);
-            sum2 = _mm256_add_epi64(sum2, z);
-            x    = _mm256_sub_epi64(x, y);
-            x    = _mm256_mul_epi32(x, x);
-            sum1 = _mm256_add_epi64(sum1, x);
+        // _mm256_mul_epi32 squares the even 32-bit lanes; shifting each 64-bit lane
+        // down by 32 brings the odd lanes into position for a second pass. Exact for
+        // any int32 input, with no assumption that the squares fit 32 bits.
+        while (col >= 8) {
+            const __m256i x  = _mm256_loadu_si256((const __m256i*)coeff_temp);
+            const __m256i y  = _mm256_loadu_si256((const __m256i*)recon_coeff_temp);
+            const __m256i d  = _mm256_sub_epi32(x, y);
+            const __m256i xo = _mm256_srli_epi64(x, 32);
+            const __m256i dd = _mm256_srli_epi64(d, 32);
+            sum2 = _mm256_add_epi64(sum2, _mm256_add_epi64(_mm256_mul_epi32(x, x), _mm256_mul_epi32(xo, xo)));
+            sum1 = _mm256_add_epi64(sum1, _mm256_add_epi64(_mm256_mul_epi32(d, d), _mm256_mul_epi32(dd, dd)));
+            coeff_temp += 8;
+            recon_coeff_temp += 8;
+            col -= 8;
+        }
+        while (col >= 4) {
+            __m128i       x0 = _mm_loadu_si128((__m128i*)(coeff_temp));
+            __m128i       y0 = _mm_loadu_si128((__m128i*)(recon_coeff_temp));
+            __m256i       x  = _mm256_cvtepi32_epi64(x0);
+            const __m256i y  = _mm256_cvtepi32_epi64(y0);
+            sum2             = _mm256_add_epi64(sum2, _mm256_mul_epi32(x, x));
+            x                = _mm256_sub_epi64(x, y);
+            sum1             = _mm256_add_epi64(sum1, _mm256_mul_epi32(x, x));
             coeff_temp += 4;
             recon_coeff_temp += 4;
-        } while (--col_count);
+            col -= 4;
+        }
 
-        coeff += coeff_stride;
-        recon_coeff += recon_coeff_stride;
+        coeff += stride;
+        recon_coeff += stride;
         row_count -= 1;
     } while (row_count > 0);
 
@@ -1778,5 +1789,27 @@ void svt_aom_hadamard_32x32_avx2(const int16_t* src_diff, ptrdiff_t src_stride, 
 
         coeff += 16;
         t_coeff += 16;
+    }
+}
+
+void svt_memcpy_intrin_avx2(void* dst_ptr, void const* src_ptr, size_t size) {
+    const unsigned char* src = src_ptr;
+    unsigned char*       dst = dst_ptr;
+    size_t               i   = 0;
+
+    while ((i + 32) <= size) {
+        _mm256_storeu_si256((__m256i*)(dst + i), _mm256_loadu_si256((const __m256i*)(src + i)));
+        i += 32;
+    }
+    if ((i + 16) <= size) {
+        _mm_storeu_si128((__m128i*)(dst + i), _mm_loadu_si128((const __m128i*)(src + i)));
+        i += 16;
+    }
+    if ((i + 8) <= size) {
+        _mm_storel_epi64((__m128i*)(dst + i), _mm_loadl_epi64((const __m128i*)(src + i)));
+        i += 8;
+    }
+    for (; i < size; ++i) {
+        dst[i] = src[i];
     }
 }

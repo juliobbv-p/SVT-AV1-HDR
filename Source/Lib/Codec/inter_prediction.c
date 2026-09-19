@@ -29,6 +29,9 @@ void svt_aom_pack_block(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8_t* i
         in8_bit_buffer, in8_stride, inn_bit_buffer, inn_stride, out16_bit_buffer, out_stride, width, height);
 }
 
+const int             div_mult[32] = {0,    16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638,
+                                      1489, 1365,  1260, 1170, 1092, 1024, 963,  910,  862,  819,  780,
+                                      744,  712,   682,  655,  630,  606,  585,  564,  546,  528};
 static WedgeMasksType wedge_masks[BLOCK_SIZES_ALL][2];
 
 int svt_aom_is_masked_compound_type(COMPOUND_TYPE type) {
@@ -202,6 +205,7 @@ void svt_av1_setup_scale_factors_for_frame(ScaleFactors* sf, int other_w, int ot
     if (!valid_ref_frame_size(other_w, other_h, this_w, this_h)) {
         sf->x_scale_fp = REF_INVALID_SCALE;
         sf->y_scale_fp = REF_INVALID_SCALE;
+        sf->is_scaled  = 0;
         return;
     }
 
@@ -211,7 +215,8 @@ void svt_av1_setup_scale_factors_for_frame(ScaleFactors* sf, int other_w, int ot
     sf->x_step_q4 = fixed_point_scale_to_coarse_point_scale(sf->x_scale_fp);
     sf->y_step_q4 = fixed_point_scale_to_coarse_point_scale(sf->y_scale_fp);
 
-    if (av1_is_scaled(sf)) {
+    sf->is_scaled = av1_is_scaled(sf);
+    if (sf->is_scaled) {
         sf->scale_value_x = scaled_x;
         sf->scale_value_y = scaled_y;
     } else {
@@ -1113,16 +1118,18 @@ AomConvolveFn svt_aom_convolve[/*subX*/ 2][/*subY*/ 2][/*bi*/ 2];
 
 void svt_aom_asm_set_convolve_asm_table(void) {
     svt_aom_convolve[0][0][0] = svt_av1_convolve_2d_copy_sr;
-    svt_aom_convolve[0][0][1] = svt_av1_jnt_convolve_2d_copy;
-
     svt_aom_convolve[0][1][0] = svt_av1_convolve_y_sr;
-    svt_aom_convolve[0][1][1] = svt_av1_jnt_convolve_y;
-
     svt_aom_convolve[1][0][0] = svt_av1_convolve_x_sr;
-    svt_aom_convolve[1][0][1] = svt_av1_jnt_convolve_x;
-
     svt_aom_convolve[1][1][0] = svt_av1_convolve_2d_sr;
+#if CONFIG_ENABLE_INTER_COMPOUND
+    // Compound (jnt) convolve is only reached when is_compound==1 (a block with a
+    // 2nd reference). RTC minimal is single-ref (see mrp coupling assert), so these
+    // slots are never indexed; guarding them lets LTO strip the jnt_convolve impls.
+    svt_aom_convolve[0][0][1] = svt_av1_jnt_convolve_2d_copy;
+    svt_aom_convolve[0][1][1] = svt_av1_jnt_convolve_y;
+    svt_aom_convolve[1][0][1] = svt_av1_jnt_convolve_x;
     svt_aom_convolve[1][1][1] = svt_av1_jnt_convolve_2d;
+#endif
 }
 
 DECLARE_ALIGNED(256, const InterpKernel, sub_pel_filters_8sharp[SUBPEL_SHIFTS]) = {{0, 0, 0, 128, 0, 0, 0, 0},
@@ -1253,8 +1260,8 @@ void highbd_convolve_2d_for_intrabc(const uint16_t* src, int src_stride, uint16_
 
 /*
 */
-void svt_inter_predictor_light_pd0(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride, int32_t w,
-                                   int32_t h, SubpelParams* subpel_params, ConvolveParams* conv_params) {
+void svt_inter_predictor_pd0(const uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride, int32_t w,
+                             int32_t h, SubpelParams* subpel_params, ConvolveParams* conv_params) {
     const int32_t is_scaled = has_scale(subpel_params->xs, subpel_params->ys);
     if (is_scaled) {
         InterpFilterParams filter_params_x, filter_params_y;
@@ -1287,6 +1294,7 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
     av1_get_convolve_filter_params(interp_filters, &filter_params_x, &filter_params_y, w, h);
     const int32_t is_scaled = has_scale(subpel_params->xs, subpel_params->ys);
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
     if (bd > EB_EIGHT_BIT) {
         // for super-res, the reference frame block might be 2x than predictor in maximum
         // for reference scaling, it might be 4x since both width and height is scaled 2x
@@ -1350,7 +1358,12 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
                                                                                               conv_params,
                                                                                               bd);
         }
-    } else {
+    } else
+#else
+    UNUSED(bd);
+    UNUSED(src_2b);
+#endif
+    {
         if (is_scaled) {
             svt_av1_convolve_2d_scale(src,
                                       src_stride,

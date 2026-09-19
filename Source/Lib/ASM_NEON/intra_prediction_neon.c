@@ -1189,21 +1189,21 @@ static inline void dr_prediction_z3_32x16_neon(uint8_t* dst, ptrdiff_t stride, c
 }
 
 static inline void dr_prediction_z3_32x64_neon(uint8_t* dst, ptrdiff_t stride, const uint8_t* left, int dy) {
-    uint8_t dstT[64 * 32];
+    DECLARE_ALIGNED(16, uint8_t, dstT[64 * 32]);
 
     dr_prediction_z1_64xH_neon(32, dstT, 64, left, dy);
     transpose(dstT, 64, dst, stride, 32, 64);
 }
 
 static inline void dr_prediction_z3_64x32_neon(uint8_t* dst, ptrdiff_t stride, const uint8_t* left, int dy) {
-    uint8_t dstT[32 * 64];
+    DECLARE_ALIGNED(16, uint8_t, dstT[32 * 64]);
 
     dr_prediction_z1_32xH_neon(64, dstT, 32, left, dy);
     transpose(dstT, 32, dst, stride, 64, 32);
 }
 
 static inline void dr_prediction_z3_16x64_neon(uint8_t* dst, ptrdiff_t stride, const uint8_t* left, int dy) {
-    uint8_t dstT[64 * 16];
+    DECLARE_ALIGNED(16, uint8_t, dstT[64 * 16]);
 
     dr_prediction_z1_64xH_neon(16, dstT, 64, left, dy);
     transpose(dstT, 64, dst, stride, 16, 64);

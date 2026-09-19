@@ -656,8 +656,8 @@ static void kf_group_rate_assingment(PictureParentControlSet* pcs, FIRSTPASS_STA
     FIRSTPASS_STATS     next_frame;
     av1_zero(next_frame);
 
-    rc->frames_since_key = 0;
-
+    rc->frames_since_key                        = 0;
+    rc->frames_since_cdf_update                 = 0;
     const FIRSTPASS_STATS*       start_position = twopass->stats_in;
     int                          kf_bits        = 0;
     double                       kf_mod_err;
@@ -941,9 +941,8 @@ void svt_aom_set_rc_param(SequenceControlSet* scs) {
     enc_ctx->rc_cfg.starting_buffer_level_ms = is_vbr ? 60000 : scs->static_config.starting_buffer_level_ms;
     enc_ctx->rc_cfg.optimal_buffer_level_ms  = is_vbr ? 60000 : scs->static_config.optimal_buffer_level_ms;
 
-    // todo: to expose to a cli parameter
-    enc_ctx->rc_cfg.max_intra_bitrate_pct = 300;
-    enc_ctx->rc_cfg.max_inter_bitrate_pct = 0; // default
+    enc_ctx->rc_cfg.max_intra_bitrate_pct = scs->static_config.max_intra_bitrate_pct;
+    enc_ctx->rc_cfg.max_inter_bitrate_pct = scs->static_config.max_inter_bitrate_pct;
 
     enc_ctx->sf_cfg.sframe_dist = scs->static_config.sframe_dist;
     enc_ctx->sf_cfg.sframe_mode = scs->static_config.sframe_mode;

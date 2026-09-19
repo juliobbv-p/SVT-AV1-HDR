@@ -16,6 +16,10 @@
 
 #include "definitions.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef NDEBUG
 #define DEBUG_MEMORY_USAGE
 #endif
@@ -329,5 +333,9 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
     } while (0)
 
 #define EB_FREE_ALIGNED_ARRAY(pa) EB_FREE_ALIGNED(pa)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif //EbMalloc_h

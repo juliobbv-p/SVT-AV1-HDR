@@ -732,7 +732,7 @@ static const AomCdfProb default_switchable_interp_cdf[SWITCHABLE_FILTER_CONTEXTS
 // clang-format on
 
 void svt_aom_init_mode_probs(FRAME_CONTEXT* fc) {
-#define COPY_CDF(dst_cdf, src_cdf) svt_memcpy(fc->dst_cdf, src_cdf, sizeof(src_cdf))
+#define COPY_CDF(dst_cdf, src_cdf) memcpy(fc->dst_cdf, src_cdf, sizeof(src_cdf))
     COPY_CDF(palette_y_size_cdf, default_palette_y_size_cdf);
     COPY_CDF(palette_uv_size_cdf, default_palette_uv_size_cdf);
     COPY_CDF(palette_y_color_index_cdf, default_palette_y_color_index_cdf);
@@ -1920,8 +1920,7 @@ static int32_t get_q_ctx(int32_t q) {
 void svt_av1_default_coef_probs(FRAME_CONTEXT* fc, int32_t base_qindex) {
     const int32_t index = get_q_ctx(base_qindex);
 
-    void (*memcpy_fn)(void*, const void*, size_t) = svt_memcpy ? svt_memcpy : svt_memcpy_c;
-#define COPY_CDF(dst_cdf, src_cdf) memcpy_fn(fc->dst_cdf, src_cdf[index], sizeof(src_cdf[index]))
+#define COPY_CDF(dst_cdf, src_cdf) SVT_MEMCPY(fc->dst_cdf, src_cdf[index], sizeof(src_cdf[index]))
     COPY_CDF(txb_skip_cdf, av1_default_txb_skip_cdfs);
     COPY_CDF(eob_extra_cdf, av1_default_eob_extra_cdfs);
     COPY_CDF(dc_sign_cdf, av1_default_dc_sign_cdfs);

@@ -881,6 +881,14 @@ typedef EbErrorType (*Av1ResizePlane)(const uint8_t* const input, int height, in
 EbErrorType svt_aom_resize_frame(const EbPictureBufferDesc* src, EbPictureBufferDesc* dst, int bd, const int num_planes,
                                  const uint32_t ss_x, const uint32_t ss_y, uint8_t is_packed,
                                  uint32_t buffer_enable_mask, uint8_t is_2bcompress) {
+#if !CONFIG_ENABLE_RESIZE
+    // resize/superres disabled in this build; all callers are gated off (superres==NONE,
+    // resize_mode==NONE, refs never rescaled) so this is never reached at runtime.
+    (void)src, (void)dst, (void)bd, (void)num_planes, (void)ss_x, (void)ss_y, (void)is_packed, (void)buffer_enable_mask,
+        (void)is_2bcompress;
+    assert(0);
+    return EB_ErrorNone;
+#else
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     uint16_t* src_buffer_highbd[MAX_PLANES];
     uint16_t* dst_buffer_highbd[MAX_PLANES];
@@ -1147,11 +1155,13 @@ EbErrorType svt_aom_resize_frame(const EbPictureBufferDesc* src, EbPictureBuffer
     }
 #endif
     return EB_ErrorNone;
+#endif
 }
 
 // Compute the horizontal frequency components' energy in a frame
 // by calculuating the 16x4 Horizontal DCT. This is to be used to
 // decide the superresolution parameters.
+#if CONFIG_ENABLE_RESIZE
 static void analyze_hor_freq(PictureParentControlSet* pcs, double* energy) {
     uint64_t freq_energy[16] = {0};
 
@@ -1197,12 +1207,14 @@ static void analyze_hor_freq(PictureParentControlSet* pcs, double* energy) {
         }
     }
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 #define SUPERRES_ENERGY_BY_Q2_THRESH_KEYFRAME_SOLO 0.012
 #define SUPERRES_ENERGY_BY_Q2_THRESH_KEYFRAME 0.008
 #define SUPERRES_ENERGY_BY_Q2_THRESH_ARFFRAME 0.008
 #define SUPERRES_ENERGY_BY_AC_THRESH 0.2
 
+#if CONFIG_ENABLE_RESIZE
 static double get_energy_by_q2_thresh(const RATE_CONTROL* rc, int frame_update_type) {
     // TODO(now): Return keyframe thresh * factor based on frame type / pyramid
     // level.
@@ -1228,7 +1240,9 @@ static int av1_superres_in_recode_allowed(SequenceControlSet* scs) {
         scs->enc_ctx->rc.frames_to_key > 1*/
         ;
 }
+#endif // CONFIG_ENABLE_RESIZE
 
+#if CONFIG_ENABLE_RESIZE
 static uint8_t get_superres_denom_from_qindex_energy(int qindex, double* energy, double threshq, double threshp) {
     const double q      = svt_av1_convert_qindex_to_q(qindex, EB_EIGHT_BIT);
     const double tq     = threshq * q * q;
@@ -1242,8 +1256,9 @@ static uint8_t get_superres_denom_from_qindex_energy(int qindex, double* energy,
     }
     return 3 * SCALE_NUMERATOR - k;
 }
+#endif // CONFIG_ENABLE_RESIZE
 
-int32_t svt_aom_get_frame_update_type(SequenceControlSet* scs, PictureParentControlSet* pcs) {
+int32_t svt_aom_get_frame_update_type(PictureParentControlSet* pcs) {
     // Reasons why not use gf_group->update_type:
     //   1. It is valid only in 2nd pass of 2-pass encoding or lap_rc is true. E.g. It's invalid in 1-pass CQP mode.
     //   2. It is set in RC process, so can't use it in processes before RC.
@@ -1251,7 +1266,7 @@ int32_t svt_aom_get_frame_update_type(SequenceControlSet* scs, PictureParentCont
         return SVT_AV1_KF_UPDATE;
     }
 
-    if (scs->max_temporal_layers > 0) {
+    if (pcs->hierarchical_levels > 0) {
         if (pcs->temporal_layer_index == 0) {
             return SVT_AV1_ARF_UPDATE;
         } else if (pcs->temporal_layer_index == pcs->hierarchical_levels) {
@@ -1264,10 +1279,11 @@ int32_t svt_aom_get_frame_update_type(SequenceControlSet* scs, PictureParentCont
     }
 }
 
+#if CONFIG_ENABLE_RESIZE
 static uint8_t get_superres_denom_for_qindex(SequenceControlSet* scs, PictureParentControlSet* pcs, int qindex,
                                              int sr_kf, int sr_arf) {
     // Use superres for Key-frames and Alt-ref frames only.
-    int32_t update_type = svt_aom_get_frame_update_type(scs, pcs);
+    int32_t update_type = svt_aom_get_frame_update_type(pcs);
     if (update_type != SVT_AV1_KF_UPDATE && update_type != SVT_AV1_ARF_UPDATE) {
         return SCALE_NUMERATOR;
     }
@@ -1303,11 +1319,13 @@ static uint8_t get_superres_denom_for_qindex(SequenceControlSet* scs, PicturePar
     }
     return denom;
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 /*
  * Given the superres configurations and the frame type, determine the denominator and
  * encoding resolution
  */
+#if CONFIG_ENABLE_RESIZE
 static void calc_superres_params(superres_params_type* spr_params, SequenceControlSet* scs,
                                  PictureParentControlSet* pcs) {
     pcs->superres_total_recode_loop = 0;
@@ -1375,7 +1393,7 @@ static void calc_superres_params(superres_params_type* spr_params, SequenceContr
                 }
             } else { // SUPERRES_AUTO_ALL
                 assert(sr_search_type == SUPERRES_AUTO_ALL);
-                int32_t update_type = svt_aom_get_frame_update_type(scs, pcs);
+                int32_t update_type = svt_aom_get_frame_update_type(pcs);
                 if (update_type == SVT_AV1_KF_UPDATE || update_type == SVT_AV1_ARF_UPDATE) {
                     for (int i = 0; i < NUM_SR_SCALES + 1; i++) {
                         if (i < SCALE_NUMERATOR) {
@@ -1395,6 +1413,7 @@ static void calc_superres_params(superres_params_type* spr_params, SequenceContr
         break;
     }
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 EbErrorType svt_aom_downscaled_source_buffer_desc_ctor(EbPictureBufferDesc** picture_ptr,
                                                        EbPictureBufferDesc*  picture_ptr_for_reference,
@@ -1663,6 +1682,7 @@ void scale_source_references(SequenceControlSet* scs, PictureParentControlSet* p
  * and its decimated/filtered versions to match with the input picture resolution
  * This is used in the open-loop stage.
  */
+#if CONFIG_ENABLE_RESIZE
 static void scale_input_references(PictureParentControlSet* pcs, superres_params_type svt_aom_superres_params) {
     uint8_t sr_denom_idx     = svt_aom_get_denom_idx(svt_aom_superres_params.superres_denom);
     uint8_t resize_denom_idx = svt_aom_get_denom_idx(pcs->resize_denom);
@@ -1714,6 +1734,7 @@ static void scale_input_references(PictureParentControlSet* pcs, superres_params
 
     svt_release_mutex(src_object->resize_mutex[sr_denom_idx][resize_denom_idx]);
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 /*
  * Allocate memory and perform scaling of the reconstructed reference pictures
@@ -1852,6 +1873,7 @@ void svt_aom_reset_resized_picture(SequenceControlSet* scs, PictureParentControl
     EB_DELETE(pcs->enhanced_downscaled_pic);
 }
 
+#if CONFIG_ENABLE_RESIZE
 static uint8_t calculate_next_resize_scale(const SequenceControlSet* scs, const PictureParentControlSet* pcs) {
     // Choose an arbitrary random number
     static unsigned int seed = 56789;
@@ -1902,17 +1924,23 @@ static uint8_t calculate_next_resize_scale(const SequenceControlSet* scs, const 
     }
     return new_denom;
 }
+#endif // CONFIG_ENABLE_RESIZE
 
+#if CONFIG_ENABLE_RESIZE
 static int dimension_is_ok(int orig_dim, int resized_dim, int denom) {
     return (resized_dim * SCALE_NUMERATOR >= orig_dim * denom / 2);
 }
+#endif // CONFIG_ENABLE_RESIZE
 
+#if CONFIG_ENABLE_RESIZE
 static int dimensions_are_ok(int owidth, int oheight, superres_params_type* rsz) {
     // Only need to check the width, as scaling is horizontal only.
     (void)oheight;
     return dimension_is_ok(owidth, rsz->encoding_width, rsz->superres_denom);
 }
+#endif // CONFIG_ENABLE_RESIZE
 
+#if CONFIG_ENABLE_RESIZE
 static int validate_size_scales(RESIZE_MODE resize_mode, SUPERRES_MODE superres_mode, int owidth, int oheight,
                                 superres_params_type* rsz, uint8_t* resize_denom) {
     if (dimensions_are_ok(owidth, oheight, rsz)) { // Nothing to do.
@@ -1967,6 +1995,7 @@ static int validate_size_scales(RESIZE_MODE resize_mode, SUPERRES_MODE superres_
     }
     return dimensions_are_ok(owidth, oheight, rsz);
 }
+#endif // CONFIG_ENABLE_RESIZE
 
 /*
  * If super-res is ON, determine super-res denominator for current picture,
@@ -1975,6 +2004,16 @@ static int validate_size_scales(RESIZE_MODE resize_mode, SUPERRES_MODE superres_
  */
 void svt_aom_init_resize_picture(SequenceControlSet* scs, PictureParentControlSet* pcs) {
     EbPictureBufferDesc* input_pic = pcs->enhanced_unscaled_pic;
+#if !CONFIG_ENABLE_RESIZE
+    // resize/superres disabled in this build: no rescaling is possible, so replicate only the
+    // no-resize path (the original do_resize==false branch) and skip all scaling code.
+    pcs->resize_denom         = SCALE_NUMERATOR;
+    pcs->frame_resize_enabled = false;
+    pcs->render_width         = input_pic->width;
+    pcs->render_height        = input_pic->height;
+    pcs->enhanced_pic         = pcs->enhanced_unscaled_pic;
+    svt_aom_reset_resized_picture(scs, pcs, input_pic);
+#else
 
     superres_params_type spr_params = {input_pic->width, // encoding_width
                                        input_pic->height, // encoding_height
@@ -2090,4 +2129,5 @@ void svt_aom_init_resize_picture(SequenceControlSet* scs, PictureParentControlSe
         pcs->enhanced_pic = pcs->enhanced_unscaled_pic;
         svt_aom_reset_resized_picture(scs, pcs, input_pic);
     }
+#endif
 }

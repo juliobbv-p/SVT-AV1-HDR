@@ -10,11 +10,13 @@
 */
 
 #include <assert.h>
+#include <math.h>
 #include <arm_neon.h>
 
 #include "definitions.h"
 #include "mem_neon.h"
 #include "temporal_filtering.h"
+#include "temporal_filtering_neon.h"
 #include "utility.h"
 
 /* value [i:0-15] (sqrt((float)i)*65536.0 */
@@ -492,14 +494,15 @@ int32_t svt_estimate_noise_fp16_neon(const uint8_t* src, uint16_t width, uint16_
             gxb_lo            = vaddq_u16(gxb_lo, vaddl_u8(vget_low_u8(mat[1][2]), vget_low_u8(mat[1][2])));
             gxb_hi            = vaddq_u16(gxb_hi, vaddl_u8(vget_high_u8(mat[1][2]), vget_high_u8(mat[1][2])));
 
-            uint16x8_t gya_lo = vaddl_u8(vget_low_u8(mat[0][0]), vget_low_u8(mat[0][2]));
-            uint16x8_t gya_hi = vaddl_u8(vget_high_u8(mat[0][0]), vget_high_u8(mat[0][2]));
-            uint16x8_t gyb_lo = vaddl_u8(vget_low_u8(mat[2][0]), vget_low_u8(mat[2][2]));
-            uint16x8_t gyb_hi = vaddl_u8(vget_high_u8(mat[2][0]), vget_high_u8(mat[2][2]));
-            gya_lo            = vaddq_u16(gya_lo, vaddl_u8(vget_low_u8(mat[0][1]), vget_low_u8(mat[0][1])));
-            gya_hi            = vaddq_u16(gya_hi, vaddl_u8(vget_high_u8(mat[0][1]), vget_high_u8(mat[0][1])));
-            gyb_lo            = vaddq_u16(gyb_lo, vaddl_u8(vget_low_u8(mat[2][1]), vget_low_u8(mat[2][1])));
-            gyb_hi            = vaddq_u16(gyb_hi, vaddl_u8(vget_high_u8(mat[2][1]), vget_high_u8(mat[2][1])));
+            uint16x8_t diag0_lo = vaddl_u8(vget_low_u8(mat[0][0]), vget_low_u8(mat[0][2]));
+            uint16x8_t diag0_hi = vaddl_u8(vget_high_u8(mat[0][0]), vget_high_u8(mat[0][2]));
+            uint16x8_t diag1_lo = vaddl_u8(vget_low_u8(mat[2][0]), vget_low_u8(mat[2][2]));
+            uint16x8_t diag1_hi = vaddl_u8(vget_high_u8(mat[2][0]), vget_high_u8(mat[2][2]));
+
+            uint16x8_t gya_lo = vaddq_u16(diag0_lo, vaddl_u8(vget_low_u8(mat[0][1]), vget_low_u8(mat[0][1])));
+            uint16x8_t gya_hi = vaddq_u16(diag0_hi, vaddl_u8(vget_high_u8(mat[0][1]), vget_high_u8(mat[0][1])));
+            uint16x8_t gyb_lo = vaddq_u16(diag1_lo, vaddl_u8(vget_low_u8(mat[2][1]), vget_low_u8(mat[2][1])));
+            uint16x8_t gyb_hi = vaddq_u16(diag1_hi, vaddl_u8(vget_high_u8(mat[2][1]), vget_high_u8(mat[2][1])));
 
             uint16x8_t ga_lo = vabaq_u16(vabdq_u16(gxa_lo, gxb_lo), gya_lo, gyb_lo);
             uint16x8_t ga_hi = vabaq_u16(vabdq_u16(gxa_hi, gxb_hi), gya_hi, gyb_hi);
@@ -522,12 +525,8 @@ int32_t svt_estimate_noise_fp16_neon(const uint8_t* src, uint16_t width, uint16_
             uint16x8_t adj_hi  = vaddq_u16(adj0_hi, adj1_hi);
             adj_hi             = vaddq_u16(adj_hi, adj_hi);
 
-            uint16x8_t diag0_lo = vaddl_u8(vget_low_u8(mat[0][0]), vget_low_u8(mat[0][2]));
-            uint16x8_t diag0_hi = vaddl_u8(vget_high_u8(mat[0][0]), vget_high_u8(mat[0][2]));
-            uint16x8_t diag1_lo = vaddl_u8(vget_low_u8(mat[2][0]), vget_low_u8(mat[2][2]));
-            uint16x8_t diag1_hi = vaddl_u8(vget_high_u8(mat[2][0]), vget_high_u8(mat[2][2]));
-            uint16x8_t diag_lo  = vaddq_u16(diag0_lo, diag1_lo);
-            uint16x8_t diag_hi  = vaddq_u16(diag0_hi, diag1_hi);
+            uint16x8_t diag_lo = vaddq_u16(diag0_lo, diag1_lo);
+            uint16x8_t diag_hi = vaddq_u16(diag0_hi, diag1_hi);
 
             uint16x8_t v_lo = vaddq_u16(center_lo, diag_lo);
             v_lo            = vabdq_u16(v_lo, adj_lo);
@@ -563,10 +562,10 @@ int32_t svt_estimate_noise_fp16_neon(const uint8_t* src, uint16_t width, uint16_
             gxa            = vaddq_u16(gxa, vaddl_u8(mat[1][0], mat[1][0]));
             gxb            = vaddq_u16(gxb, vaddl_u8(mat[1][2], mat[1][2]));
 
-            uint16x8_t gya = vaddl_u8(mat[0][0], mat[0][2]);
-            uint16x8_t gyb = vaddl_u8(mat[2][0], mat[2][2]);
-            gya            = vaddq_u16(gya, vaddl_u8(mat[0][1], mat[0][1]));
-            gyb            = vaddq_u16(gyb, vaddl_u8(mat[2][1], mat[2][1]));
+            uint16x8_t diag0 = vaddl_u8(mat[0][0], mat[0][2]);
+            uint16x8_t diag1 = vaddl_u8(mat[2][0], mat[2][2]);
+            uint16x8_t gya   = vaddq_u16(diag0, vaddl_u8(mat[0][1], mat[0][1]));
+            uint16x8_t gyb   = vaddq_u16(diag1, vaddl_u8(mat[2][1], mat[2][1]));
 
             uint16x8_t ga = vabaq_u16(vabdq_u16(gxa, gxb), gya, gyb);
 
@@ -582,9 +581,7 @@ int32_t svt_estimate_noise_fp16_neon(const uint8_t* src, uint16_t width, uint16_
             uint16x8_t adj  = vaddq_u16(adj0, adj1);
             adj             = vaddq_u16(adj, adj);
 
-            uint16x8_t diag0 = vaddl_u8(mat[0][0], mat[0][2]);
-            uint16x8_t diag1 = vaddl_u8(mat[2][0], mat[2][2]);
-            uint16x8_t diag  = vaddq_u16(diag0, diag1);
+            uint16x8_t diag = vaddq_u16(diag0, diag1);
 
             uint16x8_t v = vaddq_u16(center, diag);
             v            = vabdq_u16(v, adj);
@@ -616,10 +613,10 @@ int32_t svt_estimate_noise_fp16_neon(const uint8_t* src, uint16_t width, uint16_
             gxa            = vaddq_u16(gxa, vaddl_u8(mat[1][0], mat[1][0]));
             gxb            = vaddq_u16(gxb, vaddl_u8(mat[1][2], mat[1][2]));
 
-            uint16x8_t gya = vaddl_u8(mat[0][0], mat[0][2]);
-            uint16x8_t gyb = vaddl_u8(mat[2][0], mat[2][2]);
-            gya            = vaddq_u16(gya, vaddl_u8(mat[0][1], mat[0][1]));
-            gyb            = vaddq_u16(gyb, vaddl_u8(mat[2][1], mat[2][1]));
+            uint16x8_t diag0 = vaddl_u8(mat[0][0], mat[0][2]);
+            uint16x8_t diag1 = vaddl_u8(mat[2][0], mat[2][2]);
+            uint16x8_t gya   = vaddq_u16(diag0, vaddl_u8(mat[0][1], mat[0][1]));
+            uint16x8_t gyb   = vaddq_u16(diag1, vaddl_u8(mat[2][1], mat[2][1]));
 
             uint16x8_t ga = vabaq_u16(vabdq_u16(gxa, gxb), gya, gyb);
 
@@ -635,9 +632,7 @@ int32_t svt_estimate_noise_fp16_neon(const uint8_t* src, uint16_t width, uint16_
             uint16x8_t adj  = vaddq_u16(adj0, adj1);
             adj             = vaddq_u16(adj, adj);
 
-            uint16x8_t diag0 = vaddl_u8(mat[0][0], mat[0][2]);
-            uint16x8_t diag1 = vaddl_u8(mat[2][0], mat[2][2]);
-            uint16x8_t diag  = vaddq_u16(diag0, diag1);
+            uint16x8_t diag = vaddq_u16(diag0, diag1);
 
             uint16x8_t v = vaddq_u16(center, diag);
             v            = vabdq_u16(v, adj);
@@ -683,7 +678,14 @@ int32_t svt_estimate_noise_fp16_neon(const uint8_t* src, uint16_t width, uint16_
     // We counted negatively, so subtract to get the final value.
     final_count -= vaddvq_s32(count);
     final_acc += vaddlvq_u32(acc);
-    return (final_count < SMOOTH_THRESHOLD) ? -1.0 : (double)(final_acc * SQRT_PI_BY_2_FP16) / (6 * final_count);
+
+    // If very few smooth pels, return -1 since the estimate is unreliable.
+    if (final_count < SMOOTH_THRESHOLD) {
+        return -65536 /*-1:fp16*/;
+    }
+
+    FP_ASSERT((((int64_t)final_acc * SQRT_PI_BY_2_FP16) / (6 * final_count)) < ((int64_t)1 << 31));
+    return (int32_t)((final_acc * SQRT_PI_BY_2_FP16) / (6 * final_count));
 }
 
 static void apply_filtering_central_loop_lbd(uint16_t w, uint16_t h, uint8_t* src, uint16_t src_stride, uint32_t* accum,
@@ -1352,4 +1354,445 @@ void svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_neon(
                                                                                  v_count,
                                                                                  me_ctx->tf_decay_factor_fp16[PLANE_V]);
     }
+}
+
+DECLARE_ALIGNED(16, static const uint8_t, mean_broadcast_tbl[16]) = {0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2};
+
+static inline uint16x8_t avg8x8x2_neon(uint8x16_t s[8]) {
+    uint16x8_t sum_u16 = vpaddlq_u8(s[0]);
+    sum_u16            = vpadalq_u8(sum_u16, s[1]);
+    sum_u16            = vpadalq_u8(sum_u16, s[2]);
+    sum_u16            = vpadalq_u8(sum_u16, s[3]);
+    sum_u16            = vpadalq_u8(sum_u16, s[4]);
+    sum_u16            = vpadalq_u8(sum_u16, s[5]);
+    sum_u16            = vpadalq_u8(sum_u16, s[6]);
+    sum_u16            = vpadalq_u8(sum_u16, s[7]);
+
+    sum_u16 = vpaddq_u16(sum_u16, sum_u16);
+    sum_u16 = vpaddq_u16(sum_u16, sum_u16);
+
+    return vshrq_n_u16(sum_u16, 6);
+}
+
+static inline uint32x4_t mad8x8x2_neon(const uint8x16_t s[8], const uint8x16_t mean) {
+    uint8x16_t abs0 = vabdq_u8(s[0], mean);
+    uint8x16_t abs1 = vabdq_u8(s[1], mean);
+    uint16x8_t sum0 = vpaddlq_u8(abs0);
+    uint16x8_t sum1 = vpaddlq_u8(abs1);
+
+    abs0 = vabdq_u8(s[2], mean);
+    abs1 = vabdq_u8(s[3], mean);
+    sum0 = vpadalq_u8(sum0, abs0);
+    sum1 = vpadalq_u8(sum1, abs1);
+
+    abs0 = vabdq_u8(s[4], mean);
+    abs1 = vabdq_u8(s[5], mean);
+    sum0 = vpadalq_u8(sum0, abs0);
+    sum1 = vpadalq_u8(sum1, abs1);
+
+    abs0 = vabdq_u8(s[6], mean);
+    abs1 = vabdq_u8(s[7], mean);
+    sum0 = vpadalq_u8(sum0, abs0);
+    sum1 = vpadalq_u8(sum1, abs1);
+
+    sum0 = vaddq_u16(sum0, sum1);
+
+    return vpaddlq_u16(sum0);
+}
+
+static inline uint32x4_t mad8x8_neon(const uint8x8_t s[8], const uint8x8_t mean) {
+    uint16x8_t sum0 = vabdl_u8(s[0], mean);
+    uint16x8_t sum1 = vabdl_u8(s[1], mean);
+    sum0            = vabal_u8(sum0, s[2], mean);
+    sum1            = vabal_u8(sum1, s[3], mean);
+    sum0            = vabal_u8(sum0, s[4], mean);
+    sum1            = vabal_u8(sum1, s[5], mean);
+    sum0            = vabal_u8(sum0, s[6], mean);
+    sum1            = vabal_u8(sum1, s[7], mean);
+
+    sum0 = vaddq_u16(sum0, sum1);
+
+    return vpaddlq_u16(sum0);
+}
+
+uint32_t svt_vmaf_compute_avg_mad_neon(const uint8_t* src, int width, int height, int stride) {
+    assert(width >= 8 && width % 8 == 0 && "width must be at least 8 and multiple of 8");
+    assert(height >= 8 && height % 8 == 0 && "height must be at least 8 and multiple of 8");
+
+    const uint64_t block_count = (height * width) >> 6;
+
+    const uint8x16_t broadcast_tbl = vld1q_u8(mean_broadcast_tbl);
+
+    uint64_t total_activity = 0;
+    int      by             = 0;
+    do {
+        uint32x4_t activity_vec = vdupq_n_u32(0);
+        int        bx           = 0;
+        for (; bx + 16 <= width; bx += 16) {
+            uint8x16_t s[8];
+            load_u8_16x8(src + by * stride + bx, stride, &s[0], &s[1], &s[2], &s[3], &s[4], &s[5], &s[6], &s[7]);
+
+            const uint8x16_t mean     = vreinterpretq_u8_u16(avg8x8x2_neon(s));
+            const uint8x16_t mean_vec = vqtbl1q_u8(mean, broadcast_tbl);
+
+            activity_vec = vaddq_u32(activity_vec, mad8x8x2_neon(s, mean_vec));
+        }
+        if (bx + 8 <= width) {
+            uint8x8_t s[8];
+            load_u8_8x8(src + by * stride + bx, stride, &s[0], &s[1], &s[2], &s[3], &s[4], &s[5], &s[6], &s[7]);
+
+            uint8x8_t mean = vdup_n_u8(avg8x8_neon(s));
+
+            activity_vec = vaddq_u32(activity_vec, mad8x8_neon(s, mean));
+        }
+
+        total_activity += vaddvq_u32(activity_vec);
+        by += 8;
+    } while (by + 8 <= height);
+
+    return (uint32_t)(total_activity / (block_count * 64));
+}
+
+void svt_vmaf_apply_unsharp_row_neon(const uint8_t* src, const uint8_t* blur, uint8_t* dst, int width, int amount,
+                                     int32_t max_delta) {
+    assert(width % 8 == 0 && "width must be multiple of 8");
+
+    const int16_t amount_s16    = (int16_t)(amount > INT16_MAX ? INT16_MAX : amount);
+    const int16_t max_delta_s16 = (int16_t)(max_delta > INT16_MAX ? INT16_MAX : max_delta);
+
+    const int16x8_t clamp_max  = vdupq_n_s16(max_delta_s16);
+    const int16x8_t clamp_min  = vdupq_n_s16(-max_delta_s16);
+    const int16x8_t amount_vec = vdupq_n_s16(amount_s16);
+
+    int w = 0;
+    for (; w + 16 <= width; w += 16) {
+        uint8x16_t b_u8 = vld1q_u8(blur + w);
+        uint8x16_t s_u8 = vld1q_u8(src + w);
+
+        int16x8_t detail_lo = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(s_u8), vget_low_u8(b_u8)));
+        int16x8_t detail_hi = vreinterpretq_s16_u16(vsubl_u8(vget_high_u8(s_u8), vget_high_u8(b_u8)));
+        detail_lo           = vminq_s16(detail_lo, clamp_max);
+        detail_lo           = vmaxq_s16(detail_lo, clamp_min);
+        detail_hi           = vminq_s16(detail_hi, clamp_max);
+        detail_hi           = vmaxq_s16(detail_hi, clamp_min);
+
+        int16x8_t res_lo = vqdmulhq_s16(detail_lo, amount_vec);
+        int16x8_t res_hi = vqdmulhq_s16(detail_hi, amount_vec);
+        res_lo           = vreinterpretq_s16_u16(vaddw_u8(vreinterpretq_u16_s16(res_lo), vget_low_u8(s_u8)));
+        res_hi           = vreinterpretq_s16_u16(vaddw_u8(vreinterpretq_u16_s16(res_hi), vget_high_u8(s_u8)));
+
+        vst1_u8(dst + w + 0, vqmovun_s16(res_lo));
+        vst1_u8(dst + w + 8, vqmovun_s16(res_hi));
+    }
+    if (w + 8 <= width) {
+        uint8x8_t b_u8 = vld1_u8(blur + w);
+        uint8x8_t s_u8 = vld1_u8(src + w);
+
+        int16x8_t detail = vreinterpretq_s16_u16(vsubl_u8(s_u8, b_u8));
+        detail           = vminq_s16(detail, clamp_max);
+        detail           = vmaxq_s16(detail, clamp_min);
+
+        int16x8_t res_s16 = vqdmulhq_s16(detail, amount_vec);
+        res_s16           = vreinterpretq_s16_u16(vaddw_u8(vreinterpretq_u16_s16(res_s16), s_u8));
+
+        vst1_u8(dst + w, vqmovun_s16(res_s16));
+    }
+}
+
+void svt_vmaf_vpass_row_neon(const int16_t* r0, const int16_t* r1, const int16_t* r2, const int16_t* r3,
+                             const int16_t* r4, uint8_t* blur_row, int width, int steps_x) {
+    assert(width % 8 == 0 && "width must be multiple of 8");
+    assert(steps_x == 2 && "steps_x must be 2");
+
+    const int blur_start = 2 * steps_x;
+
+    for (int x = 0; x < width; x += 8) {
+        const int  j  = x + blur_start;
+        uint16x8_t a0 = vreinterpretq_u16_s16(vld1q_s16(r0 + j));
+        uint16x8_t a1 = vreinterpretq_u16_s16(vld1q_s16(r1 + j));
+        uint16x8_t a2 = vreinterpretq_u16_s16(vld1q_s16(r2 + j));
+        uint16x8_t a3 = vreinterpretq_u16_s16(vld1q_s16(r3 + j));
+        uint16x8_t a4 = vreinterpretq_u16_s16(vld1q_s16(r4 + j));
+
+        uint16x8_t v = vaddq_u16(a0, a4);
+        v            = vmlaq_n_u16(v, vaddq_u16(a1, a3), 4);
+        v            = vmlaq_n_u16(v, a2, 6);
+        vst1_u8(blur_row + x, vqrshrn_n_u16(v, 8));
+    }
+}
+
+uint32_t svt_vmaf_count_detail_le_neon(const uint8_t* src, const uint8_t* blur, int width, int height, int src_stride,
+                                       int thresh) {
+    uint32_t  count      = 0;
+    int32x4_t count_vec0 = vdupq_n_s32(0);
+    int32x4_t count_vec1 = vdupq_n_s32(0);
+
+    const uint8x16_t thr      = vdupq_n_u8((uint8_t)thresh);
+    const uint8_t*   src_ptr  = src;
+    const uint8_t*   blur_ptr = blur;
+    do {
+        int16x8_t acc0 = vdupq_n_s16(0);
+        int16x8_t acc1 = vdupq_n_s16(0);
+        int       x    = 0;
+        for (; x + 32 <= width; x += 32) {
+            uint8x16_t s0 = vld1q_u8(src_ptr + x + 0);
+            uint8x16_t s1 = vld1q_u8(src_ptr + x + 16);
+            uint8x16_t b0 = vld1q_u8(blur_ptr + x + 0);
+            uint8x16_t b1 = vld1q_u8(blur_ptr + x + 16);
+
+            uint8x16_t abd0 = vabdq_u8(s0, b0);
+            uint8x16_t abd1 = vabdq_u8(s1, b1);
+            uint8x16_t le0  = vcleq_u8(abd0, thr);
+            uint8x16_t le1  = vcleq_u8(abd1, thr);
+
+            acc0 = vpadalq_s8(acc0, vreinterpretq_s8_u8(le0));
+            acc1 = vpadalq_s8(acc1, vreinterpretq_s8_u8(le1));
+        }
+        if (x + 16 <= width) {
+            uint8x16_t s = vld1q_u8(src_ptr + x);
+            uint8x16_t b = vld1q_u8(blur_ptr + x);
+
+            uint8x16_t abd = vabdq_u8(s, b);
+            uint8x16_t le  = vcleq_u8(abd, thr);
+
+            acc0 = vpadalq_s8(acc0, vreinterpretq_s8_u8(le));
+
+            x += 16;
+        }
+        if (x + 8 <= width) {
+            uint8x8_t s = vld1_u8(src_ptr + x);
+            uint8x8_t b = vld1_u8(blur_ptr + x);
+
+            uint8x8_t abd = vabd_u8(s, b);
+            uint8x8_t le  = vcle_u8(abd, vget_low_u8(thr));
+
+            acc0 = vaddw_s8(acc0, vreinterpret_s8_u8(le));
+
+            x += 8;
+        }
+
+        count_vec0 = vpadalq_s16(count_vec0, acc0);
+        count_vec1 = vpadalq_s16(count_vec1, acc1);
+
+        for (; x < width; x++) {
+            int32_t d = abs((int32_t)src_ptr[x] - (int32_t)blur_ptr[x]);
+            if (d <= thresh) {
+                count++;
+            }
+        }
+
+        src_ptr += src_stride;
+        blur_ptr += width;
+    } while (--height != 0);
+
+    return count - vaddvq_s32(vaddq_s32(count_vec0, count_vec1));
+}
+
+DECLARE_ALIGNED(16, static const uint8_t, vmaf_hpass_first8_tbl[5 * 8]) = {
+    // clang-format off
+    8, 8, 8, 8, 0, 0, 0, 1,
+    8, 8, 8, 0, 0, 0, 1, 2,
+    8, 8, 0, 0, 0, 1, 2, 3,
+    8, 0, 0, 0, 1, 2, 3, 4,
+    0, 0, 0, 1, 2, 3, 4, 5,
+    // clang-format on
+};
+
+DECLARE_ALIGNED(16, static const uint8_t, vmaf_hpass_last4_tbl[2 * 8]) = {
+    // clang-format off
+    1, 2, 3, 3, 3, 3, 3, 3,
+    2, 3, 3, 3, 3, 3, 3, 3,
+    // clang-format on
+};
+
+void svt_vmaf_hpass_row_neon(const uint8_t* src_row, int width, int16_t* h_row) {
+    assert(width % 8 == 0 && "width must be multiple of 8");
+
+    const uint8x16_t   src0    = vcombine_u8(vld1_u8(src_row), vdup_n_u8(0));
+    const uint8x16x2_t tbl0123 = vld1q_u8_x2(vmaf_hpass_first8_tbl);
+    const uint8x8_t    tbl4    = vld1_u8(vmaf_hpass_first8_tbl + 32);
+
+    const uint8x16_t s01 = vqtbl1q_u8(src0, tbl0123.val[0]);
+    const uint8x16_t s23 = vqtbl1q_u8(src0, tbl0123.val[1]);
+    const uint8x8_t  s4  = vtbl1_u8(vget_low_u8(src0), tbl4);
+
+    uint16x8_t acc = vaddl_u8(vget_low_u8(s01), s4);
+    acc            = vmlaq_n_u16(acc, vaddl_u8(vget_high_u8(s01), vget_high_u8(s23)), 4);
+    acc            = vmlal_u8(acc, vget_low_u8(s23), vdup_n_u8(6));
+
+    vst1q_s16(h_row, vreinterpretq_s16_u16(acc));
+
+    int j = 8;
+    for (; j + 16 <= width; j += 16) {
+        const uint8_t* base = src_row + (j - 6);
+
+        uint8x16_t s[5];
+        load_u8_16x5(base, 1, &s[0], &s[1], &s[2], &s[3], &s[4]);
+
+        uint16x8_t acc0 = vaddl_u8(vget_low_u8(s[0]), vget_low_u8(s[4]));
+        uint16x8_t acc1 = vaddl_u8(vget_high_u8(s[0]), vget_high_u8(s[4]));
+        acc0            = vmlaq_n_u16(acc0, vaddl_u8(vget_low_u8(s[1]), vget_low_u8(s[3])), 4);
+        acc1            = vmlaq_n_u16(acc1, vaddl_u8(vget_high_u8(s[1]), vget_high_u8(s[3])), 4);
+        acc0            = vmlal_u8(acc0, vget_low_u8(s[2]), vdup_n_u8(6));
+        acc1            = vmlal_u8(acc1, vget_high_u8(s[2]), vdup_n_u8(6));
+
+        vst1q_s16(h_row + j + 0, vreinterpretq_s16_u16(acc0));
+        vst1q_s16(h_row + j + 8, vreinterpretq_s16_u16(acc1));
+    }
+    if (j + 8 <= width) {
+        const uint8_t* base = src_row + (j - 6);
+
+        uint8x8_t s[5];
+        load_u8_8x5(base, 1, &s[0], &s[1], &s[2], &s[3], &s[4]);
+
+        uint16x8_t acc0 = vaddl_u8(s[0], s[4]);
+        acc0            = vmlaq_n_u16(acc0, vaddl_u8(s[1], s[3]), 4);
+        acc0            = vmlal_u8(acc0, s[2], vdup_n_u8(6));
+
+        vst1q_s16(h_row + j, vreinterpretq_s16_u16(acc0));
+
+        j += 8;
+    }
+
+    const uint8x8_t  s0_tail  = load_u8_4x1(src_row + width - 6);
+    const uint8x8_t  s1_tail  = load_u8_4x1(src_row + width - 5);
+    const uint8x8_t  s2_tail  = load_u8_4x1(src_row + width - 4);
+    const uint8x16_t tbl_tail = vld1q_u8(vmaf_hpass_last4_tbl);
+    const uint8x16_t s34_tail = vqtbl1q_u8(vcombine_u8(s2_tail, vdup_n_u8(0)), tbl_tail);
+
+    uint16x8_t acc_tail = vaddl_u8(s0_tail, vget_high_u8(s34_tail));
+    acc_tail            = vmlaq_n_u16(acc_tail, vaddl_u8(s1_tail, vget_low_u8(s34_tail)), 4);
+    acc_tail            = vmlal_u8(acc_tail, s2_tail, vdup_n_u8(6));
+
+    vst1_s16(h_row + width, vget_low_s16(vreinterpretq_s16_u16(acc_tail)));
+}
+
+static inline void gradient_coherence_accumulate_row_8_neon(uint8x8_t row_r, uint8x8_t row_l, uint8x8_t row_d,
+                                                            uint8x8_t row_u, uint32x4_t* acc_xx, uint32x4_t* acc_yy,
+                                                            int32x4_t* acc_xy) {
+    const uint8x8_t gx_u8 = vabd_u8(row_r, row_l);
+    const uint8x8_t gy_u8 = vabd_u8(row_d, row_u);
+    *acc_xx               = vpadalq_u16(*acc_xx, vmull_u8(gx_u8, gx_u8));
+    *acc_yy               = vpadalq_u16(*acc_yy, vmull_u8(gy_u8, gy_u8));
+
+    const int16x8_t gx_s16 = vreinterpretq_s16_u16(vsubl_u8(row_r, row_l));
+    const int16x8_t gy_s16 = vreinterpretq_s16_u16(vsubl_u8(row_d, row_u));
+    *acc_xy                = vmlal_s16(*acc_xy, vget_low_s16(gx_s16), vget_low_s16(gy_s16));
+    *acc_xy                = vmlal_s16(*acc_xy, vget_high_s16(gx_s16), vget_high_s16(gy_s16));
+}
+
+float svt_vmaf_compute_gradient_coherence_neon(const uint8_t* src, int width, int height, int stride) {
+    assert(width % 8 == 0 && "width must be multiple of 8");
+
+    double weighted_coh = 0.0;
+    double weight_sum   = 0.0;
+
+    for (int by = 1; by < height - 1; by += 16) {
+        const int y_end = (by + 16 < height - 1) ? by + 16 : height - 1;
+
+        int bx = 1;
+        for (; bx + 16 <= width - 1; bx += 16) {
+            uint32x4_t acc_xx0 = vdupq_n_u32(0);
+            uint32x4_t acc_xx1 = vdupq_n_u32(0);
+            uint32x4_t acc_yy0 = vdupq_n_u32(0);
+            uint32x4_t acc_yy1 = vdupq_n_u32(0);
+            int32x4_t  acc_xy0 = vdupq_n_s32(0);
+            int32x4_t  acc_xy1 = vdupq_n_s32(0);
+
+            const uint8_t* row  = src + (size_t)by * stride;
+            const uint8_t* up   = src + (size_t)(by - 1) * stride;
+            const uint8_t* down = src + (size_t)(by + 1) * stride;
+
+            int y = by;
+            do {
+                const uint8x16_t row_r = vld1q_u8(row + bx + 1);
+                const uint8x16_t row_l = vld1q_u8(row + bx - 1);
+                const uint8x16_t row_d = vld1q_u8(down + bx);
+                const uint8x16_t row_u = vld1q_u8(up + bx);
+
+                const uint8x16_t gx_u8 = vabdq_u8(row_r, row_l);
+                const uint8x16_t gy_u8 = vabdq_u8(row_d, row_u);
+                acc_xx0                = vpadalq_u16(acc_xx0, vmull_u8(vget_low_u8(gx_u8), vget_low_u8(gx_u8)));
+                acc_xx1                = vpadalq_u16(acc_xx1, vmull_u8(vget_high_u8(gx_u8), vget_high_u8(gx_u8)));
+                acc_yy0                = vpadalq_u16(acc_yy0, vmull_u8(vget_low_u8(gy_u8), vget_low_u8(gy_u8)));
+                acc_yy1                = vpadalq_u16(acc_yy1, vmull_u8(vget_high_u8(gy_u8), vget_high_u8(gy_u8)));
+
+                const int16x8_t gx_s16_lo = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(row_r), vget_low_u8(row_l)));
+                const int16x8_t gx_s16_hi = vreinterpretq_s16_u16(vsubl_u8(vget_high_u8(row_r), vget_high_u8(row_l)));
+                const int16x8_t gy_s16_lo = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(row_d), vget_low_u8(row_u)));
+                const int16x8_t gy_s16_hi = vreinterpretq_s16_u16(vsubl_u8(vget_high_u8(row_d), vget_high_u8(row_u)));
+                acc_xy0                   = vmlal_s16(acc_xy0, vget_low_s16(gx_s16_lo), vget_low_s16(gy_s16_lo));
+                acc_xy1                   = vmlal_s16(acc_xy1, vget_high_s16(gx_s16_lo), vget_high_s16(gy_s16_lo));
+                acc_xy0                   = vmlal_s16(acc_xy0, vget_low_s16(gx_s16_hi), vget_low_s16(gy_s16_hi));
+                acc_xy1                   = vmlal_s16(acc_xy1, vget_high_s16(gx_s16_hi), vget_high_s16(gy_s16_hi));
+
+                row += stride;
+                up += stride;
+                down += stride;
+            } while (++y != y_end);
+
+            const double xx = (double)vaddvq_u32(vaddq_u32(acc_xx0, acc_xx1));
+            const double yy = (double)vaddvq_u32(vaddq_u32(acc_yy0, acc_yy1));
+            const double xy = (double)(int64_t)vaddvq_s32(vaddq_s32(acc_xy0, acc_xy1));
+            weighted_coh += sqrtf((float)((xx - yy) * (xx - yy) + 4.0 * xy * xy));
+            weight_sum += xx + yy;
+        }
+
+        uint32x4_t acc_xx = vdupq_n_u32(0);
+        uint32x4_t acc_yy = vdupq_n_u32(0);
+        int32x4_t  acc_xy = vdupq_n_s32(0);
+
+        // Tail can be either 6 pixels or 8+6 pixels.
+        if (bx + 8 < width - 1) {
+            const uint8_t* row  = src + (size_t)by * stride;
+            const uint8_t* up   = src + (size_t)(by - 1) * stride;
+            const uint8_t* down = src + (size_t)(by + 1) * stride;
+
+            int y = by;
+            do {
+                const uint8x8_t row_r = vld1_u8(row + bx + 1);
+                const uint8x8_t row_l = vld1_u8(row + bx - 1);
+                const uint8x8_t row_d = vld1_u8(down + bx);
+                const uint8x8_t row_u = vld1_u8(up + bx);
+
+                gradient_coherence_accumulate_row_8_neon(row_r, row_l, row_d, row_u, &acc_xx, &acc_yy, &acc_xy);
+
+                row += stride;
+                up += stride;
+                down += stride;
+            } while (++y != y_end);
+
+            bx += 8;
+        }
+        if (bx < width - 1) {
+            const uint8x8_t mask = vcreate_u8(0x0000FFFFFFFFFFFF);
+            const uint8_t*  row  = src + (size_t)by * stride;
+            const uint8_t*  up   = src + (size_t)(by - 1) * stride;
+            const uint8_t*  down = src + (size_t)(by + 1) * stride;
+
+            int y = by;
+            do {
+                const uint8x8_t row_r = vand_u8(vld1_u8(row + bx + 1), mask);
+                const uint8x8_t row_l = vand_u8(vld1_u8(row + bx - 1), mask);
+                const uint8x8_t row_d = vand_u8(vld1_u8(down + bx), mask);
+                const uint8x8_t row_u = vand_u8(vld1_u8(up + bx), mask);
+
+                gradient_coherence_accumulate_row_8_neon(row_r, row_l, row_d, row_u, &acc_xx, &acc_yy, &acc_xy);
+
+                row += stride;
+                up += stride;
+                down += stride;
+            } while (++y != y_end);
+
+            const double xx = (double)vaddvq_u32(acc_xx);
+            const double yy = (double)vaddvq_u32(acc_yy);
+            const double xy = (double)(int64_t)vaddvq_s32(acc_xy);
+            weighted_coh += sqrtf((float)((xx - yy) * (xx - yy) + 4.0 * xy * xy));
+            weight_sum += xx + yy;
+        }
+    }
+    if (weight_sum <= 0.0) {
+        return 1.0f;
+    }
+    return (float)(weighted_coh / weight_sum);
 }

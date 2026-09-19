@@ -73,7 +73,7 @@ TEST_P(BlockErrorTest, OperationCheck) {
         ref_ret = svt_av1_block_error_c(coeff, dqcoeff, block_size, &ref_ssz);
         ret = test_func_(coeff, dqcoeff, block_size, &ssz);
 
-        err_count += (ref_ret != ret) | (ref_ssz != ssz);
+        err_count += (ref_ret != ret) || (ref_ssz != ssz);
         if (err_count && !err_count_total) {
             first_failure = i;
         }
@@ -93,9 +93,7 @@ TEST_P(BlockErrorTest, ExtremeValues) {
     int bit_depth = 8;
     intptr_t block_size;
     int64_t ssz;
-    int64_t ret;
     int64_t ref_ssz;
-    int64_t ref_ret;
     const int msb = bit_depth + 8 - 1;
     int max_val = ((1 << msb) - 1);
     for (int i = 0; i < kNumIterations; ++i) {
@@ -128,9 +126,10 @@ TEST_P(BlockErrorTest, ExtremeValues) {
                 }
             }
         }
-        ref_ret = svt_av1_block_error_c(coeff, dqcoeff, block_size, &ref_ssz);
-        ret = test_func_(coeff, dqcoeff, block_size, &ssz);
-        err_count += (ref_ret != ret) | (ref_ssz != ssz);
+        int64_t ref_ret =
+            svt_av1_block_error_c(coeff, dqcoeff, block_size, &ref_ssz);
+        int64_t ret = test_func_(coeff, dqcoeff, block_size, &ssz);
+        err_count += (ref_ret != ret) || (ref_ssz != ssz);
         if (err_count && !err_count_total) {
             first_failure = i;
         }

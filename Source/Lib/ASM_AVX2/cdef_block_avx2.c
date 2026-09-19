@@ -334,6 +334,100 @@ static INLINE void array_reverse_transpose_8x8_dual(__m256i* in, __m256i* res) {
     res[0] = _mm256_unpackhi_epi64(tr1_6, tr1_7);
 }
 
+// Native 8-bit direction search. Identical math to the uint16 versions below;
+// only the load differs (widen uint8 -> int16 before the shift and -128 bias).
+uint8_t svt_aom_cdef_find_dir_8bit_avx2(const uint8_t* img, int32_t stride, int32_t* var, int32_t coeff_shift) {
+    int32_t cost[8];
+    int32_t best_cost = 0;
+    uint8_t best_dir  = 0;
+
+    const __m128i shift_reg = _mm_cvtsi32_si128(coeff_shift);
+    const __m128i c128      = _mm_set1_epi16(128);
+    __m128i       lines[8];
+    for (int i = 0; i < 8; i++) {
+        const __m128i src = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)&img[i * stride]));
+        lines[i]          = _mm_sub_epi16(_mm_sra_epi16(src, shift_reg), c128);
+    }
+
+    /* Compute "mostly vertical" directions. */
+    compute_directions(lines, cost + 4);
+
+    array_reverse_transpose_8x8(lines, lines);
+
+    /* Compute "mostly horizontal" directions. */
+    compute_directions(lines, cost);
+
+    for (int i = 0; i < 8; i++) {
+        if (cost[i] > best_cost) {
+            best_cost = cost[i];
+            best_dir  = (uint8_t)i;
+        }
+    }
+
+    /* Difference between the optimal variance and the variance along the
+       orthogonal direction. Again, the sum(x^2) terms cancel out. */
+    *var = best_cost - cost[(best_dir + 4) & 7];
+    /* We'd normally divide by 840, but dividing by 1024 is close enough
+       for what we're going to do with this. */
+    *var >>= 10;
+    return best_dir;
+}
+
+// Dual 8-bit direction search. Keeps both 8x8 blocks in the two 256-bit lanes so
+// the direction cost is computed for both at once.
+void svt_aom_cdef_find_dir_dual_8bit_avx2(const uint8_t* img1, const uint8_t* img2, int stride, int32_t* var_out_1st,
+                                          int32_t* var_out_2nd, int32_t coeff_shift, uint8_t* out_dir_1st_8x8,
+                                          uint8_t* out_dir_2nd_8x8) {
+    int32_t cost_first_8x8[8];
+    int32_t cost_second_8x8[8];
+    int32_t best_cost[2] = {0};
+    uint8_t best_dir[2]  = {0};
+
+    const __m128i const_coeff_shift_reg = _mm_cvtsi32_si128(coeff_shift);
+    const __m256i const_128_reg         = _mm256_set1_epi16(128);
+    __m256i       lines[8];
+    for (int i = 0; i < 8; i++) {
+        const __m128i src_1 = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)&img1[i * stride]));
+        const __m128i src_2 = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i*)&img2[i * stride]));
+
+        lines[i] = _mm256_insertf128_si256(_mm256_castsi128_si256(src_1), src_2, 1);
+        lines[i] = _mm256_sub_epi16(_mm256_sra_epi16(lines[i], const_coeff_shift_reg), const_128_reg);
+    }
+
+    const __m256i dir47 = compute_directions_dual(lines, cost_first_8x8 + 4, cost_second_8x8 + 4);
+
+    array_reverse_transpose_8x8_dual(lines, lines);
+
+    const __m256i dir03 = compute_directions_dual(lines, cost_first_8x8, cost_second_8x8);
+
+    __m256i max = _mm256_max_epi32(dir03, dir47);
+    max         = _mm256_max_epi32(max, _mm256_or_si256(_mm256_srli_si256(max, 8), _mm256_slli_si256(max, 16 - (8))));
+    max         = _mm256_max_epi32(max, _mm256_or_si256(_mm256_srli_si256(max, 4), _mm256_slli_si256(max, 16 - (4))));
+
+    const __m128i first_8x8_output  = _mm256_castsi256_si128(max);
+    const __m128i second_8x8_output = _mm256_extractf128_si256(max, 1);
+    const __m128i cmpeg_res_00      = _mm_cmpeq_epi32(first_8x8_output, _mm256_castsi256_si128(dir47));
+    const __m128i cmpeg_res_01      = _mm_cmpeq_epi32(first_8x8_output, _mm256_castsi256_si128(dir03));
+    const __m128i cmpeg_res_10      = _mm_cmpeq_epi32(second_8x8_output, _mm256_extractf128_si256(dir47, 1));
+    const __m128i cmpeg_res_11      = _mm_cmpeq_epi32(second_8x8_output, _mm256_extractf128_si256(dir03, 1));
+    const __m128i t_first_8x8       = _mm_packs_epi32(cmpeg_res_01, cmpeg_res_00);
+    const __m128i t_second_8x8      = _mm_packs_epi32(cmpeg_res_11, cmpeg_res_10);
+
+    best_cost[0] = _mm_cvtsi128_si32(_mm256_castsi256_si128(max));
+    best_cost[1] = _mm_cvtsi128_si32(second_8x8_output);
+    best_dir[0]  = _mm_movemask_epi8(_mm_packs_epi16(t_first_8x8, t_first_8x8));
+    best_dir[0]  = get_msb(best_dir[0] ^ (best_dir[0] - 1));
+    best_dir[1]  = _mm_movemask_epi8(_mm_packs_epi16(t_second_8x8, t_second_8x8));
+    best_dir[1]  = get_msb(best_dir[1] ^ (best_dir[1] - 1));
+
+    *var_out_1st = best_cost[0] - cost_first_8x8[(best_dir[0] + 4) & 7];
+    *var_out_2nd = best_cost[1] - cost_second_8x8[(best_dir[1] + 4) & 7];
+    *var_out_1st >>= 10;
+    *var_out_2nd >>= 10;
+    *out_dir_1st_8x8 = best_dir[0];
+    *out_dir_2nd_8x8 = best_dir[1];
+}
+
 void svt_aom_cdef_find_dir_dual_avx2(const uint16_t* img1, const uint16_t* img2, int stride, int32_t* var_out_1st,
                                      int32_t* var_out_2nd, int32_t coeff_shift, uint8_t* out_dir_1st_8x8,
                                      uint8_t* out_dir_2nd_8x8) {
@@ -1122,12 +1216,12 @@ void svt_cdef_filter_block_avx2(uint8_t* dst8, uint16_t* dst16, int32_t dstride,
 
 void svt_aom_copy_rect8_8bit_to_16bit_avx2(uint16_t* dst, int32_t dstride, const uint8_t* src, int32_t sstride,
                                            int32_t v, int32_t h) {
-    int i = 0, j = 0;
+    int j               = 0;
     int remaining_width = h;
 
     // Process multiple 16 pixels at a time.
     if (h > 15) {
-        for (i = 0; i < v; i++) {
+        for (int i = 0; i < v; i++) {
             for (j = 0; j < h - 15; j += 16) {
                 __m128i row = _mm_loadu_si128((__m128i*)&src[i * sstride + j]);
                 _mm256_storeu_si256((__m256i*)&dst[i * dstride + j], _mm256_cvtepu8_epi16(row));
@@ -1138,7 +1232,7 @@ void svt_aom_copy_rect8_8bit_to_16bit_avx2(uint16_t* dst, int32_t dstride, const
 
     // Process multiple 8 pixels at a time.
     if (remaining_width > 7) {
-        for (i = 0; i < v; i++) {
+        for (int i = 0; i < v; i++) {
             __m128i row = _mm_loadl_epi64((__m128i*)&src[i * sstride + j]);
             _mm_storeu_si128((__m128i*)&dst[i * dstride + j], _mm_unpacklo_epi8(row, _mm_setzero_si128()));
         }
@@ -1148,7 +1242,7 @@ void svt_aom_copy_rect8_8bit_to_16bit_avx2(uint16_t* dst, int32_t dstride, const
 
     // Process the remaining pixels.
     if (remaining_width) {
-        for (i = 0; i < v; i++) {
+        for (int i = 0; i < v; i++) {
             for (int k = j; k < h; k++) {
                 dst[i * dstride + k] = src[i * sstride + k];
             }

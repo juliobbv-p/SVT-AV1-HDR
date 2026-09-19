@@ -31,6 +31,10 @@
 #include "src_ops_process.h"
 #include "enc_mode_config.h"
 
+static bool use_rtc_cbr_path(SequenceControlSet* scs) {
+    return scs->enc_ctx->rc_cfg.mode == AOM_CBR && scs->static_config.rtc;
+}
+
 // Specifies the weights of the ref frame in calculating qindex of non base layer frames
 const int svt_av1_non_base_qindex_weight_ref[EB_MAX_TEMPORAL_LAYERS] = {100, 100, 100, 100, 100, 100};
 // Specifies the weights of the worst quality in calculating qindex of non base layer frames
@@ -94,11 +98,13 @@ static void get_ref_skip_percentage(PictureControlSet* pcs, uint8_t* skip_area) 
         return;
     }
 
+    uint8_t skip_perc = 0;
+
     EbReferenceObject* ref_obj_l0 = get_ref_obj(pcs, REF_LIST_0, 0);
-    uint8_t            skip_perc  = ref_obj_l0->skip_coded_area;
+    skip_perc += (ref_obj_l0->slice_type == I_SLICE) ? 0 : ref_obj_l0->skip_coded_area;
     if (pcs->slice_type == B_SLICE && pcs->ppcs->ref_list1_count_try) {
         EbReferenceObject* ref_obj_l1 = get_ref_obj(pcs, REF_LIST_1, 0);
-        skip_perc += ref_obj_l1->skip_coded_area;
+        skip_perc += (ref_obj_l1->slice_type == I_SLICE) ? 0 : ref_obj_l1->skip_coded_area;
 
         // if have two frames, divide the skip_perc by 2 to get the avg skip area
         skip_perc >>= 1;
@@ -151,14 +157,6 @@ typedef struct RateControlContext {
     EbFifo* rate_control_output_results_fifo_ptr;
     EbFifo* picture_decision_results_output_fifo_ptr;
 } RateControlContext;
-
-EbErrorType svt_aom_rate_control_coded_frames_stats_context_ctor(coded_frames_stats_entry* entry_ptr,
-                                                                 uint64_t                  picture_number) {
-    entry_ptr->picture_number         = picture_number;
-    entry_ptr->frame_total_bit_actual = -1;
-
-    return EB_ErrorNone;
-}
 
 static void rate_control_context_dctor(EbPtr p) {
     EbThreadContext*    thread_ctx = (EbThreadContext*)p;
@@ -222,8 +220,14 @@ int32_t svt_av1_compute_qdelta(double qstart, double qtarget, EbBitDepth bit_dep
     return target_index - start_index;
 }
 
+// r0 (TPL rate ratio) is normally in (0, 1] but can be exactly 0 for a zero-distortion (flat/static)
+// frame. Floor the divisor so factor/r0 stays finite: casting +inf to int is undefined behavior
+// (UBSan: float-cast-overflow). 1e-6 keeps the largest boost well under INT_MAX.
+#define R0_MIN_DIVISOR 1e-6
+
 int svt_av1_get_cqp_kf_boost_from_r0(double r0, int frames_to_key, ResolutionRange input_resolution) {
     double factor;
+    r0 = AOMMAX(r0, R0_MIN_DIVISOR);
     // when frames_to_key not available, it is set to -1. In this case the factor is set to average of min and max
     if (frames_to_key == -1) {
         factor = (10.0 + 4.0) / 2;
@@ -238,6 +242,7 @@ int svt_av1_get_cqp_kf_boost_from_r0(double r0, int frames_to_key, ResolutionRan
 }
 
 int svt_av1_get_gfu_boost_from_r0_lap(double min_factor, double max_factor, double r0, int frames_to_key) {
+    r0            = AOMMAX(r0, R0_MIN_DIVISOR);
     double factor = sqrt((double)frames_to_key);
     factor        = AOMMIN(factor, max_factor);
     factor        = AOMMAX(factor, min_factor);
@@ -395,8 +400,8 @@ static uint32_t update_lambda(PictureControlSet* pcs, uint8_t q_index, uint8_t m
     PictureParentControlSet* ppcs       = pcs->ppcs;
     FrameType                frame_type = ppcs->frm_hdr.frame_type;
     // To set gf_update_type based on current TL vs. the max TL (e.g. for 5L, max TL is 4)
-    uint8_t temporal_layer_index = pcs->scs->use_flat_ipp ? 0 : ppcs->temporal_layer_index;
-    uint8_t max_temporal_layer   = pcs->scs->use_flat_ipp ? 0 : ppcs->hierarchical_levels;
+    uint8_t temporal_layer_index = ppcs->temporal_layer_index;
+    uint8_t max_temporal_layer   = ppcs->hierarchical_levels;
 
     // Update rdmult based on the frame's position in the miniGOP
     uint8_t gf_update_type = frame_type == KEY_FRAME ? SVT_AV1_KF_UPDATE
@@ -454,18 +459,27 @@ uint32_t svt_aom_compute_rd_mult(PictureControlSet* pcs, uint8_t q_index, uint8_
 uint32_t svt_aom_compute_fast_lambda(PictureControlSet* pcs, uint8_t q_index, uint8_t me_q_index,
                                      EbBitDepth bit_depth) {
     // Always use q_index for the derivation of the initial rdmult (i.e. don't use me_q_index)
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
     int64_t rdmult = bit_depth == EB_EIGHT_BIT ? av1_lambda_mode_decision8_bit_sad[q_index]
                                                : av1lambda_mode_decision10_bit_sad[q_index];
+#else
+    int64_t rdmult = av1_lambda_mode_decision8_bit_sad[q_index]; // RTC: 8-bit only
+#endif
 
     return update_lambda(pcs, q_index, me_q_index, bit_depth, rdmult);
 }
 
 void svt_aom_lambda_assign(PictureControlSet* pcs, uint32_t* fast_lambda, uint32_t* full_lambda, EbBitDepth bit_depth,
                            uint8_t qp_index, bool multiply_lambda) {
+#if !CONFIG_ENABLE_HIGH_BIT_DEPTH
+    (void)multiply_lambda; // only used by the 10/12-bit paths (compiled out in 8-bit RTC)
+#endif
     if (bit_depth == EB_EIGHT_BIT) {
         *full_lambda = svt_aom_compute_rd_mult(pcs, qp_index, qp_index, bit_depth);
         *fast_lambda = av1_lambda_mode_decision8_bit_sad[qp_index];
-    } else if (bit_depth == EB_TEN_BIT) {
+    }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    else if (bit_depth == EB_TEN_BIT) {
         *full_lambda = svt_aom_compute_rd_mult(pcs, qp_index, qp_index, bit_depth);
         *fast_lambda = av1lambda_mode_decision10_bit_sad[qp_index];
         if (multiply_lambda) {
@@ -475,7 +489,9 @@ void svt_aom_lambda_assign(PictureControlSet* pcs, uint32_t* fast_lambda, uint32
     } else if (bit_depth == EB_TWELVE_BIT) {
         *full_lambda = svt_aom_compute_rd_mult(pcs, qp_index, qp_index, bit_depth);
         *fast_lambda = av1lambda_mode_decision12_bit_sad[qp_index];
-    } else {
+    }
+#endif
+    else {
         assert(0);
     }
 
@@ -483,29 +499,6 @@ void svt_aom_lambda_assign(PictureControlSet* pcs, uint32_t* fast_lambda, uint32
     uint64_t scale_factor = pcs->scs->static_config.lambda_scale_factors[pcs->ppcs->update_type];
     *full_lambda          = (uint32_t)((*full_lambda * scale_factor) >> 7);
     *fast_lambda          = (uint32_t)((*fast_lambda * scale_factor) >> 7);
-}
-
-/******************************************************************************
-* svt_av1_compute_deltaq
-* Compute delta-q based on the q, bitdepth and cyclic refresh parameters
-*******************************************************************************/
-int svt_av1_compute_deltaq(PictureParentControlSet* ppcs, int q, double rate_ratio_qdelta) {
-    SequenceControlSet* scs       = ppcs->scs;
-    RATE_CONTROL*       rc        = &scs->enc_ctx->rc;
-    int                 bit_depth = scs->static_config.encoder_bit_depth;
-
-    rate_factor_level rf_lvl     = svt_av1_rate_factor_levels[ppcs->update_type];
-    FrameType         frame_type = (rf_lvl == KF_STD) ? KEY_FRAME : INTER_FRAME;
-
-    int deltaq = svt_av1_compute_qdelta_by_rate(rc, frame_type, q, rate_ratio_qdelta, bit_depth, ppcs->sc_class1);
-    deltaq     = AOMMAX(deltaq, -ppcs->cyclic_refresh.max_qdelta_perc * q / 100);
-
-    if (scs->enc_ctx->rc_cfg.mode != AOM_CBR) {
-        // RA uses a scale factor of 4 for the deltaQ range. Found it beneficial for low delay to have a larger deltaQ range, so we scale by 8
-        deltaq = AOMMIN(deltaq, 9 * 8 - 1);
-        deltaq = AOMMAX(deltaq, -9 * 8 + 1);
-    }
-    return deltaq;
 }
 
 void svt_av1_rc_init(SequenceControlSet* scs) {
@@ -532,8 +525,9 @@ void svt_av1_rc_init(SequenceControlSet* scs) {
     rc->total_actual_bits   = 0;
     rc->total_target_bits   = 0;
 
-    rc->frames_since_key      = 8; // Sensible default for first frame.
-    rc->this_key_frame_forced = 0;
+    rc->frames_since_key        = 8; // Sensible default for first frame.
+    rc->frames_since_cdf_update = 0;
+    rc->this_key_frame_forced   = 0;
     for (i = 0; i < MAX_TEMPORAL_LAYERS + 1; ++i) {
         rc->rate_correction_factors[i] = 0.7;
     }
@@ -587,6 +581,13 @@ void svt_aom_update_rc_counts(PictureParentControlSet* ppcs) {
         // counters were incremented when it was originally encoded.
         rc->frames_since_key++;
         rc->frames_to_key--;
+        // Reset whenever the CDF is updated for the current frame,
+        // covering keyframes, warmup, scene changes, and periodic updates.
+        if (ppcs->frm_hdr.disable_cdf_update == 0) {
+            rc->frames_since_cdf_update = 0;
+        } else {
+            rc->frames_since_cdf_update++;
+        }
     }
 }
 
@@ -615,10 +616,6 @@ static void rc_init_frame_stats(PictureControlSet* pcs, SequenceControlSet* scs)
     // Get r0
     if (ppcs->r0_gen) {
         svt_aom_generate_r0beta(ppcs);
-    }
-
-    if (scs->static_config.aq_mode && scs->super_block_size == 64 && scs->enc_ctx->rc_cfg.mode == AOM_CBR) {
-        svt_aom_cyclic_refresh_init(ppcs);
     }
 
     // Get reference frame statistics
@@ -744,6 +741,23 @@ static bool rc_handle_superres(PictureControlSet* pcs, RateControlContext* conte
     return false;
 }
 
+static void generate_sb_qindex(PictureControlSet* pcs) {
+    PictureParentControlSet* ppcs = pcs->ppcs;
+    SequenceControlSet*      scs  = pcs->scs;
+
+    svt_av1_rc_init_sb_qindex(pcs, scs);
+
+    if (ppcs->frm_hdr.delta_q_params.delta_q_present && ppcs->frm_hdr.delta_q_params.delta_q_res != 1) {
+        // adjust delta q res and normalize superblock delta q values to reduce signaling overhead
+        svt_av1_normalize_sb_delta_q(pcs);
+    }
+
+    // Derive a QP per 64x64 using ME distortions (to be used for lambda modulation only; not at Q/Q-1)
+    if (scs->stats_based_sb_lambda_modulation) {
+        svt_av1_generate_b64_me_qindex_map(pcs);
+    }
+}
+
 // Process packetization feedback: update RC parameters and release resources.
 static void rc_process_packetization_feedback(PictureParentControlSet* ppcs,
                                               const EbObjectWrapper* restrict rate_control_tasks_wrapper_ptr) {
@@ -768,17 +782,21 @@ static void rc_process_packetization_feedback(PictureParentControlSet* ppcs,
             svt_av1_coded_frames_stat_calc(ppcs);
         }
     } else {
-        if (scs->static_config.gop_constraint_rc) {
-            svt_av1_rc_postencode_update_gop_const(ppcs);
-            // Qindex calculating
-            if (scs->enc_ctx->rc_cfg.mode == AOM_VBR) {
-                svt_av1_twopass_postencode_update_gop_const(ppcs);
-            }
+        if (use_rtc_cbr_path(scs)) {
+            svt_av1_rc_postencode_update_rtc_cbr(ppcs);
         } else {
-            svt_av1_rc_postencode_update(ppcs);
-            // Qindex calculating
-            if (scs->enc_ctx->rc_cfg.mode == AOM_VBR) {
-                svt_av1_twopass_postencode_update(ppcs);
+            if (scs->static_config.gop_constraint_rc) {
+                svt_av1_rc_postencode_update_gop_const(ppcs);
+                // Qindex calculating
+                if (scs->enc_ctx->rc_cfg.mode == AOM_VBR) {
+                    svt_av1_twopass_postencode_update_gop_const(ppcs);
+                }
+            } else {
+                svt_av1_rc_postencode_update(ppcs);
+                // Qindex calculating
+                if (scs->enc_ctx->rc_cfg.mode == AOM_VBR) {
+                    svt_av1_twopass_postencode_update(ppcs);
+                }
             }
         }
         svt_aom_update_rc_counts(ppcs);
@@ -798,104 +816,117 @@ static void rc_process_packetization_feedback(PictureParentControlSet* ppcs,
     svt_release_object(rc_tasks->pcs_wrapper);
 }
 
-void* svt_aom_rate_control_kernel(void* input_ptr) {
-    // Context
-    EbThreadContext*         thread_ctx  = (EbThreadContext*)input_ptr;
-    RateControlContext*      context_ptr = (RateControlContext*)thread_ctx->priv;
-    SequenceControlSet*      scs;
-    PictureControlSet*       pcs;
-    PictureParentControlSet* ppcs;
+EbErrorType svt_aom_rate_control_kernel_iter(void* context) {
+    RateControlContext* context_ptr = (RateControlContext*)context;
 
-    for (;;) {
-        // Get RateControl Task
-        EbObjectWrapper* rate_control_tasks_wrapper_ptr;
-        EB_GET_FULL_OBJECT(context_ptr->rate_control_input_tasks_fifo_ptr, &rate_control_tasks_wrapper_ptr);
+    SequenceControlSet*      scs  = NULL;
+    PictureControlSet*       pcs  = NULL;
+    PictureParentControlSet* ppcs = NULL;
 
-        RateControlTasks*    rc_tasks                = (RateControlTasks*)rate_control_tasks_wrapper_ptr->object_ptr;
-        RateControlTaskTypes task_type               = rc_tasks->task_type;
-        bool                 is_superres_recode_task = (task_type == RC_INPUT_SUPERRES_RECODE) ? true : false;
+    // Get RateControl Task
+    EbObjectWrapper* rate_control_tasks_wrapper_ptr;
+    EB_GET_FULL_OBJECT(context_ptr->rate_control_input_tasks_fifo_ptr, &rate_control_tasks_wrapper_ptr);
 
-        // Modify these for different temporal layers later
-        switch (task_type) {
-        case RC_INPUT_SUPERRES_RECODE:
-            assert(scs->static_config.superres_mode == SUPERRES_QTHRESH ||
-                   scs->static_config.superres_mode == SUPERRES_AUTO);
-            // intentionally reuse code in RC_INPUT
-        case RC_INPUT:
-            pcs  = (PictureControlSet*)rc_tasks->pcs_wrapper->object_ptr;
-            ppcs = pcs->ppcs;
-            scs  = pcs->scs;
+    RateControlTasks*    rc_tasks                = (RateControlTasks*)rate_control_tasks_wrapper_ptr->object_ptr;
+    RateControlTaskTypes task_type               = rc_tasks->task_type;
+    bool                 is_superres_recode_task = (task_type == RC_INPUT_SUPERRES_RECODE) ? true : false;
 
-            rc_init_frame_stats(pcs, scs);
+    // Modify these for different temporal layers later
+    switch (task_type) {
+    case RC_INPUT_SUPERRES_RECODE:
+        // intentionally reuse code in RC_INPUT
+    case RC_INPUT:
+        pcs  = (PictureControlSet*)rc_tasks->pcs_wrapper->object_ptr;
+        ppcs = pcs->ppcs;
+        scs  = pcs->scs;
 
-            if (!is_superres_recode_task) {
-                ppcs->blk_lambda_tuning = false;
-            }
-            reset_rc_param(ppcs);
+        // A superres recode task is only generated for the modes that run the
+        // recode loop. Checked here (not in the RC_INPUT_SUPERRES_RECODE label)
+        // because scs is not resolved until this point.
+        assert(!is_superres_recode_task || scs->static_config.superres_mode == SUPERRES_QTHRESH ||
+               scs->static_config.superres_mode == SUPERRES_AUTO);
 
-            if (ppcs->is_overlay) {
-                // overlay: ppcs->picture_qp has been updated by altref RC_INPUT
+        rc_init_frame_stats(pcs, scs);
+
+        if (!is_superres_recode_task) {
+            ppcs->blk_lambda_tuning = false;
+        }
+        reset_rc_param(ppcs);
+
+        if (ppcs->is_overlay) {
+            // overlay: ppcs->picture_qp has been updated by altref RC_INPUT
+        } else {
+            if (scs->enc_ctx->rc_cfg.mode == AOM_Q) {
+                svt_av1_rc_calc_qindex_crf_cqp(pcs, scs);
+                svt_aom_setup_segmentation(pcs, scs);
+            } else if (use_rtc_cbr_path(scs)) {
+                svt_av1_rc_calc_qindex_rtc_cbr(pcs);
             } else {
-                if (scs->enc_ctx->rc_cfg.mode == AOM_Q) {
-                    svt_av1_rc_calc_qindex_crf_cqp(pcs, scs);
-                    svt_aom_setup_segmentation(pcs, scs);
-                } else {
-                    if (!is_superres_recode_task) {
-                        svt_av1_rc_process_rate_allocation(pcs, scs);
-                    }
-                    svt_av1_rc_calc_qindex_rate_control(pcs, scs);
+                if (!is_superres_recode_task) {
+                    svt_av1_rc_process_rate_allocation(pcs, scs);
                 }
-                ppcs->picture_qp = clamp_qp(scs, (ppcs->frm_hdr.quantization_params.base_q_idx + 2) >> 2);
+                svt_av1_rc_calc_qindex_rate_control(pcs, scs);
             }
+            ppcs->picture_qp = clamp_qp(scs, (ppcs->frm_hdr.quantization_params.base_q_idx + 2) >> 2);
+        }
 
-            if (ppcs->is_alt_ref) {
-                // overlay use the same QP with alt_ref, to align with
-                // rate_control_param_queue update code in below RC_PACKETIZATION_FEEDBACK_RESULT.
-                PictureParentControlSet* overlay_ppcs     = ppcs->overlay_ppcs_ptr;
-                overlay_ppcs->picture_qp                  = ppcs->picture_qp;
-                overlay_ppcs->frm_hdr.quantization_params = ppcs->frm_hdr.quantization_params;
+        if (ppcs->is_alt_ref) {
+            // overlay use the same QP with alt_ref, to align with
+            // rate_control_param_queue update code in below RC_PACKETIZATION_FEEDBACK_RESULT.
+            PictureParentControlSet* overlay_ppcs     = ppcs->overlay_ppcs_ptr;
+            overlay_ppcs->picture_qp                  = ppcs->picture_qp;
+            overlay_ppcs->frm_hdr.quantization_params = ppcs->frm_hdr.quantization_params;
+        }
+
+        if (!is_superres_recode_task) {
+            if (rc_handle_superres(pcs, context_ptr, rate_control_tasks_wrapper_ptr)) {
+                break;
             }
+        }
 
-            if (!is_superres_recode_task) {
-                if (rc_handle_superres(pcs, context_ptr, rate_control_tasks_wrapper_ptr)) {
-                    break;
-                }
-            }
+        generate_sb_qindex(pcs);
 
-            svt_av1_rc_init_sb_qindex(pcs, scs);
+        // Get Empty Rate Control Results Buffer
+        EbObjectWrapper* rc_results_wrapper;
+        svt_get_empty_object(context_ptr->rate_control_output_results_fifo_ptr, &rc_results_wrapper);
+        RateControlResults* rc_results = (RateControlResults*)rc_results_wrapper->object_ptr;
+        rc_results->pcs_wrapper        = rc_tasks->pcs_wrapper;
+        rc_results->superres_recode    = is_superres_recode_task;
 
-            // Get Empty Rate Control Results Buffer
-            EbObjectWrapper* rc_results_wrapper;
-            svt_get_empty_object(context_ptr->rate_control_output_results_fifo_ptr, &rc_results_wrapper);
-            RateControlResults* rc_results = (RateControlResults*)rc_results_wrapper->object_ptr;
-            rc_results->pcs_wrapper        = rc_tasks->pcs_wrapper;
-            rc_results->superres_recode    = is_superres_recode_task;
+        // Post Full Rate Control Results
+        svt_post_full_object(rc_results_wrapper);
 
-            // Post Full Rate Control Results
-            svt_post_full_object(rc_results_wrapper);
+        // Release Rate Control Tasks
+        svt_release_object(rate_control_tasks_wrapper_ptr);
 
-            // Release Rate Control Tasks
-            svt_release_object(rate_control_tasks_wrapper_ptr);
+        break;
 
-            break;
+    case RC_PACKETIZATION_FEEDBACK_RESULT:
+        ppcs = (PictureParentControlSet*)rc_tasks->pcs_wrapper->object_ptr;
+        scs  = ppcs->scs;
 
-        case RC_PACKETIZATION_FEEDBACK_RESULT:
-            ppcs = (PictureParentControlSet*)rc_tasks->pcs_wrapper->object_ptr;
-            scs  = ppcs->scs;
+        rc_process_packetization_feedback(ppcs, rate_control_tasks_wrapper_ptr);
 
-            rc_process_packetization_feedback(ppcs, rate_control_tasks_wrapper_ptr);
+        // Release Rate Control Tasks
+        svt_release_object(rate_control_tasks_wrapper_ptr);
+        break;
 
-            // Release Rate Control Tasks
-            svt_release_object(rate_control_tasks_wrapper_ptr);
-            break;
+    default:
+        pcs = (PictureControlSet*)rc_tasks->pcs_wrapper->object_ptr;
+        scs = pcs->scs;
 
-        default:
-            pcs = (PictureControlSet*)rc_tasks->pcs_wrapper->object_ptr;
-            scs = pcs->scs;
+        break;
+    }
+    return EB_ErrorNone;
+}
 
-            break;
+void* svt_aom_rate_control_kernel(void* input_ptr) {
+    EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
+    for (;;) {
+        EbErrorType err = svt_aom_rate_control_kernel_iter(thread_ctx->priv);
+        if (err == EB_NoErrorFifoShutdown) {
+            return NULL;
         }
     }
-
     return NULL;
 }

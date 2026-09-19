@@ -149,7 +149,9 @@ static EbErrorType enc_context_ctor(EncApp* enc_app, EncContext* enc_context, in
     enc_context->enc_pass = enc_pass;
     enc_context->passes   = passes;
 
-    EbErrorType return_error = enc_channel_ctor(&enc_context->channel, color);
+    EncChannel* c = &enc_context->channel;
+
+    EbErrorType return_error = enc_channel_ctor(c, color);
     if (return_error != EB_ErrorNone) {
         return return_error;
     }
@@ -165,7 +167,7 @@ static EbErrorType enc_context_ctor(EncApp* enc_app, EncContext* enc_context, in
     }
     // Process any command line options, including the configuration file
     // Read all configuration files.
-    return_error = read_command_line(argc, argv, &enc_context->channel);
+    return_error = read_command_line(argc, argv, c);
     if (return_error != EB_ErrorNone) {
         fprintf(stderr, "Error in configuration, could not begin encoding! ... \n");
         fprintf(stderr, "Run %s --help for a list of options\n", argv[0]);
@@ -173,52 +175,49 @@ static EbErrorType enc_context_ctor(EncApp* enc_app, EncContext* enc_context, in
     }
 
     // Init the Encoder
-    EncChannel* c = &enc_context->channel;
-    if (c->return_error == EB_ErrorNone) {
-        EbConfig* app_cfg             = c->app_cfg;
-        app_cfg->config.recon_enabled = app_cfg->recon_file ? true : false;
-
-        // set force_key_frames frames
-        if (app_cfg->config.force_key_frames) {
-            const double fps = (double)app_cfg->config.frame_rate_numerator / app_cfg->config.frame_rate_denominator;
-            struct forced_key_frames* forced_keyframes = &app_cfg->forced_keyframes;
-
-            for (size_t i = 0; i < forced_keyframes->count; ++i) {
-                char*  p;
-                double val = strtod(forced_keyframes->specifiers[i], &p);
-                switch (*p) {
-                case 'f':
-                case 'F':
-                    break;
-                case 's':
-                case 'S':
-                default:
-                    val *= fps;
-                    break;
-                }
-                forced_keyframes->frames[i] = (uint64_t)val;
-            }
-            qsort(
-                forced_keyframes->frames, forced_keyframes->count, sizeof(forced_keyframes->frames[0]), compar_uint64);
-        }
-        init_memory_file_map(app_cfg);
-        init_reader(app_cfg);
-
-        app_svt_av1_get_time(&app_cfg->performance_context.lib_start_time[0],
-                             &app_cfg->performance_context.lib_start_time[1]);
-        // Update pass
-        app_cfg->config.pass = passes == 1 ? app_cfg->config.pass // Single-Pass
-                                           : (int)enc_pass; // Multi-Pass
-
-        c->return_error = handle_stats_file(app_cfg, enc_pass, &enc_app->rc_twopasses_stats);
-        if (c->return_error == EB_ErrorNone) {
-            c->return_error = init_encoder(app_cfg);
-        }
-        return_error = (EbErrorType)(return_error | c->return_error);
-    } else {
+    if (c->return_error != EB_ErrorNone) {
         c->active = false;
+        return c->return_error;
     }
-    return return_error;
+    EbConfig* app_cfg             = c->app_cfg;
+    app_cfg->config.recon_enabled = app_cfg->recon_file ? true : false;
+
+    // set force_key_frames frames
+    if (app_cfg->config.force_key_frames) {
+        const double fps = (double)app_cfg->config.frame_rate_numerator / app_cfg->config.frame_rate_denominator;
+        struct forced_key_frames* forced_keyframes = &app_cfg->forced_keyframes;
+
+        for (size_t i = 0; i < forced_keyframes->count; ++i) {
+            char*  p;
+            double val = strtod(forced_keyframes->specifiers[i], &p);
+            switch (*p) {
+            case 'f':
+            case 'F':
+                break;
+            case 's':
+            case 'S':
+            default:
+                val *= fps;
+                break;
+            }
+            forced_keyframes->frames[i] = (uint64_t)val;
+        }
+        qsort(forced_keyframes->frames, forced_keyframes->count, sizeof(forced_keyframes->frames[0]), compar_uint64);
+    }
+    init_memory_file_map(app_cfg);
+    init_reader(app_cfg);
+
+    app_svt_av1_get_time(&app_cfg->performance_context.lib_start_time[0],
+                         &app_cfg->performance_context.lib_start_time[1]);
+    // Update pass
+    app_cfg->config.pass = passes == 1 ? app_cfg->config.pass // Single-Pass
+                                       : (int)enc_pass; // Multi-Pass
+
+    c->return_error = handle_stats_file(app_cfg, enc_pass, &enc_app->rc_twopasses_stats);
+    if (c->return_error == EB_ErrorNone) {
+        c->return_error = init_encoder(app_cfg);
+    }
+    return c->return_error;
 }
 
 static void enc_context_dctor(EncContext* enc_context) {
@@ -435,6 +434,9 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
+#endif
+#ifdef __linux__
+    (void)pthread_setname_np(pthread_self(), "svt-app-main");
 #endif
     // GLOBAL VARIABLES
     EbErrorType return_error = EB_ErrorNone; // Error Handling

@@ -510,6 +510,15 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::Values(svt_aom_variance_highbd_avx2)));
 #endif
 
+#ifdef ARCH_AARCH64
+
+INSTANTIATE_TEST_SUITE_P(
+    NEON, HbdSquareVarianceNoRoundTest,
+    ::testing::Combine(::testing::Values(4, 8, 16, 32, 64),
+                       ::testing::Values(svt_aom_variance_highbd_neon)));
+
+#endif  // ARCH_AARCH64
+
 #endif  // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 }  // namespace

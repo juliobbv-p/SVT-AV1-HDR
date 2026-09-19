@@ -42,16 +42,16 @@
 EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     EbErrorType               return_error = EB_ErrorNone;
     EbSvtAv1EncConfiguration* config       = &scs->static_config;
-    if (config->enc_mode > MAX_ENC_PRESET || config->enc_mode < -3) {
-        SVT_ERROR("EncoderMode must be in the range of [-3-%d]\n", MAX_ENC_PRESET);
+    if (config->enc_mode > MAX_ENC_PRESET || config->enc_mode < MIN_ENC_PRESET) {
+        SVT_ERROR("EncoderMode must be in the range of [%d-%d]\n", MIN_ENC_PRESET, MAX_ENC_PRESET);
         return_error = EB_ErrorBadParameter;
     }
-    if (scs->max_input_luma_width < 4) {
-        SVT_ERROR("Source Width must be at least 4\n");
+    if (scs->max_input_luma_width < 1) {
+        SVT_ERROR("Source Width must be at least 1\n");
         return_error = EB_ErrorBadParameter;
     }
-    if (scs->max_input_luma_height < 4) {
-        SVT_ERROR("Source Height must be at least 4\n");
+    if (scs->max_input_luma_height < 1) {
+        SVT_ERROR("Source Height must be at least 1\n");
         return_error = EB_ErrorBadParameter;
     }
     if (config->pred_structure > RANDOM_ACCESS) {
@@ -158,6 +158,39 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         SVT_ERROR("CBR Rate control is currently not supported for RANDOM_ACCESS/ALL_INTRA, use VBR mode\n");
         return_error = EB_ErrorBadParameter;
     }
+    // Ref-frame management validation: ABI cap + LD-CBR-only when enabled.
+    if (config->max_managed_refs > 4) {
+        SVT_ERROR("max_managed_refs must be in [0, 4] (got %u)\n", (unsigned)config->max_managed_refs);
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->max_managed_refs > 0 && config->pred_structure != LOW_DELAY) {
+        SVT_ERROR("max_managed_refs > 0 requires pred_structure == LOW_DELAY\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->max_managed_refs > 0 && config->rate_control_mode != SVT_AV1_RC_MODE_CBR) {
+        // Only LD-CBR is implemented; LD-CRF's shifted lay1_offset would
+        // collide with the STORE-safe slot pool. See pd_process.c.
+        SVT_ERROR("max_managed_refs > 0 requires rate_control_mode == CBR (got %u)\n",
+                  (unsigned)config->rate_control_mode);
+        return_error = EB_ErrorBadParameter;
+    }
+    // Runtime MG-size change: ABI cap, restricted to where MG_SIZE_CHANGE_EVENT
+    // is accepted, and never below the level count already configured.
+    if (config->max_hierarchical_levels > 2) {
+        SVT_ERROR("max_hierarchical_levels must be in [0, 2] (got %u)\n", (unsigned)config->max_hierarchical_levels);
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->max_hierarchical_levels > 0 &&
+        !(config->rtc && config->pred_structure == LOW_DELAY && config->rate_control_mode == SVT_AV1_RC_MODE_CBR)) {
+        SVT_ERROR("max_hierarchical_levels > 0 requires RTC low-delay CBR\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->max_hierarchical_levels > 0 && config->max_hierarchical_levels < config->hierarchical_levels) {
+        SVT_ERROR("max_hierarchical_levels (%u) must be >= hierarchical_levels (%u)\n",
+                  (unsigned)config->max_hierarchical_levels,
+                  (unsigned)config->hierarchical_levels);
+        return_error = EB_ErrorBadParameter;
+    }
     if (config->rate_control_mode == SVT_AV1_RC_MODE_VBR && config->pred_structure == LOW_DELAY) {
         SVT_ERROR("VBR Rate control is currently not supported for LOW_DELAY, use CBR mode\n");
         return_error = EB_ErrorBadParameter;
@@ -178,12 +211,12 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if (scs->seq_header.max_frame_width < 4) {
-        SVT_ERROR("Forced Max Width must be at least 4\n");
+    if (scs->seq_header.max_frame_width < 1) {
+        SVT_ERROR("Forced Max Width must be at least 1\n");
         return_error = EB_ErrorBadParameter;
     }
-    if (scs->seq_header.max_frame_height < 4) {
-        SVT_ERROR("Forced Max Height must be at least 4\n");
+    if (scs->seq_header.max_frame_height < 1) {
+        SVT_ERROR("Forced Max Height must be at least 1\n");
         return_error = EB_ErrorBadParameter;
     }
     if (scs->seq_header.max_frame_width > 16384) {
@@ -197,8 +230,8 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
 
     // This is not an AV1 spec limitation, but an implementation limitation in the encoder
     // This check will stay in place until restoration filtering can handle these dimensions
-    if ((scs->max_input_luma_width >= 4 && scs->max_input_luma_width < 64) ||
-        (scs->max_input_luma_height >= 4 && scs->max_input_luma_height < 64)) {
+    if ((scs->max_input_luma_width >= 1 && scs->max_input_luma_width < 64) ||
+        (scs->max_input_luma_height >= 1 && scs->max_input_luma_height < 64)) {
         if (config->aq_mode != 0) {
             SVT_WARN("AQ mode %i is unsupported with source dimensions (%i / %i), setting AQ mode to 0\n",
                      config->aq_mode,
@@ -257,8 +290,28 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     }
 
     if (config->hierarchical_levels > 5) {
-        SVT_ERROR("Hierarchical Levels supported [0-5]\n");
+        SVT_ERROR("Hierarchical Levels supported: [0-5]\n");
         return_error = EB_ErrorBadParameter;
+    } else {
+        for (uint8_t i = 0; i < config->hierarchical_levels + 1; ++i) {
+            if (config->qindex_offsets[i] < -64 || config->qindex_offsets[i] > 63) {
+                SVT_ERROR(
+                    "Invalid qindex_offsets for hierarchical level %d. Found %d, qindex_offsets must be [-64 - 63]\n",
+                    i,
+                    config->qindex_offsets[i]);
+                return_error = EB_ErrorBadParameter;
+            }
+        }
+        for (uint8_t i = 0; i < config->hierarchical_levels + 1; ++i) {
+            if (config->chroma_qindex_offsets[i] < -64 || config->chroma_qindex_offsets[i] > 63) {
+                SVT_ERROR(
+                    "Invalid chroma_qindex_offsets for hierarchical level %d. Found %d, chroma_qindex_offsets must be "
+                    "[-64 - 63]\n",
+                    i,
+                    config->chroma_qindex_offsets[i]);
+                return_error = EB_ErrorBadParameter;
+            }
+        }
     }
     if ((config->intra_period_length < -2 || config->intra_period_length > 2 * ((1 << 30) - 1)) &&
         config->rate_control_mode == SVT_AV1_RC_MODE_CQP_OR_CRF) {
@@ -362,12 +415,6 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    for (uint8_t i = 0; i < config->hierarchical_levels + 1; ++i) {
-        if (config->qindex_offsets[i] < -64 || config->qindex_offsets[i] > 63) {
-            SVT_ERROR("Invalid qindex_offsets. qindex_offsets must be [-64 - 63]\n");
-            return_error = EB_ErrorBadParameter;
-        }
-    }
     if (config->key_frame_chroma_qindex_offset < -64 || config->key_frame_chroma_qindex_offset > 63) {
         SVT_ERROR(
             "Invalid key_frame_chroma_qindex_offset. key_frame_chroma_qindex_offset "
@@ -405,12 +452,6 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    for (uint8_t i = 0; i < config->hierarchical_levels + 1; ++i) {
-        if (config->chroma_qindex_offsets[i] < -64 || config->chroma_qindex_offsets[i] > 63) {
-            SVT_ERROR("Invalid chroma_qindex_offsets. chroma_qindex_offsets must be [-64 - 63]\n");
-            return_error = EB_ErrorBadParameter;
-        }
-    }
     if (config->startup_qp_offset < -63 || config->startup_qp_offset > 63) {
         SVT_ERROR("Invalid startup_qp_offset. startup_qp_offset must be [-63 - 63]\n");
         return_error = EB_ErrorBadParameter;
@@ -433,18 +474,19 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if ((config->encoder_bit_depth != 8) && (config->encoder_bit_depth != 10)) {
+    if ((SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) != 8) &&
+        (SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) != 10)) {
         SVT_ERROR("Encoder Bit Depth shall be only 8 or 10 \n");
         return_error = EB_ErrorBadParameter;
     }
     // Check if the EncoderBitDepth is conformant with the Profile constraint
-    if ((config->profile == 0 || config->profile == 1) && config->encoder_bit_depth > 10) {
+    if ((config->profile == 0 || config->profile == 1) && SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) > 10) {
         SVT_ERROR("The encoder bit depth shall be equal to 8 or 10 for Main/High Profile\n");
         return_error = EB_ErrorBadParameter;
     }
 
-    if (config->encoder_color_format != EB_YUV420) {
-        SVT_ERROR("Only support 420 now \n");
+    if (config->encoder_color_format != EB_YUV420 && config->encoder_color_format != EB_YUV444) {
+        SVT_ERROR("Only 4:2:0 and 4:4:4 color formats are supported\n");
         return_error = EB_ErrorBadParameter;
     }
 
@@ -458,7 +500,8 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if (config->profile == 2 && config->encoder_bit_depth <= 10 && config->encoder_color_format != EB_YUV422) {
+    if (config->profile == 2 && SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) <= 10 &&
+        config->encoder_color_format != EB_YUV422) {
         SVT_ERROR("Profile 2 bit-depth < 10 requires 4:2:2 color format\n");
         return_error = EB_ErrorBadParameter;
     }
@@ -484,8 +527,8 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     }
 
     // CDEF
-    if (config->cdef_level > 4 || config->cdef_level < -1) {
-        SVT_ERROR("Invalid CDEF level [0 - 4, -1 for auto], your input: %d\n", config->cdef_level);
+    if (config->cdef_level > 10 || config->cdef_level < -1) {
+        SVT_ERROR("Invalid CDEF level [0 - 10, -1 for auto], your input: %d\n", config->cdef_level);
         return_error = EB_ErrorBadParameter;
     }
 
@@ -513,20 +556,48 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     }
     if (config->tune > TUNE_FILM_GRAIN) {
         SVT_ERROR(
-            "Invalid tune flag [0 - 5: 0 for VQ, 1 for PSNR, 2 for SSIM, 3 for IQ, 4 for MS_SSIM and 5 "
+            "Invalid tune flag [0 - 6, 0 for VQ, 1 for PSNR, 2 for SSIM, 3 for IQ, 4 for MS_SSIM, 5 for VMAF, and 6 "
             "for Film Grain], "
-            "your input: %d\n",
+            "your input: "
+            "%d\n",
             config->tune);
         return_error = EB_ErrorBadParameter;
     }
-    if (config->tune == TUNE_SSIM || config->tune == TUNE_IQ || config->tune == TUNE_MS_SSIM) {
-        if (config->rate_control_mode != 0 || config->pred_structure == LOW_DELAY) {
-            SVT_ERROR("tune %s only supports CRF rate control mode currently\n",
-                      config->tune == TUNE_SSIM     ? "SSIM"
-                          : config->tune == TUNE_IQ ? "IQ"
-                                                    : "MS_SSIM");
+    // RC: SSIM, IQ, MS_SSIM, VMAF -> CRF only (VBR, CBR not supported)
+    if (config->tune == TUNE_SSIM || config->tune == TUNE_IQ || config->tune == TUNE_MS_SSIM ||
+        config->tune == TUNE_VMAF) {
+        if (config->rate_control_mode != 0) {
+            SVT_ERROR("Tune %s only supports CRF rate control mode\n",
+                      config->tune == TUNE_SSIM       ? "SSIM"
+                          : config->tune == TUNE_IQ   ? "IQ"
+                          : config->tune == TUNE_VMAF ? "VMAF"
+                                                      : "MS_SSIM");
             return_error = EB_ErrorBadParameter;
         }
+    }
+
+    // pred_struct: SSIM, MS_SSIM -> ALL_INTRA and RA only (LOW_DELAY not supported)
+    if (config->tune == TUNE_SSIM || config->tune == TUNE_MS_SSIM) {
+        if (config->pred_structure == LOW_DELAY) {
+            SVT_ERROR("Tune %s only supports all-intra and random access prediction structures\n",
+                      config->tune == TUNE_SSIM ? "SSIM" : "MS_SSIM");
+            return_error = EB_ErrorBadParameter;
+        }
+    }
+
+    // pred_struct: VMAF -> RA only (ALL_INTRA and LOW_DELAY not supported)
+    if (config->tune == TUNE_VMAF && (config->pred_structure == ALL_INTRA || config->pred_structure == LOW_DELAY)) {
+        SVT_ERROR("Tune VMAF only supports random access prediction structure\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    // pred_struct: IQ -> ALL_INTRA and LOW_DELAY only (RA not supported); LOW_DELAY is experimental
+    if (config->tune == TUNE_IQ && config->pred_structure == RANDOM_ACCESS) {
+        SVT_ERROR("Tune IQ only supports all-intra and low delay (experimental) prediction structures\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->tune == TUNE_IQ && config->pred_structure == LOW_DELAY) {
+        SVT_WARN("Tune IQ with low delay prediction structure is experimental\n");
     }
 
     if (config->tune == TUNE_FILM_GRAIN) {
@@ -606,10 +677,6 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         SVT_ERROR(
             "Identity matrix (matrix_coefficient = 0) may be used only with 4:4:4 "
             "color format.\n");
-        return_error = EB_ErrorBadParameter;
-    }
-    if (config->hierarchical_levels < 2 || config->hierarchical_levels > 5) {
-        SVT_ERROR("Only hierarchical levels 2-5 is currently supported.\n");
         return_error = EB_ErrorBadParameter;
     }
 
@@ -882,6 +949,18 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
+    //User configurable High Bit Depth Mode Decision Setting
+    if (config->hbd_mds < -1 || config->hbd_mds > 2) {
+        SVT_ERROR("hbd-mds must be -1 (preset default), 0, 1, or 2\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) == 8 && (config->hbd_mds == 1 || config->hbd_mds == 2)) {
+        SVT_WARN("Please use 10-bit encoding if you want to take advantage of hbd-mds 1 and 2.\n");
+        SVT_ERROR("Full high bit depth and hybrid 8/10 mode decision are not supported when encoder bit depth is 8\n");
+        return_error = EB_ErrorBadParameter;
+    }
+
     if (config->noise_norm_strength > 4) {
         SVT_ERROR("Noise normalization strength must be between 0 and 4\n");
         return_error = EB_ErrorBadParameter;
@@ -897,13 +976,13 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         return_error = EB_ErrorBadParameter;
     }
 
-    if (config->hbd_mds > 2) {
-        SVT_ERROR("Hbd-mds must be between 0 and 2\n");
+    if (config->tx_bias > 3) {
+        SVT_ERROR("TX bias must be between 0 and 3\n");
         return_error = EB_ErrorBadParameter;
     }
 
-    if (config->tx_bias > 3) {
-        SVT_ERROR("TX bias must be between 0 and 3\n");
+    if (config->enable_qmpsnr < -1 || config->enable_qmpsnr > 1) {
+        SVT_ERROR("Enable-qmpsnr must be -1 (automatic), 0 or 1\n");
         return_error = EB_ErrorBadParameter;
     }
 
@@ -991,12 +1070,15 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->under_shoot_pct          = (uint32_t)DEFAULT;
     config_ptr->over_shoot_pct           = (uint32_t)DEFAULT;
     config_ptr->mbr_over_shoot_pct       = 50;
+    config_ptr->max_intra_bitrate_pct    = 300;
+    config_ptr->max_inter_bitrate_pct    = 0;
     config_ptr->gop_constraint_rc        = 0;
     config_ptr->maximum_buffer_size_ms   = 1000; // default settings for CBR
     config_ptr->starting_buffer_level_ms = 600; // default settings for CBR
     config_ptr->optimal_buffer_level_ms  = 600; // default settings for CBR
     config_ptr->recode_loop              = ALLOW_RECODE_DEFAULT;
     config_ptr->screen_content_mode      = 2;
+    config_ptr->enable_intrabc           = true;
 
     // Annex A parameters
     config_ptr->profile = 0;
@@ -1022,6 +1104,7 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
 
     // Alt-Ref default values
     config_ptr->enable_tf       = 1;
+    config_ptr->enable_tf_key   = 1;
     config_ptr->enable_overlays = false;
     config_ptr->tune            = 1;
     // Super-resolution default values
@@ -1088,16 +1171,25 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->max_tx_size                       = 64;
     config_ptr->extended_crf_qindex_offset        = 0;
     config_ptr->ac_bias                           = 1.0;
-    config_ptr->noise_norm_strength               = 1;
-    config_ptr->kf_tf_strength                    = 1;
-    config_ptr->alt_lambda_factors                = 1;
-    config_ptr->sharp_tx                          = 1;
-    config_ptr->alt_ssim_tuning                   = false;
-    config_ptr->hbd_mds                           = 0;
-    config_ptr->tx_bias                           = 0;
-    config_ptr->complex_hvs                       = 0;
-    config_ptr->noise_adaptive_filtering          = 2;
-    config_ptr->cdef_scaling                      = 15;
+    config_ptr->hbd_mds                           = DEFAULT;
+
+    // Ref-frame management disabled by default → legacy bit-exact behavior
+    // and no extra ref-buffer memory allocated.
+    config_ptr->max_managed_refs = 0;
+
+    // MG size fixed for the session by default → legacy pool sizing.
+    config_ptr->max_hierarchical_levels = 0;
+
+    config_ptr->noise_norm_strength      = 1;
+    config_ptr->kf_tf_strength           = 1;
+    config_ptr->alt_lambda_factors       = 0;
+    config_ptr->sharp_tx                 = 1;
+    config_ptr->alt_ssim_tuning          = false;
+    config_ptr->tx_bias                  = 0;
+    config_ptr->complex_hvs              = 0;
+    config_ptr->enable_qmpsnr            = -1;
+    config_ptr->noise_adaptive_filtering = 2;
+    config_ptr->cdef_scaling             = 15;
     return return_error;
 }
 
@@ -1157,12 +1249,13 @@ void svt_av1_print_lib_params(SequenceControlSet* scs) {
 
         SVT_INFO("SVT [config]: preset / tune / pred struct \t\t\t\t\t: %d / %s%s / %s\n",
                  config->enc_mode,
-                 config->tune == TUNE_VQ            ? "VQ"
-                     : config->tune == TUNE_PSNR    ? "PSNR"
-                     : config->tune == TUNE_SSIM    ? "SSIM"
-                     : config->tune == TUNE_MS_SSIM ? "MS_SSIM"
-                     : config->tune == TUNE_IQ      ? "IQ"
-                                                    : "Film Grain",
+                 config->tune == TUNE_VQ               ? "VQ"
+                     : config->tune == TUNE_PSNR       ? "PSNR"
+                     : config->tune == TUNE_SSIM       ? "SSIM"
+                     : config->tune == TUNE_MS_SSIM    ? "MS_SSIM"
+                     : config->tune == TUNE_VMAF       ? "VMAF"
+                     : config->tune == TUNE_FILM_GRAIN ? "Film Grain"
+                                                       : "IQ",
                  (config->tune == TUNE_SSIM && config->alt_ssim_tuning) ? " (Alt)" : "",
                  config->pred_structure == LOW_DELAY           ? "low delay"
                      : config->pred_structure == RANDOM_ACCESS ? "random access"
@@ -1271,6 +1364,10 @@ void svt_av1_print_lib_params(SequenceControlSet* scs) {
                      config->tx_bias == 1
                          ? "full"
                          : (config->tx_bias == 2 ? "size only" : (config->tx_bias == 3 ? "interp. only" : "off")));
+        }
+
+        if (config->hbd_mds != DEFAULT) {
+            SVT_INFO("SVT [config]: High Bit Depth Mode Decision setting \t\t\t\t\t: %d\n", config->hbd_mds);
         }
 
         if (config->noise_norm_strength > 0) {
@@ -1558,6 +1655,31 @@ static EbErrorType str_to_crf(const char* nptr, EbSvtAv1EncConfiguration* config
     config_struct->qp                         = qp;
     config_struct->rate_control_mode          = SVT_AV1_RC_MODE_CQP_OR_CRF;
     config_struct->aq_mode                    = 2;
+    config_struct->extended_crf_qindex_offset = extended_crf_qindex_offset;
+
+    return EB_ErrorNone;
+}
+
+static EbErrorType str_to_cqp(const char* nptr, EbSvtAv1EncConfiguration* config_struct) {
+    double      cqp;
+    EbErrorType return_error;
+
+    return_error = str_to_double(nptr, &cqp, NULL);
+
+    if (return_error == EB_ErrorBadParameter) {
+        return return_error;
+    }
+    if (cqp < 0) {
+        return EB_ErrorBadParameter;
+    }
+
+    uint32_t extended_q_index           = (uint32_t)(cqp * 4);
+    uint32_t qp                         = AOMMIN(MAX_QP_VALUE, (uint32_t)cqp);
+    uint32_t extended_crf_qindex_offset = extended_q_index - qp * 4;
+
+    config_struct->qp                         = qp;
+    config_struct->rate_control_mode          = SVT_AV1_RC_MODE_CQP_OR_CRF;
+    config_struct->aq_mode                    = 0;
     config_struct->extended_crf_qindex_offset = extended_crf_qindex_offset;
 
     return EB_ErrorNone;
@@ -2164,6 +2286,10 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         return str_to_crf(value, config_struct);
     }
 
+    if (!strcmp(name, "cqp")) {
+        return str_to_cqp(value, config_struct);
+    }
+
     if (!strcmp(name, "rc")) {
         return str_to_rc_mode(value, &config_struct->rate_control_mode, &config_struct->aq_mode);
     }
@@ -2290,6 +2416,8 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"undershoot-pct", &config_struct->under_shoot_pct},
         {"overshoot-pct", &config_struct->over_shoot_pct},
         {"mbr-overshoot-pct", &config_struct->mbr_over_shoot_pct},
+        {"max-intra-bitrate-pct", &config_struct->max_intra_bitrate_pct},
+        {"max-inter-bitrate-pct", &config_struct->max_inter_bitrate_pct},
         {"recode-loop", &config_struct->recode_loop},
         {"enable-stat-report", &config_struct->stat_report},
         {"scm", &config_struct->screen_content_mode},
@@ -2342,7 +2470,6 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"noise-norm-strength", &config_struct->noise_norm_strength},
         {"kf-tf-strength", &config_struct->kf_tf_strength},
         {"sharp-tx", &config_struct->sharp_tx},
-        {"hbd-mds", &config_struct->hbd_mds},
         {"tx-bias", &config_struct->tx_bias},
         {"complex-hvs", &config_struct->complex_hvs},
         {"noise-adaptive-filtering", &config_struct->noise_adaptive_filtering},
@@ -2421,6 +2548,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"tile-rows", &config_struct->tile_rows},
         {"tile-columns", &config_struct->tile_columns},
         {"sframe-dist", &config_struct->sframe_dist},
+        {"hbd-mds", &config_struct->hbd_mds},
         {"noise-chroma", &config_struct->noise_strength_chroma},
     };
 
@@ -2441,6 +2569,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"sharpness", &config_struct->sharpness},
         {"startup-qp-offset", &config_struct->startup_qp_offset},
         {"noise-size", &config_struct->noise_size},
+        {"enable-qmpsnr", &config_struct->enable_qmpsnr},
     };
 
     const size_t int8_opts_size = sizeof(int8_opts) / sizeof(int8_opts[0]);
@@ -2478,6 +2607,8 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"avif", &config_struct->avif},
         {"rtc", &config_struct->rtc},
         {"adaptive-film-grain", &config_struct->adaptive_film_grain},
+        {"enable-kf-tf", &config_struct->enable_tf_key},
+        {"enable-intrabc", &config_struct->enable_intrabc},
         {"alt-lambda-factors", &config_struct->alt_lambda_factors},
         {"alt-ssim-tuning", &config_struct->alt_ssim_tuning},
     };

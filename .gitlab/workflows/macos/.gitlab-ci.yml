@@ -56,31 +56,8 @@ macOS (Xcode):
   variables:
     CMAKE_GENERATOR: Xcode
 
-# x86 compilation test
-macOS (Static, Tests):
-  extends: .macos-compiler-base
-  tags:
-    - macos
-    - shell
-    - x86
-  variables:
-    CMAKE_GENERATOR: Ninja
-    EXTRA_CMAKE_FLAGS: -DBUILD_TESTING=ON -DSVT_AV1_LTO=ON # -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" # universal binaries are currently broken
-    EXTRA_CFLAGS: -Wno-error -g
-    EXTRA_CXXFLAGS: -Wno-error -g
-    PREFIX_DIR: ${CI_PROJECT_DIR}/SVT-Install/
-    TARGET: install
-  parallel:
-    matrix:
-      - CMAKE_BUILD_TYPE: [Release, Debug]
-  artifacts:
-    expire_in: 1 day
-    paths:
-      - Bin/Release/*
-      - SVT-Install/*
-
-# m1 compilation test
-macOS (Static, Tests, m1):
+# Universal binary compilation test
+macOS (Static, Tests, Universal):
   extends: .macos-compiler-base
   tags:
     - macos
@@ -88,14 +65,26 @@ macOS (Static, Tests, m1):
     - m1
   variables:
     CMAKE_GENERATOR: Ninja
-    EXTRA_CMAKE_FLAGS: -DBUILD_TESTING=ON # -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" # universal binaries are currently broken
+    BASE_EXTRA_CMAKE_FLAGS: -DBUILD_TESTING=ON -DSVT_AV1_LTO=ON # Cannot use -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" directly, instead call lipo at the end
     EXTRA_CFLAGS: -Wno-error -g
     EXTRA_CXXFLAGS: -Wno-error -g
     PREFIX_DIR: ${CI_PROJECT_DIR}/SVT-Install/
-    TARGET: install
   parallel:
     matrix:
       - CMAKE_BUILD_TYPE: [Release, Debug]
+  script:
+    - EXTRA_CMAKE_FLAGS="${BASE_EXTRA_CMAKE_FLAGS} -DCMAKE_OSX_ARCHITECTURES=arm64"
+    - !reference [.compiler-script]
+    - mv Bin/${CMAKE_BUILD_TYPE} Bin/${CMAKE_BUILD_TYPE}-arm64
+    - git -C Build clean -ffdx
+    - EXTRA_CMAKE_FLAGS="${BASE_EXTRA_CMAKE_FLAGS} -DCMAKE_OSX_ARCHITECTURES=x86_64"
+    - !reference [.compiler-script]
+    - mv Bin/${CMAKE_BUILD_TYPE} Bin/${CMAKE_BUILD_TYPE}-x86_64
+    - mkdir -p Bin/${CMAKE_BUILD_TYPE}
+    - for file in Bin/${CMAKE_BUILD_TYPE}-arm64/*; do
+        lipo -create "Bin/${CMAKE_BUILD_TYPE}-arm64/$(basename $file)" "Bin/${CMAKE_BUILD_TYPE}-x86_64/$(basename $file)" -output "Bin/${CMAKE_BUILD_TYPE}/$(basename $file)";
+      done
+    - ccache -s
   artifacts:
     expire_in: 1 day
     paths:
@@ -126,7 +115,7 @@ macOS Unit Tests:
     - cmake --build Build --target TestVectors
     - python3 gtest_parallel.py --print_test_times --shard_index=$SHARD_INDEX --shard_count=$TOTAL_SHARDS ./Bin/Release/SvtAv1UnitTests ./Bin/Release/SvtAv1E2ETests -- --gtest_output="xml:reports/{#}.xml"
   needs:
-    - macOS (Static, Tests)
+    - macOS (Static, Tests, Universal)
 
 macOS Unit Tests (m1):
   extends: .macos-unit-test-base
@@ -152,7 +141,7 @@ macOS Unit Tests (m1):
     - cmake --build Build --target TestVectors
     - python3 gtest_parallel.py --print_test_times --shard_index=$SHARD_INDEX --shard_count=$TOTAL_SHARDS ./Bin/Release/SvtAv1UnitTests ./Bin/Release/SvtAv1E2ETests -- --gtest_output="xml:reports/{#}.xml"
   needs:
-    - macOS (Static, Tests, m1)
+    - macOS (Static, Tests, Universal)
 
 macOS Enc Test (x86):
   extends: .macos-test-base
@@ -162,7 +151,7 @@ macOS Enc Test (x86):
   parallel: !reference [.enc-test-parallel]
   artifacts: !reference [.enc-test-artifacts]
   needs:
-    - macOS (Static, Tests)
+    - macOS (Static, Tests, Universal)
 
 macOS Enc Test (m1):
   extends: .macos-test-base
@@ -176,7 +165,7 @@ macOS Enc Test (m1):
   parallel: !reference [.enc-test-parallel]
   artifacts: !reference [.enc-test-artifacts]
   needs:
-    - macOS (Static, Tests, m1)
+    - macOS (Static, Tests, Universal)
 
 macOS FFmpeg (Static, x86):
   extends: .macos-test-base

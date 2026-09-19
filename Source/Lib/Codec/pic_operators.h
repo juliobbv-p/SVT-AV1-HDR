@@ -26,12 +26,16 @@ void svt_aom_picture_full_distortion32_bits_single(int32_t* coeff, int32_t* reco
                                                    uint32_t bwidth, uint32_t bheight, uint64_t* distortion,
                                                    uint32_t cnt_nz_coeff);
 
+void svt_qm_full_distortion(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t width,
+                            uint32_t height, uint64_t* distortion, uint32_t eob, const QmVal* qm, const int16_t* scan,
+                            uint32_t qm_height);
+
 void svt_aom_picture_full_distortion32_bits_single_facade(int32_t* coeff, int32_t* recon_coeff, uint32_t stride,
                                                           uint32_t bwidth, uint32_t bheight, uint32_t area_width,
                                                           uint32_t area_height, uint64_t* distortion,
                                                           uint32_t cnt_nz_coeff, BlockModeInfo* block_mi,
                                                           bool is_chroma, uint8_t temporal_layer_index, double ac_bias,
-                                                          uint8_t tx_bias);
+                                                          uint8_t tx_bias, const QmVal* qm, const int16_t* scan);
 
 uint64_t svt_spatial_full_distortion_kernel_facade(uint8_t* input, uint32_t input_offset, uint32_t input_stride,
                                                    uint8_t* recon, int32_t recon_offset, uint32_t recon_stride,
@@ -71,9 +75,8 @@ void svt_full_distortion_kernel_cbf_zero32_bits_c(int32_t* coeff, uint32_t coeff
                                                   uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width,
                                                   uint32_t area_height);
 
-void svt_full_distortion_kernel32_bits_c(int32_t* coeff, uint32_t coeff_stride, int32_t* recon_coeff,
-                                         uint32_t recon_coeff_stride, uint64_t distortion_result[DIST_CALC_TOTAL],
-                                         uint32_t area_width, uint32_t area_height);
+void svt_full_distortion_kernel32_bits_c(int32_t* coeff, int32_t* recon_coeff, uint32_t stride, uint32_t area_width,
+                                         uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]);
 
 uint64_t svt_full_distortion_kernel16_bits_c(uint8_t* input, uint32_t input_offset, uint32_t input_stride,
                                              uint8_t* pred, int32_t pred_offset, uint32_t pred_stride,

@@ -11,7 +11,18 @@
 
 #include "common_dsp_rtcd.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 #include "third_party/googletest/include/gtest/gtest.h"
+
+// The test sources themselves must be compiled in test mode. If this fires, the
+// CMake configure did not set SVT_AV1_UNIT_TEST_BUILD (BUILD_TESTING=ON).
+#ifndef SVT_AV1_UNIT_TEST_BUILD
+#error \
+    "SvtAv1UnitTests must be built with SVT_AV1_UNIT_TEST_BUILD defined " \
+    "(configure with -DBUILD_TESTING=ON)."
+#endif
 
 #if ARCH_AARCH64 || ARCH_X86_64
 static void append_negative_gtest_filter(const char *str) {
@@ -35,8 +46,32 @@ static void append_negative_gtest_filter(const char *str) {
 }
 #endif  // ARCH_AARCH64 || ARCH_X86_64
 
+// Scan-order tables are generated at runtime (svt_aom_init_iscan) rather
+// than shipped as constants; the encoder init path does this, but the unit
+// tests exercise kernels directly, so do it here.
+extern "C" void svt_aom_init_iscan(void);
+
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
+
+    svt_aom_init_iscan();
+
+    // Defensive handshake: ensure the linked library was also built in test
+    // mode. A deployment library has CONFIG_ARM_NEON_IS_GUARANTEED=1, which
+    // strips the C reference functions; svt_aom_setup_*_rtcd_internal(0) would
+    // then leave the RTCD table unassigned ("Pointer ... is not assigned" ->
+    // SIGSEGV). Catch that here with a clear message instead.
+    if (!svt_aom_library_built_for_unit_tests()) {
+        fprintf(stderr,
+                "FATAL: SvtAv1 library was NOT built with "
+                "SVT_AV1_UNIT_TEST_BUILD.\n"
+                "The test binary is linked against a deployment-mode library "
+                "where C reference\nfunctions are stripped, which breaks "
+                "svt_aom_setup_*_rtcd_internal(0).\n"
+                "Rebuild the library in the same configure with "
+                "-DBUILD_TESTING=ON.\n");
+        return EXIT_FAILURE;
+    }
 
 #if ARCH_AARCH64
     const EbCpuFlags caps = svt_aom_get_cpu_flags_to_use();

@@ -230,11 +230,11 @@ class ConvolveScaleTestBase : public ::testing::Test {
         std::vector<ConvolveParams> convolve_params;
 
         ConvolveParams param_no_compound =
-            get_conv_params_no_round(0, 0, 0, nullptr, 0, 0, bd_);
+            get_conv_params_no_round(0, nullptr, 0, 0, bd_);
         convolve_params.push_back(param_no_compound);
 
         ConvolveParams param_compound_avg =
-            get_conv_params_no_round(0, 1, 0, nullptr, 0, 1, bd_);
+            get_conv_params_no_round(1, nullptr, 0, 1, bd_);
         param_compound_avg.use_dist_wtd_comp_avg = 0;
         convolve_params.push_back(param_compound_avg);
 

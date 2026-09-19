@@ -22,6 +22,7 @@
 #include "common_utils.h"
 #include "ac_bias.h"
 #include "inv_transforms.h"
+#include "enc_mode_config.h"
 
 #define DLF_MAX_LVL 4
 static const int32_t  inter_frame_multiplier[INPUT_SIZE_COUNT]      = {6017, 6017, 6017, 12034, 12034, 12034, 12034};
@@ -164,8 +165,8 @@ void svt_av1_setup_dst_planes(PictureControlSet* pcs, MacroblockdPlane* planes, 
                 bsize,
                 src->u_buffer,
                 (scs->max_input_luma_width - scs->max_input_pad_right) >>
-                    1, // The width/height should be the unpadded width/height (see AV1 spec 7.14.2 Edge Loop Filter Process)
-                (scs->max_input_luma_height - scs->max_input_pad_bottom) >> 1,
+                    scs->subsampling_x, // The width/height should be the unpadded width/height (see AV1 spec 7.14.2 Edge Loop Filter Process)
+                (scs->max_input_luma_height - scs->max_input_pad_bottom) >> scs->subsampling_y,
                 src->u_stride,
                 mi_row,
                 mi_col,
@@ -179,8 +180,8 @@ void svt_av1_setup_dst_planes(PictureControlSet* pcs, MacroblockdPlane* planes, 
                 bsize,
                 src->v_buffer,
                 (scs->max_input_luma_width - scs->max_input_pad_right) >>
-                    1, // The width/height should be the unpadded width/height (see AV1 spec 7.14.2 Edge Loop Filter Process)
-                (scs->max_input_luma_height - scs->max_input_pad_bottom) >> 1,
+                    scs->subsampling_x, // The width/height should be the unpadded width/height (see AV1 spec 7.14.2 Edge Loop Filter Process)
+                (scs->max_input_luma_height - scs->max_input_pad_bottom) >> scs->subsampling_y,
                 src->v_stride,
                 mi_row,
                 mi_col,
@@ -209,21 +210,32 @@ static INLINE TxSize get_transform_size(const MbModeInfo* const mbmi, const Edge
     return (VERT_EDGE == edge_dir) ? txsize_horz_map[tx_size] : txsize_vert_map[tx_size];
 }
 
+// Per edge-column (VERT) / edge-row (HORZ) memo of the deblock decision. For a
+// fixed edge, the result depends only on (cur, prev) block info once the position
+// gates have passed, and the outer loop revisits the same edge on every row/col a
+// block spans, so we cache and reuse it there.
+typedef struct LpfParamCache {
+    const MbModeInfo* cur;
+    const MbModeInfo* prev;
+    TxSize            ts;
+    uint32_t          filter_length;
+    uint32_t          level;
+} LpfParamCache;
+
 // Return TxSize from get_transform_size(), so it is plane and direction
 // awared
-static TxSize set_lpf_parameters(Av1DeblockingParameters* const params, const uint64_t mode_step,
-                                 const PictureControlSet* const pcs, const EdgeDir edge_dir, const uint32_t x,
-                                 const uint32_t y, const int32_t plane, const MacroblockdPlane* const plane_ptr) {
-    FrameHeader*           frm_hdr = &pcs->ppcs->frm_hdr;
-    const LoopFilterInfoN* lfi_n   = &pcs->ppcs->lf_info;
-
+static AOM_FORCE_INLINE TxSize set_lpf_parameters(Av1DeblockingParameters* const params, LpfParamCache* const cache,
+                                                  const int mode_step, const PictureControlSet* const pcs,
+                                                  const EdgeDir edge_dir, const uint32_t x, const uint32_t y,
+                                                  const int32_t plane, const MacroblockdPlane* const plane_ptr) {
     // reset to initial values
     params->filter_length = 0;
+    params->level         = 0;
 
     // no deblocking is required
     const uint32_t width  = plane_ptr->dst.width;
     const uint32_t height = plane_ptr->dst.height;
-    if ((width <= x) || (height <= y)) {
+    if (width <= x || height <= y) {
         // just return the smallest transform unit size
         return TX_4X4;
     }
@@ -235,100 +247,106 @@ static TxSize set_lpf_parameters(Av1DeblockingParameters* const params, const ui
     // and mi_col should map to the bottom/right mi structure, i.e, both mi_row
     // and mi_col should be odd number for chroma plane.
 
-    const int32_t     mi_row    = scale_vert | ((y << scale_vert) >> MI_SIZE_LOG2);
-    const int32_t     mi_col    = scale_horz | ((x << scale_horz) >> MI_SIZE_LOG2);
-    uint32_t          mi_stride = pcs->mi_stride;
-    const int32_t     offset    = mi_row * mi_stride + mi_col;
-    MbModeInfo**      mi        = pcs->mi_grid_base + offset;
-    const MbModeInfo* mbmi      = mi[0];
+    const int32_t     mi_row = scale_vert | ((y << scale_vert) >> MI_SIZE_LOG2);
+    const int32_t     mi_col = scale_horz | ((x << scale_horz) >> MI_SIZE_LOG2);
+    const int32_t     offset = mi_row * pcs->mi_stride + mi_col;
+    MbModeInfo**      mi     = pcs->mi_grid_base + offset;
+    const MbModeInfo* mbmi   = mi[0];
+    assert(mbmi != NULL);
 
-    // If current mbmi is not correctly setup, return an invalid value to stop
-    // filtering. One example is that if this tile is not coded, then its mbmi
-    // it not set up.
-    if (mbmi == NULL) {
-        return TX_INVALID;
+    const uint32_t coord = (VERT_EDGE == edge_dir) ? (x) : (y);
+
+    // At the frame's left/top boundary (coord == 0) there is no previous block, so use
+    // NULL: this avoids the out-of-bounds neighbor read and falls through to the
+    // no-filter path below.
+    const MbModeInfo* const mi_prev = coord ? *(mi - mode_step) : NULL;
+
+    // Memo hit: reuse ts and the decision computed for this (mbmi, mi_prev) on an
+    // earlier row/col this block spans. Skips get_transform_size, the txb_edge test
+    // and the whole level/decision back half (bit-exact: same order, same params).
+    if (cache->cur == mbmi && cache->prev == mi_prev) {
+        params->filter_length = cache->filter_length;
+        params->level         = cache->level;
+        return cache->ts;
     }
+
     const uint8_t segment_id   = mbmi->segment_id;
     const int32_t curr_skipped = mbmi->block_mi.skip && is_inter_block_no_intrabc(mbmi->block_mi.ref_frame[0]);
     const TxSize  ts           = get_transform_size(mbmi, edge_dir, plane, plane_ptr, curr_skipped);
     assert(ts < TX_SIZES_ALL);
 
-    {
-        const uint32_t coord           = (VERT_EDGE == edge_dir) ? (x) : (y);
-        const uint32_t transform_masks = edge_dir == VERT_EDGE ? tx_size_wide[ts] - 1 : tx_size_high[ts] - 1;
-        const int32_t  txb_edge        = (coord & transform_masks) ? (0) : (1);
+    // record the (mbmi, mi_prev) -> ts mapping for this edge column/row up front;
+    // filter_length/level are filled in below (0 on the non-filtering paths).
+    cache->cur  = mbmi;
+    cache->prev = mi_prev;
+    cache->ts   = ts;
 
-        if (!txb_edge) {
-            return ts;
-        }
+    // No deblocking at the frame boundary (no previous block) or on a non-TU edge.
+    const uint32_t transform_masks = edge_dir == VERT_EDGE ? tx_size_wide[ts] - 1 : tx_size_high[ts] - 1;
+    if (mi_prev == NULL || (coord & transform_masks)) {
+        cache->filter_length = 0;
+        cache->level         = 0;
+        return ts;
+    }
 
-        // prepare outer edge parameters. deblock the edge if it's an edge of a TU
-        {
-            uint32_t       curr_level; // Added to address 4x4 problem
-            PredictionMode mode = mbmi->block_mi.mode;
-            if (frm_hdr->delta_lf_params.delta_lf_present) {
-                curr_level = svt_aom_get_filter_level_delta_lf(
-                    frm_hdr, edge_dir, plane, pcs->ppcs->curr_delta_lf, segment_id, mode, mbmi->block_mi.ref_frame[0]);
-            } else {
-                assert(mode < 25);
-                curr_level = lfi_n->lvl[plane][segment_id][edge_dir][mbmi->block_mi.ref_frame[0]][mode_lf_lut[mode]];
-            }
+    FrameHeader*           frm_hdr = &pcs->ppcs->frm_hdr;
+    const LoopFilterInfoN* lfi_n   = &pcs->ppcs->lf_info;
 
-            uint32_t level = curr_level;
-            if (coord) {
-                const MbModeInfo* const mi_prev = *(mi - mode_step);
-                if (mi_prev == NULL) {
-                    return TX_INVALID;
-                }
-                const int32_t pv_skip = mi_prev->block_mi.skip &&
-                    is_inter_block_no_intrabc(mi_prev->block_mi.ref_frame[0]);
-                const TxSize pv_ts = get_transform_size(mi_prev, edge_dir, plane, plane_ptr, pv_skip);
-                uint32_t     pv_lvl;
-                mode = mi_prev->block_mi.mode;
-                if (frm_hdr->delta_lf_params.delta_lf_present) {
-                    pv_lvl = svt_aom_get_filter_level_delta_lf(frm_hdr,
-                                                               edge_dir,
-                                                               plane,
-                                                               pcs->ppcs->curr_delta_lf,
-                                                               mi_prev->segment_id,
-                                                               mi_prev->block_mi.mode,
-                                                               mi_prev->block_mi.ref_frame[0]);
-                } else {
-                    assert(mode < MB_MODE_COUNT);
-                    pv_lvl = lfi_n->lvl[plane][mi_prev->segment_id][edge_dir][mi_prev->block_mi.ref_frame[0]]
-                                       [mode_lf_lut[mode]];
-                }
+    // prepare outer edge parameters. deblock the edge if it's an edge of a TU
+    PredictionMode mode = mbmi->block_mi.mode;
+    uint32_t       level;
+    if (frm_hdr->delta_lf_params.delta_lf_present) {
+        level = svt_aom_get_filter_level_delta_lf(
+            frm_hdr, edge_dir, plane, pcs->ppcs->curr_delta_lf, segment_id, mode, mbmi->block_mi.ref_frame[0]);
+    } else {
+        assert(mode < 25);
+        level = lfi_n->lvl[plane][segment_id][edge_dir][mbmi->block_mi.ref_frame[0]][mode_lf_lut[mode]];
+    }
 
-                const BlockSize bsize = get_plane_block_size(
-                    mbmi->bsize, plane_ptr->subsampling_x, plane_ptr->subsampling_y);
-                assert(bsize < BLOCK_SIZES_ALL);
-                const int32_t prediction_masks = (edge_dir == VERT_EDGE) ? block_size_wide[bsize] - 1
-                                                                         : block_size_high[bsize] - 1;
-                const int32_t pu_edge          = !(coord & prediction_masks);
-                // if the current and the previous blocks are skipped,
-                // deblock the edge if the edge belongs to a PU's edge only.
-                if ((curr_level || pv_lvl) && (!pv_skip || !curr_skipped || pu_edge)) {
-                    const TxSize min_ts = AOMMIN(ts, pv_ts);
-                    if (TX_4X4 >= min_ts) {
-                        params->filter_length = 4;
-                    } else {
-                        params->filter_length = (plane != 0) ? 6 : (TX_8X8 == min_ts) ? 8 : 14;
-                    }
-                    // update the level if the current block is skipped,
-                    // but the previous one is not
-                    level = (curr_level) ? (curr_level) : (pv_lvl);
-                }
-            }
-            // prepare common parameters
-            if (params->filter_length) {
-                const LoopFilterThresh* const limits = pcs->ppcs->lf_info.lfthr + level;
-                params->lim                          = limits->lim;
-                params->mblim                        = limits->mblim;
-                params->hev_thr                      = limits->hev_thr;
-            }
+    // use the current block's level, falling back to the previous
+    // block's level when the current block is skipped
+    if (!level) {
+        if (frm_hdr->delta_lf_params.delta_lf_present) {
+            level = svt_aom_get_filter_level_delta_lf(frm_hdr,
+                                                      edge_dir,
+                                                      plane,
+                                                      pcs->ppcs->curr_delta_lf,
+                                                      mi_prev->segment_id,
+                                                      mi_prev->block_mi.mode,
+                                                      mi_prev->block_mi.ref_frame[0]);
+        } else {
+            const PredictionMode pv_mode = mi_prev->block_mi.mode;
+            assert(pv_mode < MB_MODE_COUNT);
+            level =
+                lfi_n->lvl[plane][mi_prev->segment_id][edge_dir][mi_prev->block_mi.ref_frame[0]][mode_lf_lut[pv_mode]];
         }
     }
 
+    if (level) {
+        const BlockSize bsize = get_plane_block_size(mbmi->bsize, plane_ptr->subsampling_x, plane_ptr->subsampling_y);
+        assert(bsize < BLOCK_SIZES_ALL);
+        const int32_t pv_skip = mi_prev->block_mi.skip && is_inter_block_no_intrabc(mi_prev->block_mi.ref_frame[0]);
+        const int32_t prediction_masks = (edge_dir == VERT_EDGE) ? block_size_wide[bsize] - 1
+                                                                 : block_size_high[bsize] - 1;
+        const int32_t pu_edge          = !(coord & prediction_masks);
+
+        // if the current and the previous blocks are skipped,
+        // deblock the edge if the edge belongs to a PU's edge only.
+        if (!pv_skip || !curr_skipped || pu_edge) {
+            const TxSize pv_ts  = get_transform_size(mi_prev, edge_dir, plane, plane_ptr, pv_skip);
+            const TxSize min_ts = AOMMIN(ts, pv_ts);
+            if (TX_4X4 >= min_ts) {
+                params->filter_length = 4;
+            } else {
+                params->filter_length = (plane != 0) ? 6 : (TX_8X8 == min_ts) ? 8 : 14;
+            }
+            params->level = level;
+        }
+    }
+
+    // memoize for the repeats of this same edge on the rows/cols the block spans
+    cache->filter_length = params->filter_length;
+    cache->level         = params->level;
     return ts;
 }
 
@@ -343,7 +361,8 @@ void svt_av1_filter_block_plane_vert(const PictureControlSet* const pcs, const i
     // TODO
     // when loop_filter_mode = 1, dblk is processed in encdec
     // 16 bit dblk for loop_filter_mode = 1 needs to enabled after 16bit encdec is done
-    bool           is_16bit   = scs->is_16bit_pipeline;
+    bool           is_16bit   = SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline);
+    const uint32_t bit_depth  = SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth);
     const int32_t  row_step   = MI_SIZE >> MI_SIZE_LOG2;
     const uint32_t scale_horz = plane_ptr->subsampling_x;
     const uint32_t scale_vert = plane_ptr->subsampling_y;
@@ -372,6 +391,16 @@ void svt_av1_filter_block_plane_vert(const PictureControlSet* const pcs, const i
             }
         }
     }
+
+    const LoopFilterThresh* const limits = pcs->ppcs->lf_info.lfthr;
+    // Per edge-column memo of set_lpf_parameters: the outer y-loop revisits each
+    // vertical edge for every row a block spans, but the decision is identical.
+    LpfParamCache lpf_cache[MAX_MIB_SIZE];
+    for (int32_t i = 0; i < x_range; i++) {
+        lpf_cache[i].cur = NULL;
+    }
+
+    int mode_step = 1 << scale_horz;
     for (int32_t y = 0; y < y_range; y += row_step) {
         uint8_t* p = dst_ptr + ((y * MI_SIZE * dst_stride) << plane_ptr->is_16bit);
         for (int32_t x = 0; x < x_range;) {
@@ -384,72 +413,50 @@ void svt_av1_filter_block_plane_vert(const PictureControlSet* const pcs, const i
             uint32_t                advance_units;
             TxSize                  tx_size;
             Av1DeblockingParameters params;
-            memset(&params, 0, sizeof(params));
 
             tx_size = set_lpf_parameters(
-                &params, ((uint64_t)1 << scale_horz), pcs, VERT_EDGE, curr_x, curr_y, plane, plane_ptr);
-            if (tx_size == TX_INVALID) {
-                params.filter_length = 0;
-                tx_size              = TX_4X4;
-            }
+                &params, &lpf_cache[x], mode_step, pcs, VERT_EDGE, curr_x, curr_y, plane, plane_ptr);
+
+            const LoopFilterThresh* const limit = limits + params.level;
 
             switch (params.filter_length) {
-                // apply 4-tap filtering
-            case 4:
+            case 4: // apply 4-tap filtering
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_4((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                  dst_stride,
-                                                  params.mblim,
-                                                  params.lim,
-                                                  params.hev_thr,
-                                                  scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_vertical_4(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_vertical_4(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_vertical_4(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
             case 6: // apply 6-tap filter for chroma plane only
                 assert(plane != 0);
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_6((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                  dst_stride,
-                                                  params.mblim,
-                                                  params.lim,
-                                                  params.hev_thr,
-                                                  scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_vertical_6(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_vertical_6(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_vertical_6(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
-                // apply 8-tap filtering
-            case 8:
+            case 8: // apply 8-tap filtering
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_8((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                  dst_stride,
-                                                  params.mblim,
-                                                  params.lim,
-                                                  params.hev_thr,
-                                                  scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_vertical_8(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_vertical_8(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_vertical_8(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
-                // apply 14-tap filtering
-            case 14:
+            case 14: // apply 14-tap filtering
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_14((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                   dst_stride,
-                                                   params.mblim,
-                                                   params.lim,
-                                                   params.hev_thr,
-                                                   scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_vertical_14(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_vertical_14(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_vertical_14(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
-                // no filtering
-            default:
+            default: // no filtering
                 break;
             }
+
             // advance the destination pointer
             assert(tx_size < TX_SIZES_ALL);
             advance_units = eb_tx_size_wide_unit[tx_size];
@@ -469,7 +476,8 @@ void svt_av1_filter_block_plane_horz(const PictureControlSet* const pcs, const i
     SequenceControlSet* scs = pcs->scs;
     // when loop_filter_mode = 1, dblk is processed in encdec
     // 16 bit dblk for loop_filter_mode = 1 needs to enabled after 16bit encdec is done
-    bool           is_16bit   = scs->is_16bit_pipeline;
+    bool           is_16bit   = SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline);
+    const uint32_t bit_depth  = SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth);
     const int32_t  col_step   = MI_SIZE >> MI_SIZE_LOG2;
     const uint32_t scale_horz = plane_ptr->subsampling_x;
     const uint32_t scale_vert = plane_ptr->subsampling_y;
@@ -479,8 +487,6 @@ void svt_av1_filter_block_plane_horz(const PictureControlSet* const pcs, const i
                                                                          : (SB64_MIB_SIZE >> scale_vert);
     int32_t        x_range    = scs->seq_header.sb_size == BLOCK_128X128 ? (MAX_MIB_SIZE >> scale_horz)
                                                                          : (SB64_MIB_SIZE >> scale_horz);
-
-    uint32_t mi_stride = pcs->mi_stride;
 
     if (pcs->ppcs->frame_superres_enabled || pcs->ppcs->frame_resize_enabled) {
         // the boundary of last column should use the actual width for frames might be downscaled in
@@ -500,6 +506,16 @@ void svt_av1_filter_block_plane_horz(const PictureControlSet* const pcs, const i
             }
         }
     }
+
+    const LoopFilterThresh* const limits = pcs->ppcs->lf_info.lfthr;
+    // Per edge-row memo of set_lpf_parameters: the outer x-loop revisits each
+    // horizontal edge for every column a block spans, but the decision is identical.
+    LpfParamCache lpf_cache[MAX_MIB_SIZE];
+    for (int32_t i = 0; i < y_range; i++) {
+        lpf_cache[i].cur = NULL;
+    }
+
+    int mode_step = pcs->mi_stride << scale_vert;
     for (int32_t x = 0; x < x_range; x += col_step) {
         uint8_t* p = dst_ptr + ((x * MI_SIZE) << plane_ptr->is_16bit);
         for (int32_t y = 0; y < y_range;) {
@@ -512,78 +528,47 @@ void svt_av1_filter_block_plane_horz(const PictureControlSet* const pcs, const i
             uint32_t                advance_units;
             TxSize                  tx_size;
             Av1DeblockingParameters params;
-            memset(&params, 0, sizeof(params));
 
-            tx_size = set_lpf_parameters(&params,
-                                         //(pcs->ppcs->av1_cm->mi_stride << scale_vert),
-                                         (mi_stride << scale_vert),
-                                         pcs,
-                                         HORZ_EDGE,
-                                         curr_x,
-                                         curr_y,
-                                         plane,
-                                         plane_ptr);
-            if (tx_size == TX_INVALID) {
-                params.filter_length = 0;
-                tx_size              = TX_4X4;
-            }
+            tx_size = set_lpf_parameters(
+                &params, &lpf_cache[y], mode_step, pcs, HORZ_EDGE, curr_x, curr_y, plane, plane_ptr);
+
+            const LoopFilterThresh* const limit = limits + params.level;
 
             switch (params.filter_length) {
-                // apply 4-tap filtering
-            case 4:
+            case 4: // apply 4-tap filtering
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_4((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                    dst_stride,
-                                                    params.mblim,
-                                                    params.lim,
-                                                    params.hev_thr,
-                                                    scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_horizontal_4(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_horizontal_4(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_horizontal_4(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
-                // apply 6-tap filtering
-            case 6:
+            case 6: // apply 6-tap filtering
                 assert(plane != 0);
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_6((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                    dst_stride,
-                                                    params.mblim,
-                                                    params.lim,
-                                                    params.hev_thr,
-                                                    scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_horizontal_6(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_horizontal_6(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_horizontal_6(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
-                // apply 8-tap filtering
-            case 8:
+            case 8: // apply 8-tap filtering
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_8((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                    dst_stride,
-                                                    params.mblim,
-                                                    params.lim,
-                                                    params.hev_thr,
-                                                    scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_horizontal_8(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_horizontal_8(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_horizontal_8(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
-                // apply 14-tap filtering
-            case 14:
+            case 14: // apply 14-tap filtering
                 if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_14((uint16_t*)(p), //CONVERT_TO_SHORTPTR(p),
-                                                     dst_stride,
-                                                     params.mblim,
-                                                     params.lim,
-                                                     params.hev_thr,
-                                                     scs->static_config.encoder_bit_depth);
+                    svt_aom_highbd_lpf_horizontal_14(
+                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
                 } else {
-                    svt_aom_lpf_horizontal_14(p, dst_stride, params.mblim, params.lim, params.hev_thr);
+                    svt_aom_lpf_horizontal_14(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
                 }
                 break;
-                // no filtering
-            default:
+            default: // no filtering
                 break;
             }
 
@@ -612,16 +597,16 @@ void svt_aom_loop_filter_sb(EbPictureBufferDesc* frame_buffer, //reconpicture,
     pd[0].subsampling_y = 0;
     pd[0].plane_type    = PLANE_TYPE_Y;
     pd[0].is_16bit      = frame_buffer->bit_depth > 8;
-    pd[1].subsampling_x = 1;
-    pd[1].subsampling_y = 1;
+    pd[1].subsampling_x = pcs->scs->subsampling_x;
+    pd[1].subsampling_y = pcs->scs->subsampling_y;
     pd[1].plane_type    = PLANE_TYPE_UV;
     pd[1].is_16bit      = frame_buffer->bit_depth > 8;
-    pd[2].subsampling_x = 1;
-    pd[2].subsampling_y = 1;
+    pd[2].subsampling_x = pcs->scs->subsampling_x;
+    pd[2].subsampling_y = pcs->scs->subsampling_y;
     pd[2].plane_type    = PLANE_TYPE_UV;
     pd[2].is_16bit      = frame_buffer->bit_depth > 8;
 
-    if (pcs->ppcs->scs->is_16bit_pipeline) {
+    if (SVT_EFFECTIVE_IS_16BIT_PIPELINE(pcs->ppcs->scs->is_16bit_pipeline)) {
         pd[0].is_16bit = pd[1].is_16bit = pd[2].is_16bit = true;
     }
 
@@ -718,10 +703,9 @@ static void svt_copy_buffer(EbPictureBufferDesc* src, EbPictureBufferDesc* dst, 
     uint16_t copy_width  = ALIGN_POWER_OF_TWO(src->width, 3) << is_16bit;
     uint16_t copy_height = ALIGN_POWER_OF_TWO(src->height, 3);
 
-    // TODO: Don't assume YUV420
     if (plane) {
-        copy_width >>= 1;
-        copy_height >>= 1;
+        copy_width >>= src->color_format == EB_YUV444 ? 0 : 1;
+        copy_height >>= src->color_format >= EB_YUV422 ? 0 : 1;
     }
 
     uint16_t copy_stride       = src->stride[plane] << is_16bit;
@@ -735,7 +719,7 @@ static void svt_copy_buffer(EbPictureBufferDesc* src, EbPictureBufferDesc* dst, 
 
 uint64_t picture_sse_calculations(PictureControlSet* pcs, EbPictureBufferDesc* recon_ptr, int32_t plane) {
     SequenceControlSet* scs      = pcs->ppcs->scs;
-    bool                is_16bit = scs->is_16bit_pipeline;
+    bool                is_16bit = SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline);
     assert(plane >= PLANE_Y && plane < MAX_PLANES);
     const uint32_t ss_x = scs->subsampling_x;
     const uint32_t ss_y = scs->subsampling_y;
@@ -785,7 +769,7 @@ static int64_t try_filter_frame(const EbPictureBufferDesc* sd, EbPictureBufferDe
         filter_level[0] = frm_hdr->loop_filter_params.filter_level[0];
     }
 
-    bool                 is_16bit = pcs->ppcs->scs->is_16bit_pipeline;
+    bool                 is_16bit = SVT_EFFECTIVE_IS_16BIT_PIPELINE(pcs->ppcs->scs->is_16bit_pipeline);
     EbPictureBufferDesc* recon_buffer;
     svt_aom_get_recon_pic(pcs, &recon_buffer, is_16bit);
 
@@ -855,7 +839,7 @@ static int32_t search_filter_level(EbPictureBufferDesc* sd, // source
     int32_t filt_mid    = clamp(lvl, min_filter_level, max_filter_level);
     int32_t filter_step = filt_mid < 16 ? 4 : filt_mid / 4;
 
-    bool                 is_16bit = pcs->ppcs->scs->is_16bit_pipeline;
+    bool                 is_16bit = SVT_EFFECTIVE_IS_16BIT_PIPELINE(pcs->ppcs->scs->is_16bit_pipeline);
     EbPictureBufferDesc* recon_buffer;
     svt_aom_get_recon_pic(pcs, &recon_buffer, is_16bit);
     // Sum squared error at each filter level
@@ -952,9 +936,13 @@ static void me_based_dlf_skip(PictureControlSet* pcs, uint16_t prev_dlf_dist_th,
         return;
     }
 
-    const uint8_t  in_res               = pcs->ppcs->input_resolution;
-    const uint32_t use_zero_strength_th = disable_dlf_th[pcs->ppcs->dlf_ctrls.zero_filter_strength_lvl][in_res] *
-        (pcs->temporal_layer_index + 1);
+    const uint8_t in_res = pcs->ppcs->input_resolution;
+    // For flat, mult should be based on update_type since all pics are temporal layer 0
+    const int      mult                 = pcs->ppcs->hierarchical_levels ? (pcs->temporal_layer_index + 1)
+                             : frame_is_boosted(pcs->ppcs)               ? 1
+                             : frame_is_leaf(pcs->ppcs)                  ? 3
+                                                                         : 2;
+    const uint32_t use_zero_strength_th = disable_dlf_th[pcs->ppcs->dlf_ctrls.zero_filter_strength_lvl][in_res] * mult;
     if (!use_zero_strength_th) {
         return;
     }
@@ -989,7 +977,7 @@ static void me_based_dlf_skip(PictureControlSet* pcs, uint16_t prev_dlf_dist_th,
         }
     }
 
-    if (!prev_dlf_dist_th || (prev_dlf_dist < prev_dlf_dist_th * (pcs->temporal_layer_index + 1))) {
+    if (!prev_dlf_dist_th || (prev_dlf_dist < (prev_dlf_dist_th * mult))) {
         if (average_me_sad < use_zero_strength_th) {
             *do_y = false;
         }
@@ -1059,7 +1047,8 @@ void svt_av1_pick_filter_level_by_q(PictureControlSet* pcs, uint8_t qindex, int3
                "or EB_TWELVE_BIT");
         return;
     }
-    if (scs->static_config.encoder_bit_depth != EB_EIGHT_BIT && frm_hdr->frame_type == KEY_FRAME) {
+    if (SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) != EB_EIGHT_BIT &&
+        frm_hdr->frame_type == KEY_FRAME) {
         filt_guess -= 4;
     }
 
@@ -1075,19 +1064,19 @@ void svt_av1_pick_filter_level_by_q(PictureControlSet* pcs, uint8_t qindex, int3
         filt_guess_chroma = 0;
     }
     // Force filter_level to 0 if loop-filter is shut for 1 (or many) of the sub-layer reference frame(s)
-    filter_level[0] = min_ref_filter_level[0] || !pcs->ppcs->temporal_layer_index
+    filter_level[0] = min_ref_filter_level[0] || frame_is_boosted(pcs->ppcs)
         ? clamp(filt_guess, min_filter_level, max_filter_level)
         : 0;
 
-    filter_level[1] = min_ref_filter_level[1] || !pcs->ppcs->temporal_layer_index
+    filter_level[1] = min_ref_filter_level[1] || frame_is_boosted(pcs->ppcs)
         ? clamp(filt_guess, min_filter_level, max_filter_level)
         : 0;
 
-    filter_level[2] = min_ref_filter_level_u || !pcs->ppcs->temporal_layer_index
+    filter_level[2] = min_ref_filter_level_u || frame_is_boosted(pcs->ppcs)
         ? clamp(filt_guess_chroma, min_filter_level, max_filter_level)
         : 0;
 
-    filter_level[3] = min_ref_filter_level_v || !pcs->ppcs->temporal_layer_index
+    filter_level[3] = min_ref_filter_level_v || frame_is_boosted(pcs->ppcs)
         ? clamp(filt_guess_chroma, min_filter_level, max_filter_level)
         : 0;
 }
@@ -1096,14 +1085,16 @@ void svt_av1_pick_filter_level_by_q(PictureControlSet* pcs, uint8_t qindex, int3
 * svt_av1_pick_filter_level
 * Choose the optimal loop filter levels
 *************************************************************************************************/
-EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, // source input
-                                      PictureControlSet* pcs, LpfPickMethod method) {
+EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, PictureControlSet* pcs) {
     SequenceControlSet* scs     = pcs->scs;
     FrameHeader*        frm_hdr = &pcs->ppcs->frm_hdr;
     (void)srcBuffer;
     struct LoopFilter* const lf            = &frm_hdr->loop_filter_params;
     const int32_t            sharpness_val = CLIP3(0, 7, pcs->scs->static_config.sharpness);
-    lf->sharpness_level                    = sharpness_val;
+
+    LpfPickMethod method = (LpfPickMethod)pcs->ppcs->dlf_ctrls.pick_method;
+
+    lf->sharpness_level = sharpness_val;
     if (frm_hdr->frame_type == KEY_FRAME &&
         (pcs->scs->static_config.tune == TUNE_VQ || pcs->scs->static_config.tune == TUNE_FILM_GRAIN)) {
         lf->sharpness_level = MIN(7, sharpness_val + 2);
@@ -1131,7 +1122,8 @@ EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, // source 
         lf->filter_level[1] = filter_level[1];
         lf->filter_level_u  = filter_level[2];
         lf->filter_level_v  = filter_level[3];
-    } else {
+    } else if (CONFIG_ENABLE_DLF_SEARCH) {
+        // RTC uses LPF_PICK_FROM_Q; the full/sub-image DLF search is unreachable and DCE'd.
         uint16_t padding = scs->super_block_size + 32;
         if (scs->static_config.superres_mode > SUPERRES_NONE || scs->static_config.resize_mode > RESIZE_NONE) {
             padding += scs->super_block_size;
@@ -1144,8 +1136,8 @@ EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, // source 
         temp_lf_recon_desc_init_data.border       = padding;
         temp_lf_recon_desc_init_data.split_mode   = false;
         temp_lf_recon_desc_init_data.color_format = scs->static_config.encoder_color_format;
-        bool is_16bit                             = scs->static_config.encoder_bit_depth > 8 ? true : false;
-        if (scs->is_16bit_pipeline || is_16bit) {
+        bool is_16bit = SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > 8 ? true : false;
+        if (SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline) || is_16bit) {
             temp_lf_recon_desc_init_data.bit_depth = EB_SIXTEEN_BIT;
             EB_NEW(
                 pcs->temp_lf_recon_pic_16bit, svt_recon_picture_buffer_desc_ctor, (EbPtr)&temp_lf_recon_desc_init_data);
@@ -1193,12 +1185,13 @@ EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, // source 
 
         const int32_t last_frame_filter_level[4] = {
             lf->filter_level[0], lf->filter_level[1], lf->filter_level_u, lf->filter_level_v};
-        EbPictureBufferDesc* temp_lf_recon_buffer = scs->is_16bit_pipeline ? pcs->temp_lf_recon_pic_16bit
-                                                                           : pcs->temp_lf_recon_pic;
+        EbPictureBufferDesc* temp_lf_recon_buffer = SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline)
+            ? pcs->temp_lf_recon_pic_16bit
+            : pcs->temp_lf_recon_pic;
 
         if (!do_y) {
             lf->filter_level[0] = lf->filter_level[1] = 0;
-        } else if (!pcs->temporal_layer_index || !pcs->ppcs->dlf_ctrls.use_ref_avg_y ||
+        } else if (frame_is_boosted(pcs->ppcs) || !pcs->ppcs->dlf_ctrls.use_ref_avg_y ||
                    pcs->ppcs->tot_ref_frame_types == 0) {
             lf->filter_level[0] = lf->filter_level[1] = search_filter_level(srcBuffer,
                                                                             temp_lf_recon_buffer,
@@ -1241,7 +1234,7 @@ EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, // source 
             // chroma filtering not allowed if luma filters off
             lf->filter_level_u = 0;
             lf->filter_level_v = 0;
-        } else if (pcs->temporal_layer_index && pcs->ppcs->dlf_ctrls.use_ref_avg_uv &&
+        } else if (!frame_is_boosted(pcs->ppcs) && pcs->ppcs->dlf_ctrls.use_ref_avg_uv &&
                    pcs->ppcs->tot_ref_frame_types > 0) {
             //use avg-ref for chroma
             lf->filter_level_u = last_frame_filter_level[2];

@@ -366,6 +366,13 @@ INSTANTIATE_TEST_SUITE_P(
 
 #ifdef ARCH_AARCH64
 INSTANTIATE_TEST_SUITE_P(
+    NEON, CalcTargetWeightedPredTestAbove,
+    ::testing::Combine(
+        ::testing::ValuesIn(overlap_tab),
+        ::testing::Values(svt_av1_calc_target_weighted_pred_above_c),
+        ::testing::Values(svt_av1_calc_target_weighted_pred_above_neon)));
+
+INSTANTIATE_TEST_SUITE_P(
     NEON, CalcTargetWeightedPredTestLeft,
     ::testing::Combine(
         ::testing::ValuesIn(overlap_tab),

@@ -117,17 +117,9 @@ Linux (GCC):
         EXTRA_CMAKE_FLAGS: --toolchain $CI_PROJECT_DIR/cmake/toolchains/aarch64_toolchain.cmake
       - CC: powerpc64le-linux-gnu-gcc
         CXX: powerpc64le-linux-gnu-g++
-        EXTRA_CMAKE_FLAGS: --toolchain $CI_PROJECT_DIR/powerpc64le-linux-gnu.cmake -DCROSS=powerpc64le-linux-gnu-
+        EXTRA_CMAKE_FLAGS: --toolchain $CI_PROJECT_DIR/cmake/toolchains/powerpc64le-linux-gnu.cmake
       - CMAKE_SYSTEM_NAME: Android
         EXTRA_CMAKE_FLAGS: --toolchain $CI_PROJECT_DIR/cmake/toolchains/android_aarch64_toolchain.cmake
-  before_script:
-    - |
-      case $CC in
-      powerpc64le-linux-gnu-gcc)
-        curl -Ls "https://aomedia.googlesource.com/aom/+/refs/heads/main/build/cmake/toolchains/ppc-linux-gcc.cmake?format=TEXT" |
-          base64 -d > powerpc64le-linux-gnu.cmake
-        ;;
-      esac
 
 Linux (GCC 11, Static):
   extends: .linux-compiler-base
@@ -246,10 +238,11 @@ Linux Sanitizer Test:
       - SANITIZER: memory
         svt_asm: 0
       - SANITIZER: thread
+        RC: ["", "--rc 1 --tbr 1000", "--rc 2 --tbr 1000 --pred-struct 1"]
       - SANITIZER: "signed-integer-overflow,unsigned-integer-overflow"
   script:
     - |
-      command="$PWD/$SANITIZER/SvtAv1EncApp -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m ${svt_asm:+--asm $svt_asm} -n 60 --preset 8 -b output.ivf --progress 0"
+      command="$PWD/$SANITIZER/SvtAv1EncApp -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m ${svt_asm:+--asm $svt_asm} -n 60 --preset 8 ${RC} -b output.ivf --progress 0"
       case $SANITIZER in
       thread) gdb -q -ex "handle SIG32 nostop" -ex r -ex bt -ex q --return-child-result --args $command ;;
       *) $command ;;
@@ -427,7 +420,8 @@ Linux Gstreamer (Static):
       else
         git clone https://gitlab.freedesktop.org/gstreamer/gstreamer.git
       fi
-    - meson setup -Dprefix=/usr --buildtype release -Dauto_features=disabled -Dbad=enabled -Dgst-plugins-bad:svtav1=enabled -Dtests=disabled gstreamer-plugin gstreamer
+    - git -C gstreamer submodule update --init --recursive
+    - meson setup -Dprefix=/usr --buildtype release -Dauto_features=disabled -Dbad=enabled -Dgst-plugins-bad:svtav1=enabled -Dtests=disabled -Dgstreamer:check=enabled gstreamer-plugin gstreamer
     - meson install -C gstreamer-plugin
     - |
       gst-launch-1.0 -v filesrc location=akiyo_cif.y4m \
@@ -519,6 +513,8 @@ Linux FFmpeg (n7.1, Static):
         exit 1
       fi
     - !reference [.ffmpeg-ffmpeg-script]
+    - $CI_PROJECT_DIR/ffmpeg -y -s:v 64x64 -f rawvideo -i /dev/zero -vframes 10 -c:v libsvtav1 -svtav1-params tune=5 -f ivf "$CI_PROJECT_DIR/tune5.ivf"
+    - $CI_PROJECT_DIR/ffmpeg -v error -c:v libdav1d -i "$CI_PROJECT_DIR/tune5.ivf" -f null -
     - ccache -s
   artifacts:
     untracked: false

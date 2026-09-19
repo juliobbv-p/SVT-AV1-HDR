@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include "inv_transforms.h"
+#include "EbConfigMacros.h" // CONFIG_ENABLE_HIGH_BIT_DEPTH
 #include "common_dsp_rtcd.h"
 
 static const int8_t inv_shift_4x4[2]   = {0, -4};
@@ -3370,6 +3371,7 @@ static const int16_t ac_qlookup_QTX[QINDEX_RANGE] = {
     1567, 1597, 1628, 1660, 1692, 1725, 1759, 1793, 1828,
 };
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
 static const int16_t ac_qlookup_10_QTX[QINDEX_RANGE] = {
     4,    9,    11,   13,   16,   18,   21,   24,   27,   30,   33,   37,   40,   44,   48,   51,   55,   59,   63,
     67,   71,   75,   79,   83,   88,   92,   96,   100,  105,  109,  114,  118,  122,  127,  131,  136,  140,  145,
@@ -3405,6 +3407,7 @@ static const int16_t ac_qlookup_12_QTX[QINDEX_RANGE] = {
     16110, 16414, 16734, 17054, 17390, 17726, 18062, 18414, 18766, 19134, 19502, 19886, 20270, 20670, 21070, 21486,
     21902, 22334, 22766, 23214, 23662, 24126, 24590, 25070, 25551, 26047, 26559, 27071, 27599, 28143, 28687, 29247,
 };
+#endif
 
 static const int16_t dc_qlookup_QTX[QINDEX_RANGE] = {
     4,   8,   8,   9,   10,  11,  12,  12,  13,   14,   15,   16,   17,   18,   19,   19,   20,  21,  22,  23,
@@ -3422,6 +3425,7 @@ static const int16_t dc_qlookup_QTX[QINDEX_RANGE] = {
     796, 819, 843, 869, 896, 925, 955, 988, 1022, 1058, 1098, 1139, 1184, 1232, 1282, 1336,
 };
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
 static const int16_t dc_qlookup_10_QTX[QINDEX_RANGE] = {
     4,    9,    10,   13,   15,   17,   20,   22,   25,   28,   31,   34,   37,   40,   43,   47,   50,   53,   57,
     60,   64,   68,   71,   75,   78,   82,   86,   90,   93,   97,   101,  105,  109,  113,  116,  120,  124,  128,
@@ -3457,6 +3461,7 @@ static const int16_t dc_qlookup_12_QTX[QINDEX_RANGE] = {
     8945,  9104,  9275,  9450,  9639,  9832,  10031, 10245, 10465, 10702, 10946, 11210, 11482, 11776, 12081, 12409,
     12750, 13118, 13501, 13913, 14343, 14807, 15290, 15812, 16356, 16943, 17575, 18237, 18949, 19718, 20521, 21387,
 };
+#endif
 
 // In AV1 TX, the coefficients are always scaled up a factor of 8 (3 bits), so qtx == Q3.
 int16_t svt_aom_dc_quant_qtx(int qindex, int delta, EbBitDepth bit_depth) {
@@ -3464,10 +3469,12 @@ int16_t svt_aom_dc_quant_qtx(int qindex, int delta, EbBitDepth bit_depth) {
     switch (bit_depth) {
     case EB_EIGHT_BIT:
         return dc_qlookup_QTX[q_clamped];
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
     case EB_TEN_BIT:
         return dc_qlookup_10_QTX[q_clamped];
     case EB_TWELVE_BIT:
         return dc_qlookup_12_QTX[q_clamped];
+#endif
     default:
         assert(0 && "bit_depth should be EB_EIGHT_BIT, EB_TEN_BIT or EB_TWELVE_BIT");
         return -1;
@@ -3479,10 +3486,12 @@ int16_t svt_aom_ac_quant_qtx(int qindex, int delta, EbBitDepth bit_depth) {
     switch (bit_depth) {
     case EB_EIGHT_BIT:
         return ac_qlookup_QTX[q_clamped];
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
     case EB_TEN_BIT:
         return ac_qlookup_10_QTX[q_clamped];
     case EB_TWELVE_BIT:
         return ac_qlookup_12_QTX[q_clamped];
+#endif
     default:
         assert(0 && "bit_depth should be EB_EIGHT_BIT, EB_TEN_BIT or EB_TWELVE_BIT");
         return -1;

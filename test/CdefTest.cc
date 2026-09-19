@@ -454,19 +454,18 @@ class CDEFFindDirTest : public ::testing::TestWithParam<TestFindDirParam> {
     }
 
     void test_finddir() {
-        int depth, bits, level, count;
-        uint8_t res_ref = 0, res_tst = 0;
-        int32_t var_ref = 0, var_tst = 0;
-
-        for (depth = 8; depth <= 12; depth += 2) {
-            for (count = 0; count < 512; count++) {
+        for (int depth = 8; depth <= 12; depth += 2) {
+            for (int count = 0; count < 512; count++) {
                 const int shift = depth - 8;
-                for (level = 0; level < (1 << depth); level += 1 << shift) {
-                    for (bits = 1; bits <= depth; bits++) {
+                for (int level = 0; level < (1 << depth); level += 1 << shift) {
+                    for (int bits = 1; bits <= depth; bits++) {
                         prepare_data(depth, bits, level);
+                        int32_t var_ref = 0, var_tst = 0;
 
-                        res_ref = func_ref_(src_, size_, &var_ref, shift);
-                        res_tst = func_tst_(src_, size_, &var_tst, shift);
+                        uint8_t res_ref =
+                            func_ref_(src_, size_, &var_ref, shift);
+                        uint8_t res_tst =
+                            func_tst_(src_, size_, &var_tst, shift);
                         ASSERT_EQ(res_tst, res_ref)
                             << "Error: CDEFFindDirTest, SIMD and C mismatch."
                             << "return " << res_tst << " : " << res_ref
@@ -1203,3 +1202,254 @@ INSTANTIATE_TEST_SUITE_P(
                        ::testing::ValuesIn(sb_count_v),
                        ::testing::ValuesIn(end_gi_sizes)));
 #endif  // ARCH_AARCH64
+
+/**
+ * @brief Unit test for the all-8-bit CDEF filter path:
+ * * svt_cdef_filter_block_8bit
+ * * svt_cdef_filter_block_8bit_bounded
+ *
+ * These take uint8 source and destination directly, unlike
+ * svt_cdef_filter_block_8xn_16 covered above, which works through a 16-bit
+ * sentinel buffer. Exercised by CDEF_8BITS_PATH on both AArch64 and x86-64.
+ *
+ * Test strategy:
+ * Feed random 8-bit pixels plus every combination of block size, direction,
+ * primary/secondary strength and subsampling factor to both the SIMD kernel and
+ * the C reference, and require the outputs to match exactly.
+ */
+#if CDEF_8BITS_PATH
+
+using CdefFilter8bitFunc = void (*)(uint8_t *dst, int32_t dstride,
+                                    const uint8_t *in, int32_t pri_strength,
+                                    int32_t sec_strength, int32_t dir,
+                                    int32_t damping, int32_t bsize,
+                                    int32_t coeff_shift,
+                                    uint8_t subsampling_factor);
+using CdefFilter8bitBoundedFunc = void (*)(
+    uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength,
+    int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize,
+    int32_t coeff_shift, uint8_t subsampling_factor, int edge_top,
+    int edge_left, int edge_bottom, int edge_right);
+
+class CDEFFilter8bitTest : public ::testing::TestWithParam<CdefFilter8bitFunc> {
+  public:
+    void SetUp() override {
+        tst_func_ = GetParam();
+        rnd_ = new SVTRandom(0, 255);
+    }
+    void TearDown() override {
+        delete rnd_;
+    }
+
+    void run_match_test() {
+        // CDEF reads a 3-pixel border around the block, so the source pointer
+        // sits inside a padded buffer.
+        DECLARE_ALIGNED(32, uint8_t, src[CDEF_BSTRIDE * 24]);
+        DECLARE_ALIGNED(32, uint8_t, dst_ref[16 * 16]);
+        DECLARE_ALIGNED(32, uint8_t, dst_tst[16 * 16]);
+        const int32_t bsizes[] = {BLOCK_4X4, BLOCK_4X8, BLOCK_8X4, BLOCK_8X8};
+
+        for (int iter = 0; iter < 50; iter++) {
+            for (size_t i = 0; i < sizeof(src); i++)
+                src[i] = (uint8_t)rnd_->random();
+            const uint8_t *in = src + 8 * CDEF_BSTRIDE + 8;
+
+            for (const int32_t bsize : bsizes) {
+                // svt_aom_cdef_seg_search caps the subsampling factor per block
+                // size (cdef_process.c); larger values never reach the kernels.
+                const uint8_t max_sub = bsize == BLOCK_8X8   ? 4
+                                        : bsize == BLOCK_4X4 ? 1
+                                                             : 2;
+                for (int dir = 0; dir < 8; dir++) {
+                    // sub == 4 is reachable (enc_mode_config.c sets it) and a
+                    // two-way 1/2 selector silently mapped it onto stride 2.
+                    // damping must vary: it selects the byte_shift_mask value.
+                    for (int pri = 0; pri <= 15; pri += 5) {
+                        for (int sec = 0; sec <= 4; sec++) {
+                            for (const uint8_t sub : {1, 2, 4}) {
+                                if (sub > max_sub)
+                                    continue;
+                                for (int damping = 3; damping <= 7;
+                                     damping += 2) {
+                                    memset(dst_ref, 0, sizeof(dst_ref));
+                                    memset(dst_tst, 0, sizeof(dst_tst));
+                                    svt_cdef_filter_block_8bit_c(dst_ref,
+                                                                 16,
+                                                                 in,
+                                                                 pri,
+                                                                 sec,
+                                                                 dir,
+                                                                 damping,
+                                                                 bsize,
+                                                                 0,
+                                                                 sub);
+                                    tst_func_(dst_tst,
+                                              16,
+                                              in,
+                                              pri,
+                                              sec,
+                                              dir,
+                                              damping,
+                                              bsize,
+                                              0,
+                                              sub);
+                                    ASSERT_EQ(
+                                        0,
+                                        memcmp(
+                                            dst_ref, dst_tst, sizeof(dst_ref)))
+                                        << "bsize " << bsize << " dir " << dir
+                                        << " pri " << pri << " sec " << sec
+                                        << " sub " << (int)sub << " damping "
+                                        << damping;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+  private:
+    CdefFilter8bitFunc tst_func_;
+    SVTRandom *rnd_;
+};
+
+TEST_P(CDEFFilter8bitTest, MatchTest) {
+    run_match_test();
+}
+
+#ifdef ARCH_X86_64
+INSTANTIATE_TEST_SUITE_P(SSE4_1_AVX2, CDEFFilter8bitTest,
+                         ::testing::Values(svt_cdef_filter_block_8bit_sse4_1,
+                                           svt_cdef_filter_block_8bit_avx2));
+#endif
+#ifdef ARCH_AARCH64
+INSTANTIATE_TEST_SUITE_P(NEON, CDEFFilter8bitTest,
+                         ::testing::Values(svt_cdef_filter_block_8bit_neon));
+#endif
+
+/**
+ * @brief Unit test for svt_cdef_filter_block_8bit_bounded.
+ *
+ * The bounded variant takes four edge flags and must substitute CDEF_VERY_LARGE
+ * for taps that fall outside the available region. All 16 edge combinations are
+ * exercised, since that is exactly what happens at picture and tile boundaries.
+ */
+class CDEFFilter8bitBoundedTest
+    : public ::testing::TestWithParam<CdefFilter8bitBoundedFunc> {
+  public:
+    void SetUp() override {
+        tst_func_ = GetParam();
+        rnd_ = new SVTRandom(0, 255);
+    }
+    void TearDown() override {
+        delete rnd_;
+    }
+
+    void run_match_test() {
+        DECLARE_ALIGNED(32, uint8_t, src[CDEF_BSTRIDE * 24]);
+        DECLARE_ALIGNED(32, uint8_t, dst_ref[16 * 16]);
+        DECLARE_ALIGNED(32, uint8_t, dst_tst[16 * 16]);
+        const int32_t bsizes[] = {BLOCK_4X4, BLOCK_4X8, BLOCK_8X4, BLOCK_8X8};
+
+        for (int iter = 0; iter < 3; iter++) {
+            for (size_t i = 0; i < sizeof(src); i++)
+                src[i] = (uint8_t)rnd_->random();
+            const uint8_t *in = src + 8 * CDEF_BSTRIDE + 8;
+
+            for (const int32_t bsize : bsizes) {
+                // svt_aom_cdef_seg_search caps the subsampling factor per block
+                // size (cdef_process.c); larger values never reach the kernels.
+                const uint8_t max_sub = bsize == BLOCK_8X8   ? 4
+                                        : bsize == BLOCK_4X4 ? 1
+                                                             : 2;
+                for (int dir = 0; dir < 8; dir++) {
+                    // damping must vary: it selects the byte_shift_mask value.
+                    for (int pri = 0; pri <= 15; pri += 5) {
+                        for (int sec = 0; sec <= 4; sec++) {
+                            for (const uint8_t sub : {1, 2, 4}) {
+                                if (sub > max_sub)
+                                    continue;
+                                for (int damping = 3; damping <= 7;
+                                     damping += 2) {
+                                    // all 16 combinations of the four edge
+                                    // flags
+                                    for (int e = 0; e < 16; e++) {
+                                        const int et = (e >> 0) & 1,
+                                                  el = (e >> 1) & 1;
+                                        const int eb = (e >> 2) & 1,
+                                                  er = (e >> 3) & 1;
+                                        memset(dst_ref, 0, sizeof(dst_ref));
+                                        memset(dst_tst, 0, sizeof(dst_tst));
+                                        svt_cdef_filter_block_8bit_bounded_c(
+                                            dst_ref,
+                                            16,
+                                            in,
+                                            pri,
+                                            sec,
+                                            dir,
+                                            damping,
+                                            bsize,
+                                            0,
+                                            sub,
+                                            et,
+                                            el,
+                                            eb,
+                                            er);
+                                        tst_func_(dst_tst,
+                                                  16,
+                                                  in,
+                                                  pri,
+                                                  sec,
+                                                  dir,
+                                                  damping,
+                                                  bsize,
+                                                  0,
+                                                  sub,
+                                                  et,
+                                                  el,
+                                                  eb,
+                                                  er);
+                                        ASSERT_EQ(0,
+                                                  memcmp(dst_ref,
+                                                         dst_tst,
+                                                         sizeof(dst_ref)))
+                                            << "bsize " << bsize << " dir "
+                                            << dir << " pri " << pri << " sec "
+                                            << sec << " sub " << (int)sub
+                                            << " damping " << damping
+                                            << " edges t" << et << " l" << el
+                                            << " b" << eb << " r" << er;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+  private:
+    CdefFilter8bitBoundedFunc tst_func_;
+    SVTRandom *rnd_;
+};
+
+TEST_P(CDEFFilter8bitBoundedTest, MatchTest) {
+    run_match_test();
+}
+
+#ifdef ARCH_X86_64
+INSTANTIATE_TEST_SUITE_P(
+    SSE4_1_AVX2, CDEFFilter8bitBoundedTest,
+    ::testing::Values(svt_cdef_filter_block_8bit_bounded_sse4_1,
+                      svt_cdef_filter_block_8bit_bounded_avx2));
+#endif
+#ifdef ARCH_AARCH64
+INSTANTIATE_TEST_SUITE_P(
+    NEON, CDEFFilter8bitBoundedTest,
+    ::testing::Values(svt_cdef_filter_block_8bit_bounded_neon));
+#endif
+
+#endif  // CDEF_8BITS_PATH

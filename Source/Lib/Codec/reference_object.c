@@ -48,10 +48,16 @@ static void initialize_samples_neighboring_reference_picture(EbPictureBufferDesc
         ref_pic->y_buffer, ref_pic->y_stride, ref_pic->width, ref_pic->height);
 
     initialize_samples_neighboring_reference_picture_8bit(
-        ref_pic->u_buffer, ref_pic->u_stride, ref_pic->width >> 1, ref_pic->height >> 1);
+        ref_pic->u_buffer,
+        ref_pic->u_stride,
+        ref_pic->width >> (ref_pic->color_format == EB_YUV444 ? 0 : 1),
+        ref_pic->height >> (ref_pic->color_format >= EB_YUV422 ? 0 : 1));
 
     initialize_samples_neighboring_reference_picture_8bit(
-        ref_pic->v_buffer, ref_pic->v_stride, ref_pic->width >> 1, ref_pic->height >> 1);
+        ref_pic->v_buffer,
+        ref_pic->v_stride,
+        ref_pic->width >> (ref_pic->color_format == EB_YUV444 ? 0 : 1),
+        ref_pic->height >> (ref_pic->color_format >= EB_YUV422 ? 0 : 1));
 }
 
 static void svt_reference_object_dctor(EbPtr p) {
@@ -83,7 +89,7 @@ svt_reference_param_update: update the parameters in EbReferenceObject for chang
 EbErrorType svt_reference_param_update(EbReferenceObject* ref_object, SequenceControlSet* scs) {
     EbPictureBufferDescInitData picture_buffer_desc_init_data_ptr;
 
-    bool is_16bit = scs->static_config.encoder_bit_depth > EB_EIGHT_BIT;
+    bool is_16bit = SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > EB_EIGHT_BIT;
     // Initialize the various Picture types
     picture_buffer_desc_init_data_ptr.max_width           = scs->max_input_luma_width;
     picture_buffer_desc_init_data_ptr.max_height          = scs->max_input_luma_height;
@@ -99,7 +105,7 @@ EbErrorType svt_reference_param_update(EbReferenceObject* ref_object, SequenceCo
 
     picture_buffer_desc_init_data_ptr.border            = padding;
     picture_buffer_desc_init_data_ptr.mfmv              = scs->mfmv_enabled;
-    picture_buffer_desc_init_data_ptr.is_16bit_pipeline = scs->is_16bit_pipeline;
+    picture_buffer_desc_init_data_ptr.is_16bit_pipeline = SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline);
 
     picture_buffer_desc_init_data_ptr.split_mode = false;
     if (is_16bit) {
@@ -164,20 +170,27 @@ EbErrorType svt_reference_object_ctor(EbReferenceObject* ref_object, EbPtr objec
     }
     svt_memset(&ref_object->film_grain_params, 0, sizeof(ref_object->film_grain_params));
     // set all supplemental downscaled reference picture pointers to NULL
+    // resize_mutex[][] is only taken by the super-res / reference-rescaling paths (resize.c);
+    // skip creating those mutexes when neither super-res nor resize is enabled.
+    const bool scaling_enabled = ref_init_ptr->static_config->superres_mode > SUPERRES_NONE ||
+        ref_init_ptr->static_config->resize_mode > RESIZE_NONE;
     for (uint8_t sr_denom_idx = 0; sr_denom_idx < NUM_SR_SCALES + 1; sr_denom_idx++) {
         for (uint8_t resize_denom_idx = 0; resize_denom_idx < NUM_RESIZE_SCALES + 1; resize_denom_idx++) {
             ref_object->downscaled_reference_picture[sr_denom_idx][resize_denom_idx] = NULL;
             ref_object->downscaled_picture_number[sr_denom_idx][resize_denom_idx]    = (uint64_t)~0;
-            EB_CREATE_MUTEX(ref_object->resize_mutex[sr_denom_idx][resize_denom_idx]);
+            if (scaling_enabled) {
+                EB_CREATE_MUTEX(ref_object->resize_mutex[sr_denom_idx][resize_denom_idx]);
+            }
         }
     }
 
     ref_object->mi_rows = mi_rows;
     ref_object->mi_cols = mi_cols;
+    ref_object->r0      = 0.0;
     EB_MALLOC_ARRAY(ref_object->sb_intra, picture_buffer_desc_init_data_ptr->sb_total_count);
     EB_MALLOC_ARRAY(ref_object->sb_skip, picture_buffer_desc_init_data_ptr->sb_total_count);
     EB_MALLOC_ARRAY(ref_object->sb_64x64_mvp, picture_buffer_desc_init_data_ptr->sb_total_count);
-    EB_MALLOC_ARRAY(ref_object->sb_me_64x64_dist, picture_buffer_desc_init_data_ptr->sb_total_count);
+    EB_CALLOC_ARRAY(ref_object->sb_me_64x64_dist, picture_buffer_desc_init_data_ptr->sb_total_count);
     EB_MALLOC_ARRAY(ref_object->sb_me_8x8_cost_var, picture_buffer_desc_init_data_ptr->sb_total_count);
     EB_MALLOC_ARRAY(ref_object->sb_min_sq_size, picture_buffer_desc_init_data_ptr->sb_total_count);
     EB_MALLOC_ARRAY(ref_object->sb_max_sq_size, picture_buffer_desc_init_data_ptr->sb_total_count);
@@ -288,6 +301,7 @@ EbErrorType svt_pa_reference_param_update(EbPaReferenceObject* pa_ref_obj, Seque
  *****************************************/
 EbErrorType svt_pa_reference_object_ctor(EbPaReferenceObject* pa_ref_obj_, EbPtr object_init_data_ptr) {
     EbPictureBufferDescInitData* picture_buffer_desc_init_data_ptr = (EbPictureBufferDescInitData*)object_init_data_ptr;
+    const EbPaReferenceObjectDescInitData* pa_init = (EbPaReferenceObjectDescInitData*)object_init_data_ptr;
 
     pa_ref_obj_->dctor = svt_pa_reference_object_dctor;
 
@@ -305,13 +319,19 @@ EbErrorType svt_pa_reference_object_ctor(EbPaReferenceObject* pa_ref_obj_, EbPtr
                (EbPtr)(picture_buffer_desc_init_data_ptr + 2));
     }
     // set all supplemental downscaled reference picture pointers to NULL
+    // resize_mutex[][] is only taken by the super-res / reference-rescaling paths (resize.c);
+    // skip creating those mutexes when neither super-res nor resize is enabled.
+    const bool scaling_enabled = pa_init->static_config->superres_mode > SUPERRES_NONE ||
+        pa_init->static_config->resize_mode > RESIZE_NONE;
     for (uint8_t sr_down_idx = 0; sr_down_idx < NUM_SR_SCALES + 1; sr_down_idx++) {
         for (uint8_t resize_down_idx = 0; resize_down_idx < NUM_RESIZE_SCALES + 1; resize_down_idx++) {
             pa_ref_obj_->downscaled_input_padded_picture_ptr[sr_down_idx][resize_down_idx]          = NULL;
             pa_ref_obj_->downscaled_quarter_downsampled_picture_ptr[sr_down_idx][resize_down_idx]   = NULL;
             pa_ref_obj_->downscaled_sixteenth_downsampled_picture_ptr[sr_down_idx][resize_down_idx] = NULL;
             pa_ref_obj_->downscaled_picture_number[sr_down_idx][resize_down_idx]                    = (uint64_t)~0;
-            EB_CREATE_MUTEX(pa_ref_obj_->resize_mutex[sr_down_idx][resize_down_idx]);
+            if (scaling_enabled) {
+                EB_CREATE_MUTEX(pa_ref_obj_->resize_mutex[sr_down_idx][resize_down_idx]);
+            }
         }
     }
 

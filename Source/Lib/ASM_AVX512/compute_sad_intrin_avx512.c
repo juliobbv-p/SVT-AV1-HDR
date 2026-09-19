@@ -1599,12 +1599,11 @@ void sad_loop_kernel_generalized_avx512(uint8_t*  src, // input parameter, sourc
                                         uint64_t* best_sad, int16_t* x_search_center, int16_t* y_search_center,
                                         uint32_t src_stride_raw, // input parameter, source stride (no line skipping)
                                         int16_t search_area_width, int16_t search_area_height) {
-    int16_t        i, j;
-    uint32_t       k, l;
-    const uint8_t *p_ref, *p_src;
-    uint32_t       low_sum = 0xffffff;
-    int32_t        x_best = *x_search_center, y_best = *y_search_center;
-    uint32_t       leftover = search_area_width & 15;
+    int16_t  i, j;
+    uint32_t k, l;
+    uint32_t low_sum = 0xffffff;
+    int32_t  x_best = *x_search_center, y_best = *y_search_center;
+    uint32_t leftover = search_area_width & 15;
 
     __m128i leftover_mask    = _mm_set1_epi32(-1);
     __m128i leftover_mask32b = _mm_set1_epi32(-1);
@@ -1619,8 +1618,8 @@ void sad_loop_kernel_generalized_avx512(uint8_t*  src, // input parameter, sourc
 
     for (i = 0; i < search_area_height; i++) {
         for (j = 0; j < search_area_width; j += 16) {
-            p_src = src;
-            p_ref = ref + j;
+            const uint8_t* p_src = src;
+            const uint8_t* p_ref = ref + j;
 
             __m512i sums512[8] = {_mm512_setzero_si512(),
                                   _mm512_setzero_si512(),
@@ -1731,8 +1730,6 @@ void sad_loop_kernel_generalized_avx512(uint8_t*  src, // input parameter, sourc
                     }
                     sum256 = _mm256_adds_epu16(sum256, _mm256_loadu_si256((__m256i*)tsum));
                 }
-                p_src += src_stride;
-                p_ref += ref_stride;
             }
 
             //update all

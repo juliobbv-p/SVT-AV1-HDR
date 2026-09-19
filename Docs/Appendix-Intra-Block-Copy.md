@@ -122,12 +122,12 @@ The control tokens and flags associated with the IBC feature are listed in Table
 
 ##### Table 1. Control tokens and flags for the IBC feature.
 
-| **Flag**      | **Level(Sequence/Picture)** | **Description**                                                                                                         |
-| ---           | ---                         | ---                                                                                                                     |
-| --scm         | Sequence                    | Command line token. 0: None, 1: Block Copy + Palette, 2: Auto mode (detector based), 3: Auto mode (anti-alias aware)    |
-| -intrabc-mode | Configuration               | Command line token to specify IBC mode. 0: OFF, 1-3: IBC ON with intrabc levels mentioned below.,  -1: Default behavior |
-| intrabc_level | Picture                     | Controls the complexity-quality trade-offs of the feature. 0: OFF, 1-6 ON                                               |
-| allow_intrabc | Picture                     | For intra pictures, set to 1 when IBC is allowed, else set to 0.                                                        |
+| **Flag**        | **Level(Sequence/Picture)** | **Description**                                                                                                         |
+| ---             | ---                         | ---                                                                                                                     |
+| --scm           | Sequence                    | Command line token. 0: None, 1: Block Copy + Palette, 2: Auto mode (detector based), 3: Auto mode (anti-alias aware)    |
+| --enable-intrabc | Configuration               | Command line token to enable/disable IBC. 0: OFF, 1: ON (preset-based, default)                                         |
+| intrabc_level   | Picture                     | Controls the complexity-quality trade-offs of the feature. 0: OFF, 1-7 ON                                               |
+| allow_intrabc   | Picture                     | For intra pictures, set to 1 when IBC is allowed, else set to 0.                                                        |
 
 ## 3. Optimization of the algorithm
 
@@ -152,7 +152,7 @@ at the frame level.
 ## Notes
 
 The feature settings that are described in this document were compiled at
-v4.1.0 of the code and may not reflect the current status of the code. The
+v4.2.0 of the code and may not reflect the current status of the code. The
 description in this document represents an example showing how features would
 interact with the SVT architecture. For the most up-to-date settings, it's
 recommended to review the section of the code implementing this feature.

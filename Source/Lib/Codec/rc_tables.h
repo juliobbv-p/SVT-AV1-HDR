@@ -10,7 +10,9 @@
 */
 
 #include "definitions.h"
+#include "EbConfigMacros.h" // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
 #define ASSIGN_MINQ_TABLE(bit_depth, name)                                                \
     do {                                                                                  \
         name = NULL;                                                                      \
@@ -30,6 +32,14 @@
         if (!name)                                                                        \
             name = name##_8;                                                              \
     } while (0)
+#else
+// RTC is 8-bit only (CONFIG_ENABLE_HIGH_BIT_DEPTH=0): always the 8-bit table so _10/_12 variants drop out.
+#define ASSIGN_MINQ_TABLE(bit_depth, name) \
+    do {                                   \
+        (void)(bit_depth);                 \
+        name = name##_8;                   \
+    } while (0)
+#endif
 
 static const int kf_low_motion_minq_cqp_8[QINDEX_RANGE] = {
     0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
@@ -45,6 +55,7 @@ static const int kf_low_motion_minq_cqp_8[QINDEX_RANGE] = {
     96,  97,  99,  100, 101, 103, 104, 105, 107, 109, 110, 112, 114, 116, 118, 120, 122, 124, 125, 127, 129, 131,
     134, 136, 138, 140, 142, 144, 147, 149, 151, 154, 156, 158, 161, 163};
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
 static const int kf_low_motion_minq_cqp_10[QINDEX_RANGE] = {
     0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
     0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
@@ -72,6 +83,7 @@ static const int kf_low_motion_minq_cqp_12[QINDEX_RANGE] = {
     68,  69,  70,  71,  72,  73,  74,  75,  76,  78,  79,  80,  82,  83,  85,  86,  88,  90,  91,  93,  95,  96,
     97,  99,  100, 101, 102, 104, 105, 106, 108, 110, 111, 113, 115, 117, 119, 121, 122, 124, 126, 128, 130, 132,
     134, 136, 138, 140, 142, 144, 147, 149, 152, 154, 156, 159, 161, 163};
+#endif
 
 static const int kf_high_motion_minq_8[QINDEX_RANGE] = {
     0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   2,   2,   3,   3,   4,   4,   5,   5,   5,   6,
@@ -143,6 +155,7 @@ static const int rtc_minq_8[QINDEX_RANGE] = {
     192, 193, 194, 195, 196, 197, 199, 200, 201, 202, 203, 205, 206, 207, 208, 210, 211, 212, 214, 215, 216, 218,
     219, 221, 222, 224, 225, 227, 229, 230, 232, 234, 235, 237, 239, 241};
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
 static const int kf_high_motion_minq_10[QINDEX_RANGE] = {
     0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   11,
     11,  11,  12,  13,  13,  14,  14,  15,  15,  16,  16,  17,  17,  18,  18,  19,  19,  20,  20,  21,  21,  22,
@@ -282,3 +295,4 @@ static const int rtc_minq_12[QINDEX_RANGE] = {
     170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191,
     192, 193, 194, 195, 196, 197, 199, 200, 201, 202, 203, 205, 206, 207, 208, 210, 211, 212, 214, 215, 216, 218,
     219, 221, 222, 224, 225, 227, 229, 230, 232, 234, 235, 237, 239, 241};
+#endif
