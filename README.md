@@ -56,7 +56,7 @@ Tune 6 is equivalent to setting these parameters: `--tune 0 --enable-tf 0 --enab
 
 Allows encoding in High Profile, 4:4:4 (no chroma subsampling). Perfect for screen recordings and high-quality AVIFs. Enabled automatically when source is a 4:4:4 Y4M or with `--color-format 444` if it's a raw YUV.
 
-- `QM-PSNR` *0 and 1*
+- `--enable-qmpsnr` *0 and 1*
 
 Uses quantization matrices in the distortion computation for RD search, providing visual gains especially for images. A feature from libaom. Default is 1 for tune IQ, 0 otherwise.
 
