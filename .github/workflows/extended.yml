@@ -66,8 +66,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -yq cmake ninja-build zstd
-          mkdir -p ${SVT_AV1_TEST_VECTOR_PATH}
-          cp -f ./test/vectors/longtime_comformance_test.cfg ${SVT_AV1_TEST_VECTOR_PATH}
+          mkdir -p "${SVT_AV1_TEST_VECTOR_PATH}"
+          cp -f ./test/vectors/longtime_comformance_test.cfg "${SVT_AV1_TEST_VECTOR_PATH}"
           cmake -B vec -G Ninja -DSVT_AV1_TEST_VECTORS_ONLY=ON
           cmake --build vec --target TestVectors
       - name: Save test vectors cache
@@ -161,8 +161,8 @@ jobs:
           mv Bin/RelWithDebInfo Bin/RelWithDebInfo-x86_64
           mkdir -p Bin/RelWithDebInfo
           for file in Bin/RelWithDebInfo-arm64/SvtAv1*Tests; do
-            echo "Creating universal binary for $(basename $file)"
-            lipo -create "Bin/RelWithDebInfo-arm64/$(basename $file)" "Bin/RelWithDebInfo-x86_64/$(basename $file)" -output "Bin/RelWithDebInfo/$(basename $file)"
+            echo "Creating universal binary for $(basename "$file")"
+            lipo -create "Bin/RelWithDebInfo-arm64/$(basename "$file")" "Bin/RelWithDebInfo-x86_64/$(basename "$file")" -output "Bin/RelWithDebInfo/$(basename "$file")"
           done
       - name: Upload artifacts
         uses: actions/upload-artifact@v7.0.0
@@ -420,6 +420,8 @@ jobs:
           command="$PWD/sanitizer-bin/SvtAv1EncApp -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 60 --preset 8 -b output.ivf --progress 0"
           case $SANITIZER in
           thread)
+            # Signal 32 is not well defined as it's an internal signal for pthread. Cannot replace with a standard name.
+            # shellcheck disable=SC2172
             trap '' 32
             $command
             ;;
@@ -523,6 +525,7 @@ jobs:
           REF_SCALE: ${{ matrix.ref_scale }}
         run: |
           chmod +x valgrind-bin/SvtAv1EncApp
+          # shellcheck disable=SC2086
           valgrind --error-exitcode=1 --track-origins=yes \
             --suppressions=/usr/lib/valgrind/debian.supp -- \
             valgrind-bin/SvtAv1EncApp --preset 6 \
