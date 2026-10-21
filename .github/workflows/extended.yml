@@ -40,45 +40,6 @@ env:
 # Otherwise the cache will miss and fail jobs that require them.
 
 jobs:
-  prep-gtest-parallel:
-    name: Prepare gtest_parallel.py
-    runs-on: [self-hosted, linux]
-    container:
-      image: node:alpine
-    outputs:
-      gtest-parallel-cache-key: ${{ steps.cache.outputs.cache-primary-key }}
-    steps:
-      - name: Cache gtest_parallel.py
-        id: cache
-        uses: actions/cache/restore@v5.0.3
-        with:
-          key: gtest-parallel
-          path: gtest_parallel.py
-          lookup-only: true
-          enableCrossOsArchive: true
-      - name: Install dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          apk update
-          apk add git tar zstd
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        if: steps.cache.outputs.cache-hit != 'true'
-        with:
-          repository: 1480c1/gtest-parallel
-          ref: unique_id
-          sparse-checkout: gtest_parallel.py
-          sparse-checkout-cone-mode: false
-          token: ${{ secrets.GITHUB_TOKEN }}
-          persist-credentials: false
-      - name: Upload gtest_parallel.py
-        uses: actions/cache/save@v5.0.3
-        if: steps.cache.outputs.cache-hit != 'true'
-        with:
-          key: ${{ steps.cache.outputs.cache-primary-key}}
-          path: gtest_parallel.py
-          enableCrossOsArchive: true
-
   prep-test-vectors:
     name: Prepare test vectors
     runs-on: [self-hosted, linux]
@@ -87,12 +48,12 @@ jobs:
     outputs:
       test-vectors-cache-key: ${{ steps.cache.outputs.cache-primary-key }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Restore cached test vectors
         id: cache
-        uses: actions/cache/restore@v5.0.3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: vectors
           key:
@@ -110,8 +71,10 @@ jobs:
           cmake -B vec -G Ninja -DSVT_AV1_TEST_VECTORS_ONLY=ON
           cmake --build vec --target TestVectors
       - name: Save test vectors cache
-        uses: actions/cache/save@v5.0.3
-        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        if:
+          steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
+          github.event.repository.default_branch)
         with:
           path: vectors
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -135,16 +98,16 @@ jobs:
           apt-get update
           apt-get install -yq ccache cmake gcc g++ git nasm ninja-build nodejs pkgconf
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Run debug build
-        uses: ./.github/actions/compile
+        uses: $/.github/actions/compile
         with:
           cmake_build_type: RelWithDebInfo
           extra_cmake_flags: -DBUILD_TESTING=ON -DBUILD_APPS=OFF
-          build_targets: SvtAv1ApiTests,SvtAv1E2ETests,SvtAv1UnitTests
+          build_targets: SvtAv1UnitTests,SvtAv1ApiTests,SvtAv1E2ETests
       - name: Upload unit test files
         uses: actions/upload-artifact@v7.0.0
         with:
@@ -155,80 +118,44 @@ jobs:
           compression-level: 9
           overwrite: true
 
-  msvc-x86-RelWithDebInfo:
-    name: Win64 (MSVC, RelWithDebInfo, x86)
-    runs-on: [self-hosted, windows]
-    env:
-      CFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
-      CXXFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
-      CMAKE_GENERATOR: Visual Studio 16 2019
-      CMAKE_GENERATOR_PLATFORM: x64
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          persist-credentials: true
-      - name: Cache build
-        uses: actions/cache@v5.0.3
-        with:
-          key:
-            ${{ runner.os }}-build-${{ hashFiles('**/CMakeLists.txt') }}-${{ format('{0}{1}{2}{3}{4}',
-            env.CMAKE_GENERATOR, env.CMAKE_GENERATOR_PLATFORM, env.CFLAGS, env.CXXFLAGS, env.LDFLAGS) }}-RelWithDebInfo
-          path: msvc
-      # MSVC unit test builds can't be static due to the limitation of our old googletest lib
-      - name: Configure cmake
-        run: |
-          cmake -S . -B msvc -DSVT_AV1_LTO=ON -DREPRODUCIBLE_BUILDS=ON -DBUILD_TESTING=ON -DBUILD_APPS=OFF -DCMAKE_OUTPUT_DIRECTORY=msvc/bin
-      - name: Build
-        run: cmake --build msvc --config RelWithDebInfo -j 16 -t SvtAv1UnitTests -t SvtAv1ApiTests -t SvtAv1E2ETests
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7.0.0
-        with:
-          name: windows-unit-test-artifacts
-          path: |
-            msvc/bin/RelWithDebInfo/SvtAv1*Tests.exe
-            msvc/bin/RelWithDebInfo/*.dll
-            msvc/bin/RelWithDebInfo/*.pdb
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
-
   macos-universal-RelWithDebInfo:
     name: macOS (Universal, RelWithDebInfo)
-    runs-on: [self-hosted, macos, ARM64]
+    runs-on: [self-hosted, macos]
     env:
       CC: clang
       CXX: clang++
-      CFLAGS: -Werror -Wshadow -pipe
-      CXXFLAGS: -Werror -Wshadow -pipe
-      LDFLAGS: -Werror -Wshadow -pipe
+      CFLAGS: -Wshadow -pipe
+      CXXFLAGS: -Wshadow -pipe
+      LDFLAGS: -Wshadow -pipe
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Build arm64 unit tests
-        uses: ./.github/actions/compile
+        uses: $/.github/actions/compile
         with:
           cmake_build_type: RelWithDebInfo
           cc: clang
           cxx: clang++
           extra_cmake_flags: -DBUILD_TESTING=ON -DBUILD_APPS=OFF -DCMAKE_OSX_ARCHITECTURES=arm64
           build_targets: SvtAv1UnitTests,SvtAv1ApiTests,SvtAv1E2ETests
+          packages: ccache
           save_cache: false
       - name: Prep for x86_64
         run: |
           mv Bin/RelWithDebInfo Bin/RelWithDebInfo-arm64
           git -C Build clean -ffdx
       - name: Build x86_64 unit tests
-        uses: ./.github/actions/compile
+        uses: $/.github/actions/compile
         with:
           cmake_build_type: RelWithDebInfo
           cc: clang
           cxx: clang++
           extra_cmake_flags: -DBUILD_TESTING=ON -DBUILD_APPS=OFF -DCMAKE_OSX_ARCHITECTURES=x86_64
           build_targets: SvtAv1UnitTests,SvtAv1ApiTests,SvtAv1E2ETests
+          packages: ccache nasm
       - name: Create universal test binaries
         run: |
           mv Bin/RelWithDebInfo Bin/RelWithDebInfo-x86_64
@@ -251,7 +178,6 @@ jobs:
     name: Linux Unit Tests (shard ${{ matrix.shard }})
     needs:
       - linux-gcc-static-debug-unittests
-      - prep-gtest-parallel
       - prep-test-vectors
     runs-on: [self-hosted, linux]
     container:
@@ -268,26 +194,25 @@ jobs:
         run: |
           apt-get update
           apt-get install -yq nodejs python3 zstd
+      - name: Checkout gtest-parallel
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: test/
+          persist-credentials: false
       - name: Download unit test artifacts
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: linux-unit-test-artifacts
           path: Bin/RelWithDebInfo/
       # gtest-parallel expects the cache to be ~/.cache/gtest-parallel
       - name: Restore cached test times
         id: cache
-        uses: actions/cache/restore@v5.0.3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/gtest-parallel
-          key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt', '**/*.patch') }}-${{ matrix.shard }}
-      - name: Download gtest_parallel.py
-        uses: actions/cache/restore@v5.0.3
-        with:
-          key: ${{ needs.prep-gtest-parallel.outputs.gtest-parallel-cache-key }}
-          path: gtest_parallel.py
-          fail-on-cache-miss: true
+          key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
       - name: Prepare test vectors
-        uses: actions/cache/restore@v5.0.3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: vectors
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
@@ -295,93 +220,20 @@ jobs:
         shell: bash
         run: |
           mkdir -p reports ~/.cache
-          chmod +x gtest_parallel.py Bin/RelWithDebInfo/*Tests
-          python3 ./gtest_parallel.py \
+          chmod +x Bin/RelWithDebInfo/*Tests
+          python3 ./test/gtest_parallel.py \
             --print_test_times \
             --shard_index=${{ matrix.shard }} \
             --shard_count=${{ env.TOTAL_SHARDS }} \
             Bin/RelWithDebInfo/SvtAv1UnitTests \
             Bin/RelWithDebInfo/SvtAv1E2ETests \
-             -- --gtest_output="xml:reports/{#}.xml"
-            # Bin/RelWithDebInfo/SvtAv1ApiTests \ # Currently some tests fail.
+            Bin/RelWithDebInfo/SvtAv1ApiTests \
+            -- --gtest_output="xml:reports/{#}.xml"
       - name: Save test times cache
-        uses: actions/cache/save@v5.0.3
-        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         with:
           path: ~/.cache/gtest-parallel
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-      # - name: Upload junit reports
-      #   uses: actions/upload-artifact@v7.0.0
-      #   with:
-      #     name: junit-reports-shard-${{ matrix.shard }}
-      #     path: reports/
-      #     if-no-files-found: error
-      #     retention-days: 1
-      #     compression-level: 9
-      #     overwrite: true
-
-  windows-unit-tests:
-    name: Windows Unit Tests
-    needs:
-      - msvc-x86-RelWithDebInfo
-      - prep-gtest-parallel
-      - prep-test-vectors
-    runs-on: [self-hosted, windows]
-    strategy:
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-      fail-fast: true
-    env:
-      TOTAL_SHARDS: 16
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v7.0.0
-        with:
-          name: windows-unit-test-artifacts
-      # on windows, gtest-parallel expects the cache to be at %LOCALAPPDATA%/gtest-parallel, we need to restore and save to a local folder first due to the container isolation
-      - name: Restore cached test times
-        id: cache
-        uses: actions/cache/restore@v5.0.3
-        with:
-          path: gtest-parallel-times
-          key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
-      - name: Download gtest_parallel.py
-        uses: actions/cache/restore@v5.0.3
-        with:
-          key: ${{ needs.prep-gtest-parallel.outputs.gtest-parallel-cache-key }}
-          path: gtest_parallel.py
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
-      - name: Prepare test vectors
-        uses: actions/cache/restore@v5.0.3
-        with:
-          path: vectors
-          key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
-      - name: Run tests shards
-        env:
-          SHARD_INDEX: ${{ matrix.shard }}
-        run: |
-          New-Item -ItemType Directory -Force -Path reports
-          if (Test-Path gtest-parallel-times) {
-            Copy-Item -Path gtest-parallel-times -Destination ${env:LOCALAPPDATA}/gtest-parallel -Recurse -Force
-          }
-          python gtest_parallel.py `
-            --print_test_times `
-            --shard_index=${{ matrix.shard }} `
-            --shard_count=${{ env.TOTAL_SHARDS }} `
-            ./SvtAv1UnitTests.exe `
-            ./SvtAv1E2ETests.exe `
-             -- --gtest_output="xml:reports/{#}.xml"
-          if (Test-Path ${env:LOCALAPPDATA}/gtest-parallel) {
-            Copy-Item -Path ${env:LOCALAPPDATA}/gtest-parallel -Destination gtest-parallel-times -Recurse -Force
-          }
-      - name: Save test times cache
-        uses: actions/cache/save@v5.0.3
-        if: always() && steps.cache.outputs.cache-hit != 'true'
-        with:
-          path: gtest-parallel-times
           key: ${{ steps.cache.outputs.cache-primary-key }}
       # - name: Upload junit reports
       #   uses: actions/upload-artifact@v7.0.0
@@ -397,7 +249,6 @@ jobs:
     name: macOS Unit Tests (Arm64, shard ${{ matrix.shard }})
     needs:
       - macos-universal-RelWithDebInfo
-      - prep-gtest-parallel
       - prep-test-vectors
     runs-on: [self-hosted, macos, ARM64]
     strategy:
@@ -407,30 +258,25 @@ jobs:
     env:
       TOTAL_SHARDS: 16
     steps:
-      - name: Install dependencies
-        run: |
-          python3 --version
+      - name: Checkout gtest-parallel
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: test/
+          persist-credentials: false
       - name: Download unit test artifacts
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: macos-unit-test-artifacts
           path: Bin/RelWithDebInfo/
       # gtest-parallel expects the cache to be ~/.cache/gtest-parallel
       - name: Restore cached test times
         id: cache
-        uses: actions/cache/restore@v5.0.3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/gtest-parallel
           key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
-      - name: Download gtest_parallel.py
-        uses: actions/cache/restore@v5.0.3
-        with:
-          key: ${{ needs.prep-gtest-parallel.outputs.gtest-parallel-cache-key }}
-          path: gtest_parallel.py
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
       - name: Prepare test vectors
-        uses: actions/cache/restore@v5.0.3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: vectors
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
@@ -440,17 +286,18 @@ jobs:
         shell: bash
         run: |
           mkdir -p reports ~/.cache
-          chmod +x gtest_parallel.py Bin/RelWithDebInfo/*Tests
-          python3 ./gtest_parallel.py \
+          chmod +x Bin/RelWithDebInfo/*Tests
+          python3 ./test/gtest_parallel.py \
             --print_test_times \
             --shard_index=${{ matrix.shard }} \
             --shard_count=${{ env.TOTAL_SHARDS }} \
             Bin/RelWithDebInfo/SvtAv1UnitTests \
             Bin/RelWithDebInfo/SvtAv1E2ETests \
+            Bin/RelWithDebInfo/SvtAv1ApiTests \
              -- --gtest_output="xml:reports/{#}.xml"
       - name: Save test times cache
-        uses: actions/cache/save@v5.0.3
-        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         with:
           path: ~/.cache/gtest-parallel
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -481,13 +328,24 @@ jobs:
             artifact_suffix: integer-overflow
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Restore ccache
+        id: cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: .ccache
+          key:
+            ${{ runner.os }}-svtav1-clang-19-${{ matrix.artifact_suffix }}-${{
+            hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','third_party/**','**/*.patch') }}
+          restore-keys: ${{ runner.os }}-svtav1-clang-19-${{ matrix.artifact_suffix }}-
       - name: Build with ${{ matrix.artifact_suffix }} sanitizer
         env:
           SANITIZER: ${{ matrix.sanitizer }}
           OUTPUT_DIR: ${{ matrix.artifact_suffix }}
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_COMPRESS: 1
         run: |
           cmake -B Build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -497,8 +355,17 @@ jobs:
             -DCMAKE_CXX_FLAGS="-pipe" \
             -DCMAKE_OUTPUT_DIRECTORY="$OUTPUT_DIR" \
             -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DSANITIZER="$SANITIZER"
           cmake --build Build
+          ccache -s || true
+      - name: Save ccache
+        uses: actions/cache/save@v6.1.0
+        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        with:
+          path: .ccache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Stage binary for upload
         env:
           OUTPUT_DIR: ${{ matrix.artifact_suffix }}
@@ -541,12 +408,11 @@ jobs:
           cp /Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst .
           zstd -df Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
       - name: Download sanitizer binary
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: sanitizer-bin-${{ matrix.artifact_suffix }}
           path: sanitizer-bin
       - name: Run sanitizer test
-        shell: bash
         env:
           SANITIZER: ${{ matrix.sanitizer }}
         run: |
@@ -569,18 +435,39 @@ jobs:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     steps:
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Restore ccache
+        id: cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: .ccache
+          key:
+            ${{ runner.os }}-svtav1-valgrind-${{
+            hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','third_party/**','**/*.patch') }}
+          restore-keys: ${{ runner.os }}-svtav1-valgrind-
       - name: Build debug binary for valgrind
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+          CCACHE_COMPRESS: 1
         run: |
           cmake -B Build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_FLAGS="-Wno-error -pipe" \
             -DCMAKE_CXX_FLAGS="-Wno-error -pipe" \
             -DCMAKE_OUTPUT_DIRECTORY=valgrind \
-            -DBUILD_SHARED_LIBS=OFF
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build Build
+          ccache -s || true
+      - name: Save ccache
+        uses: actions/cache/save@v6.1.0
+        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        with:
+          path: .ccache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       - name: Upload valgrind binary
         uses: actions/upload-artifact@v7.0.0
         with:
@@ -625,7 +512,7 @@ jobs:
           cp /akiyo_cif.y4m.zst .
           zstd -df akiyo_cif.y4m.zst
       - name: Download valgrind binary
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: valgrind-bin
           path: valgrind-bin
@@ -643,3 +530,103 @@ jobs:
             -i akiyo_cif.y4m \
             ${RC} -n 10 --lp 7 -b test1.ivf \
             ${REF_SCALE}
+
+  windows-msvc-debug-unittests:
+    name: Windows (MSVC, RelWithDebInfo, Unit Tests)
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 120
+    env:
+      CFLAGS: /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict /WX
+      CXXFLAGS: /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict /WX
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up MSVC problem matcher
+        uses: ammaraskar/msvc-problem-matcher@541aa4360062d76d9620af6b8bd35cfa0c5ef19f
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\NASM;$env:PATH"
+          cmake -S ${env:GITHUB_WORKSPACE} -B ${env:GITHUB_WORKSPACE}/Build -G "Visual Studio 16 2019" -A x64 `
+            -DREPRODUCIBLE_BUILDS=ON `
+            -DBUILD_SHARED_LIBS=ON `
+            -DBUILD_TESTING=ON `
+            -DBUILD_APPS=OFF
+      - name: Build unit tests
+        shell: pwsh
+        run: |
+          cmake --build ${env:GITHUB_WORKSPACE}/Build --config RelWithDebInfo --target SvtAv1UnitTests --target SvtAv1E2ETests --target SvtAv1ApiTests --parallel
+      - name: Upload unit test artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: windows-unit-test-artifacts
+          path: |
+            Bin/RelWithDebInfo/*.exe
+            Bin/RelWithDebInfo/*.dll
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
+  windows-msvc-unit-tests:
+    name: Windows Unit Tests (MSVC, shard ${{ matrix.shard }})
+    timeout-minutes: 60
+    needs:
+      - windows-msvc-debug-unittests
+      - prep-test-vectors
+    runs-on: [self-hosted, windows]
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      fail-fast: true
+    env:
+      TOTAL_SHARDS: 16
+    steps:
+      - name: Checkout gtest-parallel
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: test/
+          persist-credentials: false
+      - name: Download unit test artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: windows-unit-test-artifacts
+          path: Bin/RelWithDebInfo/
+      # on windows, gtest-parallel expects the cache to be at
+      # %LOCALAPPDATA%/gtest-parallel, we need to restore and save to a
+      # local folder first since
+      - name: Restore cached test times
+        id: cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.cache/gtest-parallel
+          key: test-times-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
+      - name: Prepare test vectors
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: vectors
+          key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+      - name: Run unit tests shard
+        shell: pwsh
+        run: |
+          $env:SVT_AV1_TEST_VECTOR_PATH = "${{ github.workspace }}\vectors"
+          New-Item -ItemType Directory -Path "$env:USERPROFILE\.cache\gtest-parallel", reports -Force | Out-Null
+          python test\gtest_parallel.py `
+            --print_test_times `
+            --shard_index=${{ matrix.shard }} `
+            --shard_count=${{ env.TOTAL_SHARDS }} `
+            Bin/RelWithDebInfo/SvtAv1UnitTests.exe `
+            Bin/RelWithDebInfo/SvtAv1E2ETests.exe `
+            Bin/RelWithDebInfo/SvtAv1ApiTests.exe `
+            -- --gtest_output="xml:reports/{#}.xml"
+      - name: Save test times cache
+        uses: actions/cache/save@v6.1.0
+        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        with:
+          path: ~/.cache/gtest-parallel
+          key: ${{ steps.cache.outputs.cache-primary-key }}

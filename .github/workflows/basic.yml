@@ -45,15 +45,9 @@ jobs:
         run: |
           apk update
           apk add cmake gcc g++ git nasm ninja pkgconf tar
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - name: Cache build directory
-        uses: actions/cache@v5.0.3
-        with:
-          path: ver
-          key: version-check-${{ github.sha }}
-          restore-keys: version-check-*
       - name: Configure CMake
         run: cmake -B ver -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Check version consistency
@@ -92,7 +86,7 @@ jobs:
           apk update
           apk add python3 clang-extra-tools curl git
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -104,12 +98,10 @@ jobs:
         run: ./test/stylecheck.sh
 
   cppcheck:
-    # For now, we allow cppcheck to fail since we can't fall back to ubuntu 18.04 due to issues
-    # with node and glibc.
     name: Static analysis (cppcheck)
     runs-on: [self-hosted, linux]
     container:
-      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
+      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2004:20260303202728
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
@@ -118,11 +110,11 @@ jobs:
           apt-get update
           apt-get install -yq cmake jq cppcheck gcc g++ git nasm ninja-build nodejs
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: Cache cppcheck results
-        uses: actions/cache/restore@v5.0.3
+        uses: actions/cache/restore@v6.1.0
         id: cache
         with:
           path: .cppcheck
@@ -146,12 +138,12 @@ jobs:
             --cppcheck-build-dir=.cppcheck \
             --suppress=unusedFunction \
             --suppress=missingIncludeSystem \
-            --template="::error file={file},line={line},col={column}::{file}:{line}:{column}: {severity}{inconclusive: (inconclusive)}: {message} [{id}]{cwe: (CWE-{cwe})}\\nCallstack: {callstack}\\n{code}" \
-            --template-location="Note: {file}:{line}:{column}: {info}\\n{code}"
+            --template="::error file={file},line={line},col={column}::{bold}{file}:{line}:{column}: {magenta}warning:{default} {message} [{id}]{reset}\\n{code}" \
+            --template-location="{bold}{file}:{line}:{column}: {dim}note:{reset} {info}\\n{code}"
         continue-on-error: true
       - name: Save cppcheck results to cache
-        uses: actions/cache/save@v5.0.3
-        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
         with:
           path: .cppcheck
           key: ${{ runner.os }}-cppcheck-${{ github.sha }}
@@ -174,105 +166,18 @@ jobs:
           apt-get update
           apt-get install -yq ccache cmake gcc g++ git nasm ninja-build nodejs pkgconf
       - name: Checkout
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Run release build
-        uses: ./.github/actions/compile
+        uses: $/.github/actions/compile
         with:
           cmake_build_type: Release
       - name: Upload release artifacts
         uses: actions/upload-artifact@v7.0.0
         with:
           name: svtav1-bin-linux-release
-          path: Bin/Release/SvtAv1EncApp
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
-
-  msvc-x86-release:
-    name: Win64 (MSVC, Release, x86)
-    runs-on: [self-hosted, windows]
-    env:
-      CFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
-      CXXFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict
-      CMAKE_GENERATOR: Visual Studio 16 2019
-      CMAKE_GENERATOR_PLATFORM: x64
-    steps:
-      - uses: actions/checkout@v6.0.2
-        with:
-          persist-credentials: true
-      - name: Cache build
-        uses: actions/cache@v5.0.3
-        with:
-          key:
-            ${{ runner.os }}-build-${{ hashFiles('**/CMakeLists.txt') }}-${{ format('{0}{1}{2}{3}{4}',
-            env.CMAKE_GENERATOR, env.CMAKE_GENERATOR_PLATFORM, env.CFLAGS, env.CXXFLAGS, env.LDFLAGS) }}-release
-          path: msvc
-      - name: Configure cmake
-        run:
-          cmake -S . -B msvc -DSVT_AV1_LTO=ON -DREPRODUCIBLE_BUILDS=ON -DCMAKE_OUTPUT_DIRECTORY=msvc/bin
-          -DBUILD_SHARED_LIBS=OFF
-      - name: Build
-        run: cmake --build msvc --config Release -j 16
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v7.0.0
-        with:
-          name: svtav1-bin-windows-release
-          path: msvc/bin/Release/SvtAv1EncApp.exe
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
-
-  macos-universal-release:
-    name: macOS (Universal, Release)
-    runs-on: [self-hosted, macos, ARM64]
-    env:
-      CC: clang
-      CXX: clang++
-      CFLAGS: -Werror -Wshadow -pipe
-      CXXFLAGS: -Werror -Wshadow -pipe
-      LDFLAGS: -Werror -Wshadow -pipe
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Build arm64
-        uses: ./.github/actions/compile
-        with:
-          cmake_build_type: Release
-          cc: clang
-          cxx: clang++
-          extra_cmake_flags: -DCMAKE_OSX_ARCHITECTURES=arm64
-          save_cache: false
-      - name: Prep for x86_64
-        run: |
-          mv Bin/Release Bin/Release-arm64
-          git -C Build clean -ffdx
-      - name: Build x86_64
-        uses: ./.github/actions/compile
-        with:
-          cmake_build_type: Release
-          cc: clang
-          cxx: clang++
-          extra_cmake_flags: -DCMAKE_OSX_ARCHITECTURES=x86_64
-      - name: Create universal binary
-        run: |
-          mv Bin/Release Bin/Release-x86_64
-          mkdir -p Bin/Release
-          for file in Bin/Release-arm64/*; do
-            echo "Creating universal binary for $(basename $file)"
-            lipo -create "Bin/Release-arm64/$(basename $file)" "Bin/Release-x86_64/$(basename $file)" -output "Bin/Release/$(basename $file)"
-          done
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v7.0.0
-        with:
-          name: svtav1-bin-macos-release
           path: Bin/Release/SvtAv1EncApp
           if-no-files-found: error
           retention-days: 1
@@ -293,7 +198,7 @@ jobs:
       chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: svtav1-bin-linux-release
           path: Bin/Release
@@ -315,50 +220,6 @@ jobs:
           echo "akiyo_m8=$(sha256sum test-pr-Linux-Release-8bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           echo "chimera_m2=$(sha256sum test-pr-Linux-Release-10bit-m2.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           echo "chimera_m8=$(sha256sum test-pr-Linux-Release-10bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-
-  linux-enc-cbrvbr-test:
-    name: Linux Enc CBRVBR Test (${{ matrix.bitness }}-bit)
-    runs-on: [self-hosted, linux]
-    container:
-      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
-    needs:
-      - linux-gcc-release
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - filename: akiyo_cif.y4m
-            bitness: 8
-          - filename: Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m
-            bitness: 10
-    steps:
-      - name: Download release artifacts
-        uses: actions/download-artifact@v7.0.0
-        with:
-          name: svtav1-bin-linux-release
-          path: Bin/Release
-      - name: Extract input vectors
-        run: |
-          cp /${{ matrix.filename }}.zst .
-          zstd -df ${{ matrix.filename }}.zst
-      - name: Run CBRVBR encoding tests
-        run: |
-          chmod +x Bin/Release/SvtAv1EncApp
-          # 1-pass VBR
-          ./Bin/Release/SvtAv1EncApp -i ${{ matrix.filename }} --rc 1 --tbr 100 --lp 1 \
-            -b vbr1pass-pr-Linux_x86_64-Release-${{ matrix.bitness }}bit-m8.ivf --preset 8
-          ./Bin/Release/SvtAv1EncApp -i ${{ matrix.filename }} --rc 1 --tbr 100 --lp 1 \
-            -b vbr1pass-pr-Linux_x86_64-Release-${{ matrix.bitness }}bit-m12.ivf --preset 12
-          # 2-pass VBR
-          ./Bin/Release/SvtAv1EncApp -i ${{ matrix.filename }} --rc 1 --tbr 100 --lp 1 \
-            -b vbr2pass-pr-Linux_x86_64-Release-${{ matrix.bitness }}bit-m8.ivf --passes 2 --preset 8
-          ./Bin/Release/SvtAv1EncApp -i ${{ matrix.filename }} --rc 1 --tbr 100 --lp 1 \
-            -b vbr2pass-pr-Linux_x86_64-Release-${{ matrix.bitness }}bit-m12.ivf --passes 2 --preset 12
-          # 1-pass CBR
-          ./Bin/Release/SvtAv1EncApp -i ${{ matrix.filename }} --rc 2 --tbr 100 --lp 1 \
-            -b cbr-pr-Linux_x86_64-Release-${{ matrix.bitness }}bit-m8.ivf --pred-struct 1 --preset 8
-          ./Bin/Release/SvtAv1EncApp -i ${{ matrix.filename }} --rc 2 --tbr 100 --lp 1 \
-            -b cbr-pr-Linux_x86_64-Release-${{ matrix.bitness }}bit-m12.ivf --pred-struct 1 --preset 12
 
   linux-rc-test:
     name: Linux RC Test
@@ -408,124 +269,6 @@ jobs:
           done
           $ret
 
-  windows-enc-test:
-    name: Win64 Enc Test
-    runs-on: [self-hosted, windows]
-    needs:
-      - msvc-x86-release
-    outputs:
-      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
-      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
-      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
-      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
-    steps:
-      - name: Download release artifacts
-        uses: actions/download-artifact@v7.0.0
-        with:
-          name: svtav1-bin-windows-release
-          path: msvc/bin/Release
-      - name: Extract input vectors
-        run: |
-          Move-Item C:/akiyo_cif.y4m.zst,C:/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst .
-          zstd -df $(Get-ChildItem *.zst)
-      - name: Run encoding tests
-        run: |
-          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 2 -i akiyo_cif.y4m -n 17 -b test-pr-Windows-Release-8bit-m2.ivf
-          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-Release-8bit-m8.ivf
-          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-Release-10bit-m2.ivf
-          ./msvc/bin/Release/SvtAv1EncApp.exe --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-Release-10bit-m8.ivf
-      - name: Hash IVF outputs
-        id: hashes
-        run: |
-          $akiyoM2 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-8bit-m2.ivf).Hash.ToLowerInvariant()
-          $akiyoM8 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-8bit-m8.ivf).Hash.ToLowerInvariant()
-          $chimeraM2 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-10bit-m2.ivf).Hash.ToLowerInvariant()
-          $chimeraM8 = (Get-FileHash -Algorithm SHA256 test-pr-Windows-Release-10bit-m8.ivf).Hash.ToLowerInvariant()
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "akiyo_m2=$akiyoM2"
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "akiyo_m8=$akiyoM8"
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "chimera_m2=$chimeraM2"
-          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "chimera_m8=$chimeraM8"
-
-  macos-enc-test:
-    name: macOS Enc Test
-    runs-on: [self-hosted, macos, ARM64]
-    needs:
-      - macos-universal-release
-    outputs:
-      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
-      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
-      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
-      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
-    steps:
-      - name: Download release artifacts
-        uses: actions/download-artifact@v7.0.0
-        with:
-          name: svtav1-bin-macos-release
-          path: Bin/Release
-      - name: Extract input vectors
-        run: |
-          cp ~/akiyo_cif.y4m.zst ~/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst .
-          zstd -df akiyo_cif.y4m.zst Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
-      - name: Run encoding tests
-        run: |
-          chmod +x Bin/Release/SvtAv1EncApp
-          ./Bin/Release/SvtAv1EncApp --preset 2 -i akiyo_cif.y4m -n 17 -b test-pr-Darwin-Release-8bit-m2.ivf
-          ./Bin/Release/SvtAv1EncApp --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Darwin-Release-8bit-m8.ivf
-          ./Bin/Release/SvtAv1EncApp --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Darwin-Release-10bit-m2.ivf
-          ./Bin/Release/SvtAv1EncApp --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Darwin-Release-10bit-m8.ivf
-      - name: Hash IVF outputs
-        id: hashes
-        run: |
-          echo "akiyo_m2=$(sha256sum test-pr-Darwin-Release-8bit-m2.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "akiyo_m8=$(sha256sum test-pr-Darwin-Release-8bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "chimera_m2=$(sha256sum test-pr-Darwin-Release-10bit-m2.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "chimera_m8=$(sha256sum test-pr-Darwin-Release-10bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-
-  enc-os-diff-test:
-    name: Enc OS Diff Test
-    runs-on: [self-hosted, linux]
-    container:
-      image: ubuntu:25.04
-    needs:
-      - linux-enc-test
-      - windows-enc-test
-      - macos-enc-test
-    env:
-      linux_akiyo_m2: ${{ needs.linux-enc-test.outputs.akiyo_m2 }}
-      linux_akiyo_m8: ${{ needs.linux-enc-test.outputs.akiyo_m8 }}
-      linux_chimera_m2: ${{ needs.linux-enc-test.outputs.chimera_m2 }}
-      linux_chimera_m8: ${{ needs.linux-enc-test.outputs.chimera_m8 }}
-      windows_akiyo_m2: ${{ needs.windows-enc-test.outputs.akiyo_m2 }}
-      windows_akiyo_m8: ${{ needs.windows-enc-test.outputs.akiyo_m8 }}
-      windows_chimera_m2: ${{ needs.windows-enc-test.outputs.chimera_m2 }}
-      windows_chimera_m8: ${{ needs.windows-enc-test.outputs.chimera_m8 }}
-      macos_akiyo_m2: ${{ needs.macos-enc-test.outputs.akiyo_m2 }}
-      macos_akiyo_m8: ${{ needs.macos-enc-test.outputs.akiyo_m8 }}
-      macos_chimera_m2: ${{ needs.macos-enc-test.outputs.chimera_m2 }}
-      macos_chimera_m8: ${{ needs.macos-enc-test.outputs.chimera_m8 }}
-    steps:
-      - name: Compare IVF hashes across OS
-        run: |
-          success=true
-          compare_hash() (
-            key="$1" linux_hash="$2" windows_hash="$3" macos_hash="$4" ret=true
-
-            if [ -n "$windows_hash" ] && [ "$linux_hash" != "$windows_hash" ]; then
-              echo "Hash mismatch for $key between Linux and Windows: $linux_hash vs $windows_hash"
-              success=false
-            fi
-            if [ -n "$macos_hash" ] && [ "$linux_hash" != "$macos_hash" ]; then
-              echo "Hash mismatch for $key between Linux and macOS: $linux_hash vs $macos_hash"
-              success=false
-            fi
-          )
-
-          compare_hash "akiyo_m2" "${linux_akiyo_m2}" "${windows_akiyo_m2}" "${macos_akiyo_m2}"
-          compare_hash "akiyo_m8" "${linux_akiyo_m8}" "${windows_akiyo_m8}" "${macos_akiyo_m8}"
-          compare_hash "chimera_m2" "${linux_chimera_m2}" "${windows_chimera_m2}" "${macos_chimera_m2}"
-          compare_hash "chimera_m8" "${linux_chimera_m8}" "${windows_chimera_m8}" "${macos_chimera_m8}"
-          $success
-
   # Build the target/default branch to enable bitstream regression detection.
   # Skipped when pushing directly to the default branch (nothing to compare against).
   linux-gcc-default-release:
@@ -545,13 +288,13 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Checkout target/default branch
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: false
       - name: Checkout the local action from this branch
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@v7.0.1
         with:
           path: action-src
           ref: ${{ github.event.pull_request.head.ref }}
@@ -559,7 +302,7 @@ jobs:
           sparse-checkout: ./.github/actions/compile/action.yaml
           persist-credentials: false
       - name: Run release build
-        uses: ./action-src/.github/actions/compile
+        uses: $/action-src/.github/actions/compile
         with:
           cmake_build_type: Release
       - name: Upload default-branch release artifacts
@@ -586,7 +329,7 @@ jobs:
       chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
     steps:
       - name: Download default-branch release artifacts
-        uses: actions/download-artifact@v7.0.0
+        uses: actions/download-artifact@v8.0.1
         with:
           name: svtav1-bin-linux-default-release
           path: Bin/Release
@@ -648,3 +391,406 @@ jobs:
           else
             echo "One or more outputs differ from the default branch. This may be an intentional bitstream change."
           fi
+
+  macos-universal-release:
+    name: macOS (Universal, Release)
+    runs-on: [self-hosted, macos]
+    env:
+      CC: clang
+      CXX: clang++
+      CFLAGS: -Wshadow -pipe
+      CXXFLAGS: -Wshadow -pipe
+      LDFLAGS: -Wshadow -pipe
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install cmake ninja nasm ccache
+          echo "/opt/homebrew/opt/ccache/libexec/" >> $GITHUB_PATH
+      - name: Build arm64
+        uses: $/.github/actions/compile
+        with:
+          cmake_build_type: Release
+          cc: clang
+          cxx: clang++
+          extra_cmake_flags: -DCMAKE_OSX_ARCHITECTURES=arm64
+          save_cache: false
+      - name: Prep for x86_64
+        run: |
+          mv Bin/Release Bin/Release-arm64
+          git -C Build clean -ffdx
+      - name: Build x86_64
+        uses: $/.github/actions/compile
+        with:
+          cmake_build_type: Release
+          cc: clang
+          cxx: clang++
+          extra_cmake_flags: -DCMAKE_OSX_ARCHITECTURES=x86_64
+      - name: Create universal binary
+        run: |
+          mv Bin/Release Bin/Release-x86_64
+          mkdir -p Bin/Release
+          for file in Bin/Release-arm64/*; do
+            echo "Creating universal binary for $(basename $file)"
+            lipo -create "Bin/Release-arm64/$(basename $file)" "Bin/Release-x86_64/$(basename $file)" -output "Bin/Release/$(basename $file)"
+          done
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: svtav1-bin-macos-release
+          path: Bin/Release/SvtAv1EncApp
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
+  macos-enc-test:
+    name: macOS Enc Test
+    runs-on: [self-hosted, macos, ARM64]
+    needs:
+      - macos-universal-release
+    outputs:
+      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
+      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
+      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
+      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: svtav1-bin-macos-release
+          path: Bin/Release
+      - name: Extract input vectors
+        run: |
+          if [ ! -f ~/akiyo_cif.y4m.zst ]; then
+            curl -L -o ~/akiyo_cif.y4m.zst https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/akiyo_cif.y4m.zst
+          fi
+          if [ ! -f ~/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst ]; then
+            curl -L -o ~/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          fi
+          if [ ! -f Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m ]; then
+            zstd -df ~/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst -o Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m
+          fi
+          if [ ! -f akiyo_cif.y4m ]; then
+            zstd -df ~/akiyo_cif.y4m.zst -o akiyo_cif.y4m
+          fi
+      - name: Run encoding tests
+        run: |
+          chmod +x Bin/Release/SvtAv1EncApp
+          ./Bin/Release/SvtAv1EncApp --preset 2 -i akiyo_cif.y4m -n 17 -b test-pr-Darwin-Release-8bit-m2.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Darwin-Release-8bit-m8.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Darwin-Release-10bit-m2.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Darwin-Release-10bit-m8.ivf
+      - name: Hash IVF outputs
+        id: hashes
+        run: |
+          echo "akiyo_m2=$(sha256sum test-pr-Darwin-Release-8bit-m2.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "akiyo_m8=$(sha256sum test-pr-Darwin-Release-8bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "chimera_m2=$(sha256sum test-pr-Darwin-Release-10bit-m2.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "chimera_m8=$(sha256sum test-pr-Darwin-Release-10bit-m8.ivf | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+  windows-msvc-release:
+    name: Windows (MSVC, Release)
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 120
+    env:
+      CFLAGS: /D_CRT_SECURE_NO_WARNINGS=1
+      CXXFLAGS: /D_CRT_SECURE_NO_WARNINGS=1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up MSVC problem matcher
+        uses: ammaraskar/msvc-problem-matcher@541aa4360062d76d9620af6b8bd35cfa0c5ef19f
+      - name: Configure CMake
+        run: |
+          $env:PATH = "C:\Program Files\NASM;$env:PATH"
+          cmake -S ${env:GITHUB_WORKSPACE} -B ${env:GITHUB_WORKSPACE}/Build -G "Visual Studio 16 2019" -A x64 `
+            -DREPRODUCIBLE_BUILDS=ON `
+            -DBUILD_SHARED_LIBS=ON `
+            -DBUILD_TESTING=OFF
+      - name: Build
+        run: cmake --build ${env:GITHUB_WORKSPACE}/Build --config Release --parallel
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: svtav1-bin-windows-msvc-release
+          path: |
+            Bin/Release/SvtAv1EncApp.exe
+            Bin/Release/SvtAv1Enc.dll
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
+  windows-msvc-enc-test:
+    name: Windows Enc Test (MSVC)
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 120
+    needs:
+      - windows-msvc-release
+    outputs:
+      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
+      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
+      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
+      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: svtav1-bin-windows-msvc-release
+          path: Bin/Release/
+      - name: Check home directory for akiyo & Chimera
+        id: home-y4m
+        run: |
+          $AkiyoZst = Join-Path $HOME "akiyo_cif.y4m.zst"
+          $ChimeraZst = Join-Path $HOME "Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst"
+          $AkiyoFound = Test-Path -LiteralPath $AkiyoZst -PathType Leaf
+          $ChimeraFound = Test-Path -LiteralPath $ChimeraZst -PathType Leaf
+
+          if ($AkiyoFound -and $ChimeraFound) {
+            Write-Host "Found both input archives in the home directory."
+            Copy-Item -LiteralPath $AkiyoZst -Destination . -Force
+            Copy-Item -LiteralPath $ChimeraZst -Destination . -Force
+            $found = "true"
+          } else {
+            Write-Host "Akiyo or Chimera input archive not found in the home directory."
+            $found = "false"
+          }
+          "found=$found" >> $env:GITHUB_OUTPUT
+      - name: Restore test inputs from cache
+        if: steps.home-y4m.outputs.found != 'true'
+        id: cache-y4m
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            akiyo_cif.y4m.zst
+            Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          key: y4m-clips
+          enableCrossOsArchive: true
+      - name: Decompress cached akiyo input
+        if: steps.home-y4m.outputs.found == 'true' || steps.cache-y4m.outputs.cache-hit == 'true'
+        run: |
+          zstd -df akiyo_cif.y4m.zst
+          zstd -df Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+      - name: Download input clips from derf
+        run: |
+          if (-not (Test-Path akiyo_cif.y4m)) {
+            Write-Host "Downloading akiyo_cif.y4m from aom-testing ..."
+            Invoke-WebRequest -Uri https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/akiyo_cif.y4m.zst -OutFile akiyo_cif.y4m.zst
+            zstd -d akiyo_cif.y4m.zst
+          }
+          if (-not (Test-Path Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m)) {
+            Write-Host "Downloading Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m from aom-testing ..."
+            Invoke-WebRequest -Uri https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst -OutFile Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+            zstd -d Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          }
+      - name: Run encoding tests
+        run: |
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 -i akiyo_cif.y4m -n 17 -b test-pr-Windows-Release-8bit-m2.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-Release-8bit-m8.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-Release-10bit-m2.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-Release-10bit-m8.ivf
+      - name: Save input clips to home and cache
+        if: always()
+        run: |
+          if (-not (Test-Path akiyo_cif.y4m.zst)) {
+            zstd -T0 --ultra -20 -f akiyo_cif.y4m -o akiyo_cif.y4m.zst
+          }
+          if (-not (Test-Path Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst)) {
+            zstd -T0 --ultra -20 -f Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -o Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          }
+          $AkiyoZst = "$HOME/akiyo_cif.y4m.zst"
+          if (-not (Test-Path $AkiyoZst)) {
+            Copy-Item akiyo_cif.y4m.zst $AkiyoZst
+          }
+          $ChimeraZst = "$HOME/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst"
+          if (-not (Test-Path $ChimeraZst)) {
+            Copy-Item Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst $ChimeraZst
+          }
+      - name: Cache input clips
+        if: steps.cache-y4m.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            akiyo_cif.y4m.zst
+            Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          key: ${{ steps.cache-y4m.outputs.cache-primary-key }}
+          enableCrossOsArchive: true
+      - name: Hash IVF outputs
+        id: hashes
+        run: |
+          $akiyo_m2 = (Get-FileHash -Path test-pr-Windows-Release-8bit-m2.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          $akiyo_m8 = (Get-FileHash -Path test-pr-Windows-Release-8bit-m8.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          "akiyo_m2=$akiyo_m2" >> $env:GITHUB_OUTPUT
+          "akiyo_m8=$akiyo_m8" >> $env:GITHUB_OUTPUT
+          $chimera_m2 = (Get-FileHash -Path test-pr-Windows-Release-10bit-m2.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          $chimera_m8 = (Get-FileHash -Path test-pr-Windows-Release-10bit-m8.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          "chimera_m2=$chimera_m2" >> $env:GITHUB_OUTPUT
+          "chimera_m8=$chimera_m8" >> $env:GITHUB_OUTPUT
+
+  windows-ucrt64-release:
+    name: Windows (mingw-w64 ucrt, Release)
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPRESS: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up GCC problem matcher
+        uses: ammaraskar/gcc-problem-matcher@cb2e3f949c41b7818628f35f8484a9b0acf90cf9
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          pacboy: >-
+            ccache cmake gcc nasm ninja zstd
+      - name: Restore ccache
+        id: cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: .ccache
+          key:
+            ${{ runner.os }}-svtav1-windows-ucrt64-release-${{
+            hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','third_party/**','**/*.patch') }}
+          restore-keys: ${{ runner.os }}-svtav1-windows-ucrt64-release-
+      - name: Configure CMake
+        env:
+          CC: gcc
+          CXX: g++
+          CFLAGS: -Wshadow -pipe
+          CXXFLAGS: -Wshadow -pipe
+          LDFLAGS: -static -static-libgcc -static-libstdc++ -Wshadow -pipe
+        run: |
+          cmake -S ${GITHUB_WORKSPACE} -B ${GITHUB_WORKSPACE}/Build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DREPRODUCIBLE_BUILDS=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: |
+          cmake --build ${GITHUB_WORKSPACE}/Build --parallel
+          ccache -s
+      - name: Save ccache
+        uses: actions/cache/save@v6.1.0
+        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        with:
+          path: .ccache
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: svtav1-bin-windows-ucrt64-release
+          path: Bin/Release/SvtAv1EncApp.exe
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          overwrite: true
+
+  windows-ucrt64-enc-test:
+    name: Windows Enc Test (mingw-w64 ucrt)
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 60
+    needs:
+      - windows-ucrt64-release
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: svtav1-bin-windows-ucrt64-release
+          path: Bin/Release/
+      - name: Check home directory for akiyo & Chimera
+        id: home-y4m
+        run: |
+          $AkiyoZst = Join-Path $HOME "akiyo_cif.y4m.zst"
+          $ChimeraZst = Join-Path $HOME "Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst"
+          $AkiyoFound = Test-Path -LiteralPath $AkiyoZst -PathType Leaf
+          $ChimeraFound = Test-Path -LiteralPath $ChimeraZst -PathType Leaf
+
+          if ($AkiyoFound -and $ChimeraFound) {
+            Write-Host "Found both input archives in the home directory."
+            Copy-Item -LiteralPath $AkiyoZst -Destination . -Force
+            Copy-Item -LiteralPath $ChimeraZst -Destination . -Force
+            $found = "true"
+          } else {
+            Write-Host "Akiyo or Chimera input archive not found in the home directory."
+            $found = "false"
+          }
+          "found=$found" >> $env:GITHUB_OUTPUT
+      - name: Restore test inputs from cache
+        if: steps.home-y4m.outputs.found != 'true'
+        id: cache-y4m
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            akiyo_cif.y4m.zst
+            Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          key: y4m-clips
+          enableCrossOsArchive: true
+      - name: Decompress cached akiyo input
+        if: steps.home-y4m.outputs.found == 'true' || steps.cache-y4m.outputs.cache-hit == 'true'
+        run: |
+          zstd -df akiyo_cif.y4m.zst
+          zstd -df Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+      - name: Download input clips from derf
+        run: |
+          if (-not (Test-Path akiyo_cif.y4m)) {
+            Write-Host "Downloading akiyo_cif.y4m from aom-testing ..."
+            Invoke-WebRequest -Uri https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/akiyo_cif.y4m.zst -OutFile akiyo_cif.y4m.zst
+            zstd -d akiyo_cif.y4m.zst
+          }
+          if (-not (Test-Path Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m)) {
+            Write-Host "Downloading Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m from aom-testing ..."
+            Invoke-WebRequest -Uri https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst -OutFile Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+            zstd -d Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          }
+      - name: Run encoding tests
+        run: |
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 -i akiyo_cif.y4m -n 17 -b test-pr-Windows-ucrt64-Release-8bit-m2.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-ucrt64-Release-8bit-m8.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-ucrt64-Release-10bit-m2.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-ucrt64-Release-10bit-m8.ivf
+      - name: Save input clips to home and cache
+        if: always()
+        run: |
+          if (-not (Test-Path akiyo_cif.y4m.zst)) {
+            zstd -T0 --ultra -20 -f akiyo_cif.y4m -o akiyo_cif.y4m.zst
+          }
+          if (-not (Test-Path Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst)) {
+            zstd -T0 --ultra -20 -f Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -o Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          }
+          $AkiyoZst = "$HOME/akiyo_cif.y4m.zst"
+          if (-not (Test-Path $AkiyoZst)) {
+            Copy-Item akiyo_cif.y4m.zst $AkiyoZst
+          }
+          $ChimeraZst = "$HOME/Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst"
+          if (-not (Test-Path $ChimeraZst)) {
+            Copy-Item Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst $ChimeraZst
+          }
+      - name: Cache input clips
+        if: steps.cache-y4m.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            akiyo_cif.y4m.zst
+            Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
+          key: ${{ steps.cache-y4m.outputs.cache-primary-key }}
+          enableCrossOsArchive: true
