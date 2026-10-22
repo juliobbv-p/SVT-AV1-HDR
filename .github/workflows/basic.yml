@@ -717,6 +717,11 @@ jobs:
     timeout-minutes: 60
     needs:
       - windows-ucrt64-release
+    outputs:
+      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
+      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
+      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
+      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v8.0.1
@@ -800,3 +805,73 @@ jobs:
             Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst
           key: ${{ steps.cache-y4m.outputs.cache-primary-key }}
           enableCrossOsArchive: true
+      - name: Hash IVF outputs
+        id: hashes
+        run: |
+          $akiyo_m2 = (Get-FileHash -Path test-pr-Windows-ucrt64-Release-8bit-m2.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          $akiyo_m8 = (Get-FileHash -Path test-pr-Windows-ucrt64-Release-8bit-m8.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          "akiyo_m2=$akiyo_m2" >> $env:GITHUB_OUTPUT
+          "akiyo_m8=$akiyo_m8" >> $env:GITHUB_OUTPUT
+          $chimera_m2 = (Get-FileHash -Path test-pr-Windows-ucrt64-Release-10bit-m2.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          $chimera_m8 = (Get-FileHash -Path test-pr-Windows-ucrt64-Release-10bit-m8.ivf -Algorithm SHA256).Hash.ToLowerInvariant()
+          "chimera_m2=$chimera_m2" >> $env:GITHUB_OUTPUT
+          "chimera_m8=$chimera_m8" >> $env:GITHUB_OUTPUT
+
+  enc-os-diff-test:
+    name: Enc OS Diff Test
+    runs-on: [self-hosted, linux]
+    container:
+      image: ubuntu:25.04
+    needs:
+      - linux-enc-test
+      - windows-msvc-enc-test
+      - windows-ucrt64-enc-test
+      - macos-enc-test
+    env:
+      linux_akiyo_m2: ${{ needs.linux-enc-test.outputs.akiyo_m2 }}
+      linux_akiyo_m8: ${{ needs.linux-enc-test.outputs.akiyo_m8 }}
+      linux_chimera_m2: ${{ needs.linux-enc-test.outputs.chimera_m2 }}
+      linux_chimera_m8: ${{ needs.linux-enc-test.outputs.chimera_m8 }}
+      windows_msvc_akiyo_m2: ${{ needs.windows-msvc-enc-test.outputs.akiyo_m2 }}
+      windows_msvc_akiyo_m8: ${{ needs.windows-msvc-enc-test.outputs.akiyo_m8 }}
+      windows_msvc_chimera_m2: ${{ needs.windows-msvc-enc-test.outputs.chimera_m2 }}
+      windows_msvc_chimera_m8: ${{ needs.windows-msvc-enc-test.outputs.chimera_m8 }}
+      windows_ucrt64_akiyo_m2: ${{ needs.windows-ucrt64-enc-test.outputs.akiyo_m2 }}
+      windows_ucrt64_akiyo_m8: ${{ needs.windows-ucrt64-enc-test.outputs.akiyo_m8 }}
+      windows_ucrt64_chimera_m2: ${{ needs.windows-ucrt64-enc-test.outputs.chimera_m2 }}
+      windows_ucrt64_chimera_m8: ${{ needs.windows-ucrt64-enc-test.outputs.chimera_m8 }}
+      macos_akiyo_m2: ${{ needs.macos-enc-test.outputs.akiyo_m2 }}
+      macos_akiyo_m8: ${{ needs.macos-enc-test.outputs.akiyo_m8 }}
+      macos_chimera_m2: ${{ needs.macos-enc-test.outputs.chimera_m2 }}
+      macos_chimera_m8: ${{ needs.macos-enc-test.outputs.chimera_m8 }}
+    steps:
+      - name: Compare IVF hashes across OS
+        run: |
+          success=true
+          compare_hash() {
+            key="$1" linux_hash="$2" windows_msvc_hash="$3" windows_ucrt64_hash="$4" macos_hash="$5"
+
+            if [ -n "$windows_msvc_hash" ] && [ "$linux_hash" != "$windows_msvc_hash" ]; then
+              echo "Hash mismatch for $key between Linux and Windows MSVC: $linux_hash vs $windows_msvc_hash"
+              success=false
+            fi
+            if [ -n "$windows_ucrt64_hash" ] && [ "$linux_hash" != "$windows_ucrt64_hash" ]; then
+              echo "Hash mismatch for $key between Linux and Windows UCRT64: $linux_hash vs $windows_ucrt64_hash"
+              success=false
+            fi
+            if [ -n "$macos_hash" ] && [ "$linux_hash" != "$macos_hash" ]; then
+              echo "Hash mismatch for $key between Linux and macOS: $linux_hash vs $macos_hash"
+              success=false
+            fi
+          }
+
+          compare_hash "akiyo_m2" "${linux_akiyo_m2}" "${windows_msvc_akiyo_m2}" "${windows_ucrt64_akiyo_m2}" "${macos_akiyo_m2}"
+          compare_hash "akiyo_m8" "${linux_akiyo_m8}" "${windows_msvc_akiyo_m8}" "${windows_ucrt64_akiyo_m8}" "${macos_akiyo_m8}"
+          compare_hash "chimera_m2" "${linux_chimera_m2}" "${windows_msvc_chimera_m2}" "${windows_ucrt64_chimera_m2}" "${macos_chimera_m2}"
+          compare_hash "chimera_m8" "${linux_chimera_m8}" "${windows_msvc_chimera_m8}" "${windows_ucrt64_chimera_m8}" "${macos_chimera_m8}"
+          if [ "$success" = true ]; then
+            echo "All hashes match across OS."
+          else
+            echo "Hash mismatches found."
+            exit 1
+          fi
