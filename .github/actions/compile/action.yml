@@ -1,61 +1,61 @@
-﻿name: "linux-compile"
-description: "Composite action to configure and build the project with CMake/Ninja on Ubuntu runners."
+﻿name: 'linux-compile'
+description: 'Composite action to configure and build the project with CMake/Ninja on Ubuntu runners.'
 inputs:
   cc:
-    description: "C compiler"
+    description: 'C compiler'
     required: false
-    default: "gcc"
+    default: 'gcc'
   cxx:
-    description: "C++ compiler"
+    description: 'C++ compiler'
     required: false
-    default: "g++"
+    default: 'g++'
   cmake_build_type:
-    description: "CMake build type"
+    description: 'CMake build type'
     required: false
-    default: "Release"
+    default: 'Release'
   packages:
-    description: "Additional packages to install (space-separated)"
+    description: 'Additional packages to install (space-separated)'
     required: false
-    default: ""
+    default: ''
   build_shared_libs:
-    description: "Build shared libraries (ON/OFF)"
+    description: 'Build shared libraries (ON/OFF)'
     required: false
-    default: "OFF"
+    default: 'OFF'
   extra_cmake_flags:
-    description: "Extra flags to pass to CMake"
+    description: 'Extra flags to pass to CMake'
     required: false
-    default: ""
+    default: ''
   extra_cflags:
-    description: "Extra C flags"
+    description: 'Extra C flags'
     required: false
-    default: ""
+    default: ''
   extra_cxxflags:
-    description: "Extra C++ flags"
+    description: 'Extra C++ flags'
     required: false
-    default: ""
+    default: ''
   extra_ldflags:
-    description: "Extra linker flags"
+    description: 'Extra linker flags'
     required: false
-    default: ""
+    default: ''
   prefix_dir:
-    description: "Installation prefix directory"
+    description: 'Installation prefix directory'
     required: false
-    default: "/usr/local"
+    default: '/usr/local'
   cmake_generator:
-    description: "CMake generator"
+    description: 'CMake generator'
     required: false
-    default: "Ninja"
+    default: 'Ninja'
   build_targets:
-    description: "Optional cmake --build --target (comma-separated)"
+    description: 'Optional cmake --build --target (comma-separated)'
     required: false
-    default: ""
+    default: ''
   save_cache:
-    description: "Whether to save the ccache cache (true/false)"
+    description: 'Whether to save the ccache cache (true/false)'
     required: false
-    default: "true"
+    default: 'true'
 
 runs:
-  using: "composite"
+  using: 'composite'
   steps:
     - name: Install build deps
       shell: bash
@@ -82,7 +82,9 @@ runs:
       id: cache
       with:
         path: .ccache
-        key: ${{ runner.os }}-svtav1-${{ inputs.cc }}-${{ inputs.cmake_build_type }}-${{ hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','test/**','third_party/**', '**/*.patch') }}
+        key:
+          ${{ runner.os }}-svtav1-${{ inputs.cc }}-${{ inputs.cmake_build_type }}-${{
+          hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','test/**','third_party/**', '**/*.patch') }}
         restore-keys: ${{ runner.os }}-svtav1-${{ inputs.cc }}-${{ inputs.cmake_build_type }}-
     - name: Configure with CMake
       shell: bash
@@ -138,8 +140,10 @@ runs:
         fi
         echo "ccache stats:" && ccache -s || true
     - name: Save build/cache
-      if: always() && steps.cache.outputs.cache-hit != 'true' && inputs.save_cache == 'true'
-      uses: actions/cache/save@v5.0.3
+      if:
+        always() && steps.cache.outputs.cache-hit != 'true' && inputs.save_cache == 'true' && github.ref ==
+        format('refs/heads/{0}', github.event.repository.default_branch)
+      uses: actions/cache/save@v6.1.0
       with:
         path: .ccache
         key: ${{ steps.cache.outputs.cache-primary-key }}

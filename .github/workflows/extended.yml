@@ -231,7 +231,9 @@ jobs:
             -- --gtest_output="xml:reports/{#}.xml"
       - name: Save test times cache
         uses: actions/cache/save@v6.1.0
-        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        if:
+          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
+          github.event.repository.default_branch)
         with:
           path: ~/.cache/gtest-parallel
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -297,7 +299,9 @@ jobs:
              -- --gtest_output="xml:reports/{#}.xml"
       - name: Save test times cache
         uses: actions/cache/save@v6.1.0
-        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        if:
+          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
+          github.event.repository.default_branch)
         with:
           path: ~/.cache/gtest-parallel
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -362,7 +366,9 @@ jobs:
           ccache -s || true
       - name: Save ccache
         uses: actions/cache/save@v6.1.0
-        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        if:
+          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
+          github.event.repository.default_branch)
         with:
           path: .ccache
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -466,7 +472,9 @@ jobs:
           ccache -s || true
       - name: Save ccache
         uses: actions/cache/save@v6.1.0
-        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        if:
+          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
+          github.event.repository.default_branch)
         with:
           path: .ccache
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -629,7 +637,9 @@ jobs:
             -- --gtest_output="xml:reports/{#}.xml"
       - name: Save test times cache
         uses: actions/cache/save@v6.1.0
-        if: always() && steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        if:
+          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
+          github.event.repository.default_branch)
         with:
           path: ~/.cache/gtest-parallel
           key: ${{ steps.cache.outputs.cache-primary-key }}
