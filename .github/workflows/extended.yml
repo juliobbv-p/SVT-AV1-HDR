@@ -48,6 +48,10 @@ jobs:
     outputs:
       test-vectors-cache-key: ${{ steps.cache.outputs.cache-primary-key }}
     steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -yq nodejs python3 zstd
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
@@ -65,7 +69,7 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           apt-get update
-          apt-get install -yq cmake ninja-build zstd
+          apt-get install -yq cmake ninja-build
           mkdir -p "${SVT_AV1_TEST_VECTOR_PATH}"
           cp -f ./test/vectors/longtime_comformance_test.cfg "${SVT_AV1_TEST_VECTOR_PATH}"
           cmake -B vec -G Ninja -DSVT_AV1_TEST_VECTORS_ONLY=ON
