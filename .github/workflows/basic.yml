@@ -695,7 +695,8 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_TESTING=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DSVT_AV1_LTO=OFF
       - name: Build
         run: |
           cmake --build ${GITHUB_WORKSPACE}/Build --parallel
