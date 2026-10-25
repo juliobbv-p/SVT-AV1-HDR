@@ -307,7 +307,7 @@ jobs:
           sparse-checkout: ./.github/actions/compile/action.yaml
           persist-credentials: false
       - name: Run release build
-        uses: $/action-src/.github/actions/compile
+        uses: ./action-src/.github/actions/compile # zizmor: ignore[self-repository] We deliberately want to use the action from the local checkout
         with:
           cmake_build_type: Release
       - name: Upload default-branch release artifacts
@@ -691,7 +691,7 @@ jobs:
           CXXFLAGS: -Wshadow -pipe
           LDFLAGS: -static -static-libgcc -static-libstdc++ -Wshadow -pipe
         run: |
-          cmake -S ${GITHUB_WORKSPACE} -B ${GITHUB_WORKSPACE}/Build -G Ninja \
+          cmake -S "${GITHUB_WORKSPACE}" -B "${GITHUB_WORKSPACE}/Build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DREPRODUCIBLE_BUILDS=ON \
             -DBUILD_SHARED_LIBS=OFF \
@@ -701,7 +701,7 @@ jobs:
             -DSVT_AV1_LTO=OFF
       - name: Build
         run: |
-          cmake --build ${GITHUB_WORKSPACE}/Build --parallel
+          cmake --build "${GITHUB_WORKSPACE}/Build" --parallel
           ccache -s
       - name: Save ccache
         uses: actions/cache/save@v6.1.0
