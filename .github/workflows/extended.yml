@@ -47,6 +47,7 @@ jobs:
       image: ubuntu:25.04
     outputs:
       test-vectors-cache-key: ${{ steps.cache.outputs.cache-primary-key }}
+      test-vectors-sha256sum: ${{ steps.test-vectors-sha256sum.outputs.test-vectors-sha256sum }}
     steps:
       - name: Install dependencies
         run: |
@@ -63,7 +64,6 @@ jobs:
           key:
             test-vectors-${{ hashFiles('./test/e2e_test/test_vector_list.txt',
             './test/vectors/longtime_comformance_test.cfg') }}
-          lookup-only: true
           enableCrossOsArchive: true
       - name: Prepare test vectors cache
         if: steps.cache.outputs.cache-hit != 'true'
@@ -83,6 +83,23 @@ jobs:
           path: vectors
           key: ${{ steps.cache.outputs.cache-primary-key }}
           enableCrossOsArchive: true
+      - name: Calculate test vectors SHA256 sum
+        id: test-vectors-sha256sum
+        shell: bash
+        run: |
+          test -n "$(find vectors -type f -print -quit)" || {
+            echo "No test vectors were generated." >&2
+            exit 1
+          }
+          test_vectors_sha256sum=$(
+            cd vectors
+            find . -type f -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 sha256sum |
+              sha256sum |
+              cut -d ' ' -f1
+          )
+          echo "test-vectors-sha256sum=$test_vectors_sha256sum" >> "$GITHUB_OUTPUT"
 
   linux-gcc-static-debug-unittests:
     name: Linux (GCC, Static, Debug, Unit Tests)
@@ -282,12 +299,57 @@ jobs:
           path: ~/.cache/gtest-parallel
           key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
       - name: Prepare test vectors
+        id: home-vectors
+        shell: bash
+        env:
+          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          home_vectors="$HOME/.cache/svtav1-test-vectors/$RUNNER_NAME/$CACHE_KEY-$EXPECTED_SHA256"
+          if ! [ -d "$home_vectors" ]; then
+            echo "Home directory test vectors not found."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          actual_sha256=$(
+            cd "$home_vectors"
+            find . -type f -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 shasum -a 256 |
+              shasum -a 256 |
+              cut -d ' ' -f1
+          )
+          if [ "$actual_sha256" = "$EXPECTED_SHA256" ]; then
+            echo "Found matching test vectors in home directory."
+            mkdir -p vectors
+            cp -a "$home_vectors/." vectors/
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Home directory test vectors do not match the expected checksum."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore test vectors cache
+        if: steps.home-vectors.outputs.found != 'true'
+        id: vectors-cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: vectors
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
           fail-on-cache-miss: true
           enableCrossOsArchive: true
+      - name: Save test vectors to home directory
+        if: steps.home-vectors.outputs.found != 'true'
+        shell: bash
+        env:
+          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          home_vectors="$HOME/.cache/svtav1-test-vectors/$RUNNER_NAME/$CACHE_KEY-$EXPECTED_SHA256"
+          rm -rf "$home_vectors"
+          mkdir -p "$home_vectors"
+          cp -a vectors/. "$home_vectors/"
       - name: Run tests shard
         shell: bash
         run: |
@@ -620,12 +682,64 @@ jobs:
           path: ~/.cache/gtest-parallel
           key: test-times-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
       - name: Prepare test vectors
+        id: home-vectors
+        shell: bash -l {0}
+        env:
+          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
+          RUNNER_NAME: ${{ runner.name }}
+          CHERE_INVOKING: 1
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          # Can't use $HOME here since it's unbound in CI.
+          home_vectors="/c/tools/msys64/.cache/svtav1-test-vectors/$RUNNER_NAME/$CACHE_KEY-$EXPECTED_SHA256"
+          echo "Looking for home directory test vectors at $home_vectors"
+          if ! [ -d "$home_vectors" ]; then
+            echo "Home directory test vectors not found."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # We have to specify --text for sha256sum because otherwise the output shows an * before the filename.
+          actual_sha256=$(
+            cd "$home_vectors"
+            find . -type f -print0 |
+              LC_ALL=C sort -z |
+              xargs -0 sha256sum --text |
+              sha256sum --text |
+              cut -d ' ' -f1
+          )
+          if [ "$actual_sha256" = "$EXPECTED_SHA256" ]; then
+            echo "Found matching test vectors in home directory."
+            mkdir -p vectors
+            cp -a "$home_vectors/." vectors/
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Home directory test vectors do not match the expected checksum."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore test vectors cache
+        if: steps.home-vectors.outputs.found != 'true'
+        id: vectors-cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: vectors
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
           fail-on-cache-miss: true
           enableCrossOsArchive: true
+      - name: Save test vectors to home directory
+        if: steps.home-vectors.outputs.found != 'true'
+        shell: bash -l {0}
+        env:
+          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
+          RUNNER_NAME: ${{ runner.name }}
+          CHERE_INVOKING: 1
+          MSYS2_PATH_TYPE: inherit
+        run: |
+          home_vectors="/c/tools/msys64/.cache/svtav1-test-vectors/$RUNNER_NAME/$CACHE_KEY-$EXPECTED_SHA256"
+          rm -rf "$home_vectors"
+          mkdir -p "$home_vectors"
+          cp -a vectors/. "$home_vectors/"
       - name: Run unit tests shard
         shell: pwsh
         run: |
