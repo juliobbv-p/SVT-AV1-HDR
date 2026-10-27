@@ -11,7 +11,7 @@ and was then [adopted](https://aomedia.org/press%20releases/aomedia-software-imp
 by the Alliance of Open Media (AOM) Software Implementation Working Group
 (SIWG), in August 2020, to carry on the group's mission.
 
-The canonical URL for this project is at <https://gitlab.com/AOMediaCodec/SVT-AV1>
+The canonical URL for this project is at <https://github.com/AOMediaCodec/SVT-AV1>
 
 ## License
 
