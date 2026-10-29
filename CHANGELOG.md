@@ -1,5 +1,63 @@
 # Changelog
 
+## [4.3.0] - 2026-11-01
+
+VOD / Random Access / Still Image
+
+- Added experimental `--fast-decode 3` (`ENABLE_FAST_DECODE_3` CMake option): a decode-speed level for still images, with decoder-complexity terms in the mode decision RD cost
+- Added timed film grain tables (`--fgs-table`) and per-picture film grain parameters through a new `FILM_GRAIN_EVENT` API
+- Lossless coding fixes and speedups (recode, RDOQ, light PD1)
+- Fixed bitrate inversion at fractional CRF/QP above 63
+
+RTC / Low Delay
+
+- Added low-delay tile parallelism
+- Added opt-in CBR pre-encode frame skipping (`max_allowed_consecutive_frames_skips`, `EB_NoErrorFrameSkipped`)
+- Added screen content tools for RTC: IntraBC on I-frames and palette on intra blocks of inter frames
+- Signal AV1 `frame_id` for application-managed LTR streams, and keep LTR anchors in a dedicated half of the DPB
+- Added `max_hierarchical_levels` to size buffer pools for runtime mini-GOP size changes
+- Allow re-encoding of key frames and on max frame size conditions
+- RTC preset retuning (hierarchical levels 1-2, CDEF strength selection, ME segmentation right-sizing at 540p and below)
+
+Build
+
+- Added `MOBILE_BUILD` CMake option (`build.sh --mobile-build`): one 8-bit library for RTC, VOD and AVIF at a fraction of the default binary size
+- Added `CONFIG_ENABLE_*` switches to compile out unused coding tools, and further binary size reduction for RTC and minimal builds (const-folding, dead-code stripping, PGO build script)
+- Reduced stack usage by hoisting large buffers off the stack
+
+Encoder (general)
+
+- Improved the quality vs. speed tradeoffs across all presets:
+  - ~5-8% improvement in cycle efficiency at similar quality levels
+  - ~10-11% run time reduction in multi-threaded mode
+- Speed optimizations in MD pruning, RDOQ and coefficient cost, MV cost and subpel search, loop filter parameter derivation, and block copies
+- Run anti-aliasing-aware screen content detection only on I-frames in multi-threaded mode
+
+x86
+
+- Added native 8-bit CDEF kernels (AVX2, SSE4.1) and int16 lowbd forward transforms (AVX2, AVX-512)
+- Added an SSE4.1 tier for intra predictors, CfL, SAD, Hadamard, palette, and transform kernels
+- Optimized quantize, memcpy, block copy, full distortion, and sub-pixel variance kernels
+
+Arm
+
+- Added Neon kernels for fwht4x4, highbd variance, k-means, OBMC weighted prediction, down2_symeven, and interpolate_core
+- Added Neon and SVE2 Hadamard SATD and psy distortion kernels
+- Optimized VMAF tune, variance, and sub-pixel variance kernels
+- Only read `MIDR_EL1` where the kernel advertises it
+
+Bug fixes and documentation
+
+- Fixed multi-instance and TSan data races, and nondeterministic output with `--enable-overlays 1` or `--lookahead 0`
+- Fixed a low-delay deadlock, an Apple teardown SIGTRAP, and single-core encoding without `--lp`
+- Fixed out-of-bounds reads, a high bit depth Hadamard overflow, UBSan findings, and NaN/overflow in film grain and temporal filtering noise estimation
+- Fixed hidden-frame T.35 metadata output and recon output changing the deblocking level search
+- Fixed the `--tier` parameter being ignored when writing the sequence header
+- Fixed an encoder/decoder mismatch when quantization matrices were enabled on frames coded losslessly
+- Stricter configuration validation (switch frames with all-intra, forward key frames with CBR, RTC build settings)
+- Fixed Visual Studio 2026 and Windows Server 2016 issues
+- General code cleanup, CI and test improvements, and reformatting with clang-format 22
+
 ## [4.2.0] - 2026-07-14
 
 VOD / Random Access
