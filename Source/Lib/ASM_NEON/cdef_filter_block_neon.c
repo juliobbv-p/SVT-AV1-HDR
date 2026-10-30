@@ -1036,12 +1036,12 @@ static inline uint8x8_t bnd_colmask8(int dc, int edge_left, int edge_right, int 
     if (!edge_left && !edge_right) {
         return vdup_n_u8(0xFF); // no left/right frame edge -> all columns in-frame (common case)
     }
-    uint8_t m[8];
-    for (int c = 0; c < 8; c++) {
-        const int off = (edge_left && (c + dc) < 0) || (edge_right && (c + dc) >= cols);
-        m[c]          = (!off) ? 0xFF : 0x00;
-    }
-    return vld1_u8(m);
+    // Column c is in-frame iff c + dc >= 0 (left edge) and c + dc < cols (right edge).
+    static const int8_t col[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    const int8x8_t      c      = vld1_s8(col);
+    const uint8x8_t     in_l   = vcge_s8(c, vdup_n_s8((int8_t)(edge_left ? -dc : INT8_MIN)));
+    const uint8x8_t     in_r   = vclt_s8(c, vdup_n_s8((int8_t)(edge_right ? cols - dc : INT8_MAX)));
+    return vand_u8(in_l, in_r);
 }
 
 // 16-lane availability for a 2-row pack (rows i and i+sub) given a tap row delta dr and the tap's
@@ -1184,27 +1184,21 @@ static inline uint8x16_t bnd_col16_4(int dc, int edge_left, int edge_right) {
     if (!edge_left && !edge_right) {
         return vdupq_n_u8(0xFF); // no left/right frame edge -> all columns in-frame (common case)
     }
-    uint8_t m[4];
-    for (int c = 0; c < 4; c++) {
-        const int off = (edge_left && (c + dc) < 0) || (edge_right && (c + dc) >= 4);
-        m[c]          = (!off) ? 0xFF : 0x00;
-    }
-    uint32_t w;
-    memcpy(&w, m, 4);
-    const uint8x8_t lo = vreinterpret_u8_u32(vdup_n_u32(w));
-    return vcombine_u8(lo, lo);
+    static const int8_t col[16] = {0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3};
+    const int8x16_t     c       = vld1q_s8(col);
+    const uint8x16_t    in_l    = vcgeq_s8(c, vdupq_n_s8((int8_t)(edge_left ? -dc : INT8_MIN)));
+    const uint8x16_t    in_r    = vcltq_s8(c, vdupq_n_s8((int8_t)(edge_right ? 4 - dc : INT8_MAX)));
+    return vandq_u8(in_l, in_r);
 }
 
 // Row availability for the 4-row pack [r0 r1 r2 r3] (rows i+q*sub), 4 lanes per row.
 static inline uint8x16_t bnd_row16_4(int i, int sub, int dr, int edge_top, int edge_bottom, int rows) {
-    uint8_t b[16];
-    for (int k = 0; k < 4; k++) {
-        const int     r  = i + k * sub;
-        const int     ok = !((edge_top && (r + dr) < 0) || (edge_bottom && (r + dr) >= rows));
-        const uint8_t v  = ok ? 0xFF : 0x00;
-        b[k * 4 + 0] = b[k * 4 + 1] = b[k * 4 + 2] = b[k * 4 + 3] = v;
-    }
-    return vld1q_u8(b);
+    // Row i + k * sub + dr (k = lane / 4) is in-frame iff >= 0 (top edge) and < rows (bottom edge).
+    static const int8_t k[16] = {0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3};
+    const int8x16_t     r     = vmlaq_s8(vdupq_n_s8((int8_t)(i + dr)), vld1q_s8(k), vdupq_n_s8((int8_t)sub));
+    const uint8x16_t    in_t  = vcgeq_s8(r, vdupq_n_s8(edge_top ? 0 : INT8_MIN));
+    const uint8x16_t    in_b  = vcltq_s8(r, vdupq_n_s8((int8_t)(edge_bottom ? rows : INT8_MAX)));
+    return vandq_u8(in_t, in_b);
 }
 
 // Row availability for the 2-row tail pack [r0 r1 r0 r1] (only the low 8 lanes are consumed).
