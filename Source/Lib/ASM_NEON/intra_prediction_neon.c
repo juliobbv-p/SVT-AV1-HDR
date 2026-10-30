@@ -647,6 +647,7 @@ void svt_av1_dr_prediction_z2_neon(uint8_t* dst, ptrdiff_t stride, int32_t bw, i
 }
 
 /* ---------------------P R E D I C T I O N   Z 3--------------------------- */
+#if !CONFIG_COMPACT_KERNELS
 static inline void transpose4x16_neon(uint8x16_t* x, uint16x8x2_t* d) {
     uint8x16x2_t w0, w1;
 
@@ -791,6 +792,7 @@ static inline void transpose8x16_16x8_neon(uint8x16_t* x, uint64x2_t* d) {
     d[6] = vzip1q_u64(vreinterpretq_u64_u32(w10.val[1]), vreinterpretq_u64_u32(w11.val[1]));
     d[7] = vzip2q_u64(vreinterpretq_u64_u32(w10.val[1]), vreinterpretq_u64_u32(w11.val[1]));
 }
+#endif // !CONFIG_COMPACT_KERNELS
 
 static inline void transpose16x16_neon(uint8x16_t* x, uint64x2_t* d) {
     uint8x16x2_t w0, w1, w2, w3, w4, w5, w6, w7;
@@ -847,6 +849,7 @@ static inline void transpose16x16_neon(uint8x16_t* x, uint64x2_t* d) {
     d[15] = vzip2q_u64(vreinterpretq_u64_u32(w14.val[1]), vreinterpretq_u64_u32(w15.val[1]));
 }
 
+#if !CONFIG_COMPACT_KERNELS
 static inline void transpose16x32_neon(uint8x16x2_t* x, uint64x2x2_t* d) {
     uint8x16x2_t w0, w1, w2, w3, w8, w9, w10, w11;
     uint16x8x2_t w4, w5, w12, w13;
@@ -957,6 +960,7 @@ static inline void transpose16x32_neon(uint8x16x2_t* x, uint64x2x2_t* d) {
     d[15].val[0] = vzip1q_u64(vreinterpretq_u64_u32(w7.val[1]), vreinterpretq_u64_u32(w15.val[1]));
     d[15].val[1] = vzip2q_u64(vreinterpretq_u64_u32(w7.val[1]), vreinterpretq_u64_u32(w15.val[1]));
 }
+#endif // !CONFIG_COMPACT_KERNELS
 
 static inline void transpose_TX_16X16(const uint8_t* src, ptrdiff_t pitchSrc, uint8_t* dst, ptrdiff_t pitchDst) {
     uint8x16_t r[16];
@@ -979,6 +983,30 @@ static inline void transpose(const uint8_t* src, ptrdiff_t pitchSrc, uint8_t* ds
     }
 }
 
+#if CONFIG_COMPACT_KERNELS
+// Directional prediction, zone 3: 180 < angle < 270
+// Zone 3 predicts from the left edge exactly as zone 1 predicts from the above edge with rows and columns swapped, so
+// the transposed block is predicted with the zone 1 kernel and transposed into place.
+void svt_av1_dr_prediction_z3_neon(uint8_t* dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint8_t* above,
+                                   const uint8_t* left, int32_t upsample_left, int32_t dx, int32_t dy) {
+    (void)above;
+    (void)dx;
+    assert(dx == 1);
+    assert(dy > 0);
+
+    DECLARE_ALIGNED(16, uint8_t, dst_t[64 * 64]);
+    svt_av1_dr_prediction_z1_neon(dst_t, bh, bh, bw, left, NULL, upsample_left, dy, 1);
+    if (bw >= 16 && bh >= 16) {
+        transpose(dst_t, bh, dst, stride, bw, bh);
+    } else {
+        for (int r = 0; r < bh; r++) {
+            for (int c = 0; c < bw; c++) {
+                dst[r * stride + c] = dst_t[c * bh + r];
+            }
+        }
+    }
+}
+#else
 static inline void dr_prediction_z3_4x4_neon(uint8_t* dst, ptrdiff_t stride, const uint8_t* left, int upsample_left,
                                              int dy) {
     uint8x8_t    dstvec[4];
@@ -1328,6 +1356,7 @@ void svt_av1_dr_prediction_z3_neon(uint8_t* dst, ptrdiff_t stride, int32_t bw, i
         }
     }
 }
+#endif // CONFIG_COMPACT_KERNELS
 
 // clang-format off
 // These kernels are a transposed version of those defined in filterintra_c.c,
