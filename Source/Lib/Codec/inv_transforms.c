@@ -3151,12 +3151,16 @@ EbErrorType svt_aom_inv_transform_recon8bit(int32_t* coeff_buffer, //1D buffer
     txfm_param.is_hbd   = 1;
     //TxfmParam.tx_set_type = av1_get_ext_tx_set_type(   txfm_param->tx_size, is_inter_block(xd->mi[0]), reduced_tx_set);
 
+#if !defined(ARCH_AARCH64)
+    // The aarch64 kernels (C and dav1d NEON) copy the whole read block to the write block before
+    // adding the residual, so there the eob keeps bounding the transform work.
     if (recon_buffer_r != recon_buffer_w) {
         /* When output pointers to read and write are differents,
          * then kernel copy also all buffer from read to write,
          * and cannot be limited by End Of Buffer calculations. */
         txfm_param.eob = av1_get_max_eob(txsize);
     }
+#endif
 
     svt_av1_inv_txfm_add(
         (const TranLow*)coeff_buffer, recon_buffer_r, recon_stride_r, recon_buffer_w, recon_stride_w, &txfm_param);
