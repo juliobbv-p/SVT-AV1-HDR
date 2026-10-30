@@ -396,6 +396,24 @@ static inline void get_eobx_eoby_scan_h_identity(int* eobx, int* eoby, TxSize tx
     *eoby = eob_fill[temp_eoby];
 }
 
+// Packs a sparse DCT_DCT block of dim x dim coded coefficients: the coded area is zeroed and only the
+// default-scan nonzero region is copied, transposed to dav1d's column-major order. Returns false
+// (nothing written) when the nonzero region is larger than 8x8.
+static bool pack_sparse_dct_dct(const int32_t* input, int16_t* out, TxSize tx_size, int eob, int dim) {
+    int eobx, eoby;
+    get_eobx_eoby_scan_default(&eobx, &eoby, tx_size, eob);
+    if (eobx >= 8 || eoby >= 8) {
+        return false;
+    }
+    memset(out, 0, dim * dim * sizeof(*out));
+    for (int c = 0; c <= eobx; c++) {
+        for (int r = 0; r <= eoby; r++) {
+            out[c * dim + r] = (int16_t)input[r * dim + c];
+        }
+    }
+    return true;
+}
+
 static void inv_txf_add_4x4_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t stride, TxType tx_type, int eob) {
     switch (tx_type) {
     case DCT_DCT:
@@ -4696,9 +4714,11 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 
     switch (txfm_param->tx_size) {
     case TX_32X32:
-        pack_and_load_buffer_32x32(dqcoeff, in);
-        transpose_s16_32x32(in, out);
-        store_buffer_s16_32x32(out, dqcoeff_16);
+        if (tx_type != DCT_DCT || !pack_sparse_dct_dct(dqcoeff, dqcoeff_16, tx_size, txfm_param->eob, 32)) {
+            pack_and_load_buffer_32x32(dqcoeff, in);
+            transpose_s16_32x32(in, out);
+            store_buffer_s16_32x32(out, dqcoeff_16);
+        }
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
@@ -4722,9 +4742,11 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #endif
         break;
     case TX_16X16:
-        pack_and_load_buffer_16x16(dqcoeff, in);
-        transpose_s16_16x16(in, out);
-        store_buffer_s16_16x16(out, dqcoeff_16);
+        if (tx_type != DCT_DCT || !pack_sparse_dct_dct(dqcoeff, dqcoeff_16, tx_size, txfm_param->eob, 16)) {
+            pack_and_load_buffer_16x16(dqcoeff, in);
+            transpose_s16_16x16(in, out);
+            store_buffer_s16_16x16(out, dqcoeff_16);
+        }
         inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_8X8:
@@ -4808,9 +4830,11 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #endif
         break;
     case TX_64X64:
-        pack_and_load_buffer_32x32(dqcoeff, in);
-        transpose_s16_32x32(in, out);
-        store_buffer_s16_32x32(out, dqcoeff_16);
+        if (tx_type != DCT_DCT || !pack_sparse_dct_dct(dqcoeff, dqcoeff_16, tx_size, txfm_param->eob, 32)) {
+            pack_and_load_buffer_32x32(dqcoeff, in);
+            transpose_s16_32x32(in, out);
+            store_buffer_s16_32x32(out, dqcoeff_16);
+        }
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
