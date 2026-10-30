@@ -2936,6 +2936,7 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                         }
                     }
 
+                    ed_ctx->md_ctx->sb_epoch++;
                     // Initialize is_subres_safe
                     ed_ctx->md_ctx->is_subres_safe = (uint8_t)~0;
                     // Signal initialized here; if needed, will be set in md_encode_block before MDS3

@@ -906,6 +906,17 @@ typedef struct PC_TREE {
     PartitionContextType above_part_ctx;
 } PC_TREE;
 
+// Luma variance and SSE of a block at a full-pel MV, computed by VLPD0 for its first ME candidate and reused by
+// LPD1 when it evaluates the same reference and MV for the same block. Valid while sb_epoch equals
+// ModeDecisionContext.sb_epoch.
+typedef struct Pd0FullpelVar {
+    uint32_t         sb_epoch;
+    Mv               mv;
+    uint32_t         var;
+    uint32_t         sse;
+    MvReferenceFrame ref_frame;
+} Pd0FullpelVar;
+
 typedef struct ModeDecisionContext {
     EbDctor dctor;
 
@@ -1275,6 +1286,10 @@ typedef struct ModeDecisionContext {
     // when plane_residual_sad < th * blk_area_uv -> skip that plane's TX/Q/RDOQ. Evaluated
     // per-plane; can collapse to whole-block SKIP if luma also has zero coeffs. 0: OFF.
     uint16_t lpd1_chroma_skip_energy_th; // skip chroma via chroma residual energy
+    // Parallel-to-md_blk_arr_nsq array of VLPD0 full-pel variances, consumed by LPD1.
+    Pd0FullpelVar* pd0_fullpel_var;
+    // Incremented per SB so that pd0_fullpel_var entries written for previous SBs never match.
+    uint32_t sb_epoch;
     // chroma components to compensate at MDS3 of LPD1
     COMPONENT_TYPE lpd1_chroma_comp;
     uint8_t        corrupted_mv_check;

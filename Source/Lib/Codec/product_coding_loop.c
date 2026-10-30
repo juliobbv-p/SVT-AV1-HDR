@@ -959,6 +959,17 @@ static void product_coding_loop_init_fast_loop(PictureControlSet* pcs, ModeDecis
     return;
 }
 
+static INLINE bool get_pd0_fullpel_var(const ModeDecisionContext* ctx, MvReferenceFrame ref_frame, Mv mv, uint32_t* var,
+                                       uint32_t* sse) {
+    const Pd0FullpelVar* e = &ctx->pd0_fullpel_var[ctx->blk_ptr->mds_idx];
+    if (e->sb_epoch != ctx->sb_epoch || e->ref_frame != ref_frame || e->mv.as_int != mv.as_int) {
+        return false;
+    }
+    *var = e->var;
+    *sse = e->sse;
+    return true;
+}
+
 static void fast_loop_core_pd0(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                EbPictureBufferDesc* input_pic, uint32_t input_origin_index, uint32_t cu_origin_index) {
     ModeDecisionCandidate* cand = cand_bf->cand;
@@ -1001,11 +1012,16 @@ static void fast_loop_core_light_pd1(ModeDecisionCandidateBuffer* cand_bf, Pictu
     ctx->uv_intra_comp_only = false;
     product_prediction_fun_table_light_pd1[is_inter_mode(cand->block_mi.mode)](0, ctx, pcs, cand_bf);
     // Distortion
-    const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-    unsigned int            sse;
-    uint8_t*                pred_y = pred->y_buffer;
-    uint8_t*                src_y  = input_pic->y_buffer + loc->input_origin_index;
-    cand_bf->luma_fast_dist        = fn_ptr->vf(pred_y, pred->y_stride, src_y, input_pic->y_stride, &sse);
+    // A single-reference full-pel prediction is the reference block itself, so VLPD0 may already have its variance.
+    const BlockModeInfo* bmi = &cand->block_mi;
+    uint32_t             var, sse;
+    if (!(is_inter_mode(bmi->mode) && bmi->ref_frame[1] <= INTRA_FRAME && !((bmi->mv[0].x | bmi->mv[0].y) & 7) &&
+          pcs->ppcs->is_not_scaled && get_pd0_fullpel_var(ctx, bmi->ref_frame[0], bmi->mv[0], &var, &sse))) {
+        const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
+        var                            = fn_ptr->vf(
+            pred->y_buffer, pred->y_stride, input_pic->y_buffer + loc->input_origin_index, input_pic->y_stride, &sse);
+    }
+    cand_bf->luma_fast_dist = var;
     // Shift variance by 4 because we use full lambda in the cost (since variance is proportional to sse)
     // and full lambda is set with the expectation the variance is a squared metric shifted by 4 (the same
     // shift is applied to sse in the full loop)
@@ -2579,8 +2595,9 @@ static int md_subpel_search(SUBPEL_STAGE       search_stage, //ME or PME
 
 extern const uint8_t svt_aom_eb_av1_var_offs[MAX_SB_SIZE];
 
-static uint32_t md_subpel_search_fixed_stage(ModeDecisionContext* ctx, const EbPictureBufferDesc* ref_pic,
-                                             const uint8_t* src, const int src_stride, Mv* me_mv) {
+static uint32_t md_subpel_search_fixed_stage(ModeDecisionContext* ctx, MvReferenceFrame ref_frame,
+                                             const EbPictureBufferDesc* ref_pic, const uint8_t* src,
+                                             const int src_stride, Mv* me_mv) {
     const uint8_t*          ref_buf    = ref_pic->y_buffer;
     const int               blk_org_x  = ctx->blk_org_x;
     const int               blk_org_y  = ctx->blk_org_y;
@@ -2601,10 +2618,13 @@ static uint32_t md_subpel_search_fixed_stage(ModeDecisionContext* ctx, const EbP
     const uint32_t th_normalizer = blk_w * blk_h * ctx->md_subpel_me_ctrls.abs_th_mult;
     // integer-pel baseline
     {
-        const int    fp_x = blk_org_x + (mv_x_fp >> 3);
-        const int    fp_y = blk_org_y + (mv_y_fp >> 3);
+        const int    fp_x  = blk_org_x + (mv_x_fp >> 3);
+        const int    fp_y  = blk_org_y + (mv_y_fp >> 3);
+        const Mv     fp_mv = {{(int16_t)(mv_x_fp & ~7), (int16_t)(mv_y_fp & ~7)}};
         unsigned int sse;
-        best_var = fn_ptr->vf(ref_buf + fp_x + fp_y * ref_stride, ref_stride, src, src_stride, &sse);
+        if (!get_pd0_fullpel_var(ctx, ref_frame, fp_mv, &best_var, &sse)) {
+            best_var = fn_ptr->vf(ref_buf + fp_x + fp_y * ref_stride, ref_stride, src, src_stride, &sse);
+        }
 
         if (best_var < th_normalizer) {
             return best_var;
@@ -2736,7 +2756,7 @@ static void read_refine_me_mvs_light_pd1(PictureControlSet* pcs, EbPictureBuffer
                         const uint8_t* src = input_pic->y_buffer + ctx->blk_org_x +
                             (ctx->blk_org_y) * input_pic->y_stride;
                         ctx->post_subpel_me_mv_cost[list][ref] = md_subpel_search_fixed_stage(
-                            ctx, ref_pic, src, input_pic->y_stride, &me_mv);
+                            ctx, rf[0], ref_pic, src, input_pic->y_stride, &me_mv);
                     } else {
                         ctx->post_subpel_me_mv_cost[list][ref] = md_subpel_search(
                             SPEL_ME, pcs, ctx, ctx->md_subpel_me_ctrls, rf[0], &me_mv);
@@ -2843,7 +2863,7 @@ static void read_refine_me_mvs(PictureControlSet* pcs, ModeDecisionContext* ctx,
                         const uint8_t* src = input_pic->y_buffer + ctx->blk_org_x +
                             (ctx->blk_org_y) * input_pic->y_stride;
                         ctx->post_subpel_me_mv_cost[list][ref] = md_subpel_search_fixed_stage(
-                            ctx, ref_pic, src, input_pic->y_stride, &me_mv);
+                            ctx, rf[0], ref_pic, src, input_pic->y_stride, &me_mv);
                     } else {
                         ctx->post_subpel_me_mv_cost[list][ref] = md_subpel_search(
                             SPEL_ME, pcs, ctx, md_subpel_me_ctrls, rf[0], &me_mv);
@@ -3308,7 +3328,7 @@ static void pme_search(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictu
                 if (ctx->md_subpel_me_ctrls.subpel_search_method == SUBPEL_FIXED_STAGE_SEARCH) {
                     const uint8_t* src = input_pic->y_buffer + ctx->blk_org_x + (ctx->blk_org_y) * input_pic->y_stride;
                     post_subpel_pme_mv_cost = md_subpel_search_fixed_stage(
-                        ctx, ref_pic, src, input_pic->y_stride, &best_search_mv);
+                        ctx, rf[0], ref_pic, src, input_pic->y_stride, &best_search_mv);
                 } else {
                     post_subpel_pme_mv_cost = (uint32_t)md_subpel_search(
                         SPEL_PME, pcs, ctx, ctx->md_subpel_pme_ctrls, rf[0], &best_search_mv);
@@ -8306,6 +8326,10 @@ static void compute_lpd0_cost_inter(PictureControlSet* pcs, ModeDecisionContext*
         unsigned int   sse;
         const uint64_t cost = fn_ptr->vf(
             ref_pic->y_buffer + ref_origin_index, ref_pic->y_stride, src_y, input_pic->y_stride, &sse);
+        if (cand_count == 0) {
+            ctx->pd0_fullpel_var[ctx->blk_ptr->mds_idx] = (Pd0FullpelVar){
+                ctx->sb_epoch, {{mv_x, mv_y}}, (uint32_t)cost, sse, ref_frame};
+        }
 
         if (cost < best_cost) {
             best_cost = cost;
