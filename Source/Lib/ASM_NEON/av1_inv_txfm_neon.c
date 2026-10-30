@@ -838,43 +838,43 @@ static void inv_txf_add_16x8_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t strid
     }
 }
 
-static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_w, int32_t stride_w, const TxfmParam* txfm_param) {
-    switch (txfm_param->tx_type) {
+static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_w, int32_t stride_w, TxType tx_type, int eob) {
+    switch (tx_type) {
     case DCT_DCT:
-        svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case DCT_ADST:
-        svt_dav1d_inv_txfm_add_adst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_DCT:
-        svt_dav1d_inv_txfm_add_dct_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_ADST:
-        svt_dav1d_inv_txfm_add_adst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case DCT_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_DCT:
-        svt_dav1d_inv_txfm_add_dct_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_ADST:
-        svt_dav1d_inv_txfm_add_adst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case IDTX:
-        svt_dav1d_inv_txfm_add_identity_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_identity_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case H_DCT:
-        svt_dav1d_inv_txfm_add_dct_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case V_DCT:
-        svt_dav1d_inv_txfm_add_identity_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_identity_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     default:
         assert(0);
@@ -4665,9 +4665,34 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
     }
 
     const TxType tx_type = txfm_param->tx_type;
-    const int    eob     = txfm_param->eob;
-    int16x4_t    in[512];
-    int16x4_t    out[512];
+    // dav1d's eob is the last nonzero scan index (0 = DC only); SVT's eob is a count.
+    const int eob = txfm_param->eob > 0 ? txfm_param->eob - 1 : 0;
+
+    if (eob == 0 && tx_type == DCT_DCT && !txfm_param->lossless) {
+        // DC only: dav1d's dct_dct kernels read just the first coefficient, so the block is not packed.
+        dqcoeff_16[0] = (int16_t)dqcoeff[0];
+        switch (tx_size) {
+        case TX_4X4:
+            svt_dav1d_inv_txfm_add_dct_dct_4x4_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_8X8:
+            svt_dav1d_inv_txfm_add_dct_dct_8x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_16X16:
+            svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_32X32:
+            svt_dav1d_inv_txfm_add_dct_dct_32x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_64X64:
+            svt_dav1d_inv_txfm_add_dct_dct_64x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        default:
+            break;
+        }
+    }
+    int16x4_t in[512];
+    int16x4_t out[512];
 
     switch (txfm_param->tx_size) {
     case TX_32X32:
@@ -4687,10 +4712,8 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         // Non-DCT at large tx (only IDTX per ext-tx set) is unused in RTC; aom fallback compiled out.
 #if MOBILE_BUILD
         // MOBILE (VOD/AVIF) can code IDTX here: dav1d identity kernel, as the x86 path does (normative inverse).
-        // dav1d's eob is the last nonzero index (SVT passes a count): its identity loops overrun on a count.
         if (tx_type == IDTX) {
-            svt_dav1d_inv_txfm_add_identity_identity_32x32_8bpc_neon(
-                dst_w, stride_w, dqcoeff_16, eob > 0 ? eob - 1 : 0);
+            svt_dav1d_inv_txfm_add_identity_identity_32x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
             break;
         }
 #endif
@@ -4702,7 +4725,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         pack_and_load_buffer_16x16(dqcoeff, in);
         transpose_s16_16x16(in, out);
         store_buffer_s16_16x16(out, dqcoeff_16);
-        inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, txfm_param);
+        inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_8X8:
         pack_and_load_buffer_8x8(dqcoeff, in);
@@ -4751,8 +4774,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #if MOBILE_BUILD
         // MOBILE: IDTX via dav1d, see TX_32X32.
         if (tx_type == IDTX) {
-            svt_dav1d_inv_txfm_add_identity_identity_16x32_8bpc_neon(
-                dst_w, stride_w, dqcoeff_16, eob > 0 ? eob - 1 : 0);
+            svt_dav1d_inv_txfm_add_identity_identity_16x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
             break;
         }
 #endif
@@ -4777,8 +4799,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #if MOBILE_BUILD
         // MOBILE: IDTX via dav1d, see TX_32X32.
         if (tx_type == IDTX) {
-            svt_dav1d_inv_txfm_add_identity_identity_32x16_8bpc_neon(
-                dst_w, stride_w, dqcoeff_16, eob > 0 ? eob - 1 : 0);
+            svt_dav1d_inv_txfm_add_identity_identity_32x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
             break;
         }
 #endif
@@ -4911,7 +4932,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #if MOBILE_BUILD
         // MOBILE: IDTX via dav1d, see TX_32X32.
         if (tx_type == IDTX) {
-            svt_dav1d_inv_txfm_add_identity_identity_32x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob > 0 ? eob - 1 : 0);
+            svt_dav1d_inv_txfm_add_identity_identity_32x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
             break;
         }
 #endif
