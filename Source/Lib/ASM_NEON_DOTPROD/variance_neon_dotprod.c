@@ -310,9 +310,16 @@ FUSED_SUBPEL_VAR_8XH(6, load_interp_1_3_w8)
 #undef FUSED_SUBPEL_VAR_8XH_XY
 #undef FUSED_SUBPEL_VAR_8XH
 
-static unsigned int fused_subpel_variance_8xh_generic(const uint8_t* src, int64_t src_stride, int h, int shift,
-                                                      const uint8_t* ref, int64_t ref_stride, unsigned int* sse_out,
-                                                      unsigned int offsets) {
+// Odd (1/8-pel) offsets are rare: compact builds keep one out-of-line copy instead of one per 8xN function.
+#if CONFIG_COMPACT_KERNELS
+#define SUBPEL_8XH_GENERIC_ATTR NOINLINE
+#else
+#define SUBPEL_8XH_GENERIC_ATTR
+#endif
+static SUBPEL_8XH_GENERIC_ATTR unsigned int fused_subpel_variance_8xh_generic(const uint8_t* src, int64_t src_stride,
+                                                                              int h, int shift, const uint8_t* ref,
+                                                                              int64_t ref_stride, unsigned int* sse_out,
+                                                                              unsigned int offsets) {
     const int  xoffset = offsets & 7;
     const int  yoffset = (offsets >> 3) & 7;
     uint32x4_t src_sum = vdupq_n_u32(0);
@@ -372,6 +379,10 @@ typedef unsigned int (*SubpelVarFn)(const uint8_t* src, int64_t src_stride, int 
 
 FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE(8);
 
+#if CONFIG_COMPACT_KERNELS
+#undef FUSED_SUBPEL_VARIANCE_WXH_FN_TABLE
+#endif // CONFIG_COMPACT_KERNELS
+
 static unsigned int sub_pixel_variance_8xh_neon_dotprod(const uint8_t* src, int src_stride, int xoffset, int yoffset,
                                                         const uint8_t* ref, int ref_stride, int h, unsigned int* sse) {
     if (xoffset == 0 && yoffset == 0) {
@@ -405,6 +416,237 @@ FUSED_SUBPEL_VARIANCE_8XH_NEON_DOTPROD(32)
 
 #undef FUSED_SUBPEL_VARIANCE_8XH_NEON_DOTPROD
 
+#if CONFIG_COMPACT_KERNELS
+// Calculate variance from two sets of src_sum, ref_sum and sse accumulator vectors.
+static inline unsigned int var_w16x2_reduce(const uint32x4_t src_sum[2], const uint32x4_t ref_sum[2],
+                                            const uint32x4_t sse[2], int shift, unsigned int* sse_out) {
+    return var_w8_reduce(vaddq_u32(src_sum[0], src_sum[1]),
+                         vaddq_u32(ref_sum[0], ref_sum[1]),
+                         vaddq_u32(sse[0], sse[1]),
+                         shift,
+                         sse_out);
+}
+
+static inline void var_w16_accum_pair(uint32x4_t src_sum[2], uint32x4_t ref_sum[2], uint32x4_t sse[2], uint8x16_t pred0,
+                                      uint8x16_t pred1, const uint8_t* ref, int64_t ref_stride) {
+    var_w16_accum(&src_sum[0], &ref_sum[0], &sse[0], pred0, vld1q_u8(ref));
+    var_w16_accum(&src_sum[1], &ref_sum[1], &sse[1], pred1, vld1q_u8(ref + ref_stride));
+}
+
+typedef unsigned int (*SubpelVarWxhFn)(const uint8_t* src, int64_t src_stride, int w, int h, int shift,
+                                       const uint8_t* ref, int64_t ref_stride, unsigned int* sse);
+
+// Emit a fused sub pixel variance function for blocks of width w (a multiple of 16) that uses the
+// specified horizontal 2-tap filter. The block is processed one 16-wide column at a time, four rows
+// per iteration.
+#define FUSED_SUBPEL_VAR_WXH_X(X_FILTER_OFFSET, X_FILTER)                                                        \
+    static unsigned int fused_subpel_variance_wxh_##X_FILTER_OFFSET(const uint8_t* src,                          \
+                                                                    int64_t        src_stride,                   \
+                                                                    int            w,                            \
+                                                                    int            h,                            \
+                                                                    int            shift,                        \
+                                                                    const uint8_t* ref,                          \
+                                                                    int64_t        ref_stride,                   \
+                                                                    unsigned int*  sse_out) {                    \
+        uint32x4_t src_sum[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};                                                \
+        uint32x4_t ref_sum[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};                                                \
+        uint32x4_t sse[2]     = {vdupq_n_u32(0), vdupq_n_u32(0)};                                                \
+        for (int x = 0; x < w; x += 16) {                                                                        \
+            const uint8_t* s = src + x;                                                                          \
+            const uint8_t* r = ref + x;                                                                          \
+            int            i = h;                                                                                \
+            do {                                                                                                 \
+                var_w16_accum_pair(src_sum, ref_sum, sse, X_FILTER(s), X_FILTER(s + src_stride), r, ref_stride); \
+                var_w16_accum_pair(src_sum,                                                                      \
+                                   ref_sum,                                                                      \
+                                   sse,                                                                          \
+                                   X_FILTER(s + 2 * src_stride),                                                 \
+                                   X_FILTER(s + 3 * src_stride),                                                 \
+                                   r + 2 * ref_stride,                                                           \
+                                   ref_stride);                                                                  \
+                s += 4 * src_stride;                                                                             \
+                r += 4 * ref_stride;                                                                             \
+                i -= 4;                                                                                          \
+            } while (i != 0);                                                                                    \
+        }                                                                                                        \
+        return var_w16x2_reduce(src_sum, ref_sum, sse, shift, sse_out);                                          \
+    }
+
+FUSED_SUBPEL_VAR_WXH_X(2, load_interp_3_1_w16)
+FUSED_SUBPEL_VAR_WXH_X(4, load_interp_1_1_w16)
+FUSED_SUBPEL_VAR_WXH_X(6, load_interp_1_3_w16)
+
+// Emit a fused sub pixel variance function for blocks of width w (a multiple of 16) that uses the
+// specified 2-tap bilinear filter.
+#define FUSED_SUBPEL_VAR_WXH_XY(X_FILTER_OFFSET, Y_FILTER_OFFSET, X_FILTER, Y_FILTER)                                 \
+    static unsigned int fused_subpel_variance_wxh_##X_FILTER_OFFSET##_##Y_FILTER_OFFSET(const uint8_t* src,           \
+                                                                                        int64_t        src_stride,    \
+                                                                                        int            w,             \
+                                                                                        int            h,             \
+                                                                                        int            shift,         \
+                                                                                        const uint8_t* ref,           \
+                                                                                        int64_t        ref_stride,    \
+                                                                                        unsigned int*  sse_out) {     \
+        uint32x4_t src_sum[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};                                                     \
+        uint32x4_t ref_sum[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};                                                     \
+        uint32x4_t sse[2]     = {vdupq_n_u32(0), vdupq_n_u32(0)};                                                     \
+        for (int x = 0; x < w; x += 16) {                                                                             \
+            const uint8_t* s    = src + x;                                                                            \
+            const uint8_t* r    = ref + x;                                                                            \
+            int            i    = h;                                                                                  \
+            uint8x16_t     prev = X_FILTER(s);                                                                        \
+            s += src_stride;                                                                                          \
+            do {                                                                                                      \
+                const uint8x16_t cur0 = X_FILTER(s);                                                                  \
+                const uint8x16_t cur1 = X_FILTER(s + src_stride);                                                     \
+                const uint8x16_t cur2 = X_FILTER(s + 2 * src_stride);                                                 \
+                const uint8x16_t cur3 = X_FILTER(s + 3 * src_stride);                                                 \
+                var_w16_accum_pair(src_sum, ref_sum, sse, Y_FILTER(prev, cur0), Y_FILTER(cur0, cur1), r, ref_stride); \
+                var_w16_accum_pair(src_sum,                                                                           \
+                                   ref_sum,                                                                           \
+                                   sse,                                                                               \
+                                   Y_FILTER(cur1, cur2),                                                              \
+                                   Y_FILTER(cur2, cur3),                                                              \
+                                   r + 2 * ref_stride,                                                                \
+                                   ref_stride);                                                                       \
+                prev = cur3;                                                                                          \
+                s += 4 * src_stride;                                                                                  \
+                r += 4 * ref_stride;                                                                                  \
+                i -= 4;                                                                                               \
+            } while (i != 0);                                                                                         \
+        }                                                                                                             \
+        return var_w16x2_reduce(src_sum, ref_sum, sse, shift, sse_out);                                               \
+    }
+
+#define FUSED_SUBPEL_VAR_WXH(X_FILTER_OFFSET, X_FILTER)                   \
+    FUSED_SUBPEL_VAR_WXH_XY(X_FILTER_OFFSET, 2, X_FILTER, interp_3_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(X_FILTER_OFFSET, 4, X_FILTER, interp_1_1_w16) \
+    FUSED_SUBPEL_VAR_WXH_XY(X_FILTER_OFFSET, 6, X_FILTER, interp_1_3_w16)
+
+FUSED_SUBPEL_VAR_WXH(0, vld1q_u8)
+FUSED_SUBPEL_VAR_WXH(2, load_interp_3_1_w16)
+FUSED_SUBPEL_VAR_WXH(4, load_interp_1_1_w16)
+FUSED_SUBPEL_VAR_WXH(6, load_interp_1_3_w16)
+
+#undef FUSED_SUBPEL_VAR_WXH_X
+#undef FUSED_SUBPEL_VAR_WXH_XY
+#undef FUSED_SUBPEL_VAR_WXH
+
+// Fused sub pixel variance for blocks of width w (a multiple of 16) and any 2-tap bilinear filter.
+static unsigned int fused_subpel_variance_wxh_generic(const uint8_t* src, int64_t src_stride, int w, int h, int shift,
+                                                      const uint8_t* ref, int64_t ref_stride, unsigned int* sse_out,
+                                                      int xoffset, int yoffset) {
+    uint32x4_t src_sum[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};
+    uint32x4_t ref_sum[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};
+    uint32x4_t sse[2]     = {vdupq_n_u32(0), vdupq_n_u32(0)};
+
+    for (int x = 0; x < w; x += 16) {
+        const uint8_t* s = src + x;
+        const uint8_t* r = ref + x;
+        int            i = h;
+        if (yoffset == 0) {
+            do {
+                var_w16_accum_pair(src_sum,
+                                   ref_sum,
+                                   sse,
+                                   load_interp_w16(s, xoffset),
+                                   load_interp_w16(s + src_stride, xoffset),
+                                   r,
+                                   ref_stride);
+                s += 2 * src_stride;
+                r += 2 * ref_stride;
+                i -= 2;
+            } while (i != 0);
+        } else {
+            uint8x16_t prev = load_interp_w16(s, xoffset);
+            s += src_stride;
+            do {
+                const uint8x16_t cur0 = load_interp_w16(s, xoffset);
+                const uint8x16_t cur1 = load_interp_w16(s + src_stride, xoffset);
+                var_w16_accum_pair(src_sum,
+                                   ref_sum,
+                                   sse,
+                                   interp_w16(prev, cur0, yoffset),
+                                   interp_w16(cur0, cur1, yoffset),
+                                   r,
+                                   ref_stride);
+                prev = cur1;
+                s += 2 * src_stride;
+                r += 2 * ref_stride;
+                i -= 2;
+            } while (i != 0);
+        }
+    }
+
+    return var_w16x2_reduce(src_sum, ref_sum, sse, shift, sse_out);
+}
+
+static const SubpelVarWxhFn fused_subpel_variance_wxh_fn_table[4][4] = {
+    {NULL, fused_subpel_variance_wxh_0_2, fused_subpel_variance_wxh_0_4, fused_subpel_variance_wxh_0_6},
+    {fused_subpel_variance_wxh_2,
+     fused_subpel_variance_wxh_2_2,
+     fused_subpel_variance_wxh_2_4,
+     fused_subpel_variance_wxh_2_6},
+    {fused_subpel_variance_wxh_4,
+     fused_subpel_variance_wxh_4_2,
+     fused_subpel_variance_wxh_4_4,
+     fused_subpel_variance_wxh_4_6},
+    {fused_subpel_variance_wxh_6,
+     fused_subpel_variance_wxh_6_2,
+     fused_subpel_variance_wxh_6_4,
+     fused_subpel_variance_wxh_6_6},
+};
+
+// Sub pixel variance for blocks of width w (a multiple of 16) at a non-zero filter offset. Even/even
+// filter offsets dispatch through the table; odd offsets use the generic loop.
+static AOM_FORCE_INLINE unsigned int fused_subpel_variance_wxh(const uint8_t* src, int src_stride, int xoffset,
+                                                               int yoffset, const uint8_t* ref, int ref_stride, int w,
+                                                               int h, int shift, unsigned int* sse) {
+    if ((xoffset | yoffset) & 1) {
+        return fused_subpel_variance_wxh_generic(src, src_stride, w, h, shift, ref, ref_stride, sse, xoffset, yoffset);
+    }
+    return fused_subpel_variance_wxh_fn_table[xoffset >> 1][yoffset >> 1](
+        src, src_stride, w, h, shift, ref, ref_stride, sse);
+}
+
+// Emit svt_aom_sub_pixel_variance{W}x{H}_neon_dotprod for supported (W, H)
+// pairs. Filter offset (0,0) uses the variance fast path. Shift is computed at
+// compile time via svt_ctz((W) * (H)).
+#define SUBPEL_VARIANCE_WXH_NEON_DOTPROD(W, H)                                                      \
+    unsigned int svt_aom_sub_pixel_variance##W##x##H##_neon_dotprod(const uint8_t* src,             \
+                                                                    int            src_stride,      \
+                                                                    int            xoffset,         \
+                                                                    int            yoffset,         \
+                                                                    const uint8_t* ref,             \
+                                                                    int            ref_stride,      \
+                                                                    unsigned int*  sse) {           \
+        if (xoffset == 0 && yoffset == 0) {                                                         \
+            int sum;                                                                                \
+            variance_##W##xh_neon_dotprod(src, src_stride, ref, ref_stride, (H), sse, &sum);        \
+            return *sse - (uint32_t)(((int64_t)sum * sum) >> svt_ctz((W) * (H)));                   \
+        }                                                                                           \
+        return fused_subpel_variance_wxh(                                                           \
+            src, src_stride, xoffset, yoffset, ref, ref_stride, (W), (H), svt_ctz((W) * (H)), sse); \
+    }
+
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(16, 4)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(16, 8)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(16, 16)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(16, 32)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(16, 64)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(32, 8)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(32, 16)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(32, 32)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(32, 64)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(64, 16)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(64, 32)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(64, 64)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(64, 128)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(128, 64)
+SUBPEL_VARIANCE_WXH_NEON_DOTPROD(128, 128)
+
+#undef SUBPEL_VARIANCE_WXH_NEON_DOTPROD
+#else
 // Number of accumulators for block width W.
 #define ACCUM(W) (((W) / 16 >= 4) ? 4 : (W) / 16)
 
@@ -656,6 +898,7 @@ SUBPEL_VARIANCE_WXH_NEON_DOTPROD(128, 128)
 
 #undef FUSED_SUBPEL_VARIANCE_WXH_NEON_DOTPROD
 #undef ACCUM
+#endif // CONFIG_COMPACT_KERNELS
 
 unsigned int svt_aom_mse16x16_neon_dotprod(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride) {
     uint32x4_t sse_u32[2] = {vdupq_n_u32(0), vdupq_n_u32(0)};
