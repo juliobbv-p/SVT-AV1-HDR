@@ -206,11 +206,28 @@ static inline void svt_sad_loop_kernel16xh_neon_dotprod(uint8_t* src, uint32_t s
     for (int16_t y_search_index = y_search_start; y_search_index < search_area_height;
          y_search_index += y_search_step) {
         for (int16_t x_search_index = 0; x_search_index < search_area_width; x_search_index += 8) {
-            /* Get the SAD of 8 search spaces aligned along the width and store it in 'sad4'. */
-            uint32x4_t sad4_0 = sad16xhx4d_neon_dotprod(
-                src, src_stride, ref + x_search_index, ref_stride, block_height);
-            uint32x4_t sad4_1 = sad16xhx4d_neon_dotprod(
-                src, src_stride, ref + x_search_index + 4, ref_stride, block_height);
+            /* SADs of 8 positions along the width, top half first: if none of the 8 partial SADs is below the best
+             * so far, no full SAD can be, so the bottom half is skipped (the result is unchanged). */
+            const uint32_t h0     = block_height >= 4 ? block_height >> 1 : block_height;
+            uint32x4_t     sad4_0 = sad16xhx4d_neon_dotprod(src, src_stride, ref + x_search_index, ref_stride, h0);
+            uint32x4_t     sad4_1 = sad16xhx4d_neon_dotprod(src, src_stride, ref + x_search_index + 4, ref_stride, h0);
+            if (vminvq_u32(vminq_u32(sad4_0, sad4_1)) >= *best_sad) {
+                continue;
+            }
+            if (h0 < block_height) {
+                sad4_0 = vaddq_u32(sad4_0,
+                                   sad16xhx4d_neon_dotprod(src + h0 * src_stride,
+                                                           src_stride,
+                                                           ref + x_search_index + h0 * ref_stride,
+                                                           ref_stride,
+                                                           block_height - h0));
+                sad4_1 = vaddq_u32(sad4_1,
+                                   sad16xhx4d_neon_dotprod(src + h0 * src_stride,
+                                                           src_stride,
+                                                           ref + x_search_index + 4 + h0 * ref_stride,
+                                                           ref_stride,
+                                                           block_height - h0));
+            }
             update_best_sad_u32(sad4_0, best_sad, x_search_center, y_search_center, x_search_index, y_search_index);
             update_best_sad_u32(sad4_1, best_sad, x_search_center, y_search_center, x_search_index + 4, y_search_index);
         }
@@ -261,11 +278,28 @@ static inline void svt_sad_loop_kernel32xh_neon_dotprod(uint8_t* src, uint32_t s
                                                         int16_t search_area_height) {
     for (int16_t y_search_index = 0; y_search_index < search_area_height; y_search_index++) {
         for (int16_t x_search_index = 0; x_search_index < search_area_width; x_search_index += 8) {
-            /* Get the SAD of 4 search spaces aligned along the width and store it in 'sad4'. */
-            uint32x4_t sad4_0 = sad32xhx4d_neon_dotprod(
-                src, src_stride, ref + x_search_index, ref_stride, block_height);
-            uint32x4_t sad4_1 = sad32xhx4d_neon_dotprod(
-                src, src_stride, ref + x_search_index + 4, ref_stride, block_height);
+            /* SADs of 8 positions along the width, top half first: if none of the 8 partial SADs is below the best
+             * so far, no full SAD can be, so the bottom half is skipped (the result is unchanged). */
+            const uint32_t h0     = block_height >= 4 ? block_height >> 1 : block_height;
+            uint32x4_t     sad4_0 = sad32xhx4d_neon_dotprod(src, src_stride, ref + x_search_index, ref_stride, h0);
+            uint32x4_t     sad4_1 = sad32xhx4d_neon_dotprod(src, src_stride, ref + x_search_index + 4, ref_stride, h0);
+            if (vminvq_u32(vminq_u32(sad4_0, sad4_1)) >= *best_sad) {
+                continue;
+            }
+            if (h0 < block_height) {
+                sad4_0 = vaddq_u32(sad4_0,
+                                   sad32xhx4d_neon_dotprod(src + h0 * src_stride,
+                                                           src_stride,
+                                                           ref + x_search_index + h0 * ref_stride,
+                                                           ref_stride,
+                                                           block_height - h0));
+                sad4_1 = vaddq_u32(sad4_1,
+                                   sad32xhx4d_neon_dotprod(src + h0 * src_stride,
+                                                           src_stride,
+                                                           ref + x_search_index + 4 + h0 * ref_stride,
+                                                           ref_stride,
+                                                           block_height - h0));
+            }
             update_best_sad_u32(sad4_0, best_sad, x_search_center, y_search_center, x_search_index, y_search_index);
             update_best_sad_u32(sad4_1, best_sad, x_search_center, y_search_center, x_search_index + 4, y_search_index);
         }
