@@ -9092,11 +9092,24 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
         loc.input_cb_origin_in_index = ((ctx->blk_org_x) >> 1) + ((ctx->blk_org_y) >> 1) * input_pic->u_stride;
     }
     ctx->md_stage = MD_STAGE_3;
+    cand_bf       = cand_bf_ptr_array[ctx->mds0_best_idx];
+    // With EncDec bypassed, the single MDS3 candidate is final: quantize straight into the SB coefficient buffer at
+    // the current coded area rather than copying the coefficients there afterwards.
+    EbPictureBufferDesc* const cand_quant = cand_bf->quant;
+    EbPictureBufferDesc        quant_in_sb;
+    if (ctx->bypass_encdec) {
+        const EbPictureBufferDesc* sb_coeff = pcs->ppcs->enc_dec_ptr->quantized_coeff[ctx->sb_index];
+        quant_in_sb                         = *cand_quant;
+        quant_in_sb.y_buffer                = sb_coeff->y_buffer + ctx->coded_area_sb * sizeof(int32_t);
+        quant_in_sb.u_buffer                = sb_coeff->u_buffer + ctx->coded_area_sb_uv * sizeof(int32_t);
+        quant_in_sb.v_buffer                = sb_coeff->v_buffer + ctx->coded_area_sb_uv * sizeof(int32_t);
+        cand_bf->quant                      = &quant_in_sb;
+    }
     md_stage_3_light_pd1(pcs, ctx, input_pic, &loc);
-    cand_bf = cand_bf_ptr_array[ctx->mds0_best_idx];
 
     // Full Mode Decision (choose the best mode)
     svt_aom_product_full_mode_decision_light_pd1(pcs, ctx, cand_bf);
+    cand_bf->quant = cand_quant;
     // Perform inverse transform recon when needed
     if (perform_md_recon) {
         av1_perform_inverse_transform_recon(pcs, ctx, cand_bf, ctx->blk_geom);

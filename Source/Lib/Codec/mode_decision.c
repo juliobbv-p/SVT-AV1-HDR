@@ -3823,6 +3823,7 @@ uint8_t av1_drl_ctx(const CandidateMv* ref_mv_stack, int32_t ref_idx);
 ***************************************/
 void svt_aom_product_full_mode_decision_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                                   ModeDecisionCandidateBuffer* cand_bf) {
+    (void)pcs; // read only by an assert
     BlkStruct*             blk_ptr = ctx->blk_ptr;
     ModeDecisionCandidate* cand    = cand_bf->cand;
     blk_ptr->total_rate            = cand_bf->total_rate;
@@ -3891,7 +3892,6 @@ void svt_aom_product_full_mode_decision_light_pd1(PictureControlSet* pcs, ModeDe
     blk_ptr->block_mi.skip = !blk_ptr->block_has_coeff;
 
     const uint16_t txb_itr       = 0;
-    const int32_t  txb_1d_offset = 0, txb_1d_offset_uv = 0;
     blk_ptr->y_has_coeff         = cand_bf->y_has_coeff;
     blk_ptr->u_has_coeff         = cand_bf->u_has_coeff;
     blk_ptr->v_has_coeff         = cand_bf->v_has_coeff;
@@ -3902,45 +3902,15 @@ void svt_aom_product_full_mode_decision_light_pd1(PictureControlSet* pcs, ModeDe
     blk_ptr->quant_dc.v[txb_itr] = cand_bf->quant_dc.v[txb_itr];
 
     if (ctx->bypass_encdec) {
+        // The quantized coefficients were written into the SB coefficient buffer during MDS3
         blk_ptr->eob.y[txb_itr] = cand_bf->eob.y[txb_itr];
         blk_ptr->eob.u[txb_itr] = cand_bf->eob.u[txb_itr];
         blk_ptr->eob.v[txb_itr] = cand_bf->eob.v[txb_itr];
-        int32_t* src_ptr;
-        int32_t* dst_ptr;
 
-        const TxSize tx_size   = tx_depth_to_tx_size[blk_ptr->block_mi.tx_depth][ctx->blk_geom->bsize];
-        const int    tx_width  = tx_size_wide[tx_size];
-        const int    tx_height = tx_size_high[tx_size];
-
-        // only one TX unit, so no need to bitmask
-        if (blk_ptr->y_has_coeff) {
-            src_ptr = &(((int32_t*)cand_bf->quant->y_buffer)[txb_1d_offset]);
-            dst_ptr = ((int32_t*)pcs->ppcs->enc_dec_ptr->quantized_coeff[ctx->sb_index]->y_buffer) + ctx->coded_area_sb;
-            memcpy(dst_ptr, src_ptr, get_txb_coded_coeff_count(tx_size, blk_ptr->eob.y[txb_itr]) * sizeof(int32_t));
-        }
-        ctx->coded_area_sb += tx_width * tx_height;
-
-        const TxSize tx_size_uv   = av1_get_max_uv_txsize(ctx->blk_geom->bsize, 1, 1);
-        const int    tx_width_uv  = tx_size_wide[tx_size_uv];
-        const int    tx_height_uv = tx_size_high[tx_size_uv];
-        // Cb
-        // only one TX unit, so no need to bitmask
-        if (blk_ptr->u_has_coeff) {
-            src_ptr = &(((int32_t*)cand_bf->quant->u_buffer)[txb_1d_offset_uv]);
-            dst_ptr = ((int32_t*)pcs->ppcs->enc_dec_ptr->quantized_coeff[ctx->sb_index]->u_buffer) +
-                ctx->coded_area_sb_uv;
-            memcpy(dst_ptr, src_ptr, get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.u[txb_itr]) * sizeof(int32_t));
-        }
-
-        // Cr
-        // only one TX unit, so no need to bitmask
-        if (blk_ptr->v_has_coeff) {
-            src_ptr = &(((int32_t*)cand_bf->quant->v_buffer)[txb_1d_offset_uv]);
-            dst_ptr = ((int32_t*)pcs->ppcs->enc_dec_ptr->quantized_coeff[ctx->sb_index]->v_buffer) +
-                ctx->coded_area_sb_uv;
-            memcpy(dst_ptr, src_ptr, get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.v[txb_itr]) * sizeof(int32_t));
-        }
-        ctx->coded_area_sb_uv += tx_width_uv * tx_height_uv;
+        const TxSize tx_size    = tx_depth_to_tx_size[blk_ptr->block_mi.tx_depth][ctx->blk_geom->bsize];
+        const TxSize tx_size_uv = av1_get_max_uv_txsize(ctx->blk_geom->bsize, 1, 1);
+        ctx->coded_area_sb += tx_size_wide[tx_size] * tx_size_high[tx_size];
+        ctx->coded_area_sb_uv += tx_size_wide[tx_size_uv] * tx_size_high[tx_size_uv];
     }
 }
 
