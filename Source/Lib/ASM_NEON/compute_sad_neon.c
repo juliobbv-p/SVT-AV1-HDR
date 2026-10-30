@@ -836,48 +836,28 @@ static inline void compute_4sad_neon(const uint32_t p_sad16x16[4][8], uint32_t* 
     store_u32_4x2(p_sad32x32, 4, *sad0, *sad1);
 }
 
+// Takes the first minimum of the SADs at the 8 search positions mv + 0..7 (lo: 0-3, hi: 4-7) if it beats the best.
+static inline void update_best_of_eight(uint32x4_t lo, uint32x4_t hi, uint32_t mv, uint32_t* p_best_sad,
+                                        uint32_t* p_best_mv) {
+    const uint32_t min_sad = vminvq_u32(vminq_u32(lo, hi));
+    if (min_sad < *p_best_sad) {
+        const uint32_t pos = vminvq_u32(lo) == min_sad ? findposq_u32(lo, min_sad) : 4 + findposq_u32(hi, min_sad);
+        *p_best_sad        = min_sad;
+        *p_best_mv         = (mv & 0xFFFF0000) | ((mv + pos) & 0xFFFF);
+    }
+}
+
 void svt_ext_eight_sad_calculation_32x32_64x64_neon(const uint32_t p_sad16x16[16][8], uint32_t* p_best_sad_32x32,
                                                     uint32_t* p_best_sad_64x64, uint32_t* p_best_mv32x32,
                                                     uint32_t* p_best_mv64x64, uint32_t mv, uint32_t p_sad32x32[4][8]) {
-    uint32x4_t sad32_a1, sad32_a2, sad32_b1, sad32_b2, sad32_c1, sad32_c2, sad32_d1, sad32_d2;
-    compute_4sad_neon(&p_sad16x16[0], &p_sad32x32[0][0], &sad32_a1, &sad32_a2);
-    compute_4sad_neon(&p_sad16x16[4], &p_sad32x32[1][0], &sad32_b1, &sad32_b2);
-    compute_4sad_neon(&p_sad16x16[8], &p_sad32x32[2][0], &sad32_c1, &sad32_c2);
-    compute_4sad_neon(&p_sad16x16[12], &p_sad32x32[3][0], &sad32_d1, &sad32_d2);
-
-    DECLARE_ALIGNED(32, uint32_t, p_sad64x64[8]);
-    uint32x4_t tmp0 = vaddq_u32(sad32_a1, sad32_b1);
-    uint32x4_t tmp1 = vaddq_u32(sad32_c1, sad32_d1);
-    vst1q_u32(p_sad64x64, vaddq_u32(tmp0, tmp1));
-    tmp0 = vaddq_u32(sad32_a2, sad32_b2);
-    tmp1 = vaddq_u32(sad32_c2, sad32_d2);
-    vst1q_u32((p_sad64x64 + 4), vaddq_u32(tmp0, tmp1));
-
-    DECLARE_ALIGNED(32, uint32_t, computed_idx[8]);
-    uint32x4_t       search_idx = vmovl_u16(vcreate_u16(0x0003000200010000));
-    const uint16x8_t mv_sse     = vreinterpretq_u16_u32(vdupq_n_u32(mv));
-    uint32x4_t       new_mv_sse = vreinterpretq_u32_u16(vaddq_u16(vreinterpretq_u16_u32(search_idx), mv_sse));
-    vst1q_u32(computed_idx, new_mv_sse);
-
-    search_idx = vmovl_u16(vcreate_u16(0x0007000600050004));
-    new_mv_sse = vreinterpretq_u32_u16(vaddq_u16(vreinterpretq_u16_u32(search_idx), mv_sse));
-    vst1q_u32(computed_idx + 4, new_mv_sse);
-
+    uint32x4_t sad32_lo[4], sad32_hi[4];
     for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 8; j++) {
-            if (p_sad32x32[i][j] < p_best_sad_32x32[i]) {
-                p_best_sad_32x32[i] = p_sad32x32[i][j];
-                p_best_mv32x32[i]   = computed_idx[j];
-            }
-        }
+        compute_4sad_neon(&p_sad16x16[4 * i], &p_sad32x32[i][0], &sad32_lo[i], &sad32_hi[i]);
+        update_best_of_eight(sad32_lo[i], sad32_hi[i], mv, &p_best_sad_32x32[i], &p_best_mv32x32[i]);
     }
-
-    for (int j = 0; j < 8; j++) {
-        if (p_sad64x64[j] < p_best_sad_64x64[0]) {
-            p_best_sad_64x64[0] = p_sad64x64[j];
-            p_best_mv64x64[0]   = computed_idx[j];
-        }
-    }
+    const uint32x4_t sad64_lo = vaddq_u32(vaddq_u32(sad32_lo[0], sad32_lo[1]), vaddq_u32(sad32_lo[2], sad32_lo[3]));
+    const uint32x4_t sad64_hi = vaddq_u32(vaddq_u32(sad32_hi[0], sad32_hi[1]), vaddq_u32(sad32_hi[2], sad32_hi[3]));
+    update_best_of_eight(sad64_lo, sad64_hi, mv, p_best_sad_64x64, p_best_mv64x64);
 }
 
 void svt_ext_sad_calculation_32x32_64x64_neon(uint32_t* p_sad16x16, uint32_t* p_best_sad_32x32,
