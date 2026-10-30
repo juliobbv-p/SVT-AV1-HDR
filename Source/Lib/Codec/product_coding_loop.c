@@ -9109,6 +9109,8 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
     ctx->md_stage       = MD_STAGE_0;
     ctx->mds0_best_idx  = 0;
     ctx->mds0_best_cost = (uint64_t)~0;
+    EbPictureBufferDesc  pred_on_ref;
+    EbPictureBufferDesc* cand_pred = NULL;
     // If there is only a single candidate, skip compensation if transform will be skipped (unless compensation is needed for recon)
     if (fast_candidate_total_count > 1 || perform_md_recon || ctx->lpd1_tx_skip_decision_ctrls.skip_tx_score_th ||
         ctx->lpd1_tx_ctrls.use_mds3_shortcuts_th || is_intra_mode(fast_cand_array[0].block_mi.mode)) {
@@ -9116,8 +9118,20 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
             pcs, ctx, cand_bf_ptr_array_base, fast_cand_array, fast_candidate_total_count, input_pic, &loc);
         cand_bf = cand_bf_ptr_array_base[ctx->mds0_best_idx];
         if (!cand_bf->valid_luma_pred) {
-            ctx->uv_intra_comp_only = false;
-            product_prediction_fun_table_light_pd1[1](0, ctx, pcs, cand_bf);
+            if (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) == EB_EIGHT_BIT) {
+                // The luma prediction of a single-reference full-pel candidate is the reference block itself, so
+                // the block reads it in place (nothing writes the 8-bit luma prediction after MDS0).
+                const BlockModeInfo*       bmi     = &cand_bf->cand->block_mi;
+                const EbPictureBufferDesc* ref_pic = svt_aom_get_ref_pic_buffer(pcs, bmi->ref_frame[0]);
+                pred_on_ref                        = *cand_bf->pred;
+                pred_on_ref.y_buffer = (uint8_t*)svt_aom_light_pd1_fullpel_luma_ref(pcs->scs, ctx, ref_pic, bmi->mv[0]);
+                pred_on_ref.y_stride = ref_pic->y_stride;
+                cand_pred            = cand_bf->pred;
+                cand_bf->pred        = &pred_on_ref;
+            } else {
+                ctx->uv_intra_comp_only = false;
+                product_prediction_fun_table_light_pd1[1](0, ctx, pcs, cand_bf);
+            }
             cand_bf->valid_luma_pred = 1;
         }
 
@@ -9194,6 +9208,9 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
     }
     if (!ctx->skip_intra) {
         copy_recon_light_pd1(pcs, ctx, cand_bf);
+    }
+    if (cand_pred) {
+        cand_bf->pred = cand_pred;
     }
 }
 
