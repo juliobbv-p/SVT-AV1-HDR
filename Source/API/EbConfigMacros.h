@@ -563,9 +563,9 @@
 #define SVT_X86_ONLY_KERNEL_PATHS 0
 #endif
 
-// MOBILE rejects presets below MIN_ENC_PRESET (svt_av1_verify_settings()): clamping the preset where the signal
-// derivations read it lets the compiler drop their branches for the lower presets.
-#if MOBILE_BUILD
+// MOBILE and the minimal RTC build reject presets below MIN_ENC_PRESET (svt_av1_verify_settings()): clamping the
+// preset where the signal derivations read it lets the compiler drop their branches for the lower presets.
+#if MOBILE_BUILD || (RTC_BUILD && MINIMAL_BUILD)
 #define SVT_ENC_MODE(enc_mode) ((enc_mode) < MIN_ENC_PRESET ? MIN_ENC_PRESET : (enc_mode))
 #else
 #define SVT_ENC_MODE(enc_mode) (enc_mode)
