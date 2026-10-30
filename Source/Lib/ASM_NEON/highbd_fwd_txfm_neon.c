@@ -2875,7 +2875,8 @@ uint64_t svt_av1_fwd_txfm2d_64x64_energy_neon(int16_t* input, int32_t* output, u
     int32x4_t buf[1024];
     fdct64x64_unshifted_neon(input, stride, bd, buf);
 
-    int64x2_t energy = vdupq_n_s64(0);
+    // Four accumulators break the multiply-accumulate dependency chain.
+    int64x2_t energy[4] = {vdupq_n_s64(0), vdupq_n_s64(0), vdupq_n_s64(0), vdupq_n_s64(0)};
     for (int g = 0; g < 16; g++) {
         const int32x4_t* in      = buf + g * 64;
         int              c_start = 0;
@@ -2897,13 +2898,16 @@ uint64_t svt_av1_fwd_txfm2d_64x64_energy_neon(int16_t* input, int32_t* output, u
             }
             c_start = 32;
         }
-        for (int c = c_start; c < 64; c++) {
-            const int32x4_t v = vrshrq_n_s32(in[c], 2);
-            energy            = vmlal_s32(energy, vget_low_s32(v), vget_low_s32(v));
-            energy            = vmlal_high_s32(energy, v, v);
+        for (int c = c_start; c < 64; c += 2) {
+            const int32x4_t v0 = vrshrq_n_s32(in[c + 0], 2);
+            const int32x4_t v1 = vrshrq_n_s32(in[c + 1], 2);
+            energy[0]          = vmlal_s32(energy[0], vget_low_s32(v0), vget_low_s32(v0));
+            energy[1]          = vmlal_high_s32(energy[1], v0, v0);
+            energy[2]          = vmlal_s32(energy[2], vget_low_s32(v1), vget_low_s32(v1));
+            energy[3]          = vmlal_high_s32(energy[3], v1, v1);
         }
     }
-    return (uint64_t)vaddvq_s64(energy);
+    return (uint64_t)vaddvq_s64(vaddq_s64(vaddq_s64(energy[0], energy[1]), vaddq_s64(energy[2], energy[3])));
 }
 
 static AOM_FORCE_INLINE void highbd_fdct4_N4_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) {
