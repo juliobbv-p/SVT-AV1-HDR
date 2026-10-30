@@ -2216,8 +2216,9 @@ void set_final_search_centre_sb(PictureParentControlSet* pcs, MeContext* me_ctx)
     }
 }
 
-// Initialize zz SAD array
-static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_t org_x, uint32_t org_y) {
+// Initialize zz SAD array. l0r0_zz_sad: the raw list0/ref0 zz SAD (get_zz_sad()).
+static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_t org_x, uint32_t org_y,
+                        uint32_t l0r0_zz_sad) {
     const uint32_t block_width  = me_ctx->b64_width;
     const uint32_t block_height = me_ctx->b64_height;
     uint32_t       best_zz_sad  = MAX_U32;
@@ -2227,7 +2228,9 @@ static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_
         for (uint8_t ref_i = 0; ref_i < me_ctx->num_of_ref_pic_to_search[list_i]; ++ref_i) {
             if (me_ctx->temporal_layer_index > 0 || list_i == 0) {
                 EbPictureBufferDesc* ref_pic = me_ctx->me_ds_ref_array[list_i][ref_i].picture_ptr;
-                uint32_t             zz_sad  = get_zz_sad(ref_pic, me_ctx, org_x, org_y, block_width, block_height);
+                uint32_t             zz_sad  = list_i == REF_LIST_0 && ref_i == 0
+                    ? l0r0_zz_sad
+                    : get_zz_sad(ref_pic, me_ctx, org_x, org_y, block_width, block_height);
                 //normalize for incomplete b64
                 zz_sad                        = (zz_sad * 64 * 64) / (block_width * block_height);
                 me_ctx->zz_sad[list_i][ref_i] = zz_sad;
@@ -2274,10 +2277,10 @@ static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_
  * performs hierarchical ME for a 64x64 block for every ref frame
  *******************************************/
 static void hme_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_t org_y, MeContext* me_ctx,
-                    EbPictureBufferDesc* input_ptr) {
+                    EbPictureBufferDesc* input_ptr, uint32_t l0r0_zz_sad) {
     // If needed, initialize the zz sad array
     if (me_ctx->me_early_exit_th || me_ctx->me_safe_limit_zz_th) {
-        init_zz_sad(pcs, me_ctx, org_x, org_y);
+        init_zz_sad(pcs, me_ctx, org_x, org_y, l0r0_zz_sad);
     }
 
     if (me_ctx->prehme_ctrl.enable) {
@@ -2858,19 +2861,13 @@ static INLINE void init_me_hme_data(MeContext* me_ctx) {
 // below me_ctx->me_static_b64_th, populate the minimal set of outputs that
 // downstream consumers (construct_me_candidate_array*, compute_distortion)
 // need and return true so the caller can skip init/HME/integer ME.
-static bool me_static_b64_bypass(MeContext* me_ctx, uint32_t b64_origin_x, uint32_t b64_origin_y) {
+static bool me_static_b64_bypass(MeContext* me_ctx, uint32_t l0r0_raw) {
     if (!me_ctx->me_static_b64_th) {
         return false;
     }
 
     // The bypass decision uses the list0/ref0 zero-motion SAD: if the block is static against the
     // primary reference, skip the full ME pipeline (HME + integer search).
-    const uint32_t l0r0_raw = get_zz_sad(me_ctx->me_ds_ref_array[0][0].picture_ptr,
-                                         me_ctx,
-                                         b64_origin_x,
-                                         b64_origin_y,
-                                         me_ctx->b64_width,
-                                         me_ctx->b64_height);
     if ((uint64_t)l0r0_raw * 64 * 64 >= (uint64_t)me_ctx->me_static_b64_th * me_ctx->b64_width * me_ctx->b64_height) {
         return false;
     }
@@ -2947,9 +2944,18 @@ EbErrorType svt_aom_motion_estimation_b64(
     // processed b64, which can drive an out-of-bounds reference fetch in inter prediction
     // (observed as a SIGSEGV in svt_av1_convolve_2d_copy_sr_neon on edge SBs at >=1080p RTC).
     init_me_hme_data(me_ctx);
-    if (!me_static_b64_bypass(me_ctx, b64_origin_x, b64_origin_y)) {
+    // The list0/ref0 zero-MV SAD is used by both the static-block bypass and the HME zz SAD init.
+    const uint32_t l0r0_zz_sad = me_ctx->me_static_b64_th || me_ctx->me_early_exit_th || me_ctx->me_safe_limit_zz_th
+        ? get_zz_sad(me_ctx->me_ds_ref_array[0][0].picture_ptr,
+                     me_ctx,
+                     b64_origin_x,
+                     b64_origin_y,
+                     me_ctx->b64_width,
+                     me_ctx->b64_height)
+        : 0;
+    if (!me_static_b64_bypass(me_ctx, l0r0_zz_sad)) {
         // HME: Perform Hierarchical Motion Estimation for all reference frames for the current 64x64 block.
-        hme_b64(pcs, b64_origin_x, b64_origin_y, me_ctx, input_ptr);
+        hme_b64(pcs, b64_origin_x, b64_origin_y, me_ctx, input_ptr, l0r0_zz_sad);
 
         if (me_ctx->me_type == ME_MCTF && me_ctx->search_results[0][0].hme_sad < me_ctx->tf_me_exit_th) {
             me_ctx->tf_use_pred_64x64_only_th = (uint8_t)~0;
