@@ -42,6 +42,7 @@
 #include "mode_decision.h"
 #include "adaptive_mv_pred.h"
 #include "segmentation.h"
+#include "bitstream_unit.h"
 
 #define INIT_BIT_EST 6000
 #define DIVIDE_AND_ROUND(x, y) (((x) + ((y) >> 1)) / (y))
@@ -8752,6 +8753,27 @@ static void copy_recon_md(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
     } // END RECON COPIES
 }
 
+// Copies the column src[0], src[stride], ..., src[(h - 1) * stride] to dst_inc[0..h-1] and to dst_dec[0], dst_dec[-1],
+// ..., dst_dec[-(h - 1)]; eight samples are gathered into one word so that each destination takes one store per eight.
+static INLINE void copy_recon_column(const uint8_t* src, uint32_t stride, uint32_t h, uint8_t* dst_inc,
+                                     uint8_t* dst_dec) {
+    uint32_t j = 0;
+    for (; j + 8 <= h; j += 8) {
+        uint64_t col = 0;
+        for (uint32_t k = 0; k < 8; k++) {
+            col |= (uint64_t)src[(j + k) * stride] << (8 * k);
+        }
+        // Big-endian order stores sample j + 7 first, the order of dst_dec.
+        const uint64_t col_dec = HToBE64(col);
+        const uint64_t col_inc = BSwap64(col_dec);
+        memcpy(dst_inc + j, &col_inc, sizeof(col_inc));
+        memcpy(dst_dec - j - 7, &col_dec, sizeof(col_dec));
+    }
+    for (; j < h; j++) {
+        dst_inc[j] = dst_dec[-(int32_t)j] = src[j * stride];
+    }
+}
+
 // Since light-PD1 uses pred_depth_only, the recon pixels can be copied directly to the recon buffer (no need
 // to copy to a temp buffer and copy after d2 decision)
 static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ctx,
@@ -8800,10 +8822,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     dst_ptr_top_left  = svt_aom_na_left_ptr(ctx->recon_neigh_y, blk_org_y);
     dst_ptr_bot_right = svt_aom_na_topright_ptr(ctx->recon_neigh_y, blk_org_x, blk_org_y, bwidth);
     src_ptr           = recon_ptr->y_buffer + rec_luma_offset + bwidth - 1;
-    for (j = 0; j < bheight; ++j) {
-        *dst_ptr_bot_right = dst_ptr_top_left[j] = src_ptr[j * recon_ptr->y_stride];
-        dst_ptr_bot_right -= 1;
-    }
+    copy_recon_column(src_ptr, recon_ptr->y_stride, bheight, dst_ptr_top_left, dst_ptr_bot_right);
 
     // Cb
     // Copy top and bottom rows
@@ -8817,10 +8836,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     dst_ptr_top_left  = svt_aom_na_left_ptr(ctx->recon_neigh_cb, blk_origin_y_uv);
     dst_ptr_bot_right = svt_aom_na_topright_ptr(ctx->recon_neigh_cb, blk_origin_x_uv, blk_origin_y_uv, bwidth_uv);
     src_ptr           = recon_ptr->u_buffer + rec_cb_offset + bwidth_uv - 1;
-    for (j = 0; j < bheight_uv; ++j) {
-        *dst_ptr_bot_right = dst_ptr_top_left[j] = src_ptr[j * recon_ptr->u_stride];
-        dst_ptr_bot_right -= 1;
-    }
+    copy_recon_column(src_ptr, recon_ptr->u_stride, bheight_uv, dst_ptr_top_left, dst_ptr_bot_right);
 
     // Cr
     // Copy top and bottom rows
@@ -8834,10 +8850,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     dst_ptr_top_left  = svt_aom_na_left_ptr(ctx->recon_neigh_cr, blk_origin_y_uv);
     dst_ptr_bot_right = svt_aom_na_topright_ptr(ctx->recon_neigh_cr, blk_origin_x_uv, blk_origin_y_uv, bwidth_uv);
     src_ptr           = recon_ptr->v_buffer + rec_cr_offset + bwidth_uv - 1;
-    for (j = 0; j < bheight_uv; ++j) {
-        *dst_ptr_bot_right = dst_ptr_top_left[j] = src_ptr[j * recon_ptr->v_stride];
-        dst_ptr_bot_right -= 1;
-    }
+    copy_recon_column(src_ptr, recon_ptr->v_stride, bheight_uv, dst_ptr_top_left, dst_ptr_bot_right);
 
     // If bypassing EncDec for 10bit, need to save 8bit and 10bit recon
     if (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) > EB_EIGHT_BIT && ctx->bypass_encdec) {
