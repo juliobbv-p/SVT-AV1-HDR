@@ -2489,40 +2489,33 @@ static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs
 
     // Set the count to 1 for all PUs using memset, which is faster than setting at the end of each loop.  The count will only need
     // to be updated if both reference frames are allowed.
-    uint8_t number_of_pus = pcs->enable_me_16x16
+    uint8_t            number_of_pus = pcs->enable_me_16x16
         ? pcs->enable_me_8x8 ? pcs->max_number_of_pus_per_sb : MAX_SB64_PU_COUNT_NO_8X8
         : MAX_SB64_PU_COUNT_WO_16X16;
-    memset(pcs->pa_me_data->me_results[sb_index]->total_me_candidate_index, 1, number_of_pus);
+    MeSbResults* const me_results    = pcs->pa_me_data->me_results[sb_index];
+    memset(me_results->total_me_candidate_index, 1, number_of_pus);
 
+    const uint32_t* const best_sad = ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx];
+    const uint32_t* const best_mv  = ctx->p_sb_best_mv[REF_LIST_0][ref_pic_idx];
     for (uint8_t n_idx = 0; n_idx < pcs->max_number_of_pus_per_sb; ++n_idx) {
+        ctx->me_distortion[z_to_raster[n_idx]] = best_sad[n_idx];
+    }
+    //ME was skipped, so do not add this Unipred candidate
+    if (blk_do_ref == 0) {
+        return;
+    }
+    // The PUs with ME results are the first number_of_pus in z-order.
+    const uint8_t max_cand = pcs->pa_me_data->max_cand;
+    const uint8_t max_refs = pcs->pa_me_data->max_refs;
+    for (uint8_t n_idx = 0; n_idx < number_of_pus; ++n_idx) {
         const uint8_t pu_index = z_to_raster[n_idx];
-
-        uint8_t      use_me_pu          = pcs->enable_me_16x16 ? pcs->enable_me_8x8 || n_idx < MAX_SB64_PU_COUNT_NO_8X8
-                                                               : n_idx < MAX_SB64_PU_COUNT_WO_16X16;
-        MeCandidate* me_candidate_array = NULL;
-        if (use_me_pu) {
-            me_candidate_array =
-                &pcs->pa_me_data->me_results[sb_index]->me_candidate_array[pu_index * pcs->pa_me_data->max_cand];
-        }
-        ctx->me_distortion[pu_index] = ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx];
-        ;
-
-        //ME was skipped, so do not add this Unipred candidate
-        if (blk_do_ref == 0) {
-            continue;
-        }
-
-        if (use_me_pu) {
-            me_candidate_array[0].direction  = REF_LIST_0;
-            me_candidate_array[0].ref_idx_l0 = ref_pic_idx;
-            me_candidate_array[0].ref_idx_l1 = ref_pic_idx;
-            me_candidate_array[0].ref0_list  = 0;
-            me_candidate_array[0].ref1_list  = 0;
-
-            pcs->pa_me_data->me_results[sb_index]
-                ->me_mv_array[pu_index * pcs->pa_me_data->max_refs + ref_pic_idx]
-                .as_int = ctx->p_sb_best_mv[0][ref_pic_idx][n_idx];
-        }
+        MeCandidate*  cand     = &me_results->me_candidate_array[pu_index * max_cand];
+        cand->direction        = REF_LIST_0;
+        cand->ref_idx_l0       = ref_pic_idx;
+        cand->ref_idx_l1       = ref_pic_idx;
+        cand->ref0_list        = 0;
+        cand->ref1_list        = 0;
+        me_results->me_mv_array[pu_index * max_refs + ref_pic_idx].as_int = best_mv[n_idx];
     }
 }
 
