@@ -959,17 +959,6 @@ static void product_coding_loop_init_fast_loop(PictureControlSet* pcs, ModeDecis
     return;
 }
 
-static INLINE bool get_pd0_fullpel_var(const ModeDecisionContext* ctx, MvReferenceFrame ref_frame, Mv mv, uint32_t* var,
-                                       uint32_t* sse) {
-    const Pd0FullpelVar* e = &ctx->pd0_fullpel_var[ctx->blk_ptr->mds_idx];
-    if (e->sb_epoch != ctx->sb_epoch || e->ref_frame != ref_frame || e->mv.as_int != mv.as_int) {
-        return false;
-    }
-    *var = e->var;
-    *sse = e->sse;
-    return true;
-}
-
 static void fast_loop_core_pd0(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                EbPictureBufferDesc* input_pic, uint32_t input_origin_index, uint32_t cu_origin_index) {
     ModeDecisionCandidate* cand = cand_bf->cand;
@@ -1245,11 +1234,21 @@ void fast_loop_core(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs
     } else {
         // Distortion
         if (!SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
-            const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-            unsigned int            sse;
-            uint8_t*                pred_y = pred->y_buffer;
-            uint8_t*                src_y  = input_pic->y_buffer + input_origin_index;
-            cand_bf->luma_fast_dist        = fn_ptr->vf(pred_y, pred->y_stride, src_y, input_pic->y_stride, &sse);
+            const BlockModeInfo* bmi = &cand->block_mi;
+            uint32_t             var, sse;
+            if (!(is_inter_mode(bmi->mode) && bmi->ref_frame[1] <= INTRA_FRAME &&
+                  bmi->motion_mode == SIMPLE_TRANSLATION && !bmi->is_interintra_used &&
+                  !is_global_mv_block(bmi->mode, ctx->blk_geom->bsize, cand->wm_params_l0.wmtype) &&
+                  !((bmi->mv[0].x | bmi->mv[0].y) & 7) && pcs->ppcs->is_not_scaled &&
+                  get_pd0_fullpel_var(ctx, bmi->ref_frame[0], bmi->mv[0], &var, &sse))) {
+                const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
+                var                            = fn_ptr->vf(pred->y_buffer,
+                                                            pred->y_stride,
+                                                            input_pic->y_buffer + input_origin_index,
+                                                            input_pic->y_stride,
+                                                            &sse);
+            }
+            cand_bf->luma_fast_dist = var;
         } else {
             const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
             unsigned int            sse;
@@ -3148,11 +3147,17 @@ static void build_single_ref_mvp_array(PictureControlSet* pcs, ModeDecisionConte
             for (int8_t mvp_index = 0; mvp_index < ctx->mvp_count[list][ref]; mvp_index++) {
                 int32_t ref_origin_index = (ctx->blk_org_x + (ctx->mvp_array[list][ref][mvp_index].x >> 3)) +
                     (ctx->blk_org_y + (ctx->mvp_array[list][ref][mvp_index].y >> 3)) * ref_pic->y_stride;
-                const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-                unsigned int            sse;
-                uint8_t*                pred_y = ref_pic->y_buffer + ref_origin_index;
-                uint8_t*                src_y  = input_pic->y_buffer + input_origin_index;
-                uint32_t mvp_cost = fn_ptr->vf(pred_y, ref_pic->y_stride, src_y, input_pic->y_stride, &sse);
+                const Mv fp_mv = {{(int16_t)(ctx->mvp_array[list][ref][mvp_index].x & ~7),
+                                   (int16_t)(ctx->mvp_array[list][ref][mvp_index].y & ~7)}};
+                uint32_t mvp_cost, sse;
+                if (!get_pd0_fullpel_var(ctx, svt_get_ref_frame_type(list, ref), fp_mv, &mvp_cost, &sse)) {
+                    const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
+                    mvp_cost                       = fn_ptr->vf(ref_pic->y_buffer + ref_origin_index,
+                                                                ref_pic->y_stride,
+                                                                input_pic->y_buffer + input_origin_index,
+                                                                input_pic->y_stride,
+                                                                &sse);
+                }
 
                 if (mvp_cost < best_mvp_cost) {
                     ctx->best_fp_mvp_idx[list][ref]  = mvp_index;

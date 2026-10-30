@@ -356,7 +356,18 @@ int svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, const s
 
     (void)xd;
     (void)cm;
-    besterr = svt_upsampled_setup_center_error(*bestmv, var_params, mv_cost_params, (unsigned int*)distortion);
+    uint32_t pd0_var, pd0_sse;
+    if (ictx != NULL &&
+        get_pd0_fullpel_var((ModeDecisionContext*)ictx,
+                            svt_get_ref_frame_type(ms_params->list_idx, ms_params->ref_idx),
+                            *bestmv,
+                            &pd0_var,
+                            &pd0_sse)) {
+        *distortion = (int)pd0_var;
+        besterr     = pd0_var + svt_aom_fp_mv_err_cost(*bestmv, mv_cost_params);
+    } else {
+        besterr = svt_upsampled_setup_center_error(*bestmv, var_params, mv_cost_params, (unsigned int*)distortion);
+    }
 
     if (ictx != NULL && ms_params->search_stage == SPEL_ME) {
         ModeDecisionContext* ctx                                 = (ModeDecisionContext*)ictx;

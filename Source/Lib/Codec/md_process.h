@@ -1315,6 +1315,18 @@ typedef struct ModeDecisionContext {
     DECLARE_ALIGNED(16, int8_t, md_coeff_contexts[MAX_TX_SQUARE]);
 } ModeDecisionContext;
 
+// Returns the VLPD0 full-pel variance/SSE of the current block if VLPD0 evaluated the same reference and MV.
+static INLINE bool get_pd0_fullpel_var(const ModeDecisionContext* ctx, MvReferenceFrame ref_frame, Mv mv, uint32_t* var,
+                                       uint32_t* sse) {
+    const Pd0FullpelVar* e = &ctx->pd0_fullpel_var[ctx->blk_ptr->mds_idx];
+    if (e->sb_epoch != ctx->sb_epoch || e->ref_frame != ref_frame || e->mv.as_int != mv.as_int) {
+        return false;
+    }
+    *var = e->var;
+    *sse = e->sse;
+    return true;
+}
+
 #if CONFIG_ENABLE_FAST_DECODE_3
 // Decoder-complexity rate of the coarse luma coefficient-rate estimates that only use the eob.
 // Only call when ctx->dec_cost_ctrls.enabled.
