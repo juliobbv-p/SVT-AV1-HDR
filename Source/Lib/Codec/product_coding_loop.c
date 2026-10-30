@@ -751,13 +751,19 @@ void av1_perform_inverse_transform_recon_luma(PictureControlSet* pcs, ModeDecisi
     } while (txb_itr < tu_total_count);
 }
 
+// spatial_sse_recon: the shared candidate recon buffer holds the spatial SSE recon of cand_bf from its MDS3 full loop.
+// It is final for luma when no TX split was selected (the split candidates keep their recon in the TX depth buffers),
+// and for chroma of inter candidates (CFL may change the chroma mode of intra candidates after the chroma recon).
 static void av1_perform_inverse_transform_recon(PictureControlSet* pcs, ModeDecisionContext* ctx,
-                                                ModeDecisionCandidateBuffer* cand_bf, const BlockGeom* blk_geom) {
+                                                ModeDecisionCandidateBuffer* cand_bf, const BlockGeom* blk_geom,
+                                                bool spatial_sse_recon) {
     const uint8_t  tx_depth       = cand_bf->cand->block_mi.tx_depth;
     const uint32_t tu_total_count = tx_blocks_per_depth[ctx->blk_geom->bsize][tx_depth];
     uint32_t       txb_itr        = 0;
     uint32_t       txb_1d_offset = 0, txb_1d_offset_uv = 0;
-    const bool     is_inter = is_inter_mode(cand_bf->cand->block_mi.mode) || cand_bf->cand->block_mi.use_intrabc;
+    const bool     is_inter       = is_inter_mode(cand_bf->cand->block_mi.mode) || cand_bf->cand->block_mi.use_intrabc;
+    const bool     y_recon_ready  = spatial_sse_recon && tx_depth == 0 && !ctx->mds_subres_step;
+    const bool     uv_recon_ready = spatial_sse_recon && ctx->mds_do_chroma && is_inter;
     do {
         const uint32_t txb_origin_x = tx_org[ctx->blk_geom->bsize][is_inter][tx_depth][txb_itr].x;
         const uint32_t txb_origin_y = tx_org[ctx->blk_geom->bsize][is_inter][tx_depth][txb_itr].y;
@@ -815,7 +821,17 @@ static void av1_perform_inverse_transform_recon(PictureControlSet* pcs, ModeDeci
                 rec_cr_offset   = ROUND_UV((txb_origin_x) + (txb_origin_y * recon_buffer->v_stride)) >> 1;
             }
         }
-        if (ctx->blk_ptr->y_has_coeff & (1 << txb_itr)) {
+        if ((ctx->blk_ptr->y_has_coeff & (1 << txb_itr)) && y_recon_ready) {
+            if (recon_buffer != cand_bf->recon) {
+                svt_av1_picture_copy_y(cand_bf->recon,
+                                       txb_origin_x + txb_origin_y * cand_bf->recon->y_stride,
+                                       recon_buffer,
+                                       rec_luma_offset,
+                                       txb_width,
+                                       txb_height,
+                                       SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
+            }
+        } else if (ctx->blk_ptr->y_has_coeff & (1 << txb_itr)) {
             svt_aom_inv_transform_recon_wrapper(pcs,
                                                 ctx,
                                                 cand_bf->pred->y_buffer,
@@ -888,7 +904,17 @@ static void av1_perform_inverse_transform_recon(PictureControlSet* pcs, ModeDeci
                     ((ROUND_UV(txb_origin_x) + ROUND_UV(txb_origin_y) * cand_bf->rec_coeff->u_stride) >> 1);
                 const uint32_t cr_tu_chroma_origin_index =
                     ((ROUND_UV(txb_origin_x) + ROUND_UV(txb_origin_y) * cand_bf->rec_coeff->v_stride) >> 1);
-                if (ctx->blk_ptr->u_has_coeff & (1 << txb_itr)) {
+                if ((ctx->blk_ptr->u_has_coeff & (1 << txb_itr)) && uv_recon_ready) {
+                    if (recon_buffer != cand_bf->recon) {
+                        svt_av1_picture_copy_cb(cand_bf->recon,
+                                                cb_tu_chroma_origin_index,
+                                                recon_buffer,
+                                                rec_cb_offset,
+                                                chroma_txb_width,
+                                                chroma_txb_height,
+                                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
+                    }
+                } else if (ctx->blk_ptr->u_has_coeff & (1 << txb_itr)) {
                     svt_aom_inv_transform_recon_wrapper(pcs,
                                                         ctx,
                                                         cand_bf->pred->u_buffer,
@@ -914,7 +940,17 @@ static void av1_perform_inverse_transform_recon(PictureControlSet* pcs, ModeDeci
                                             SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
                 }
 
-                if (ctx->blk_ptr->v_has_coeff & (1 << txb_itr)) {
+                if ((ctx->blk_ptr->v_has_coeff & (1 << txb_itr)) && uv_recon_ready) {
+                    if (recon_buffer != cand_bf->recon) {
+                        svt_av1_picture_copy_cr(cand_bf->recon,
+                                                cr_tu_chroma_origin_index,
+                                                recon_buffer,
+                                                rec_cr_offset,
+                                                chroma_txb_width,
+                                                chroma_txb_height,
+                                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
+                    }
+                } else if (ctx->blk_ptr->v_has_coeff & (1 << txb_itr)) {
                     svt_aom_inv_transform_recon_wrapper(pcs,
                                                         ctx,
                                                         cand_bf->pred->v_buffer,
@@ -7057,6 +7093,7 @@ static void full_loop_core(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                       &y_coeff_bits,
                       &cb_coeff_bits,
                       &cr_coeff_bits);
+    ctx->spatial_sse_recon_cand = ctx->mds_do_spatial_sse ? cand_bf : NULL;
 }
 
 static void md_stage_1(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictureBufferDesc* input_pic,
@@ -8469,7 +8506,7 @@ static void md_encode_block_pd0(PictureControlSet* pcs, ModeDecisionContext* ctx
         cand_bf->cand->transform_type[0] = DCT_DCT;
         ctx->blk_ptr->y_has_coeff        = cand_bf->y_has_coeff;
         // generate recon
-        av1_perform_inverse_transform_recon(pcs, ctx, cand_bf, ctx->blk_geom);
+        av1_perform_inverse_transform_recon(pcs, ctx, cand_bf, ctx->blk_geom, false);
 
         //copy neigh recon data in blk_ptr
         uint32_t             j;
@@ -9117,7 +9154,7 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
     cand_bf->quant = cand_quant;
     // Perform inverse transform recon when needed
     if (perform_md_recon) {
-        av1_perform_inverse_transform_recon(pcs, ctx, cand_bf, ctx->blk_geom);
+        av1_perform_inverse_transform_recon(pcs, ctx, cand_bf, ctx->blk_geom, false);
     }
 
     // Convert 10bit recon (used as final EncDec recon) to 8bit recon (used for MD intra pred)
@@ -9638,7 +9675,7 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
     ModeDecisionCandidateBuffer* cand_bf = cand_bf_ptr_array[candidate_index];
     //perform inverse transform recon when needed
     if (perform_md_recon) {
-        av1_perform_inverse_transform_recon(pcs, ctx, cand_bf, ctx->blk_geom);
+        av1_perform_inverse_transform_recon(pcs, ctx, cand_bf, ctx->blk_geom, ctx->spatial_sse_recon_cand == cand_bf);
     }
     if (ctx->shape == PART_N &&
         ((!ctx->md_disallow_nsq_search && ctx->nsq_search_ctrls.max_part0_to_part1_dev &&

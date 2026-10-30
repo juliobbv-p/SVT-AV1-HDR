@@ -1290,6 +1290,8 @@ typedef struct ModeDecisionContext {
     Pd0FullpelVar* pd0_fullpel_var;
     // Incremented per SB so that pd0_fullpel_var entries written for previous SBs never match.
     uint32_t sb_epoch;
+    // Candidate whose full loop last wrote the shared candidate recon buffer with the spatial SSE recon.
+    ModeDecisionCandidateBuffer* spatial_sse_recon_cand;
     // chroma components to compensate at MDS3 of LPD1
     COMPONENT_TYPE lpd1_chroma_comp;
     uint8_t        corrupted_mv_check;
