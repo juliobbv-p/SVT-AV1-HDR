@@ -447,11 +447,12 @@ static int32_t av1_write_coeffs_txb_1d(PictureParentControlSet* ppcs, FRAME_CONT
     const int width  = get_txb_wide(tx_size);
     const int height = get_txb_high(tx_size);
 
-    uint8_t* const levels = set_levels(ec_ctx->levels_buf, width, height);
-    svt_av1_txb_init_levels(coeff_buffer_ptr, width, height, levels);
-
     const ScanOrder* const scan_order = get_scan_order(tx_size, tx_type);
     const int16_t* const   scan       = scan_order->scan;
+
+    uint8_t* const levels = set_levels(ec_ctx->levels_buf, width, height);
+    svt_av1_txb_init_levels(
+        coeff_buffer_ptr, width, get_levels_rows(scan, eob, bwl, height, tx_type_to_class[tx_type]), levels);
 
     svt_av1_get_nz_map_contexts(levels, scan, eob, tx_size, tx_type_to_class[tx_type], ec_ctx->coeff_contexts);
 

@@ -378,10 +378,7 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
     }
 
     if (eob > 1) {
-        svt_av1_txb_init_levels(qcoeff,
-                                width,
-                                height,
-                                levels); // NM - Needs to be optimized - to be combined with the quantisation.
+        svt_av1_txb_init_levels(qcoeff, width, get_levels_rows(scan, eob, bwl, height, tx_class), levels);
     }
     const bool is_inter = is_inter_mode(cand_bf->cand->block_mi.mode);
     // Transform type bit estimation

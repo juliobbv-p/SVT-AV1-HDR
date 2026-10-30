@@ -97,6 +97,18 @@ static INLINE uint8_t* set_levels(uint8_t* const levels_buf, const int32_t width
     return levels_buf + LEVELS_TAIL_OFFSET - height * stride;
 }
 
+// Rows of the levels buffer read when coding the first eob (> 1) coefficients. Contexts reach 2 rows below a coded
+// position, and in the up-right diagonal scan of TX_CLASS_2D no position before scan[eob - 1] lies on a later
+// anti-diagonal.
+static INLINE int32_t get_levels_rows(const int16_t* scan, int32_t eob, int32_t bwl, int32_t height, TxClass tx_class) {
+    if (tx_class != TX_CLASS_2D) {
+        return height;
+    }
+    const int32_t pos = scan[eob - 1];
+    // multiple of 4: the AVX2/AVX512 svt_av1_txb_init_levels kernels fill 4 rows per step
+    return AOMMIN(height, ((pos >> bwl) + (pos & ((1 << bwl) - 1)) + 3 + 3) & ~3);
+}
+
 static INLINE TxSize av1_get_adjusted_tx_size(TxSize tx_size) {
     switch (tx_size) {
     case TX_64X64:

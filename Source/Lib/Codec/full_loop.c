@@ -1086,7 +1086,7 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
     uint8_t* const levels = set_levels(ctx->md_levels_buf, width, height);
 
     if (*eob > 1) {
-        svt_av1_txb_init_levels(qcoeff_ptr, width, height, levels);
+        svt_av1_txb_init_levels(qcoeff_ptr, width, get_levels_rows(scan, *eob, bwl, height, tx_class), levels);
     }
     int accu_rate = eob_cost;
 
