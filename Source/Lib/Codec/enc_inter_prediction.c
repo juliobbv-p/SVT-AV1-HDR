@@ -3814,6 +3814,31 @@ EbErrorType svt_aom_inter_pu_prediction_av1_light_pd1(uint8_t hbd_md, ModeDecisi
     return EB_ErrorNone;
 }
 
+// The 8-bit luma block that the light PD1 prediction of a single-reference full-pel MV on an unscaled reference
+// copies.
+const uint8_t* svt_aom_light_pd1_fullpel_luma_ref(SequenceControlSet* scs, ModeDecisionContext* ctx,
+                                                  const EbPictureBufferDesc* ref_pic, Mv mv) {
+    SubpelParams subpel_params;
+    int32_t      pos_y, pos_x;
+    compute_subpel_params(scs,
+                          ctx->blk_org_y,
+                          ctx->blk_org_x,
+                          mv,
+                          &scs->sf_identity,
+                          ref_pic->width,
+                          ref_pic->height,
+                          ctx->blk_geom->bwidth,
+                          ctx->blk_geom->bheight,
+                          ctx->blk_ptr->av1xd,
+                          0,
+                          0,
+                          &subpel_params,
+                          &pos_y,
+                          &pos_x);
+    assert(!subpel_params.subpel_x && !subpel_params.subpel_y);
+    return ref_pic->y_buffer + pos_x + pos_y * ref_pic->y_stride;
+}
+
 EbErrorType svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
                                             ModeDecisionCandidateBuffer* cand_bf) {
     SVT_FOLD_HBD_MD(hbd_md);

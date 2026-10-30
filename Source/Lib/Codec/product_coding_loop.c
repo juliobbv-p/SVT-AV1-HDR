@@ -1034,18 +1034,26 @@ static void fast_loop_core_light_pd1(ModeDecisionCandidateBuffer* cand_bf, Pictu
             }
         }
     }
-    // Prediction
-    ctx->uv_intra_comp_only = false;
-    product_prediction_fun_table_light_pd1[is_inter_mode(cand->block_mi.mode)](0, ctx, pcs, cand_bf);
-    // Distortion
-    // A single-reference full-pel prediction is the reference block itself, so VLPD0 may already have its variance.
-    const BlockModeInfo* bmi = &cand->block_mi;
-    uint32_t             var, sse;
-    if (!(is_inter_mode(bmi->mode) && bmi->ref_frame[1] <= INTRA_FRAME && !((bmi->mv[0].x | bmi->mv[0].y) & 7) &&
-          pcs->ppcs->is_not_scaled && get_pd0_fullpel_var(ctx, bmi->ref_frame[0], bmi->mv[0], &var, &sse))) {
-        const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-        var                            = fn_ptr->vf(
-            pred->y_buffer, pred->y_stride, input_pic->y_buffer + loc->input_origin_index, input_pic->y_stride, &sse);
+    // A single-reference full-pel prediction is a copy of the reference block, so its variance is taken from VLPD0
+    // or computed on the reference. The prediction is then only made if the candidate is selected for MDS3 (see
+    // md_encode_block_light_pd1()).
+    const BlockModeInfo*    bmi    = &cand->block_mi;
+    const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
+    const uint8_t*          src_y  = input_pic->y_buffer + loc->input_origin_index;
+    uint32_t                var, sse;
+    ctx->uv_intra_comp_only  = false;
+    cand_bf->valid_luma_pred = !(is_inter_mode(bmi->mode) && bmi->ref_frame[1] <= INTRA_FRAME &&
+                                 !((bmi->mv[0].x | bmi->mv[0].y) & 7) && pcs->ppcs->is_not_scaled);
+    if (cand_bf->valid_luma_pred) {
+        product_prediction_fun_table_light_pd1[is_inter_mode(cand->block_mi.mode)](0, ctx, pcs, cand_bf);
+        var = fn_ptr->vf(pred->y_buffer, pred->y_stride, src_y, input_pic->y_stride, &sse);
+    } else if (!get_pd0_fullpel_var(ctx, bmi->ref_frame[0], bmi->mv[0], &var, &sse)) {
+        const EbPictureBufferDesc* ref_pic = svt_aom_get_ref_pic_buffer(pcs, bmi->ref_frame[0]);
+        var = fn_ptr->vf(svt_aom_light_pd1_fullpel_luma_ref(pcs->scs, ctx, ref_pic, bmi->mv[0]),
+                         ref_pic->y_stride,
+                         src_y,
+                         input_pic->y_stride,
+                         &sse);
     }
     cand_bf->luma_fast_dist = var;
     // Shift variance by 4 because we use full lambda in the cost (since variance is proportional to sse)
@@ -9106,6 +9114,12 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
         ctx->lpd1_tx_ctrls.use_mds3_shortcuts_th || is_intra_mode(fast_cand_array[0].block_mi.mode)) {
         md_stage_0_light_pd1(
             pcs, ctx, cand_bf_ptr_array_base, fast_cand_array, fast_candidate_total_count, input_pic, &loc);
+        cand_bf = cand_bf_ptr_array_base[ctx->mds0_best_idx];
+        if (!cand_bf->valid_luma_pred) {
+            ctx->uv_intra_comp_only = false;
+            product_prediction_fun_table_light_pd1[1](0, ctx, pcs, cand_bf);
+            cand_bf->valid_luma_pred = 1;
+        }
 
         ctx->perform_mds1 = 0;
     } else {
