@@ -240,8 +240,8 @@ static inline uint8x16_t get_coeff_contexts_kernel(uint8x16_t* const level) {
     return count;
 }
 
-static inline void get_4_nz_map_contexts_2d(const uint8_t* levels, const int32_t height, const ptrdiff_t* const offsets,
-                                            uint8_t* const coeff_contexts) {
+static inline void get_4_nz_map_contexts_2d(const uint8_t* levels, const int32_t height, const int32_t rows,
+                                            const ptrdiff_t* const offsets, uint8_t* const coeff_contexts) {
     const int32_t    stride              = 4 + TX_PAD_HOR;
     const uint8x16_t pos_to_offset_large = vdupq_n_u8(21);
 
@@ -250,7 +250,7 @@ static inline void get_4_nz_map_contexts_2d(const uint8_t* levels, const int32_t
     uint8x16_t count;
     uint8x16_t level[5];
     uint8_t*   cc  = coeff_contexts;
-    int        row = height;
+    int        row = rows;
 
     assert(!(height % 4));
 
@@ -268,14 +268,14 @@ static inline void get_4_nz_map_contexts_2d(const uint8_t* levels, const int32_t
     coeff_contexts[0] = 0;
 }
 
-static inline void get_8_coeff_contexts_2d(const uint8_t* levels, const int32_t height, const ptrdiff_t* const offsets,
-                                           uint8_t* coeff_contexts) {
+static inline void get_8_coeff_contexts_2d(const uint8_t* levels, const int32_t height, const int32_t rows,
+                                           const ptrdiff_t* const offsets, uint8_t* coeff_contexts) {
     const int32_t stride = 8 + TX_PAD_HOR;
     uint8_t*      cc     = coeff_contexts;
     uint8x16_t    count;
     uint8x16_t    level[5];
     uint8x16_t    pos_to_offset[3];
-    int32_t       row = height;
+    int32_t       row = rows;
 
     assert(!(height % 2));
 
@@ -307,11 +307,11 @@ static inline void get_8_coeff_contexts_2d(const uint8_t* levels, const int32_t 
 }
 
 static inline void get_16n_coeff_contexts_2d(const uint8_t* levels, const int32_t real_width, const int32_t real_height,
-                                             const int32_t width, const int32_t height, const ptrdiff_t* const offsets,
+                                             const int32_t width, const int32_t rows, const ptrdiff_t* const offsets,
                                              uint8_t* coeff_contexts) {
     const int32_t stride = width + TX_PAD_HOR;
     uint8_t*      cc     = coeff_contexts;
-    int32_t       row    = height;
+    int32_t       row    = rows;
     uint8x16_t    pos_to_offset[5];
     uint8x16_t    pos_to_offset_large[3];
     uint8x16_t    count;
@@ -547,17 +547,22 @@ void svt_av1_get_nz_map_contexts_neon(const uint8_t* const levels, const int16_t
     /* coeff_contexts must be 16 byte aligned. */
     assert(!((intptr_t)coeff_contexts & 0xf));
 
+    const int32_t bwl = get_txb_bwl(tx_size);
+    const int32_t pos = scan[last_idx];
     if (tx_class == TX_CLASS_2D) {
         offsets[0] = 0 * stride + 2;
         offsets[1] = 1 * stride + 1;
         offsets[2] = 2 * stride + 0;
 
+        // Contexts are only read for the first eob positions of the up-right diagonal scan, which lie on rows up to
+        // the anti-diagonal of the last one.
+        const int32_t rows = AOMMIN(height, (pos >> bwl) + (pos & (width - 1)) + 1);
         if (width == 4) {
-            get_4_nz_map_contexts_2d(levels, height, offsets, coefficients);
+            get_4_nz_map_contexts_2d(levels, height, (rows + 3) & ~3, offsets, coefficients);
         } else if (width == 8) {
-            get_8_coeff_contexts_2d(levels, height, offsets, coefficients);
+            get_8_coeff_contexts_2d(levels, height, (rows + 1) & ~1, offsets, coefficients);
         } else {
-            get_16n_coeff_contexts_2d(levels, real_width, real_height, width, height, offsets, coefficients);
+            get_16n_coeff_contexts_2d(levels, real_width, real_height, width, rows, offsets, coefficients);
         }
     } else if (tx_class == TX_CLASS_HORIZ) {
         offsets[0] = 2;
@@ -583,8 +588,6 @@ void svt_av1_get_nz_map_contexts_neon(const uint8_t* const levels, const int16_t
         }
     }
 
-    const int32_t bwl = get_txb_bwl(tx_size);
-    const int32_t pos = scan[last_idx];
     if (last_idx <= (height << bwl) / 8) {
         coeff_contexts[pos] = 1;
     } else if (last_idx <= (height << bwl) / 4) {
