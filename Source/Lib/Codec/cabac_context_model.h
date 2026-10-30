@@ -95,12 +95,9 @@ static INLINE void update_cdf(AomCdfProb* cdf, int val, int nsymbs) {
 
     EB_ASSUME(val < nsymbs);
 
-    int i = 0;
-    for (; i < val; i++) {
-        cdf[i] += (CDF_PROB_TOP - cdf[i]) >> rate;
-    }
-    for (; i < nsymbs - 1; i++) {
-        cdf[i] -= cdf[i] >> rate;
+    for (int i = 0; i < nsymbs - 1; i++) {
+        const int c = cdf[i];
+        cdf[i]      = (AomCdfProb)(i < val ? c + ((CDF_PROB_TOP - c) >> rate) : c - (c >> rate));
     }
 }
 
