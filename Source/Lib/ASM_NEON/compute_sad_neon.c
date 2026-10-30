@@ -668,373 +668,45 @@ static inline void update_best_cost_u32(uint32x4_t cost4, uint32_t* best_cost, i
     }
 }
 
-static inline void svt_pme_sad_loop_kernel4xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                   uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                   uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                   int16_t* best_mvy, int16_t search_position_start_x,
-                                                   int16_t search_position_start_y, int16_t search_area_width,
-                                                   int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                   int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint16x8_t     res8;
-    uint32x4_t     cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src                = src;
-            p_ref                = ref + j;
-            res8                 = sad4xhx8d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            uint32x4_t res8_low  = vmovl_u16(vget_low_u16(res8));
-            uint32x4_t res8_high = vmovl_u16(vget_high_u16(res8));
-            cost4_low            = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-            res4_1 = vaddq_u32(res8_low, cost4_low);
-            res4_2 = vaddq_u32(res8_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
+// SADs of a block_width x block_height block at the 8 horizontal positions ref + 0..7.
+static inline void pme_sad8d_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                  uint32_t block_width, uint32_t block_height, uint32x4_t sad[2]) {
+    switch (block_width) {
+    case 4: {
+        const uint16x8_t sad8 = sad4xhx8d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[0]                = vmovl_u16(vget_low_u16(sad8));
+        sad[1]                = vmovl_u16(vget_high_u16(sad8));
+        break;
     }
-}
-
-static inline void svt_pme_sad_loop_kernel8xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                   uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                   uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                   int16_t* best_mvy, int16_t search_position_start_x,
-                                                   int16_t search_position_start_y, int16_t search_area_width,
-                                                   int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                   int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint32x4_t     sad4_low, sad4_high, cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src     = src;
-            p_ref     = ref + j;
-            sad4_low  = sad8xhx4d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            sad4_high = sad8xhx4d_neon(p_src, src_stride, p_ref + 4, ref_stride, block_height);
-
-            cost4_low = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-            res4_1 = vaddq_u32(sad4_low, cost4_low);
-            res4_2 = vaddq_u32(sad4_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
-    }
-}
-
-static inline void svt_pme_sad_loop_kernel16xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                    uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                    uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                    int16_t* best_mvy, int16_t search_position_start_x,
-                                                    int16_t search_position_start_y, int16_t search_area_width,
-                                                    int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                    int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint32x4_t     sad4_low, sad4_high, cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src     = src;
-            p_ref     = ref + j;
-            sad4_low  = sad16xhx4d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            sad4_high = sad16xhx4d_neon(p_src, src_stride, p_ref + 4, ref_stride, block_height);
-
-            cost4_low = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-            res4_1 = vaddq_u32(sad4_low, cost4_low);
-            res4_2 = vaddq_u32(sad4_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
-    }
-}
-
-static inline void svt_pme_sad_loop_kernel24xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                    uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                    uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                    int16_t* best_mvy, int16_t search_position_start_x,
-                                                    int16_t search_position_start_y, int16_t search_area_width,
-                                                    int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                    int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint32x4_t     sad4_low, sad4_high, cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src     = src;
-            p_ref     = ref + j;
-            sad4_low  = sad24xhx4d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            sad4_high = sad24xhx4d_neon(p_src, src_stride, p_ref + 4, ref_stride, block_height);
-
-            cost4_low = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-            res4_1 = vaddq_u32(sad4_low, cost4_low);
-            res4_2 = vaddq_u32(sad4_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
-    }
-}
-
-static inline void svt_pme_sad_loop_kernel32xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                    uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                    uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                    int16_t* best_mvy, int16_t search_position_start_x,
-                                                    int16_t search_position_start_y, int16_t search_area_width,
-                                                    int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                    int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint32x4_t     sad4_low, sad4_high, cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src     = src;
-            p_ref     = ref + j;
-            sad4_low  = sad32xhx4d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            sad4_high = sad32xhx4d_neon(p_src, src_stride, p_ref + 4, ref_stride, block_height);
-
-            cost4_low = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-            res4_1 = vaddq_u32(sad4_low, cost4_low);
-            res4_2 = vaddq_u32(sad4_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
-    }
-}
-
-static inline void svt_pme_sad_loop_kernel48xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                    uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                    uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                    int16_t* best_mvy, int16_t search_position_start_x,
-                                                    int16_t search_position_start_y, int16_t search_area_width,
-                                                    int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                    int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint32x4_t     sad4_low, sad4_high, cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src     = src;
-            p_ref     = ref + j;
-            sad4_low  = sad48xhx4d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            sad4_high = sad48xhx4d_neon(p_src, src_stride, p_ref + 4, ref_stride, block_height);
-
-            cost4_low = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-            res4_1 = vaddq_u32(sad4_low, cost4_low);
-            res4_2 = vaddq_u32(sad4_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
-    }
-}
-
-static inline void svt_pme_sad_loop_kernel64xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                    uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                    uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                    int16_t* best_mvy, int16_t search_position_start_x,
-                                                    int16_t search_position_start_y, int16_t search_area_width,
-                                                    int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                    int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint32x4_t     sad4_low, sad4_high, cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src     = src;
-            p_ref     = ref + j;
-            sad4_low  = sad64xhx4d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            sad4_high = sad64xhx4d_neon(p_src, src_stride, p_ref + 4, ref_stride, block_height);
-
-            cost4_low = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-
-            res4_1 = vaddq_u32(sad4_low, cost4_low);
-            res4_2 = vaddq_u32(sad4_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
-    }
-}
-
-static inline void svt_pme_sad_loop_kernel128xh_neon(const svt_mv_cost_param* mv_cost_params, uint8_t* src,
-                                                     uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,
-                                                     uint32_t block_height, uint32_t* best_cost, int16_t* best_mvx,
-                                                     int16_t* best_mvy, int16_t search_position_start_x,
-                                                     int16_t search_position_start_y, int16_t search_area_width,
-                                                     int16_t search_area_height, int16_t search_step, int16_t mvx,
-                                                     int16_t mvy) {
-    int16_t        i, j;
-    const uint8_t *p_ref, *p_src;
-    uint32x4_t     sad4_low, sad4_high, cost4_low, cost4_high, res4_1, res4_2;
-
-    for (i = 0; i < search_area_height; i += search_step) {
-        for (j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
-            p_src     = src;
-            p_ref     = ref + j;
-            sad4_low  = sad128xhx4d_neon(p_src, src_stride, p_ref, ref_stride, block_height);
-            sad4_high = sad128xhx4d_neon(p_src, src_stride, p_ref + 4, ref_stride, block_height);
-
-            cost4_low = get_mv_cost_vector(
-                mv_cost_params, i, j, mvx, mvy, search_position_start_x, search_position_start_y);
-            cost4_high = get_mv_cost_vector(
-                mv_cost_params, i, j + 4, mvx, mvy, search_position_start_x, search_position_start_y);
-            res4_1 = vaddq_u32(sad4_low, cost4_low);
-            res4_2 = vaddq_u32(sad4_high, cost4_high);
-            update_best_cost_u32(res4_1,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-            update_best_cost_u32(res4_2,
-                                 best_cost,
-                                 best_mvx,
-                                 best_mvy,
-                                 j + 4 + search_position_start_x,
-                                 i + search_position_start_y,
-                                 mvx,
-                                 mvy);
-        }
-
-        ref += search_step * ref_stride;
+    case 8:
+        sad[0] = sad8xhx4d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[1] = sad8xhx4d_neon(src, src_stride, ref + 4, ref_stride, block_height);
+        break;
+    case 16:
+        sad[0] = sad16xhx4d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[1] = sad16xhx4d_neon(src, src_stride, ref + 4, ref_stride, block_height);
+        break;
+    case 24:
+        sad[0] = sad24xhx4d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[1] = sad24xhx4d_neon(src, src_stride, ref + 4, ref_stride, block_height);
+        break;
+    case 32:
+        sad[0] = sad32xhx4d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[1] = sad32xhx4d_neon(src, src_stride, ref + 4, ref_stride, block_height);
+        break;
+    case 48:
+        sad[0] = sad48xhx4d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[1] = sad48xhx4d_neon(src, src_stride, ref + 4, ref_stride, block_height);
+        break;
+    case 64:
+        sad[0] = sad64xhx4d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[1] = sad64xhx4d_neon(src, src_stride, ref + 4, ref_stride, block_height);
+        break;
+    default:
+        assert(block_width == 128);
+        sad[0] = sad128xhx4d_neon(src, src_stride, ref, ref_stride, block_height);
+        sad[1] = sad128xhx4d_neon(src, src_stride, ref + 4, ref_stride, block_height);
+        break;
     }
 }
 
@@ -1045,159 +717,16 @@ void svt_pme_sad_loop_kernel_neon(const svt_mv_cost_param* mv_cost_params, uint8
                                   int16_t search_area_width, int16_t search_area_height, int16_t search_step,
                                   int16_t mvx, int16_t mvy) {
     switch (block_width) {
-    case 4: {
-        svt_pme_sad_loop_kernel4xh_neon(mv_cost_params,
-                                        src,
-                                        src_stride,
-                                        ref,
-                                        ref_stride,
-                                        block_height,
-                                        best_cost,
-                                        best_mvx,
-                                        best_mvy,
-                                        search_position_start_x,
-                                        search_position_start_y,
-                                        search_area_width,
-                                        search_area_height,
-                                        search_step,
-                                        mvx,
-                                        mvy);
+    case 4:
+    case 8:
+    case 16:
+    case 24:
+    case 32:
+    case 48:
+    case 64:
+    case 128:
         break;
-    }
-    case 8: {
-        svt_pme_sad_loop_kernel8xh_neon(mv_cost_params,
-                                        src,
-                                        src_stride,
-                                        ref,
-                                        ref_stride,
-                                        block_height,
-                                        best_cost,
-                                        best_mvx,
-                                        best_mvy,
-                                        search_position_start_x,
-                                        search_position_start_y,
-                                        search_area_width,
-                                        search_area_height,
-                                        search_step,
-                                        mvx,
-                                        mvy);
-        break;
-    }
-    case 16: {
-        svt_pme_sad_loop_kernel16xh_neon(mv_cost_params,
-                                         src,
-                                         src_stride,
-                                         ref,
-                                         ref_stride,
-                                         block_height,
-                                         best_cost,
-                                         best_mvx,
-                                         best_mvy,
-                                         search_position_start_x,
-                                         search_position_start_y,
-                                         search_area_width,
-                                         search_area_height,
-                                         search_step,
-                                         mvx,
-                                         mvy);
-        break;
-    }
-    case 24: {
-        svt_pme_sad_loop_kernel24xh_neon(mv_cost_params,
-                                         src,
-                                         src_stride,
-                                         ref,
-                                         ref_stride,
-                                         block_height,
-                                         best_cost,
-                                         best_mvx,
-                                         best_mvy,
-                                         search_position_start_x,
-                                         search_position_start_y,
-                                         search_area_width,
-                                         search_area_height,
-                                         search_step,
-                                         mvx,
-                                         mvy);
-        break;
-    }
-    case 32: {
-        svt_pme_sad_loop_kernel32xh_neon(mv_cost_params,
-                                         src,
-                                         src_stride,
-                                         ref,
-                                         ref_stride,
-                                         block_height,
-                                         best_cost,
-                                         best_mvx,
-                                         best_mvy,
-                                         search_position_start_x,
-                                         search_position_start_y,
-                                         search_area_width,
-                                         search_area_height,
-                                         search_step,
-                                         mvx,
-                                         mvy);
-        break;
-    }
-    case 48: {
-        svt_pme_sad_loop_kernel48xh_neon(mv_cost_params,
-                                         src,
-                                         src_stride,
-                                         ref,
-                                         ref_stride,
-                                         block_height,
-                                         best_cost,
-                                         best_mvx,
-                                         best_mvy,
-                                         search_position_start_x,
-                                         search_position_start_y,
-                                         search_area_width,
-                                         search_area_height,
-                                         search_step,
-                                         mvx,
-                                         mvy);
-        break;
-    }
-    case 64: {
-        svt_pme_sad_loop_kernel64xh_neon(mv_cost_params,
-                                         src,
-                                         src_stride,
-                                         ref,
-                                         ref_stride,
-                                         block_height,
-                                         best_cost,
-                                         best_mvx,
-                                         best_mvy,
-                                         search_position_start_x,
-                                         search_position_start_y,
-                                         search_area_width,
-                                         search_area_height,
-                                         search_step,
-                                         mvx,
-                                         mvy);
-        break;
-    }
-    case 128: {
-        svt_pme_sad_loop_kernel128xh_neon(mv_cost_params,
-                                          src,
-                                          src_stride,
-                                          ref,
-                                          ref_stride,
-                                          block_height,
-                                          best_cost,
-                                          best_mvx,
-                                          best_mvy,
-                                          search_position_start_x,
-                                          search_position_start_y,
-                                          search_area_width,
-                                          search_area_height,
-                                          search_step,
-                                          mvx,
-                                          mvy);
-        break;
-    }
-    default: {
+    default:
         svt_pme_sad_loop_kernel_c(mv_cost_params,
                                   src,
                                   src_stride,
@@ -1215,8 +744,30 @@ void svt_pme_sad_loop_kernel_neon(const svt_mv_cost_param* mv_cost_params, uint8
                                   search_step,
                                   mvx,
                                   mvy);
-        break;
+        return;
     }
+
+    for (int16_t i = 0; i < search_area_height; i += search_step) {
+        for (int16_t j = 0; j <= search_area_width - 8; j += (8 + search_step - 1)) {
+            uint32x4_t sad[2];
+            pme_sad8d_neon(src, src_stride, ref + j, ref_stride, block_width, block_height, sad);
+            for (int16_t k = 0; k < 8; k += 4) {
+                const uint32x4_t cost = vaddq_u32(
+                    sad[k >> 2],
+                    get_mv_cost_vector(
+                        mv_cost_params, i, j + k, mvx, mvy, search_position_start_x, search_position_start_y));
+                update_best_cost_u32(cost,
+                                     best_cost,
+                                     best_mvx,
+                                     best_mvy,
+                                     j + k + search_position_start_x,
+                                     i + search_position_start_y,
+                                     mvx,
+                                     mvy);
+            }
+        }
+
+        ref += search_step * ref_stride;
     }
 }
 
