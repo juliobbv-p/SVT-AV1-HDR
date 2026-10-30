@@ -1137,15 +1137,15 @@ typedef struct ModeDecisionContext {
     RefResults             ref_filtering_res[TOT_INTER_GROUP][MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH];
     RefPruningControls     ref_pruning_ctrls;
     // Signal to control initial and final pass PD setting(s)
-    PdPass               pd_pass;
-    CflCtrls             cfl_ctrls;
-    TxsControls          txs_ctrls;
-    TxtControls          txt_ctrls;
-    CandReductionCtrls   cand_reduction_ctrls;
-    NsqGeomCtrls         nsq_geom_ctrls;
-    NsqSearchCtrls       nsq_search_ctrls;
-    DepthEarlyExitCtrls  depth_early_exit_ctrls;
-    RdoqCtrls            rdoq_ctrls;
+    PdPass              pd_pass;
+    CflCtrls            cfl_ctrls;
+    TxsControls         txs_ctrls;
+    TxtControls         txt_ctrls;
+    CandReductionCtrls  cand_reduction_ctrls;
+    NsqGeomCtrls        nsq_geom_ctrls;
+    NsqSearchCtrls      nsq_search_ctrls;
+    DepthEarlyExitCtrls depth_early_exit_ctrls;
+    RdoqCtrls           rdoq_ctrls;
 #if CONFIG_ENABLE_FAST_DECODE_3
     DecCostCtrls dec_cost_ctrls;
 #endif
@@ -1275,13 +1275,6 @@ typedef struct ModeDecisionContext {
     // when plane_residual_sad < th * blk_area_uv -> skip that plane's TX/Q/RDOQ. Evaluated
     // per-plane; can collapse to whole-block SKIP if luma also has zero coeffs. 0: OFF.
     uint16_t lpd1_chroma_skip_energy_th; // skip chroma via chroma residual energy
-    // Per-pixel residual-cost threshold for the LPD1 GLOBALMV (MDS0-2) bypass.
-    // 0: OFF. Otherwise: bypass fires when pd0_mds0_best_cost[mds_idx] < th * blk_area.
-    uint8_t lpd1_globalmv_bypass_th;
-    // Parallel-to-md_blk_arr_nsq array of PD0 MDS0 best costs, consumed by the LPD1
-    // GLOBALMV-bypass classifier. Reset to UINT32_MAX per SB via a single memset; PD0 storage
-    // sites overwrite per block. UINT32_MAX => "not available" => bypass declines (safe fallback).
-    uint32_t* pd0_mds0_best_cost;
     // chroma components to compensate at MDS3 of LPD1
     COMPONENT_TYPE lpd1_chroma_comp;
     uint8_t        corrupted_mv_check;

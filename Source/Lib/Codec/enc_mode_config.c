@@ -7573,8 +7573,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_default(PictureControlSet* pcs, ModeDec
             l1_was_64x64_mvp              = ref_obj_l1->sb_64x64_mvp[ctx->sb_index];
         }
     }
-    uint8_t ref_skip_perc        = pcs->ref_skip_percentage;
-    ctx->lpd1_globalmv_bypass_th = 0;
+    uint8_t ref_skip_perc = pcs->ref_skip_percentage;
 
     // Set candidate reduction levels
     uint8_t cand_reduction_level = 0;
@@ -7772,8 +7771,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_rtc(PictureControlSet* pcs, ModeDecisio
             l1_was_64x64_mvp              = ref_obj_l1->sb_64x64_mvp[ctx->sb_index];
         }
     }
-    uint8_t ref_skip_perc        = pcs->ref_skip_percentage;
-    ctx->lpd1_globalmv_bypass_th = 0;
+    uint8_t ref_skip_perc = pcs->ref_skip_percentage;
 
     // Set candidate reduction levels
     uint8_t cand_reduction_level = 0;

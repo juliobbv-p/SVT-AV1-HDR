@@ -8252,8 +8252,8 @@ static INLINE uint64_t compute_lpd0_cost_from_variance(ModeDecisionContext* ctx,
     return RDCOST(lambda, partition_rate, dist);
 }
 
-// Evaluates unipred ME candidates directly on the reference buffer and writes blk_ptr->cost
-// (and pd0_mds0_best_cost). Mirrors compute_vlpd0_cost_allintra.
+// Evaluates unipred ME candidates directly on the reference buffer and writes blk_ptr->cost.
+// Mirrors compute_vlpd0_cost_allintra.
 // - VLPD0 is not supported on I_SLICE so !I_SLICE is guaranteed.
 // - lpd0_use_src_samples is always 0, so no neighbour copy needed.
 // - BI_PRED is always skipped (see inject_new_candidates_light_pd0).
@@ -8332,8 +8332,6 @@ static void compute_lpd0_cost_inter(PictureControlSet* pcs, ModeDecisionContext*
 
     // Compute block cost from best variance (same formula as original VLPD0 path)
     ctx->blk_ptr->cost = compute_lpd0_cost_from_variance(ctx, (uint32_t)best_cost);
-
-    ctx->pd0_mds0_best_cost[ctx->blk_ptr->mds_idx] = (uint32_t)best_cost;
 }
 
 #if CONFIG_ENABLE_FAST_DECODE_3
@@ -8403,11 +8401,6 @@ static void md_encode_block_pd0(PictureControlSet* pcs, ModeDecisionContext* ctx
     } else {
         md_stage_0_pd0(pcs, ctx, fast_candidate_total_count, input_pic, input_origin_index, blk_origin_index);
     }
-    // Store PD0 MDS0 best cost (residual variance) for use by the LPD1 MDS0-bypass classifier.
-    // When the single-candidate skip path runs (no distortion computed), mds0_best_cost stays at
-    // its init value (uint64_t)~0, which truncates to UINT32_MAX and naturally signals "not available".
-    ctx->pd0_mds0_best_cost[blk_ptr->mds_idx] = (uint32_t)ctx->mds0_best_cost;
-
     ctx->md_stage = MD_STAGE_3;
     md_stage_3_pd0(pcs, ctx, input_pic, input_origin_index, blk_origin_index);
     // Update the cost
@@ -8948,96 +8941,6 @@ static void convert_md_recon_16bit_to_8bit(PictureControlSet* pcs, ModeDecisionC
                       ctx->blk_geom->bheight_uv);
 }
 
-// Check if reference frame pair of the current block matches with the given
-// block.
-static bool lpd1_try_mds0_bypass(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictureBufferDesc* input_pic,
-                                 const BlockLocation* loc, ModeDecisionCandidateBuffer** cand_bf_ptr_array_base,
-                                 ModeDecisionCandidate* fast_cand_array, uint32_t* fast_candidate_total_count) {
-    if (pcs->slice_type == I_SLICE || !ctx->lpd1_globalmv_bypass_th || ctx->shape != PART_N ||
-        pcs->ppcs->frm_hdr.use_ref_frame_mvs) {
-        return false;
-    }
-
-    // GLOBALMV needs IDENTITY warp params for L0/R0
-    MvReferenceFrame    gmv_ref   = svt_get_ref_frame_type(REF_LIST_0, 0);
-    WarpedMotionParams* gm_params = &pcs->ppcs->global_motion[gmv_ref];
-    if (gm_params->wmtype != IDENTITY) {
-        return false;
-    }
-
-    // ME must have picked (0,0)
-    const MeSbResults* me_sb = pcs->ppcs->pa_me_data->me_results[ctx->me_sb_addr];
-    const Mv           me_mv = me_sb->me_mv_array[ctx->me_block_offset * pcs->ppcs->pa_me_data->max_refs];
-    if (me_mv.as_int != 0) {
-        return false;
-    }
-
-    // PD0 residual variance must be low (per-pixel). UINT32_MAX sentinel (PD0 skipped) fails this check.
-    const uint32_t blk_area = (uint32_t)(ctx->blk_geom->bwidth * ctx->blk_geom->bheight);
-    if (ctx->pd0_mds0_best_cost[ctx->blk_ptr->mds_idx] >= (uint32_t)ctx->lpd1_globalmv_bypass_th * blk_area) {
-        return false;
-    }
-
-    // Inject the synthetic GLOBALMV candidate
-    ModeDecisionCandidate* cand       = &fast_cand_array[0];
-    cand->block_mi.mode               = GLOBALMV;
-    cand->block_mi.motion_mode        = SIMPLE_TRANSLATION;
-    cand->block_mi.mv[0]              = (Mv){{0, 0}};
-    cand->block_mi.ref_frame[0]       = gmv_ref;
-    cand->block_mi.ref_frame[1]       = NONE_FRAME;
-    cand->block_mi.use_intrabc        = 0;
-    cand->block_mi.is_interintra_used = 0;
-    cand->block_mi.tx_depth           = 0;
-    cand->block_mi.interp_filters     = (pcs->ppcs->frm_hdr.interpolation_filter == SWITCHABLE)
-        ? 0
-        : av1_broadcast_interp_filter(pcs->ppcs->frm_hdr.interpolation_filter);
-    cand->skip_mode_allowed           = false;
-    cand->drl_index                   = 0;
-    cand->block_mi.num_proj_ref       = 0;
-    cand->pred_mv[0]                  = (Mv){{0, 0}};
-    cand->wm_params_l0                = *gm_params;
-    cand->wm_params_l1                = *gm_params;
-
-    // Run prediction + distortion
-    ModeDecisionCandidateBuffer* gmv_bf = cand_bf_ptr_array_base[0];
-    gmv_bf->cand                        = cand;
-    ctx->uv_intra_comp_only             = false;
-    ctx->md_stage                       = MD_STAGE_0;
-    product_prediction_fun_table_light_pd1[1](0, ctx, pcs, gmv_bf);
-
-    const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-    unsigned int            sse;
-    gmv_bf->luma_fast_dist = fn_ptr->vf(gmv_bf->pred->y_buffer,
-                                        gmv_bf->pred->y_stride,
-                                        input_pic->y_buffer + loc->input_origin_index,
-                                        input_pic->y_stride,
-                                        &sse);
-    gmv_bf->full_dist      = sse;
-
-    // Derive inter_mode_ctx for EC (lightweight, no full MVP table needed)
-    svt_aom_compute_inter_mode_ctx_light(ctx, ctx->blk_ptr, gmv_ref, pcs);
-
-    // Compute accurate rate for GLOBALMV
-    MdRateEstimationContext* r            = ctx->md_rate_est_ctx;
-    MvReferenceFrame         rf[2]        = {gmv_ref, NONE_FRAME};
-    const uint32_t           mode_context = svt_aom_mode_context_analyzer(ctx->inter_mode_ctx[gmv_ref], rf);
-    const int16_t            newmv_ctx    = mode_context & NEWMV_CTX_MASK;
-    const int16_t            zero_mv_ctx  = (mode_context >> GLOBALMV_OFFSET) & GLOBALMV_CTX_MASK;
-    uint32_t                 luma_rate    = r->new_mv_mode_fac_bits[newmv_ctx][1] + // !NEWMV
-        r->zero_mv_mode_fac_bits[zero_mv_ctx][0] + // ==GLOBALMV
-        r->intra_inter_fac_bits[ctx->is_inter_ctx][1];
-    gmv_bf->fast_luma_rate     = luma_rate;
-    gmv_bf->fast_chroma_rate   = 0;
-    const uint32_t full_lambda = ctx->full_lambda_md[EB_8_BIT_MD];
-    *(gmv_bf->fast_cost)       = RDCOST(full_lambda, luma_rate, (uint64_t)gmv_bf->luma_fast_dist << 4);
-
-    ctx->mds0_best_idx          = 0;
-    ctx->mds0_best_cost         = *(gmv_bf->fast_cost);
-    ctx->perform_mds1           = 0;
-    *fast_candidate_total_count = 1;
-    return true;
-}
-
 static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                       EbPictureBufferDesc* input_pic) {
     ModeDecisionCandidateBuffer** cand_bf_ptr_array_base = ctx->cand_bf_ptr_array;
@@ -9091,58 +8994,54 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
     }
 
     uint8_t perform_md_recon = svt_aom_do_md_recon(pcs->ppcs, ctx);
-    if (!lpd1_try_mds0_bypass(
-            pcs, ctx, input_pic, &loc, cand_bf_ptr_array_base, fast_cand_array, &fast_candidate_total_count)) {
-        if (!ctx->shut_fast_rate && pcs->slice_type != I_SLICE) {
-            svt_aom_generate_av1_mvp_table(ctx,
-                                           ctx->blk_ptr,
-                                           ctx->blk_geom,
-                                           ctx->blk_org_x,
-                                           ctx->blk_org_y,
-                                           ctx->ref_frame_type_arr,
-                                           ctx->tot_ref_frame_types,
-                                           pcs);
+    if (!ctx->shut_fast_rate && pcs->slice_type != I_SLICE) {
+        svt_aom_generate_av1_mvp_table(ctx,
+                                       ctx->blk_ptr,
+                                       ctx->blk_geom,
+                                       ctx->blk_org_x,
+                                       ctx->blk_org_y,
+                                       ctx->ref_frame_type_arr,
+                                       ctx->tot_ref_frame_types,
+                                       pcs);
+    }
+    product_coding_loop_init_fast_loop(pcs, ctx);
+    ctx->is_intra_bordered = ctx->cand_reduction_ctrls.use_neighbouring_mode_ctrls.enabled ? is_intra_bordered(ctx) : 0;
+    //mvp array is not constructed in LPD1. reset to zero.
+    memset(ctx->mvp_count, 0, sizeof(ctx->mvp_count));
+    // Read and (if needed) perform 1/8 Pel ME MVs refinement
+    if (pcs->slice_type != I_SLICE) {
+        read_refine_me_mvs_light_pd1(pcs, input_pic, ctx);
+    }
+    generate_md_stage_0_cand_light_pd1(ctx, &fast_candidate_total_count, pcs);
+    if (pcs->slice_type != I_SLICE && ctx->approx_inter_rate < 2) {
+        if (!ctx->shut_fast_rate) {
+            estimate_ref_frames_num_bits(ctx, pcs);
         }
-        product_coding_loop_init_fast_loop(pcs, ctx);
-        ctx->is_intra_bordered = ctx->cand_reduction_ctrls.use_neighbouring_mode_ctrls.enabled ? is_intra_bordered(ctx)
-                                                                                               : 0;
-        //mvp array is not constructed in LPD1. reset to zero.
-        memset(ctx->mvp_count, 0, sizeof(ctx->mvp_count));
-        // Read and (if needed) perform 1/8 Pel ME MVs refinement
-        if (pcs->slice_type != I_SLICE) {
-            read_refine_me_mvs_light_pd1(pcs, input_pic, ctx);
-        }
-        generate_md_stage_0_cand_light_pd1(ctx, &fast_candidate_total_count, pcs);
-        if (pcs->slice_type != I_SLICE && ctx->approx_inter_rate < 2) {
-            if (!ctx->shut_fast_rate) {
-                estimate_ref_frames_num_bits(ctx, pcs);
-            }
-        }
+    }
 
-        ctx->md_stage       = MD_STAGE_0;
-        ctx->mds0_best_idx  = 0;
-        ctx->mds0_best_cost = (uint64_t)~0;
-        // If there is only a single candidate, skip compensation if transform will be skipped (unless compensation is needed for recon)
-        if (fast_candidate_total_count > 1 || perform_md_recon || ctx->lpd1_tx_skip_decision_ctrls.skip_tx_score_th ||
-            ctx->lpd1_tx_ctrls.use_mds3_shortcuts_th || is_intra_mode(fast_cand_array[0].block_mi.mode)) {
-            md_stage_0_light_pd1(
-                pcs, ctx, cand_bf_ptr_array_base, fast_cand_array, fast_candidate_total_count, input_pic, &loc);
+    ctx->md_stage       = MD_STAGE_0;
+    ctx->mds0_best_idx  = 0;
+    ctx->mds0_best_cost = (uint64_t)~0;
+    // If there is only a single candidate, skip compensation if transform will be skipped (unless compensation is needed for recon)
+    if (fast_candidate_total_count > 1 || perform_md_recon || ctx->lpd1_tx_skip_decision_ctrls.skip_tx_score_th ||
+        ctx->lpd1_tx_ctrls.use_mds3_shortcuts_th || is_intra_mode(fast_cand_array[0].block_mi.mode)) {
+        md_stage_0_light_pd1(
+            pcs, ctx, cand_bf_ptr_array_base, fast_cand_array, fast_candidate_total_count, input_pic, &loc);
 
-            ctx->perform_mds1 = 0;
-        } else {
-            cand_bf                   = cand_bf_ptr_array_base[0];
-            cand_bf->cand             = &fast_cand_array[0];
-            *(cand_bf->fast_cost)     = 0;
-            cand_bf->fast_luma_rate   = 0;
-            cand_bf->fast_chroma_rate = 0;
+        ctx->perform_mds1 = 0;
+    } else {
+        cand_bf                   = cand_bf_ptr_array_base[0];
+        cand_bf->cand             = &fast_cand_array[0];
+        *(cand_bf->fast_cost)     = 0;
+        cand_bf->fast_luma_rate   = 0;
+        cand_bf->fast_chroma_rate = 0;
 
-            /* If the interpolation filter type is assigned at the picture level, use that value, OW use regular.
-         * NB intra_bc always uses BILINEAR, but IBC is not allowed in LPD1. */
-            cand_bf->cand->block_mi.interp_filters = (pcs->ppcs->frm_hdr.interpolation_filter == SWITCHABLE)
-                ? 0
-                : av1_broadcast_interp_filter(pcs->ppcs->frm_hdr.interpolation_filter);
-            cand_bf->cand->block_mi.tx_depth       = 0;
-        }
+        /* If the interpolation filter type is assigned at the picture level, use that value, OW use regular.
+     * NB intra_bc always uses BILINEAR, but IBC is not allowed in LPD1. */
+        cand_bf->cand->block_mi.interp_filters = (pcs->ppcs->frm_hdr.interpolation_filter == SWITCHABLE)
+            ? 0
+            : av1_broadcast_interp_filter(pcs->ppcs->frm_hdr.interpolation_filter);
+        cand_bf->cand->block_mi.tx_depth       = 0;
     }
 
     ctx->use_tx_shortcuts_mds3 = 0;

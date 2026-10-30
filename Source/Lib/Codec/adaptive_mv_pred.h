@@ -26,8 +26,6 @@ struct ModeDecisionContext;
 EbErrorType clip_mv(uint32_t blk_org_x, uint32_t blk_org_y, int16_t* mv_x, int16_t* mv_y, uint32_t picture_width,
                     uint32_t picture_height, uint32_t tb_size);
 void        svt_aom_init_xd(PictureControlSet* pcs, struct ModeDecisionContext* ctx);
-void        svt_aom_compute_inter_mode_ctx_light(struct ModeDecisionContext* ctx, BlkStruct* blk_ptr,
-                                                 MvReferenceFrame ref_frame, PictureControlSet* pcs);
 void svt_aom_generate_av1_mvp_table(struct ModeDecisionContext* ctx, BlkStruct* blk_ptr, const BlockGeom* blk_geom,
                                     uint16_t blk_org_x, uint16_t blk_org_y, MvReferenceFrame* ref_frames,
                                     uint32_t tot_refs, PictureControlSet* pcs);
