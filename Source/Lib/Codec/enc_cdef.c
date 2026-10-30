@@ -169,6 +169,19 @@ int32_t svt_sb_compute_cdef_list(PictureControlSet* pcs, const Av1Common* const 
     // CDEF lists 8x8 luma units; one unit = 2x2 mi blocks (MI_SIZE = 4px), so the mi step is 2 and
     // the unit index is the mi index >> 1. (mi_size_wide/high[BLOCK_8X8] == 2, fixed.)
     int32_t count = 0;
+    // Without blocks narrower or shorter than 8 luma samples (GEOM_0..GEOM_4) the 2x2 mi of an 8x8 unit belong to one
+    // block, so its first mi carries the unit's skip flag. An odd mi count at the frame edge keeps the four-mi test.
+    if (pcs->scs->svt_aom_geom_idx <= GEOM_4 && !((maxr | maxc) & 1)) {
+        for (int32_t r = 0; r < maxr; r += 2) {
+            MbModeInfo** const row0 = pcs->mi_grid_base + (mi_row + r) * pcs->mi_stride + mi_col;
+            for (int32_t c = 0; c < maxc; c += 2) {
+                dlist[count].by = (uint8_t)(r >> 1);
+                dlist[count].bx = (uint8_t)(c >> 1);
+                count += 1 - row0[c]->block_mi.skip;
+            }
+        }
+        return count;
+    }
     for (int32_t r = 0; r < maxr; r += 2) {
         MbModeInfo** const row0 = pcs->mi_grid_base + (mi_row + r) * pcs->mi_stride + mi_col;
         MbModeInfo** const row1 = row0 + pcs->mi_stride;
