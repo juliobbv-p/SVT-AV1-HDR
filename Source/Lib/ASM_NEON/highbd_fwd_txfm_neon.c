@@ -2813,26 +2813,32 @@ static inline void fidtx64x64_neon(int32x4_t* input, int32x4_t* output, const in
     }
 }
 
+// 64x64 DCT_DCT before the final rounding shift by 2. out[g * 64 + c] holds rows 4g..4g+3 of column c.
+static void fdct64x64_unshifted_neon(int16_t* input, uint32_t stride, uint8_t bd, int32x4_t* out) {
+    // Column-wise transform.
+    int32x4_t buf0[1024];
+    if (bd == 8) {
+        svt_lbd_fdct64x64_col_neon(input, stride, (int32_t*)buf0);
+    }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    else {
+        highbd_fdct64_col_many_neon(input, buf0, stride, 13, /*lr_flip=*/0, /*howmany=*/16, /*hm_stride=*/64);
+        shift_right_2_round_s32_x4(buf0, buf0, 1024);
+    }
+#endif
+
+    int32x4_t buf1[1024];
+    transpose_arrays_s32_64x64(buf0, buf1);
+
+    // Row-wise transform.
+    highbd_fdct64_row_many_neon(buf1, out, 10, /*howmany=*/16, /*hm_stride=*/64);
+}
+
 void svt_av1_fwd_txfm2d_64x64_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
     switch (tx_type) {
     case DCT_DCT: {
-        // Column-wise transform.
         int32x4_t buf0[1024];
-        if (bd == 8) {
-            svt_lbd_fdct64x64_col_neon(input, stride, (int32_t*)buf0);
-        }
-#if CONFIG_ENABLE_HIGH_BIT_DEPTH
-        else {
-            highbd_fdct64_col_many_neon(input, buf0, stride, 13, /*lr_flip=*/0, /*howmany=*/16, /*hm_stride=*/64);
-            shift_right_2_round_s32_x4(buf0, buf0, 1024);
-        }
-#endif
-
-        int32x4_t buf1[1024];
-        transpose_arrays_s32_64x64(buf0, buf1);
-
-        // Row-wise transform.
-        highbd_fdct64_row_many_neon(buf1, buf0, 10, /*howmany=*/16, /*hm_stride=*/64);
+        fdct64x64_unshifted_neon(input, stride, bd, buf0);
         shift_right_2_round_s32_x4(buf0, buf0, 1024);
         transpose_64xh(buf0, (int32x4_t*)output, 1024);
         break;
@@ -2855,6 +2861,49 @@ void svt_av1_fwd_txfm2d_64x64_neon(int16_t* input, int32_t* output, uint32_t str
     default:
         assert(0);
     }
+}
+
+// Same as svt_av1_fwd_txfm2d_64x64_neon() followed by svt_handle_transform64x64_neon(): writes the top-left 32x32
+// coefficients packed with stride 32 and returns the energy of the other three quarters. For DCT_DCT the shift,
+// transpose and energy are done in one pass over the row transform output, and only the kept quarter is transposed.
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type,
+                                              uint8_t bd) {
+    if (tx_type != DCT_DCT) {
+        svt_av1_fwd_txfm2d_64x64_neon(input, output, stride, tx_type, bd);
+        return svt_handle_transform64x64_neon(output);
+    }
+    int32x4_t buf[1024];
+    fdct64x64_unshifted_neon(input, stride, bd, buf);
+
+    int64x2_t energy = vdupq_n_s64(0);
+    for (int g = 0; g < 16; g++) {
+        const int32x4_t* in      = buf + g * 64;
+        int              c_start = 0;
+        if (g < 8) {
+            for (int c = 0; c < 32; c += 4) {
+                int32x4_t r0, r1, r2, r3;
+                transpose_elems_s32_4x4(vrshrq_n_s32(in[c + 0], 2),
+                                        vrshrq_n_s32(in[c + 1], 2),
+                                        vrshrq_n_s32(in[c + 2], 2),
+                                        vrshrq_n_s32(in[c + 3], 2),
+                                        &r0,
+                                        &r1,
+                                        &r2,
+                                        &r3);
+                vst1q_s32(output + (4 * g + 0) * 32 + c, r0);
+                vst1q_s32(output + (4 * g + 1) * 32 + c, r1);
+                vst1q_s32(output + (4 * g + 2) * 32 + c, r2);
+                vst1q_s32(output + (4 * g + 3) * 32 + c, r3);
+            }
+            c_start = 32;
+        }
+        for (int c = c_start; c < 64; c++) {
+            const int32x4_t v = vrshrq_n_s32(in[c], 2);
+            energy            = vmlal_s32(energy, vget_low_s32(v), vget_low_s32(v));
+            energy            = vmlal_high_s32(energy, v, v);
+        }
+    }
+    return (uint64_t)vaddvq_s64(energy);
 }
 
 static AOM_FORCE_INLINE void highbd_fdct4_N4_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) {

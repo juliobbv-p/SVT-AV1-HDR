@@ -118,6 +118,8 @@ void svt_av1_fwd_txfm2d_64x16_c(int16_t *input, int32_t *output, uint32_t input_
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_64x16)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_transform_two_d_64x64_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_64x64)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
+RTCD_EXTERN uint64_t(*svt_av1_fwd_txfm2d_64x64_energy)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
 void svt_av1_transform_two_d_32x32_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_32x32)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_transform_two_d_16x16_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
@@ -1364,6 +1366,7 @@ void svt_av1_fwd_txfm2d_32x64_neon(int16_t *input, int32_t *coeff, uint32_t stri
 void svt_av1_fwd_txfm2d_64x16_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
 void svt_av1_fwd_txfm2d_64x32_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
 void svt_av1_fwd_txfm2d_64x64_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
 
 void svt_av1_quantize_fp_neon(const TranLow *coeff_ptr, intptr_t count, const int16_t *zbin_ptr, const int16_t *round_ptr, const int16_t *quant_ptr, const int16_t *quant_shift_ptr, TranLow *qcoeff_ptr, TranLow *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const int16_t *scan, const int16_t *iscan);
 void svt_av1_quantize_fp_32x32_neon(const TranLow *coeff_ptr, intptr_t count, const int16_t *zbin_ptr, const int16_t *round_ptr, const int16_t *quant_ptr, const int16_t *quant_shift_ptr, TranLow *qcoeff_ptr, TranLow *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const int16_t *scan, const int16_t *iscan);

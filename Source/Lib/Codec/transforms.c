@@ -2538,6 +2538,12 @@ uint64_t svt_handle_transform64x64_c(int32_t* output) {
     return three_quad_energy;
 }
 
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_c(int16_t* input, int32_t* output, uint32_t input_stride,
+                                           TxType transform_type, uint8_t bit_depth) {
+    svt_av1_fwd_txfm2d_64x64(input, output, input_stride, transform_type, bit_depth);
+    return svt_handle_transform64x64(output);
+}
+
 void svt_av1_transform_two_d_64x64_c(int16_t* input, int32_t* output, uint32_t input_stride, TxType transform_type,
                                      uint8_t bit_depth) {
     int32_t       intermediate_transform_buffer[64 * 64];
@@ -3319,11 +3325,8 @@ static EbErrorType av1_estimate_transform_default(int16_t* residual_buffer, uint
         break;
 
     case TX_64X64:
-
-        svt_av1_fwd_txfm2d_64x64(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
-
-        *three_quad_energy = svt_handle_transform64x64(coeff_buffer);
-
+        *three_quad_energy = svt_av1_fwd_txfm2d_64x64_energy(
+            residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         break;
 
     case TX_32X32:
