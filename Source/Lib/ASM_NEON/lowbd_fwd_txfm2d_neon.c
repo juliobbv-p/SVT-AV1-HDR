@@ -2011,3 +2011,285 @@ void svt_lbd_fwd_txfm2d_16x4_neon(int16_t* input, int32_t* output, uint32_t stri
         vst1q_s32(o + 12, vmovl_s16(vget_high_s16(t1[h])));
     }
 }
+
+// ---------------------------------------------------------------------------
+// 64-point column pass of the 8-bit 64x64 forward DCT, in 16-bit lanes (8 columns per vector instead of the 4
+// of the 32-bit kernel). 8-bit residuals keep every stage within int16, and each butterfly rounds once like the
+// 32-bit kernel, so the coefficients are identical. The btf_exact helpers keep that single rounding when
+// CONFIG_ENABLE_FAST_LBD_TXFM turns the butterfly_*_x8 helpers into two-rounding approximations. Ported from
+// libaom's fdct8x64, which feeds row 32 swapped butterfly operands and never writes row 50 (it keeps only rows < 32).
+// ---------------------------------------------------------------------------
+static AOM_FORCE_INLINE void btf_exact_0112_x8(const int16x4_t w, const int16x8_t in0, const int16x8_t in1,
+                                               int16x8_t* out0, int16x8_t* out1) {
+    butterfly_s16_s32_x8_neon(w, 0, 1, 1, 2, in0, in1, out0, out1);
+}
+
+static AOM_FORCE_INLINE void btf_exact_0332_x8(const int16x4_t w, const int16x8_t in0, const int16x8_t in1,
+                                               int16x8_t* out0, int16x8_t* out1) {
+    butterfly_s16_s32_x8_neon(w, 0, 3, 3, 2, in0, in1, out0, out1);
+}
+
+static AOM_FORCE_INLINE void btf_exact_1003_x8(const int16x4_t w, const int16x8_t in0, const int16x8_t in1,
+                                               int16x8_t* out0, int16x8_t* out1) {
+    butterfly_s16_s32_x8_neon(w, 1, 0, 0, 3, in0, in1, out0, out1);
+}
+
+static AOM_FORCE_INLINE void btf_exact_1223_x8(const int16x4_t w, const int16x8_t in0, const int16x8_t in1,
+                                               int16x8_t* out0, int16x8_t* out1) {
+    butterfly_s16_s32_x8_neon(w, 1, 2, 2, 3, in0, in1, out0, out1);
+}
+
+static AOM_FORCE_INLINE void fdct8x64_neon(const int16x8_t* input, int16x8_t* output, int cos_bit) {
+    const int16_t* cospi = fwd_cospi_q13(cos_bit);
+
+    const int16x8_t cospi32_16 = vld1q_s16(&cospi[4 * 0]);
+    const int16x8_t cospi8_24  = vld1q_s16(&cospi[4 * 2]);
+    const int16x8_t cospi4_12  = vld1q_s16(&cospi[4 * 4]);
+    const int16x8_t cospi20_28 = vld1q_s16(&cospi[4 * 6]);
+    const int16x8_t cospi2_6   = vld1q_s16(&cospi[4 * 8]);
+    const int16x8_t cospi10_14 = vld1q_s16(&cospi[4 * 10]);
+    const int16x8_t cospi18_22 = vld1q_s16(&cospi[4 * 12]);
+    const int16x8_t cospi26_30 = vld1q_s16(&cospi[4 * 14]);
+    const int16x8_t cospi1_3   = vld1q_s16(&cospi[4 * 16]);
+    const int16x8_t cospi5_7   = vld1q_s16(&cospi[4 * 18]);
+    const int16x8_t cospi9_11  = vld1q_s16(&cospi[4 * 20]);
+    const int16x8_t cospi13_15 = vld1q_s16(&cospi[4 * 22]);
+    const int16x8_t cospi17_19 = vld1q_s16(&cospi[4 * 24]);
+    const int16x8_t cospi21_23 = vld1q_s16(&cospi[4 * 26]);
+    const int16x8_t cospi25_27 = vld1q_s16(&cospi[4 * 28]);
+    const int16x8_t cospi29_31 = vld1q_s16(&cospi[4 * 30]);
+
+    const int16x4_t cospi32 = vget_low_s16(cospi32_16);
+    const int16x4_t cospi16 = vget_high_s16(cospi32_16);
+    const int16x4_t cospi8  = vget_low_s16(cospi8_24);
+    const int16x4_t cospi24 = vget_high_s16(cospi8_24);
+    const int16x4_t cospi4  = vget_low_s16(cospi4_12);
+    const int16x4_t cospi12 = vget_high_s16(cospi4_12);
+    const int16x4_t cospi20 = vget_low_s16(cospi20_28);
+    const int16x4_t cospi28 = vget_high_s16(cospi20_28);
+    const int16x4_t cospi2  = vget_low_s16(cospi2_6);
+    const int16x4_t cospi6  = vget_high_s16(cospi2_6);
+    const int16x4_t cospi10 = vget_low_s16(cospi10_14);
+    const int16x4_t cospi14 = vget_high_s16(cospi10_14);
+    const int16x4_t cospi18 = vget_low_s16(cospi18_22);
+    const int16x4_t cospi22 = vget_high_s16(cospi18_22);
+    const int16x4_t cospi26 = vget_low_s16(cospi26_30);
+    const int16x4_t cospi30 = vget_high_s16(cospi26_30);
+    const int16x4_t cospi1  = vget_low_s16(cospi1_3);
+    const int16x4_t cospi3  = vget_high_s16(cospi1_3);
+    const int16x4_t cospi5  = vget_low_s16(cospi5_7);
+    const int16x4_t cospi7  = vget_high_s16(cospi5_7);
+    const int16x4_t cospi9  = vget_low_s16(cospi9_11);
+    const int16x4_t cospi11 = vget_high_s16(cospi9_11);
+    const int16x4_t cospi13 = vget_low_s16(cospi13_15);
+    const int16x4_t cospi15 = vget_high_s16(cospi13_15);
+    const int16x4_t cospi17 = vget_low_s16(cospi17_19);
+    const int16x4_t cospi19 = vget_high_s16(cospi17_19);
+    const int16x4_t cospi21 = vget_low_s16(cospi21_23);
+    const int16x4_t cospi23 = vget_high_s16(cospi21_23);
+    const int16x4_t cospi25 = vget_low_s16(cospi25_27);
+    const int16x4_t cospi27 = vget_high_s16(cospi25_27);
+    const int16x4_t cospi29 = vget_low_s16(cospi29_31);
+    const int16x4_t cospi31 = vget_high_s16(cospi29_31);
+
+    // stage 1
+    int16x8_t x1[64];
+    butterfly_dct_pre_s16_x8(input, x1, 64);
+
+    // stage 2
+    int16x8_t x2[64];
+    butterfly_dct_pre_s16_x8(x1, x2, 32);
+    btf_exact_0112_x8(cospi32, x1[55], x1[40], &x2[55], &x2[40]);
+    btf_exact_0112_x8(cospi32, x1[54], x1[41], &x2[54], &x2[41]);
+    btf_exact_0112_x8(cospi32, x1[53], x1[42], &x2[53], &x2[42]);
+    btf_exact_0112_x8(cospi32, x1[52], x1[43], &x2[52], &x2[43]);
+    btf_exact_0112_x8(cospi32, x1[51], x1[44], &x2[51], &x2[44]);
+    btf_exact_0112_x8(cospi32, x1[50], x1[45], &x2[50], &x2[45]);
+    btf_exact_0112_x8(cospi32, x1[49], x1[46], &x2[49], &x2[46]);
+    btf_exact_0112_x8(cospi32, x1[48], x1[47], &x2[48], &x2[47]);
+
+    // stage 3
+    int16x8_t x3[64];
+    butterfly_dct_pre_s16_x8(x2, x3, 16);
+    x3[16] = x2[16];
+    x3[17] = x2[17];
+    x3[18] = x2[18];
+    x3[19] = x2[19];
+    btf_exact_0112_x8(cospi32, x2[27], x2[20], &x3[27], &x3[20]);
+    btf_exact_0112_x8(cospi32, x2[26], x2[21], &x3[26], &x3[21]);
+    btf_exact_0112_x8(cospi32, x2[25], x2[22], &x3[25], &x3[22]);
+    btf_exact_0112_x8(cospi32, x2[24], x2[23], &x3[24], &x3[23]);
+    x3[28] = x2[28];
+    x3[29] = x2[29];
+    x3[30] = x2[30];
+    x3[31] = x2[31];
+    butterfly_dct_post_s16_x8(x1 + 32, x2 + 32, x3 + 32, 32);
+
+    // stage 4
+    int16x8_t x4[64];
+    butterfly_dct_pre_s16_x8(x3, x4, 8);
+    btf_exact_0112_x8(cospi32, x3[13], x3[10], &x4[13], &x4[10]);
+    btf_exact_0112_x8(cospi32, x3[12], x3[11], &x4[12], &x4[11]);
+    butterfly_dct_post_s16_x8(x3 + 16, x3 + 16, x4 + 16, 16);
+    btf_exact_0112_x8(cospi16, x3[59], x3[36], &x4[59], &x4[36]);
+    btf_exact_0112_x8(cospi16, x3[58], x3[37], &x4[58], &x4[37]);
+    btf_exact_0112_x8(cospi16, x3[57], x3[38], &x4[57], &x4[38]);
+    btf_exact_0112_x8(cospi16, x3[56], x3[39], &x4[56], &x4[39]);
+    btf_exact_1223_x8(cospi16, x3[55], x3[40], &x4[55], &x4[40]);
+    btf_exact_1223_x8(cospi16, x3[54], x3[41], &x4[54], &x4[41]);
+    btf_exact_1223_x8(cospi16, x3[53], x3[42], &x4[53], &x4[42]);
+    btf_exact_1223_x8(cospi16, x3[52], x3[43], &x4[52], &x4[43]);
+
+    // stage 5
+    int16x8_t x5[64];
+    butterfly_dct_pre_s16_x8(x4, x5, 4);
+    btf_exact_0112_x8(cospi32, x4[6], x4[5], &x5[6], &x5[5]);
+    butterfly_dct_post_s16_x8(x3 + 8, x4 + 8, x5 + 8, 8);
+    btf_exact_0112_x8(cospi16, x4[29], x4[18], &x5[29], &x5[18]);
+    btf_exact_0112_x8(cospi16, x4[28], x4[19], &x5[28], &x5[19]);
+    btf_exact_1223_x8(cospi16, x4[27], x4[20], &x5[27], &x5[20]);
+    btf_exact_1223_x8(cospi16, x4[26], x4[21], &x5[26], &x5[21]);
+    butterfly_dct_post_s16_x8(x3 + 32, x4 + 32, x5 + 32, 16);
+    butterfly_dct_post_s16_x8(x3 + 48, x4 + 48, x5 + 48, 16);
+
+    // stage 6
+    int16x8_t x6[64];
+    btf_exact_0112_x8(cospi32, x5[0], x5[1], &x6[0], &x6[1]);
+    btf_exact_0112_x8(cospi16, x5[3], x5[2], &x6[2], &x6[3]);
+    butterfly_dct_post_s16_x8(x4 + 4, x5 + 4, x6 + 4, 4);
+    btf_exact_0112_x8(cospi16, x5[14], x5[9], &x6[14], &x6[9]);
+    btf_exact_1223_x8(cospi16, x5[13], x5[10], &x6[13], &x6[10]);
+    butterfly_dct_post_s16_x8(x4 + 16, x5 + 16, x6 + 16, 8);
+    butterfly_dct_post_s16_x8(x4 + 24, x5 + 24, x6 + 24, 8);
+    btf_exact_0112_x8(cospi8, x5[61], x5[34], &x6[61], &x6[34]);
+    btf_exact_0112_x8(cospi8, x5[60], x5[35], &x6[60], &x6[35]);
+    btf_exact_1223_x8(cospi8, x5[59], x5[36], &x6[59], &x6[36]);
+    btf_exact_1223_x8(cospi8, x5[58], x5[37], &x6[58], &x6[37]);
+    btf_exact_1003_x8(cospi24, x5[53], x5[42], &x6[53], &x6[42]);
+    btf_exact_1003_x8(cospi24, x5[52], x5[43], &x6[52], &x6[43]);
+    btf_exact_0332_x8(cospi24, x5[51], x5[44], &x6[51], &x6[44]);
+    btf_exact_0332_x8(cospi24, x5[50], x5[45], &x6[50], &x6[45]);
+
+    // stage 7
+    int16x8_t x7[64];
+    btf_exact_0112_x8(cospi8, x6[7], x6[4], &x7[4], &x7[7]);
+    btf_exact_1003_x8(cospi24, x6[6], x6[5], &x7[5], &x7[6]);
+    butterfly_dct_post_s16_x8(x5 + 8, x6 + 8, x7 + 8, 4);
+    butterfly_dct_post_s16_x8(x5 + 12, x6 + 12, x7 + 12, 4);
+    btf_exact_0112_x8(cospi8, x6[30], x6[17], &x7[30], &x7[17]);
+    btf_exact_1223_x8(cospi8, x6[29], x6[18], &x7[29], &x7[18]);
+    btf_exact_1003_x8(cospi24, x6[26], x6[21], &x7[26], &x7[21]);
+    btf_exact_0332_x8(cospi24, x6[25], x6[22], &x7[25], &x7[22]);
+    butterfly_dct_post_s16_x8(x5 + 32, x6 + 32, x7 + 32, 8);
+    butterfly_dct_post_s16_x8(x5 + 40, x6 + 40, x7 + 40, 8);
+    butterfly_dct_post_s16_x8(x5 + 48, x6 + 48, x7 + 48, 8);
+    butterfly_dct_post_s16_x8(x5 + 56, x6 + 56, x7 + 56, 8);
+
+    // stage 8
+    int16x8_t x8[64];
+    btf_exact_0112_x8(cospi4, x7[15], x7[8], &x8[8], &x8[15]);
+    btf_exact_1003_x8(cospi28, x7[14], x7[9], &x8[9], &x8[14]);
+    btf_exact_0112_x8(cospi20, x7[13], x7[10], &x8[10], &x8[13]);
+    btf_exact_1003_x8(cospi12, x7[12], x7[11], &x8[11], &x8[12]);
+    butterfly_dct_post_s16_x8(x6 + 16, x7 + 16, x8 + 16, 4);
+    butterfly_dct_post_s16_x8(x6 + 20, x7 + 20, x8 + 20, 4);
+    butterfly_dct_post_s16_x8(x6 + 24, x7 + 24, x8 + 24, 4);
+    butterfly_dct_post_s16_x8(x6 + 28, x7 + 28, x8 + 28, 4);
+    btf_exact_0112_x8(cospi4, x7[62], x7[33], &x8[62], &x8[33]);
+    btf_exact_1223_x8(cospi4, x7[61], x7[34], &x8[61], &x8[34]);
+    btf_exact_1003_x8(cospi28, x7[58], x7[37], &x8[58], &x8[37]);
+    btf_exact_0332_x8(cospi28, x7[57], x7[38], &x8[57], &x8[38]);
+    btf_exact_0112_x8(cospi20, x7[54], x7[41], &x8[54], &x8[41]);
+    btf_exact_1223_x8(cospi20, x7[53], x7[42], &x8[53], &x8[42]);
+    btf_exact_1003_x8(cospi12, x7[50], x7[45], &x8[50], &x8[45]);
+    btf_exact_0332_x8(cospi12, x7[49], x7[46], &x8[49], &x8[46]);
+
+    // stage 9
+    int16x8_t x9[64];
+    btf_exact_0112_x8(cospi2, x8[31], x8[16], &x9[16], &x9[31]);
+    btf_exact_1003_x8(cospi30, x8[30], x8[17], &x9[17], &x9[30]);
+    btf_exact_0112_x8(cospi18, x8[29], x8[18], &x9[18], &x9[29]);
+    btf_exact_1003_x8(cospi14, x8[28], x8[19], &x9[19], &x9[28]);
+    btf_exact_0112_x8(cospi10, x8[27], x8[20], &x9[20], &x9[27]);
+    btf_exact_1003_x8(cospi22, x8[26], x8[21], &x9[21], &x9[26]);
+    btf_exact_0112_x8(cospi26, x8[25], x8[22], &x9[22], &x9[25]);
+    btf_exact_1003_x8(cospi6, x8[24], x8[23], &x9[23], &x9[24]);
+    butterfly_dct_post_s16_x8(x7 + 32, x8 + 32, x9 + 32, 4);
+    butterfly_dct_post_s16_x8(x7 + 36, x8 + 36, x9 + 36, 4);
+    butterfly_dct_post_s16_x8(x7 + 40, x8 + 40, x9 + 40, 4);
+    butterfly_dct_post_s16_x8(x7 + 44, x8 + 44, x9 + 44, 4);
+    butterfly_dct_post_s16_x8(x7 + 48, x8 + 48, x9 + 48, 4);
+    butterfly_dct_post_s16_x8(x7 + 52, x8 + 52, x9 + 52, 4);
+    butterfly_dct_post_s16_x8(x7 + 56, x8 + 56, x9 + 56, 4);
+    butterfly_dct_post_s16_x8(x7 + 60, x8 + 60, x9 + 60, 4);
+
+    // stage 10
+    btf_exact_0112_x8(cospi1, x9[63], x9[32], &output[1], &output[63]);
+    btf_exact_1003_x8(cospi31, x9[62], x9[33], &output[33], &output[31]);
+    btf_exact_0112_x8(cospi17, x9[61], x9[34], &output[17], &output[47]);
+    btf_exact_1003_x8(cospi15, x9[60], x9[35], &output[49], &output[15]);
+    btf_exact_0112_x8(cospi9, x9[59], x9[36], &output[9], &output[55]);
+    btf_exact_1003_x8(cospi23, x9[58], x9[37], &output[41], &output[23]);
+    btf_exact_0112_x8(cospi25, x9[57], x9[38], &output[25], &output[39]);
+    btf_exact_1003_x8(cospi7, x9[56], x9[39], &output[57], &output[7]);
+    btf_exact_0112_x8(cospi5, x9[55], x9[40], &output[5], &output[59]);
+    btf_exact_1003_x8(cospi27, x9[54], x9[41], &output[37], &output[27]);
+    btf_exact_0112_x8(cospi21, x9[53], x9[42], &output[21], &output[43]);
+    btf_exact_1003_x8(cospi11, x9[52], x9[43], &output[53], &output[11]);
+    btf_exact_0112_x8(cospi13, x9[51], x9[44], &output[13], &output[51]);
+    btf_exact_1003_x8(cospi19, x9[50], x9[45], &output[45], &output[19]);
+    btf_exact_0112_x8(cospi29, x9[49], x9[46], &output[29], &output[35]);
+    btf_exact_1003_x8(cospi3, x9[48], x9[47], &output[61], &output[3]);
+
+    // stage 11
+    output[0]  = x6[0];
+    output[2]  = x9[16];
+    output[4]  = x8[8];
+    output[6]  = x9[24];
+    output[8]  = x7[4];
+    output[10] = x9[20];
+    output[12] = x8[12];
+    output[14] = x9[28];
+    output[16] = x6[2];
+    output[18] = x9[18];
+    output[20] = x8[10];
+    output[22] = x9[26];
+    output[24] = x7[6];
+    output[26] = x9[22];
+    output[28] = x8[14];
+    output[30] = x9[30];
+    output[32] = x6[1];
+    output[34] = x9[17];
+    output[36] = x8[9];
+    output[38] = x9[25];
+    output[40] = x7[5];
+    output[42] = x9[21];
+    output[44] = x8[13];
+    output[46] = x9[29];
+    output[48] = x6[3];
+    output[50] = x9[19];
+    output[52] = x8[11];
+    output[54] = x9[27];
+    output[56] = x7[7];
+    output[58] = x9[23];
+    output[60] = x8[15];
+    output[62] = x9[31];
+}
+
+// Column pass (cos_bit 13, then round-shift by 2) of the 8-bit 64x64 DCT_DCT. Writes 4-column groups of 64 rows
+// (output[(g * 64 + r) * 4 + c]), the layout of the 32-bit kernel.
+void svt_lbd_fdct64x64_col_neon(const int16_t* input, uint32_t stride, int32_t* output) {
+    int32x4_t* out = (int32x4_t*)output;
+    for (int i = 0; i < 8; i++) {
+        int16x8_t buf[64];
+        for (int r = 0; r < 64; r++) {
+            buf[r] = vld1q_s16(input + r * stride + 8 * i);
+        }
+        fdct8x64_neon(buf, buf, 13);
+        for (int r = 0; r < 64; r++) {
+            const int16x8_t v         = vrshrq_n_s16(buf[r], 2);
+            out[(2 * i) * 64 + r]     = vmovl_s16(vget_low_s16(v));
+            out[(2 * i + 1) * 64 + r] = vmovl_s16(vget_high_s16(v));
+        }
+    }
+}

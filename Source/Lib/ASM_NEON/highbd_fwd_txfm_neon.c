@@ -80,7 +80,9 @@ LOAD_BUFFER_4XH(4, 2)
 LOAD_BUFFER_4XH(8, 2)
 LOAD_BUFFER_4XH(16, 2)
 LOAD_BUFFER_4XH(32, 2)
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
 LOAD_BUFFER_4XH(64, 0)
+#endif
 
 #define LOAD_BUFFER_WXH(w, h, shift)                                                                                  \
     static AOM_FORCE_INLINE void load_buffer_##w##x##h(const int16_t* input, int32x4_t* in, int stride, int fliplr) { \
@@ -2764,7 +2766,9 @@ void svt_av1_fwd_txfm2d_64x32_neon(int16_t* input, int32_t* output, uint32_t str
     transpose_64xh(buf1, (int32x4_t*)output, 512);
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
 TRANSFORM_COL_MANY(fdct64, 64)
+#endif
 TRANSFORM_ROW_MANY(fdct64, 64)
 
 static inline void load_buffer_64x64_neon(const int16_t* input, int32_t stride, int32x4_t* output) {
@@ -2810,14 +2814,19 @@ static inline void fidtx64x64_neon(int32x4_t* input, int32x4_t* output, const in
 }
 
 void svt_av1_fwd_txfm2d_64x64_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
-    (void)bd;
-
     switch (tx_type) {
     case DCT_DCT: {
         // Column-wise transform.
         int32x4_t buf0[1024];
-        highbd_fdct64_col_many_neon(input, buf0, stride, 13, /*lr_flip=*/0, /*howmany=*/16, /*hm_stride=*/64);
-        shift_right_2_round_s32_x4(buf0, buf0, 1024);
+        if (bd == 8) {
+            svt_lbd_fdct64x64_col_neon(input, stride, (int32_t*)buf0);
+        }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+        else {
+            highbd_fdct64_col_many_neon(input, buf0, stride, 13, /*lr_flip=*/0, /*howmany=*/16, /*hm_stride=*/64);
+            shift_right_2_round_s32_x4(buf0, buf0, 1024);
+        }
+#endif
 
         int32x4_t buf1[1024];
         transpose_arrays_s32_64x64(buf0, buf1);

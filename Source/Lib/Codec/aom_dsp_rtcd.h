@@ -1336,6 +1336,7 @@ void svt_lbd_fwd_txfm2d_4x4_neon(int16_t *input, int32_t *coeff, uint32_t stride
 void svt_lbd_fwd_txfm2d_8x8_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_16x16_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_32x32_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
+void svt_lbd_fdct64x64_col_neon(const int16_t *input, uint32_t stride, int32_t *output);
 void svt_lbd_fwd_txfm2d_8x16_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_16x8_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_8x32_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
