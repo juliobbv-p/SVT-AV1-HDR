@@ -3916,7 +3916,7 @@ void svt_aom_product_full_mode_decision_light_pd1(PictureControlSet* pcs, ModeDe
         if (blk_ptr->y_has_coeff) {
             src_ptr = &(((int32_t*)cand_bf->quant->y_buffer)[txb_1d_offset]);
             dst_ptr = ((int32_t*)pcs->ppcs->enc_dec_ptr->quantized_coeff[ctx->sb_index]->y_buffer) + ctx->coded_area_sb;
-            memcpy(dst_ptr, src_ptr, tx_width * tx_height * sizeof(int32_t));
+            memcpy(dst_ptr, src_ptr, get_txb_coded_coeff_count(tx_size, blk_ptr->eob.y[txb_itr]) * sizeof(int32_t));
         }
         ctx->coded_area_sb += tx_width * tx_height;
 
@@ -3929,7 +3929,7 @@ void svt_aom_product_full_mode_decision_light_pd1(PictureControlSet* pcs, ModeDe
             src_ptr = &(((int32_t*)cand_bf->quant->u_buffer)[txb_1d_offset_uv]);
             dst_ptr = ((int32_t*)pcs->ppcs->enc_dec_ptr->quantized_coeff[ctx->sb_index]->u_buffer) +
                 ctx->coded_area_sb_uv;
-            memcpy(dst_ptr, src_ptr, tx_width_uv * tx_height_uv * sizeof(int32_t));
+            memcpy(dst_ptr, src_ptr, get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.u[txb_itr]) * sizeof(int32_t));
         }
 
         // Cr
@@ -3938,7 +3938,7 @@ void svt_aom_product_full_mode_decision_light_pd1(PictureControlSet* pcs, ModeDe
             src_ptr = &(((int32_t*)cand_bf->quant->v_buffer)[txb_1d_offset_uv]);
             dst_ptr = ((int32_t*)pcs->ppcs->enc_dec_ptr->quantized_coeff[ctx->sb_index]->v_buffer) +
                 ctx->coded_area_sb_uv;
-            memcpy(dst_ptr, src_ptr, tx_width_uv * tx_height_uv * sizeof(int32_t));
+            memcpy(dst_ptr, src_ptr, get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.v[txb_itr]) * sizeof(int32_t));
         }
         ctx->coded_area_sb_uv += tx_width_uv * tx_height_uv;
     }
@@ -4151,7 +4151,7 @@ uint32_t svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeDecision
             }
 
             if (blk_ptr->y_has_coeff & (1 << txb_itr)) {
-                memcpy(dst_ptr, src_ptr, tx_width * tx_height * sizeof(int32_t));
+                memcpy(dst_ptr, src_ptr, get_txb_coded_coeff_count(tx_size, blk_ptr->eob.y[txb_itr]) * sizeof(int32_t));
             }
 
             txb_1d_offset += tx_width * tx_height;
@@ -4167,7 +4167,9 @@ uint32_t svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeDecision
                 }
 
                 if (blk_ptr->u_has_coeff & (1 << txb_itr)) {
-                    memcpy(dst_ptr, src_ptr, tx_width_uv * tx_height_uv * sizeof(int32_t));
+                    memcpy(dst_ptr,
+                           src_ptr,
+                           get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.u[txb_itr]) * sizeof(int32_t));
                 }
 
                 // Cr
@@ -4181,7 +4183,9 @@ uint32_t svt_aom_product_full_mode_decision(PictureControlSet* pcs, ModeDecision
                 }
 
                 if (blk_ptr->v_has_coeff & (1 << txb_itr)) {
-                    memcpy(dst_ptr, src_ptr, tx_width_uv * tx_height_uv * sizeof(int32_t));
+                    memcpy(dst_ptr,
+                           src_ptr,
+                           get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.v[txb_itr]) * sizeof(int32_t));
                 }
 
                 txb_1d_offset_uv += tx_width_uv * tx_height_uv;

@@ -1444,28 +1444,28 @@ static void copy_qcoeffs(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* 
     int32_t* md_coeff = ((int32_t*)blk_ptr->coeff_tmp->y_buffer) + blk_coded_area;
 
     if ((blk_ptr->y_has_coeff & (1 << txb_itr))) {
-        const TxSize tx_size   = tx_depth_to_tx_size[tx_depth][blk_geom->bsize];
-        const int    tx_width  = tx_size_wide[tx_size];
-        const int    tx_height = tx_size_high[tx_size];
-        memcpy(ep_coeff, md_coeff, sizeof(int32_t) * tx_height * tx_width);
+        const TxSize tx_size = tx_depth_to_tx_size[tx_depth][blk_geom->bsize];
+        memcpy(ep_coeff, md_coeff, sizeof(int32_t) * get_txb_coded_coeff_count(tx_size, blk_ptr->eob.y[txb_itr]));
     }
 
     if (ctx->md_ctx->has_uv && uv_pass) {
-        const TxSize tx_size_uv   = av1_get_max_uv_txsize(blk_geom->bsize, 1, 1);
-        const int    tx_width_uv  = tx_size_wide[tx_size_uv];
-        const int    tx_height_uv = tx_size_high[tx_size_uv];
-        int32_t*     ep_coeff_cb  = ((int32_t*)coeff_buffer_sb->u_buffer) + ctx->coded_area_sb_uv_update;
-        int32_t*     md_coeff_cb  = ((int32_t*)blk_ptr->coeff_tmp->u_buffer) + blk_coded_area_uv;
+        const TxSize tx_size_uv  = av1_get_max_uv_txsize(blk_geom->bsize, 1, 1);
+        int32_t*     ep_coeff_cb = ((int32_t*)coeff_buffer_sb->u_buffer) + ctx->coded_area_sb_uv_update;
+        int32_t*     md_coeff_cb = ((int32_t*)blk_ptr->coeff_tmp->u_buffer) + blk_coded_area_uv;
 
         if ((blk_ptr->u_has_coeff & (1 << txb_itr))) {
-            memcpy(ep_coeff_cb, md_coeff_cb, sizeof(int32_t) * tx_height_uv * tx_width_uv);
+            memcpy(ep_coeff_cb,
+                   md_coeff_cb,
+                   sizeof(int32_t) * get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.u[txb_itr]));
         }
 
         int32_t* ep_coeff_cr = ((int32_t*)coeff_buffer_sb->v_buffer) + ctx->coded_area_sb_uv_update;
         int32_t* md_coeff_cr = ((int32_t*)blk_ptr->coeff_tmp->v_buffer) + blk_coded_area_uv;
 
         if ((blk_ptr->v_has_coeff & (1 << txb_itr))) {
-            memcpy(ep_coeff_cr, md_coeff_cr, sizeof(int32_t) * tx_height_uv * tx_width_uv);
+            memcpy(ep_coeff_cr,
+                   md_coeff_cr,
+                   sizeof(int32_t) * get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.v[txb_itr]));
         }
     }
 }

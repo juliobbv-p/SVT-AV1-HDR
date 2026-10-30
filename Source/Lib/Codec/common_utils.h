@@ -139,6 +139,12 @@ static INLINE int get_txb_high(TxSize tx_size) {
     return tx_size_high[tx_size];
 }
 
+// Leading coefficients of a quantized transform block that the entropy coder reads: the DC alone when eob == 1,
+// otherwise the block clipped to 32x32 (64-length transforms keep their coefficients packed in it).
+static INLINE int get_txb_coded_coeff_count(TxSize tx_size, uint16_t eob) {
+    return eob == 1 ? 1 : get_txb_wide(tx_size) * get_txb_high(tx_size);
+}
+
 static INLINE PredictionMode get_uv_mode(UvPredictionMode mode) {
     assert(mode < UV_INTRA_MODES);
     return g_uv2y[mode];
