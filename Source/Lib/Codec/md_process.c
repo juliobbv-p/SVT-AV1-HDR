@@ -70,6 +70,7 @@ static void mode_decision_context_dctor(EbPtr p) {
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_pred_pool);
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_rec_coeff_pool);
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_quant_pool);
+    EB_FREE_ALIGNED_ARRAY(obj->cand_dct_dct_coeff);
     EB_FREE_ARRAY(obj->cand_bf_tx_depth_1->cand);
     EB_DELETE(obj->cand_bf_tx_depth_1);
     EB_FREE_ARRAY(obj->cand_bf_tx_depth_2->cand);
@@ -671,6 +672,8 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     if (cand_err != EB_ErrorNone) {
         return cand_err;
     }
+    // Zeroed: the debug reuse check compares whole blocks, including coefficients a transform leaves unwritten
+    EB_CALLOC_ALIGNED_ARRAY(ctx->cand_dct_dct_coeff, (size_t)ctx->max_nics * MAX_TX_SQUARE);
 
     for (buffer_index = 0; buffer_index < ctx->max_nics_uv; ++buffer_index) {
         ctx->cand_bf_ptr_array[buffer_index] = &ctx->cand_bf_pool[buffer_index];
@@ -685,6 +688,11 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
                                                                  &(ctx->full_cost_ssim_array[buffer_index]));
         if (cbf_err != EB_ErrorNone) {
             return cbf_err;
+        }
+        // chroma-only slots never hold a luma candidate
+        if (buffer_index < ctx->max_nics) {
+            ctx->cand_bf_ptr_array[buffer_index]->dct_dct_coeff = ctx->cand_dct_dct_coeff +
+                (size_t)buffer_index * MAX_TX_SQUARE;
         }
     }
 

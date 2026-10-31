@@ -92,6 +92,12 @@ typedef struct ModeDecisionCandidateBuffer {
     uint16_t    y_has_coeff;
     // The prediction of SIMPLE_TRANSLATION is not valid when OBMC face-off is used (where OBMC will re-use the pred buffer of SIMPLE_TRANSLATION)
     bool valid_luma_pred;
+    // Inter DCT_DCT tx-depth-0 luma coeffs of (input - pred), kept across MD stages so a later stage
+    // can skip the identical forward transform. dct_dct_key identifies the transform setup (0 = invalid)
+    // and is cleared whenever the luma pred is rewritten.
+    int32_t* dct_dct_coeff;
+    uint32_t dct_dct_key;
+    uint64_t dct_dct_three_quad_energy;
 } ModeDecisionCandidateBuffer;
 
 /**************************************

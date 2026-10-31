@@ -4625,6 +4625,44 @@ static INLINE double derive_ssim_threshold_factor_for_tx_type_search(SequenceCon
     return scs->input_resolution >= INPUT_SIZE_1080p_RANGE ? 1.06 : 1.05;
 }
 
+// Identifies the setup of a candidate's stored DCT_DCT luma transform; never 0.
+static INLINE uint32_t get_dct_dct_key(TxSize tx_size, TxCoeffShape pf_shape, uint8_t hbd_md, uint8_t subres_step) {
+    return 1 | (tx_size << 1) | (pf_shape << 8) | (hbd_md << 12) | (subres_step << 14);
+}
+
+// Debug builds check that a reused DCT_DCT transform matches the one it replaces
+static INLINE void check_dct_dct_reuse(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                       const ModeDecisionCandidateBuffer* cand_bf, int16_t* residual,
+                                       uint32_t residual_stride, TxSize tx_size, TxCoeffShape pf_shape) {
+#ifndef NDEBUG
+    DECLARE_ALIGNED(32, int32_t, coeff[MAX_TX_SQUARE]);
+    uint64_t energy = 0;
+    memcpy(coeff, cand_bf->dct_dct_coeff, sizeof(coeff));
+    svt_aom_estimate_transform(pcs,
+                               ctx,
+                               residual,
+                               residual_stride,
+                               coeff,
+                               NOT_USED_VALUE,
+                               tx_size,
+                               &energy,
+                               SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
+                               DCT_DCT,
+                               PLANE_TYPE_Y,
+                               pf_shape);
+    assert(energy == cand_bf->dct_dct_three_quad_energy);
+    assert(!memcmp(coeff, cand_bf->dct_dct_coeff, sizeof(coeff)));
+#else
+    (void)pcs;
+    (void)ctx;
+    (void)cand_bf;
+    (void)residual;
+    (void)residual_stride;
+    (void)tx_size;
+    (void)pf_shape;
+#endif
+}
+
 static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
                            uint32_t qindex, uint8_t tx_search_skip_flag, uint64_t* y_coeff_bits,
                            uint64_t y_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL]) {
@@ -4688,11 +4726,17 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
             pf_shape = N4_SHAPE;
         }
     }
-    uint64_t best_cost_tx_search = (uint64_t)~0;
-    uint64_t dct_dct_cost        = (uint64_t)~0;
-    int      best_satd_tx_search = INT_MAX;
-    uint16_t satd_early_exit_th  = only_dct_dct ? 0
-        : is_inter                              ? ctx->txt_ctrls.satd_early_exit_th_inter
+    // Inter tx-depth-0 DCT_DCT coeffs persist in the candidate buffer across MD stages; the buffer holds one transform,
+    // so blocks with several depth-0 transforms (128-wide/tall) do not use it
+    const uint32_t dct_key             = (is_inter && ctx->tx_depth == 0 && !tx_search_skip_flag &&
+                                          tx_blocks_per_depth[ctx->blk_geom->bsize][0] == 1)
+        ? get_dct_dct_key(tx_size, pf_shape, SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx->mds_subres_step)
+        : 0;
+    uint64_t       best_cost_tx_search = (uint64_t)~0;
+    uint64_t       dct_dct_cost        = (uint64_t)~0;
+    int            best_satd_tx_search = INT_MAX;
+    uint16_t       satd_early_exit_th  = only_dct_dct ? 0
+        : is_inter                                    ? ctx->txt_ctrls.satd_early_exit_th_inter
                    : ctx->txt_ctrls.satd_early_exit_th_intra; // only compute satd when using TXT search
 
     if (ctx->txt_ctrls.satd_th_q_weight) {
@@ -4792,25 +4836,41 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
             EbPictureBufferDesc* recon_ptr       = (tx_type == DCT_DCT) ? cand_bf->recon : ctx->recon_ptr[tx_type];
             EbPictureBufferDesc* quant_coeff_ptr = (tx_type == DCT_DCT) ? cand_bf->quant
                                                                         : ctx->quant_coeff_ptr[tx_type];
+            const bool           cand_dct        = tx_type == DCT_DCT && dct_key;
+            int32_t* const       coeff           = cand_dct ? cand_bf->dct_dct_coeff
+                                                            : &(((int32_t*)ctx->tx_coeffs->y_buffer)[ctx->txb_1d_offset]);
             ctx->three_quad_energy               = 0;
             if (!tx_search_skip_flag) {
                 // Y: T Q i_q
-                svt_aom_estimate_transform(pcs,
-                                           ctx,
-                                           &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
-                                           cand_bf->residual->y_stride,
-                                           &(((int32_t*)ctx->tx_coeffs->y_buffer)[ctx->txb_1d_offset]),
-                                           NOT_USED_VALUE,
-                                           tx_size,
-                                           &ctx->three_quad_energy,
-                                           SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
-                                           tx_type,
-                                           PLANE_TYPE_Y,
-                                           pf_shape);
+                if (cand_dct && cand_bf->dct_dct_key == dct_key) {
+                    ctx->three_quad_energy = cand_bf->dct_dct_three_quad_energy;
+                    check_dct_dct_reuse(pcs,
+                                        ctx,
+                                        cand_bf,
+                                        &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
+                                        cand_bf->residual->y_stride,
+                                        tx_size,
+                                        pf_shape);
+                } else {
+                    svt_aom_estimate_transform(pcs,
+                                               ctx,
+                                               &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
+                                               cand_bf->residual->y_stride,
+                                               coeff,
+                                               NOT_USED_VALUE,
+                                               tx_size,
+                                               &ctx->three_quad_energy,
+                                               SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
+                                               tx_type,
+                                               PLANE_TYPE_Y,
+                                               pf_shape);
+                    if (cand_dct) {
+                        cand_bf->dct_dct_key               = dct_key;
+                        cand_bf->dct_dct_three_quad_energy = ctx->three_quad_energy;
+                    }
+                }
                 if (satd_early_exit_th) {
-                    int satd = svt_aom_satd(&(((int32_t*)ctx->tx_coeffs->y_buffer)[ctx->txb_1d_offset]),
-                                            (txbwidth * txbheight))
-                        << ctx->mds_subres_step;
+                    int satd = svt_aom_satd(coeff, (txbwidth * txbheight)) << ctx->mds_subres_step;
 
                     // If SATD of current type is better than the previous best, update best, and continue evaluating tx_type
                     if (satd < best_satd_tx_search) {
@@ -4826,7 +4886,7 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                 quantized_dc_txt[tx_type] = svt_aom_quantize_inv_quantize(
                     pcs,
                     ctx,
-                    &(((int32_t*)ctx->tx_coeffs->y_buffer)[ctx->txb_1d_offset]),
+                    coeff,
                     &(((int32_t*)quant_coeff_ptr->y_buffer)[ctx->txb_1d_offset]),
                     &(((int32_t*)recon_coeff_ptr->y_buffer)[ctx->txb_1d_offset]),
                     qindex,
@@ -4937,7 +4997,7 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                     bheight = txbheight < 64 ? txbheight : 32;
                 }
                 svt_aom_picture_full_distortion32_bits_single(
-                    &(((int32_t*)ctx->tx_coeffs->y_buffer)[ctx->txb_1d_offset]),
+                    coeff,
                     &(((int32_t*)recon_coeff_ptr->y_buffer)[ctx->txb_1d_offset]),
                     txbwidth < 64 ? txbwidth : 32,
                     bwidth,
@@ -5776,25 +5836,43 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
     EbPictureBufferDesc* const recon_coeff_ptr = cand_bf->rec_coeff;
     EbPictureBufferDesc* const recon_ptr       = cand_bf->recon;
     EbPictureBufferDesc* const quant_coeff_ptr = cand_bf->quant;
+    // Inter coeffs persist in the candidate buffer so a later MD stage can skip the transform
+    const uint32_t dct_key = (is_inter && !tx_search_skip_flag)
+        ? get_dct_dct_key(tx_size, pf_shape, SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx->mds_subres_step)
+        : 0;
+    int32_t* const coeff   = dct_key ? cand_bf->dct_dct_coeff : &(((int32_t*)ctx->tx_coeffs->y_buffer)[txb_1d_offset]);
 
     if (!tx_search_skip_flag) {
         // Y: T Q i_q
-        svt_aom_estimate_transform(pcs,
-                                   ctx,
-                                   &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
-                                   cand_bf->residual->y_stride,
-                                   &(((int32_t*)ctx->tx_coeffs->y_buffer)[txb_1d_offset]),
-                                   NOT_USED_VALUE,
-                                   tx_size,
-                                   &ctx->three_quad_energy,
-                                   SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
-                                   tx_type,
-                                   PLANE_TYPE_Y,
-                                   pf_shape);
+        if (dct_key && cand_bf->dct_dct_key == dct_key) {
+            ctx->three_quad_energy = cand_bf->dct_dct_three_quad_energy;
+            check_dct_dct_reuse(pcs,
+                                ctx,
+                                cand_bf,
+                                &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
+                                cand_bf->residual->y_stride,
+                                tx_size,
+                                pf_shape);
+        } else {
+            svt_aom_estimate_transform(pcs,
+                                       ctx,
+                                       &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
+                                       cand_bf->residual->y_stride,
+                                       coeff,
+                                       NOT_USED_VALUE,
+                                       tx_size,
+                                       &ctx->three_quad_energy,
+                                       SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_TEN_BIT : EB_EIGHT_BIT,
+                                       tx_type,
+                                       PLANE_TYPE_Y,
+                                       pf_shape);
+            cand_bf->dct_dct_key               = dct_key;
+            cand_bf->dct_dct_three_quad_energy = ctx->three_quad_energy;
+        }
         cand_bf->quant_dc.y[txb_itr] = svt_aom_quantize_inv_quantize(
             pcs,
             ctx,
-            &(((int32_t*)ctx->tx_coeffs->y_buffer)[txb_1d_offset]),
+            coeff,
             &(((int32_t*)quant_coeff_ptr->y_buffer)[txb_1d_offset]),
             &(((int32_t*)recon_coeff_ptr->y_buffer)[txb_1d_offset]),
             qindex,
@@ -5936,7 +6014,7 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
             bheight = txbheight < 64 ? txbheight : 32;
         }
 
-        svt_aom_picture_full_distortion32_bits_single(&(((int32_t*)ctx->tx_coeffs->y_buffer)[txb_1d_offset]),
+        svt_aom_picture_full_distortion32_bits_single(coeff,
                                                       &(((int32_t*)recon_coeff_ptr->y_buffer)[txb_1d_offset]),
                                                       txbwidth < 64 ? txbwidth : 32,
                                                       bwidth,

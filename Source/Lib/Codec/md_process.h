@@ -956,6 +956,7 @@ typedef struct ModeDecisionContext {
     SvtPicBufDescPool cand_pred_pool;
     SvtPicBufDescPool cand_rec_coeff_pool;
     SvtPicBufDescPool cand_quant_pool;
+    int32_t*          cand_dct_dct_coeff; // MAX_TX_SQUARE per luma candidate, backs cand_bf->dct_dct_coeff
     // Coefficient rate (eob + levels + signs) of the last RDOQ result; svt_av1_cost_coeffs_txb reuses it for the
     // same coefficients instead of recounting them. Valid for rdoq_rate_qcoeff/rdoq_rate_eob/rdoq_rate_key.
     const TranLow*    rdoq_rate_qcoeff;

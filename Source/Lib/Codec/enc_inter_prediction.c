@@ -3730,6 +3730,7 @@ EbErrorType svt_aom_inter_pu_prediction_av1_pd0(uint8_t hbd_md, ModeDecisionCont
                                                 ModeDecisionCandidateBuffer* cand_bf) {
     UNUSED(hbd_md);
     ModeDecisionCandidate* const cand = cand_bf->cand;
+    cand_bf->dct_dct_key              = 0;
 
     EbPictureBufferDesc* ref_pic_list0      = svt_aom_get_ref_pic_buffer(pcs, cand->block_mi.ref_frame[0]);
     EbPictureBufferDesc* ref_pic_list1      = svt_aom_get_ref_pic_buffer(pcs, cand->block_mi.ref_frame[1]);
@@ -3770,6 +3771,7 @@ EbErrorType svt_aom_inter_pu_prediction_av1_pd0(uint8_t hbd_md, ModeDecisionCont
 EbErrorType svt_aom_inter_pu_prediction_av1_light_pd1(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
                                                       ModeDecisionCandidateBuffer* cand_bf) {
     ModeDecisionCandidate* const cand = cand_bf->cand;
+    cand_bf->dct_dct_key              = 0;
 
     EbPictureBufferDesc* ref_pic_list0 = svt_aom_get_ref_pic_buffer(pcs, cand->block_mi.ref_frame[0]);
     EbPictureBufferDesc* ref_pic_list1 = svt_aom_get_ref_pic_buffer(pcs, cand->block_mi.ref_frame[1]);
@@ -3870,6 +3872,9 @@ EbErrorType svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionContext*
         }
     }
 
+    if (component_mask & PICTURE_BUFFER_DESC_LUMA_MASK) {
+        cand_bf->dct_dct_key = 0;
+    }
     NeighborArrayUnit* recon_neigh_y  = hbd_md ? ctx->luma_recon_na_16bit : ctx->recon_neigh_y;
     NeighborArrayUnit* recon_neigh_cb = hbd_md ? ctx->cb_recon_na_16bit : ctx->recon_neigh_cb;
     NeighborArrayUnit* recon_neigh_cr = hbd_md ? ctx->cr_recon_na_16bit : ctx->recon_neigh_cr;
@@ -3905,6 +3910,7 @@ EbErrorType svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionContext*
 EbErrorType svt_aom_inter_pu_prediction_av1_obmc(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
                                                  ModeDecisionCandidateBuffer* cand_bf) {
     EbErrorType return_error = EB_ErrorNone;
+    cand_bf->dct_dct_key     = 0;
 
 #if CONFIG_ENABLE_OBMC
     uint32_t component_mask = ctx->mds_do_chroma ? PICTURE_BUFFER_DESC_FULL_MASK : PICTURE_BUFFER_DESC_LUMA_MASK;
