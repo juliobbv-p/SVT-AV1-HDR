@@ -178,6 +178,10 @@ static INLINE void variance16_avx2(const uint8_t* src, const int src_stride, con
                                    const int h, __m256i* const vsse, __m256i* const vsum) {
     *vsum = _mm256_setzero_si256();
 
+    // Full unrolling makes GCC spill the per-row-pair temporaries to the stack
+#if defined(__GNUC__)
+#pragma GCC unroll 2
+#endif
     for (int i = 0; i < h; i += 2) {
         variance16_kernel_avx2(src, src_stride, ref, ref_stride, vsse, vsum);
         src += 2 * src_stride;
