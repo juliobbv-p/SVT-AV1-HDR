@@ -2959,7 +2959,6 @@ static void av1_inter_prediction_obmc(PictureControlSet* pcs, BlkStruct* blk_ptr
             (component_mask == PICTURE_BUFFER_DESC_FULL_MASK || component_mask == PICTURE_BUFFER_DESC_LUMA_MASK)) {
             svt_aom_precompute_obmc_data(pcs, ctx, PICTURE_BUFFER_DESC_LUMA_MASK);
         }
-        svt_aom_precompute_obmc_data(pcs, ctx, PICTURE_BUFFER_DESC_LUMA_MASK);
 
         if (!ctx->obmc_neighbor_chroma_pred_ready &&
             (component_mask == PICTURE_BUFFER_DESC_FULL_MASK || component_mask == PICTURE_BUFFER_DESC_CHROMA_MASK)) {
