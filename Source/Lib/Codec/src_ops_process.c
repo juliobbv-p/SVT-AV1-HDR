@@ -243,10 +243,17 @@ void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep
 
 #if CONFIG_ENABLE_TPL
 static AOM_INLINE void get_quantize_error(MacroblockPlane* p, const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff,
-                                          TxSize tx_size, uint16_t* eob, int64_t* recon_error, int64_t* sse) {
+                                          TxSize tx_size, TxCoeffShape pf_shape, uint16_t* eob, int64_t* recon_error,
+                                          int64_t* sse) {
     const ScanOrder* const scan_order = get_scan_order(tx_size, DCT_DCT);
     int                    pix_num    = 1 << eb_num_pels_log2_lookup[txsize_to_bsize[tx_size]];
     const int              shift      = tx_size == TX_32X32 ? 0 : 2;
+
+    // N2/N4 transforms leave only the top (height >> pf_shape) rows non-zero. Zero coefficients quantize to zero and
+    // add nothing to the error, so only those rows are processed; the caller zeroes the tail once.
+    if (pf_shape && tx_size >= TX_8X8 && tx_size <= TX_32X32) {
+        pix_num >>= pf_shape;
+    }
 
     svt_av1_quantize_fp(coeff,
                         pix_num,
@@ -554,6 +561,10 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
     DECLARE_ALIGNED(32, TranLow, best_coeff[MAX_TPL_SAMPLES_PER_BLOCK]);
     DECLARE_ALIGNED(16, uint8_t, compensated_blk[(const uint32_t)MAX_TPL_SAMPLES_PER_BLOCK]);
     uint8_t* predictor = predictor8;
+    // get_quantize_error() writes only the leading N2/N4 coefficients
+    const int tx_pix_num = 1 << eb_num_pels_log2_lookup[txsize_to_bsize[tx_size]];
+    memset(qcoeff, 0, tx_pix_num * sizeof(*qcoeff));
+    memset(dqcoeff, 0, tx_pix_num * sizeof(*dqcoeff));
 
     MacroblockPlane mb_plane;
     mb_plane.quant_qtx       = scs->enc_ctx->quants_8bit.y_quant[qIndex];
@@ -962,7 +973,8 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                         src_diff, size << tpl_ctrls->subsample_tx, best_coeff, tx_size, pf_shape, 8, 0);
                 }
 
-                get_quantize_error(&mb_plane, best_coeff, qcoeff, dqcoeff, tx_size, &eob, &recon_error, &sse);
+                get_quantize_error(
+                    &mb_plane, best_coeff, qcoeff, dqcoeff, tx_size, pcs->tpl_ctrls.pf_shape, &eob, &recon_error, &sse);
 
 #if CONFIG_ENABLE_TPL_HQ
                 int64_t rate_cost = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
@@ -1169,7 +1181,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
 
         uint16_t eob = 0;
 
-        get_quantize_error(&mb_plane, coeff, qcoeff, dqcoeff, tx_size, &eob, &recon_error, &sse);
+        get_quantize_error(&mb_plane, coeff, qcoeff, dqcoeff, tx_size, pf_shape, &eob, &recon_error, &sse);
 #if CONFIG_ENABLE_TPL_HQ
         int64_t rate_cost = pcs->tpl_ctrls.compute_rate ? rate_estimator(qcoeff, eob, tx_size) : 0;
 #else
