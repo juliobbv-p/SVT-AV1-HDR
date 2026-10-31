@@ -559,6 +559,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x4_N4, svt_av1_fwd_txfm2d_16x4_N4_c, svt_av1_fwd_txfm2d_16x4_N4_sse4_1, svt_av1_fwd_txfm2d_16x4_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x8_N4, svt_av1_fwd_txfm2d_16x8_N4_c, svt_av1_fwd_txfm2d_16x8_N4_sse4_1, svt_av1_fwd_txfm2d_16x8_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x16_N4, svt_aom_transform_two_d_16x16_N4_c, svt_av1_fwd_txfm2d_16x16_N4_sse4_1, svt_av1_fwd_txfm2d_16x16_N4_avx2);
+    SET_AVX2(svt_av1_fwd_txfm2d_16x16_N4_sub_dct, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x32_N4, svt_av1_fwd_txfm2d_16x32_N4_c, svt_av1_fwd_txfm2d_16x32_N4_sse4_1, svt_av1_fwd_txfm2d_16x32_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x64_N4, svt_av1_fwd_txfm2d_16x64_N4_c, svt_av1_fwd_txfm2d_16x64_N4_sse4_1, svt_av1_fwd_txfm2d_16x64_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_32x8_N4, svt_av1_fwd_txfm2d_32x8_N4_c, svt_av1_fwd_txfm2d_32x8_N4_sse4_1, svt_av1_fwd_txfm2d_32x8_N4_avx2);
@@ -1420,6 +1421,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x4_N4, svt_av1_fwd_txfm2d_16x4_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x8_N4, svt_av1_fwd_txfm2d_16x8_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x16_N4, svt_aom_transform_two_d_16x16_N4_c);
+    SET_ONLY_C(svt_av1_fwd_txfm2d_16x16_N4_sub_dct, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x32_N4, svt_av1_fwd_txfm2d_16x32_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x64_N4, svt_av1_fwd_txfm2d_16x64_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_32x8_N4, svt_av1_fwd_txfm2d_32x8_N4_c);

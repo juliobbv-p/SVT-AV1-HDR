@@ -242,6 +242,25 @@ void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep
 }
 
 #if CONFIG_ENABLE_TPL
+// Forward transform of (src - pred); the 8-bit 16x16 N4 DCT forms the residual inside the transform.
+static AOM_INLINE void tpl_residual_fwd_txfm(const TplControls* tpl_ctrls, uint32_t size, TxSize tx_size,
+                                             int16_t* src_diff, const uint8_t* src, uint32_t src_stride,
+                                             const uint8_t* pred, uint32_t pred_stride, int32_t* coeff) {
+    if (SVT_X86_ONLY_KERNEL_PATHS && tx_size == TX_16X16 && tpl_ctrls->pf_shape == N4_SHAPE) {
+        svt_av1_fwd_txfm2d_16x16_N4_sub_dct(src, src_stride, pred, pred_stride, coeff);
+        return;
+    }
+    svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
+                           size,
+                           src_diff,
+                           size << tpl_ctrls->subsample_tx,
+                           src,
+                           src_stride << tpl_ctrls->subsample_tx,
+                           pred,
+                           pred_stride << tpl_ctrls->subsample_tx);
+    svt_av1_wht_fwd_txfm(src_diff, size << tpl_ctrls->subsample_tx, coeff, tx_size, tpl_ctrls->pf_shape, 8, 0);
+}
+
 static AOM_INLINE void get_quantize_error(MacroblockPlane* p, const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff,
                                           TxSize tx_size, TxCoeffShape pf_shape, uint16_t* eob, int64_t* recon_error,
                                           int64_t* sse) {
@@ -959,18 +978,15 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                                                          NULL); // wm_params
                     }
 
-                    svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
-                                           size,
-                                           src_diff,
-                                           size << tpl_ctrls->subsample_tx,
-                                           src_mb,
-                                           input_pic->y_stride << tpl_ctrls->subsample_tx,
-                                           subpel_mv ? compensated_blk : ref_pic_ptr->y_buffer + ref_origin_index,
-                                           (subpel_mv ? size : ref_pic_ptr->y_stride) << tpl_ctrls->subsample_tx);
-                    TxCoeffShape pf_shape = pcs->tpl_ctrls.pf_shape;
-
-                    svt_av1_wht_fwd_txfm(
-                        src_diff, size << tpl_ctrls->subsample_tx, best_coeff, tx_size, pf_shape, 8, 0);
+                    tpl_residual_fwd_txfm(tpl_ctrls,
+                                          size,
+                                          tx_size,
+                                          src_diff,
+                                          src_mb,
+                                          input_pic->y_stride,
+                                          subpel_mv ? compensated_blk : ref_pic_ptr->y_buffer + ref_origin_index,
+                                          subpel_mv ? size : ref_pic_ptr->y_stride,
+                                          best_coeff);
                 }
 
                 get_quantize_error(
@@ -1168,16 +1184,9 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
             }
         }
 
-        svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
-                               size,
-                               src_diff,
-                               size << tpl_ctrls->subsample_tx,
-                               src_mb,
-                               input_pic->y_stride << tpl_ctrls->subsample_tx,
-                               dst_buffer,
-                               dst_buffer_stride << tpl_ctrls->subsample_tx);
+        tpl_residual_fwd_txfm(
+            tpl_ctrls, size, tx_size, src_diff, src_mb, input_pic->y_stride, dst_buffer, dst_buffer_stride, coeff);
         TxCoeffShape pf_shape = pcs->tpl_ctrls.pf_shape;
-        svt_av1_wht_fwd_txfm(src_diff, size << tpl_ctrls->subsample_tx, coeff, tx_size, pf_shape, 8, 0);
 
         uint16_t eob = 0;
 

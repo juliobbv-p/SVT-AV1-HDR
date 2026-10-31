@@ -4092,6 +4092,14 @@ void svt_av1_highbd_fwd_txfm(int16_t* src_diff, TranLow* coeff, int diff_stride,
     }
 }
 
+// Callers read only the first 4 coefficient rows (the SIMD versions write only those).
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c(const uint8_t* src, uint32_t src_stride, const uint8_t* pred,
+                                           uint32_t pred_stride, int32_t* coeff) {
+    DECLARE_ALIGNED(32, int16_t, diff[16 * 16]);
+    svt_aom_subtract_block_c(16, 16, diff, 16, src, src_stride, pred, pred_stride);
+    svt_aom_transform_two_d_16x16_N4_c(diff, coeff, 16, DCT_DCT, EB_EIGHT_BIT);
+}
+
 void svt_av1_wht_fwd_txfm(int16_t* src_diff, int bw, int32_t* coeff, TxSize tx_size, TxCoeffShape pf_shape,
                           int bit_depth, int is_hbd) {
     TxfmParam txfm_param;

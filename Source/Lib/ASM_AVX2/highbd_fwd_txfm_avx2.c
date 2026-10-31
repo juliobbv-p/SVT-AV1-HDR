@@ -13012,17 +13012,14 @@ static INLINE void btf16_c32_avx2(__m256i w32, __m256i a, __m256i b, __m256i* ad
 // madd + mulhrs for cospi32), rounds (>>shift[1]=2) and writes them as int32 in the
 // int32 N4 column layout out[k*2+g] (k=freq 0..3, g=0/1 -> cols 0-7 / 8-15). Column
 // values fit int16 (16-pt DC <= 16320), so this is bit-exact with the int32 column.
-static INLINE void fdct16_N4_col16_avx2(const int16_t* input, uint32_t stride, __m256i* out) {
+static AOM_FORCE_INLINE void fdct16_N4_col16_core_avx2(const __m256i* in, __m256i* out) {
     const int32_t* cs  = cospi_arr(13); // fwd_cos_bit_col[TX_16X16] = 13
     const __m256i  rnd = _mm256_set1_epi32(1 << 12);
     const __m256i  w32 = _mm256_set1_epi16((short)(cs[32] << 2));
     const __m256i  r2  = _mm256_set1_epi16(2);
     const int16_t  c16 = (int16_t)cs[16], c48 = (int16_t)cs[48], c8 = (int16_t)cs[8], c56 = (int16_t)cs[56];
     const int16_t  c4 = (int16_t)cs[4], c60 = (int16_t)cs[60], c12 = (int16_t)cs[12], c52 = (int16_t)cs[52];
-    __m256i        in[16], u[16], v[16], cout[4];
-    for (int r = 0; r < 16; r++) {
-        in[r] = _mm256_slli_epi16(_mm256_loadu_si256((const __m256i*)(input + r * stride)), 2);
-    }
+    __m256i        u[16], v[16], cout[4];
     // stage 1
     for (int i = 0; i < 8; i++) {
         u[i]      = _mm256_adds_epi16(in[i], in[15 - i]);
@@ -13081,6 +13078,37 @@ static INLINE void fdct16_N4_col16_avx2(const int16_t* input, uint32_t stride, _
         const __m256i x = _mm256_srai_epi16(_mm256_adds_epi16(cout[k], r2), 2);
         out[k * 2 + 0]  = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(x));
         out[k * 2 + 1]  = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(x, 1));
+    }
+}
+
+static INLINE void fdct16_N4_col16_avx2(const int16_t* input, uint32_t stride, __m256i* out) {
+    __m256i in[16];
+    for (int r = 0; r < 16; r++) {
+        in[r] = _mm256_slli_epi16(_mm256_loadu_si256((const __m256i*)(input + r * stride)), 2);
+    }
+    fdct16_N4_col16_core_avx2(in, out);
+}
+
+// 8-bit DCT_DCT 16x16 N4 of (src - pred), residual formed in registers. Writes only the first 4 coefficient rows
+// (64 values, zero beyond column 3); the rest of coeff is left untouched.
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_avx2(const uint8_t* src, uint32_t src_stride, const uint8_t* pred,
+                                              uint32_t pred_stride, int32_t* coeff) {
+    __m256i in[32], out[32];
+    for (int r = 0; r < 16; r++) {
+        const __m256i s = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i*)(src + r * src_stride)));
+        const __m256i p = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i*)(pred + r * pred_stride)));
+        in[r]           = _mm256_slli_epi16(_mm256_sub_epi16(s, p), 2);
+    }
+    fdct16_N4_col16_core_avx2(in, out);
+    transpose_4rows_in_16x16_avx2(out, in);
+    transpose_4rows_in_16x16_avx2(out + 1, in + 16);
+    fdct16x16_N4_row_128(in, out, fwd_cos_bit_row[get_txw_idx(TX_16X16)][get_txh_idx(TX_16X16)]);
+    const __m128i zero128 = _mm_setzero_si128();
+    const __m256i zero    = _mm256_setzero_si256();
+    for (int r = 0; r < 4; r++) {
+        _mm_storeu_si128((__m128i*)(coeff + r * 16), _mm256_castsi256_si128(out[2 * r]));
+        _mm_storeu_si128((__m128i*)(coeff + r * 16 + 4), zero128);
+        _mm256_storeu_si256((__m256i*)(coeff + r * 16 + 8), zero);
     }
 }
 

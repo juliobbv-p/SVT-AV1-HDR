@@ -200,6 +200,8 @@ void svt_aom_transform_two_d_32x32_N4_c(int16_t *input, int32_t *output, uint32_
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_32x32_N4)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_aom_transform_two_d_16x16_N4_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_16x16_N4)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c(const uint8_t *src, uint32_t src_stride, const uint8_t *pred, uint32_t pred_stride, int32_t *coeff);
+RTCD_EXTERN void(*svt_av1_fwd_txfm2d_16x16_N4_sub_dct)(const uint8_t *src, uint32_t src_stride, const uint8_t *pred, uint32_t pred_stride, int32_t *coeff);
 void svt_aom_transform_two_d_8x8_N4_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_8x8_N4)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_aom_transform_two_d_4x4_N4_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
@@ -1700,6 +1702,7 @@ void svt_av1_fwd_txfm2d_16x16_N4_avx2(int16_t *input, int32_t *output, uint32_t 
 void svt_aom_src_var_prep_avx512icl(SrcVarCtx *c, const uint8_t *src, int stride, int bw, int bh);
 uint32_t svt_aom_src_var_avx512icl(const SrcVarCtx *c, const uint8_t *pred, int pred_stride);
 void svt_aom_variance_window_avx512icl(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int bw, int bh, int nx, int ny, uint32_t *var);
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_avx2(const uint8_t *src, uint32_t src_stride, const uint8_t *pred, uint32_t pred_stride, int32_t *coeff);
 void svt_av1_fwd_txfm2d_8x8_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_4x4_N4_sse4_1(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void av1_fwd_txfm2d_32x32_N2_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
