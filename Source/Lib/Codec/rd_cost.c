@@ -236,6 +236,47 @@ static INLINE int32_t av1_cost_coeffs_txb_loop_cost_one_eob(const TranLow* const
     return cost;
 }
 
+// Rate of scan positions [1, c_start]. Instantiated per tx class in the NOINLINE copies below: inlined into its
+// caller the loop runs out of registers.
+static AOM_FORCE_INLINE int32_t cost_coeffs_mid(const int16_t* const scan, const TranLow* const qcoeff,
+                                                const int8_t* const coeff_contexts, const LvMapCoeffCost* coeff_costs,
+                                                const uint8_t* const levels, const int32_t bwl, TxClass tx_class,
+                                                int32_t c_start) {
+    int32_t cost = 0;
+    int32_t nz   = 0;
+    for (int32_t c = c_start; c >= 1; --c) {
+        const int32_t pos   = scan[c];
+        const int32_t level = abs(qcoeff[pos]);
+        nz += level != 0;
+        cost += coeff_costs->base_cost[coeff_contexts[pos]][AOMMIN(level, 3)];
+        if (level > NUM_BASE_LEVELS) {
+            const int32_t ctx        = get_br_ctx(levels, pos, bwl, tx_class);
+            const int32_t base_range = level - 1 - NUM_BASE_LEVELS;
+            if (base_range < COEFF_BASE_RANGE) {
+                cost += coeff_costs->lps_cost[ctx][base_range];
+            } else {
+                cost += get_golomb_cost(level) + coeff_costs->lps_cost[ctx][COEFF_BASE_RANGE];
+            }
+        }
+    }
+    return cost + nz * av1_cost_literal(1);
+}
+
+#define COST_COEFFS_MID(tx_class_literal)                                                                          \
+    static NOINLINE int32_t cost_coeffs_mid_##tx_class_literal(const int16_t* const  scan,                         \
+                                                               const TranLow* const  qcoeff,                       \
+                                                               const int8_t* const   coeff_contexts,               \
+                                                               const LvMapCoeffCost* coeff_costs,                  \
+                                                               const uint8_t* const  levels,                       \
+                                                               const int32_t         bwl,                          \
+                                                               int32_t               c_start) {                    \
+        return cost_coeffs_mid(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, tx_class_literal, c_start); \
+    }
+COST_COEFFS_MID(TX_CLASS_2D)
+COST_COEFFS_MID(TX_CLASS_HORIZ)
+COST_COEFFS_MID(TX_CLASS_VERT)
+#undef COST_COEFFS_MID
+
 // Takes TxClass rather than TxType and is force-inlined, so the switch at the
 // call site instantiates one copy per class with tx_class a compile-time
 // constant, letting get_br_ctx() fold its class dispatch away in the loop.
@@ -309,36 +350,29 @@ static AOM_FORCE_INLINE int32_t av1_cost_coeffs_txb_loop_cost_eob(
             }
         }
     }
-    int32_t c;
     /* Optimized Loop, omitted first (eob - 1) and last (0) index */
     // Estimate the rate of the first(eob / fast_coeff_est_level) coeff(s), DC and last coeff only
-    int32_t  c_start = MIN(eob - 2, eob / MAX(1, (int)(md_ctx->mds_fast_coeff_est_level - md_ctx->mds_subres_step)));
-    uint32_t cost_literal_cnt = 0;
+    int32_t c_start = MIN(eob - 2, eob / MAX(1, (int)(md_ctx->mds_fast_coeff_est_level - md_ctx->mds_subres_step)));
 #if CONFIG_ENABLE_FAST_DECODE_3
     // Decoder-complexity rate of the positions this estimate skips (c_start + 1 .. eob - 2)
     if (md_ctx->dec_cost_ctrls.enabled && c_start < eob - 2) {
         cost += md_ctx->dec_cost_ctrls.pos_rate * (eob - 2 - c_start);
     }
 #endif
-    for (c = c_start; c >= 1; --c) {
-        const int32_t pos = scan[c];
-        cost_literal_cnt += !!(qcoeff[pos]);
-        const int32_t level = abs(qcoeff[pos]);
-        if (level > NUM_BASE_LEVELS) {
-            int32_t       ctx        = get_br_ctx(levels, pos, bwl, tx_class);
-            const int32_t base_range = level - 1 - NUM_BASE_LEVELS;
-
-            cost += coeff_costs->base_cost[coeff_contexts[pos]][3];
-            if (base_range < COEFF_BASE_RANGE) {
-                cost += coeff_costs->lps_cost[ctx][base_range];
-            } else {
-                cost += get_golomb_cost(level) + coeff_costs->lps_cost[ctx][COEFF_BASE_RANGE];
-            }
-        } else {
-            cost += coeff_costs->base_cost[coeff_contexts[pos]][level];
-        }
+    if (c_start < 1) {
+        return cost;
     }
-    cost += cost_literal_cnt * cost_literal;
+    switch (tx_class) {
+    case TX_CLASS_2D:
+        cost += cost_coeffs_mid_TX_CLASS_2D(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, c_start);
+        break;
+    case TX_CLASS_HORIZ:
+        cost += cost_coeffs_mid_TX_CLASS_HORIZ(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, c_start);
+        break;
+    default:
+        cost += cost_coeffs_mid_TX_CLASS_VERT(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, c_start);
+        break;
+    }
 
     return cost;
 }
