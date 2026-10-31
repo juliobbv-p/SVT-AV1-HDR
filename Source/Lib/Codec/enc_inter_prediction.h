@@ -32,7 +32,7 @@ struct calc_target_weighted_pred_ctxt {
     int            overlap;
 };
 
-EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, ScaleFactors sf_identity, uint32_t interp_filters,
+EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, const ScaleFactors* sf, uint32_t interp_filters,
                                         BlkStruct* blk_ptr, Mv mv, uint16_t pu_origin_x, uint16_t pu_origin_y,
                                         uint8_t bwidth, uint8_t bheight, EbPictureBufferDesc* ref_pic_list0,
                                         EbPictureBufferDesc* prediction_ptr, uint16_t dst_origin_x,

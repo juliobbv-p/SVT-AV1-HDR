@@ -1465,7 +1465,7 @@ static void svt_check_position(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PicturePare
     mv.y = tf_sp_param->mv_y + tf_sp_param->yd;
 
     svt_aom_simple_luma_unipred(scs,
-                                scs->sf_identity,
+                                &scs->sf_identity,
                                 tf_sp_param->interp_filters,
                                 blk_ptr,
                                 mv,

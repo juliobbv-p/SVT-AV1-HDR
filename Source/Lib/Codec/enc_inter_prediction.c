@@ -2688,7 +2688,7 @@ void svt_aom_enc_make_inter_predictor(SequenceControlSet* scs, uint8_t* src_ptr,
     }
 }
 
-EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, ScaleFactors sf_identity, uint32_t interp_filters,
+EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, const ScaleFactors* sf, uint32_t interp_filters,
                                         BlkStruct* blk_ptr, Mv mv, uint16_t pu_origin_x, uint16_t pu_origin_y,
                                         uint8_t bwidth, uint8_t bheight, EbPictureBufferDesc* ref_pic_list0,
                                         EbPictureBufferDesc* prediction_ptr, uint16_t dst_origin_x,
@@ -2709,9 +2709,7 @@ EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, ScaleFactors sf
     dst_ptr = prediction_ptr->y_buffer + ((dst_origin_x + (dst_origin_y)*prediction_ptr->y_stride) << is16bit);
 
     int32_t dst_stride = prediction_ptr->y_stride;
-    /*ScaleFactor*/
-    const struct ScaleFactors* const sf = &sf_identity;
-    conv_params                         = get_conv_params_no_round(0, tmp_dstY, 128, is_compound, bit_depth);
+    conv_params        = get_conv_params_no_round(0, tmp_dstY, 128, is_compound, bit_depth);
 
     tf_inter_predictor(scs,
                        src_ptr,
