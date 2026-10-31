@@ -1362,6 +1362,9 @@ typedef struct ModeDecisionContext {
     // Persistent buffers for svt_av1_cost_coeffs_txb() / svt_av1_optimize_b()
     // (moved from the stack to avoid repeated tail-zeroing).
     uint8_t md_levels_buf[TX_PAD_2D];
+    // MDS0 luma variances of the current block against its prepared source terms
+    SrcVarCtx src_var;
+    bool      src_var_on;
     DECLARE_ALIGNED(16, int8_t, md_coeff_contexts[MAX_TX_SQUARE]);
 } ModeDecisionContext;
 

@@ -1286,12 +1286,16 @@ void fast_loop_core(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs
                   !is_global_mv_block(bmi->mode, ctx->blk_geom->bsize, cand->wm_params_l0.wmtype) &&
                   !((bmi->mv[0].x | bmi->mv[0].y) & 7) && pcs->ppcs->is_not_scaled &&
                   get_pd0_fullpel_var(ctx, bmi->ref_frame[0], bmi->mv[0], &var, &sse))) {
-                const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-                var                            = fn_ptr->vf(pred->y_buffer,
-                                                            pred->y_stride,
-                                                            input_pic->y_buffer + input_origin_index,
-                                                            input_pic->y_stride,
-                                                            &sse);
+                if (ctx->src_var_on) {
+                    var = svt_aom_src_var(&ctx->src_var, pred->y_buffer, pred->y_stride);
+                } else {
+                    const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
+                    var                            = fn_ptr->vf(pred->y_buffer,
+                                                                pred->y_stride,
+                                                                input_pic->y_buffer + input_origin_index,
+                                                                input_pic->y_stride,
+                                                                &sse);
+                }
             }
             cand_bf->luma_fast_dist = var;
         } else {
@@ -1971,6 +1975,39 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
     assert(
         !(dist_type == SAD && ctx->enable_psad && !hbd_md && (search_position_end_x - search_position_start_x) >= 7));
 #endif
+    const int32_t bw = ctx->blk_geom->bwidth;
+    const int32_t nx = search_position_end_x - search_position_start_x + 1;
+    const int32_t ny = search_position_end_y - search_position_start_y + 1;
+    if (SVT_X86_ONLY_KERNEL_PATHS && dist_type == VAR && !hbd_md && sparse_search_step == 1 &&
+        (bw == 16 || bw == 32 || bw == 64) && ctx->blk_geom->bheight <= 64 && nx * ny >= 25 && nx * ny <= 128 &&
+        svt_aom_variance_window != svt_aom_variance_window_c) {
+        // all window variances in one pass (pays off on larger windows); same visiting order and tie rule as below
+        uint32_t var[128];
+        svt_aom_variance_window(input_pic->y_buffer + input_origin_index,
+                                input_pic->y_stride,
+                                ref_pic->y_buffer + (ctx->blk_org_x + (mvx >> 3) + search_position_start_x) +
+                                    (ctx->blk_org_y + (mvy >> 3) + search_position_start_y) * ref_pic->y_stride,
+                                ref_pic->y_stride,
+                                bw,
+                                ctx->blk_geom->bheight,
+                                nx,
+                                ny,
+                                var);
+        for (int32_t i = 0; i < nx; i++) {
+            for (int32_t j = 0; j < ny; j++) {
+                Mv mv;
+                mv.x             = mvx + ((search_position_start_x + i) * 8);
+                mv.y             = mvy + ((search_position_start_y + j) * 8);
+                const uint32_t c = var[i * ny + j] + svt_aom_fp_mv_err_cost(mv, &mv_cost_params);
+                if (c < *best_cost) {
+                    *best_mvx  = mv.x;
+                    *best_mvy  = mv.y;
+                    *best_cost = c;
+                }
+            }
+        }
+        return;
+    }
     for (int32_t refinement_pos_x = search_position_start_x; refinement_pos_x <= search_position_end_x;
          refinement_pos_x         = refinement_pos_x + sparse_search_step) {
         for (int32_t refinement_pos_y = search_position_start_y; refinement_pos_y <= search_position_end_y;
@@ -9637,6 +9674,18 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
     ctx->mds0_best_cost        = (uint64_t)~0;
     ctx->mds0_best_class       = 0;
     ctx->mds0_best_class0_cost = (uint64_t)~0;
+    const int32_t blk_bw       = ctx->blk_geom->bwidth;
+    ctx->src_var_on = SVT_X86_ONLY_KERNEL_PATHS && !SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) && !ctx->mds0_use_hadamard_blk &&
+        (blk_bw == 16 || blk_bw == 32 || blk_bw == 64) && ctx->blk_geom->bheight <= 64 &&
+        !((blk_bw * ctx->blk_geom->bheight) & 63);
+    if (ctx->src_var_on) {
+        ctx->src_var.vf = svt_aom_mefn_ptr[ctx->blk_geom->bsize].vf;
+        svt_aom_src_var_prep(&ctx->src_var,
+                             input_pic->y_buffer + loc.input_origin_index,
+                             input_pic->y_stride,
+                             blk_bw,
+                             ctx->blk_geom->bheight);
+    }
     for (cand_class_it = CAND_CLASS_0; cand_class_it < CAND_CLASS_TOTAL; cand_class_it++) {
         //number of next level candidates could not exceed number of curr level candidates
         ctx->md_stage_1_count[cand_class_it] = MIN(ctx->md_stage_0_count[cand_class_it],

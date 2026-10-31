@@ -179,6 +179,31 @@ uint32_t svt_aom_variance_highbd_c(const uint16_t* a, int a_stride, const uint16
     return *sse - ((int64_t)sad * sad) / (w * h);
 }
 
+void svt_aom_variance_window_c(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride, int bw, int bh,
+                               int nx, int ny, uint32_t* var) {
+    for (int x = 0; x < nx; x++) {
+        for (int y = 0; y < ny; y++) {
+            uint32_t sse;
+            int      sum;
+            variance_c(ref + y * ref_stride + x, ref_stride, src, src_stride, bw, bh, &sse, &sum);
+            var[x * ny + y] = sse - (uint32_t)(((int64_t)sum * sum) / (bw * bh));
+        }
+    }
+}
+
+// Generic path: the block's own variance function
+void svt_aom_src_var_prep_c(SrcVarCtx* c, const uint8_t* src, int stride, int bw, int bh) {
+    c->src    = src;
+    c->stride = stride;
+    c->bw     = bw;
+    c->bh     = bh;
+}
+
+uint32_t svt_aom_src_var_c(const SrcVarCtx* c, const uint8_t* pred, int pred_stride) {
+    unsigned int sse;
+    return c->vf(pred, pred_stride, c->src, c->stride, &sse);
+}
+
 // Moved from EbComputeVariance_C.c
 #define VAR(W, H)                                                                        \
     uint32_t svt_aom_variance##W##x##H##_c(                                              \

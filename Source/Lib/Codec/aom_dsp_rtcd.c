@@ -427,6 +427,14 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2_AVX2(svt_aom_variance16x4, svt_aom_variance16x4_c, svt_aom_variance16x4_sse2, svt_aom_variance16x4_avx2);
     SET_SSE2_AVX2(svt_aom_variance16x8, svt_aom_variance16x8_c, svt_aom_variance16x8_sse2, svt_aom_variance16x8_avx2);
     SET_SSE2_AVX2(svt_aom_variance16x16, svt_aom_variance16x16_c, svt_aom_variance16x16_sse2, svt_aom_variance16x16_avx2);
+    SET_ONLY_C(svt_aom_variance_window, svt_aom_variance_window_c);
+    SET_ONLY_C(svt_aom_src_var_prep, svt_aom_src_var_prep_c);
+    SET_ONLY_C(svt_aom_src_var, svt_aom_src_var_c);
+#if EN_AVX512_SUPPORT
+    SET_FUNCTION(svt_aom_variance_window, svt_aom_variance_window_avx512icl, EB_CPU_FLAGS_AVX512ICL);
+    SET_FUNCTION(svt_aom_src_var_prep, svt_aom_src_var_prep_avx512icl, EB_CPU_FLAGS_AVX512ICL);
+    SET_FUNCTION(svt_aom_src_var, svt_aom_src_var_avx512icl, EB_CPU_FLAGS_AVX512ICL);
+#endif
     SET_SSE2_AVX2(svt_aom_variance16x32, svt_aom_variance16x32_c, svt_aom_variance16x32_sse2, svt_aom_variance16x32_avx2);
     SET_SSE2_AVX2(svt_aom_variance16x64, svt_aom_variance16x64_c, svt_aom_variance16x64_sse2, svt_aom_variance16x64_avx2);
     SET_SSE2_AVX2_AVX512(svt_aom_variance32x8, svt_aom_variance32x8_c, svt_aom_variance32x8_sse2, svt_aom_variance32x8_avx2, svt_aom_variance32x8_avx512);

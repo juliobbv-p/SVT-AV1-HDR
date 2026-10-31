@@ -62,7 +62,12 @@ set(all_files
     transpose_avx512.h
     transpose_encoder_avx512.h
     variance_avx512.c
+    variance_window_avx512icl.c
     wiener_convolve_avx512.c
     )
+
+if(NOT MSVC)
+    set_source_files_properties(variance_window_avx512icl.c PROPERTIES COMPILE_OPTIONS "-mavx512vnni")
+endif()
 
 add_library(ASM_AVX512 OBJECT ${all_files})

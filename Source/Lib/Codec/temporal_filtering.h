@@ -117,6 +117,8 @@ typedef struct {
     uint8_t      subsampling_shift;
     uint32_t     idx_x;
     uint32_t     idx_y;
+    // prepared source block for the luma distortion, or NULL
+    const SrcVarCtx* sv;
 } TF_SUBPEL_SEARCH_PARAMS;
 #ifdef __cplusplus
 }

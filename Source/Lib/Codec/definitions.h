@@ -2221,6 +2221,15 @@ typedef struct DecCostCtrls {
 } DecCostCtrls;
 #endif
 
+// Source block terms shared by the variances of many predictions of one block (svt_aom_src_var)
+typedef struct SrcVarCtx {
+    uint8_t        sx[64 * 64]; // source ^ 0x80, 64 bytes per step
+    const uint8_t* src;
+    int32_t        stride, bw, bh;
+    int64_t        ss, ss2;
+    unsigned int (*vf)(const uint8_t* a, int a_stride, const uint8_t* b, int b_stride, unsigned int* sse);
+} SrcVarCtx;
+
 #ifdef __cplusplus
 }
 #endif

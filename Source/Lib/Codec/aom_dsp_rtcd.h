@@ -556,6 +556,12 @@ unsigned int svt_aom_variance16x8_c(const uint8_t *src_ptr, int source_stride, c
 RTCD_EXTERN unsigned int(*svt_aom_variance16x8)(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 unsigned int svt_aom_variance16x16_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 RTCD_EXTERN unsigned int(*svt_aom_variance16x16)(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
+void svt_aom_variance_window_c(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int bw, int bh, int nx, int ny, uint32_t *var);
+void svt_aom_src_var_prep_c(SrcVarCtx *c, const uint8_t *src, int stride, int bw, int bh);
+RTCD_EXTERN void(*svt_aom_src_var_prep)(SrcVarCtx *c, const uint8_t *src, int stride, int bw, int bh);
+uint32_t svt_aom_src_var_c(const SrcVarCtx *c, const uint8_t *pred, int pred_stride);
+RTCD_EXTERN uint32_t(*svt_aom_src_var)(const SrcVarCtx *c, const uint8_t *pred, int pred_stride);
+RTCD_EXTERN void(*svt_aom_variance_window)(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int bw, int bh, int nx, int ny, uint32_t *var);
 unsigned int svt_aom_variance16x32_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 RTCD_EXTERN unsigned int(*svt_aom_variance16x32)(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 unsigned int svt_aom_variance16x64_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
@@ -1691,6 +1697,9 @@ void svt_av1_fwd_txfm2d_64x16_N4_avx2(int16_t *input, int32_t *output, uint32_t 
 void svt_av1_fwd_txfm2d_64x64_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_32x32_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_16x16_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+void svt_aom_src_var_prep_avx512icl(SrcVarCtx *c, const uint8_t *src, int stride, int bw, int bh);
+uint32_t svt_aom_src_var_avx512icl(const SrcVarCtx *c, const uint8_t *pred, int pred_stride);
+void svt_aom_variance_window_avx512icl(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int bw, int bh, int nx, int ny, uint32_t *var);
 void svt_av1_fwd_txfm2d_8x8_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_4x4_N4_sse4_1(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void av1_fwd_txfm2d_32x32_N2_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
