@@ -1154,12 +1154,15 @@ EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, PictureCon
         bool is_16bit = SVT_EFFECTIVE_BIT_DEPTH(scs->static_config.encoder_bit_depth) > 8 ? true : false;
         if (SVT_EFFECTIVE_IS_16BIT_PIPELINE(scs->is_16bit_pipeline) || is_16bit) {
             temp_lf_recon_desc_init_data.bit_depth = EB_SIXTEEN_BIT;
-            EB_NEW(
-                pcs->temp_lf_recon_pic_16bit, svt_recon_picture_buffer_desc_ctor, (EbPtr)&temp_lf_recon_desc_init_data);
+            if (!pcs->temp_lf_recon_pic_16bit) {
+                EB_NEW(pcs->temp_lf_recon_pic_16bit,
+                       svt_recon_picture_buffer_desc_ctor,
+                       (EbPtr)&temp_lf_recon_desc_init_data);
+            }
             if (!is_16bit) {
                 pcs->temp_lf_recon_pic_16bit->bit_depth = EB_EIGHT_BIT;
             }
-        } else {
+        } else if (!pcs->temp_lf_recon_pic) {
             temp_lf_recon_desc_init_data.bit_depth = EB_EIGHT_BIT;
             EB_NEW(pcs->temp_lf_recon_pic, svt_recon_picture_buffer_desc_ctor, (EbPtr)&temp_lf_recon_desc_init_data);
         }
@@ -1272,8 +1275,7 @@ EbErrorType svt_av1_pick_filter_level(EbPictureBufferDesc* srcBuffer, PictureCon
                                                      2,
                                                      0);
         }
-        EB_DELETE(pcs->temp_lf_recon_pic);
-        EB_DELETE(pcs->temp_lf_recon_pic_16bit);
+        // the caller owns the scratch buffers (reused across pictures)
     }
 
     return EB_ErrorNone;

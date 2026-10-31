@@ -3132,6 +3132,8 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                         if (sb_index == 0) {
                             svt_av1_loop_filter_init(pcs);
                             svt_av1_pick_filter_level((EbPictureBufferDesc*)pcs->ppcs->enhanced_pic, pcs);
+                            EB_DELETE(pcs->temp_lf_recon_pic);
+                            EB_DELETE(pcs->temp_lf_recon_pic_16bit);
                             svt_av1_loop_filter_frame_init(&pcs->ppcs->frm_hdr, &pcs->ppcs->lf_info, 0, 3);
                         }
 

@@ -23,6 +23,9 @@
 typedef struct DlfContext {
     EbFifo* dlf_input_fifo_ptr;
     EbFifo* dlf_output_fifo_ptr;
+    // filter level search scratch, kept across pictures
+    EbPictureBufferDesc* temp_lf_recon_pic;
+    EbPictureBufferDesc* temp_lf_recon_pic_16bit;
 } DlfContext;
 
 /**************************************
