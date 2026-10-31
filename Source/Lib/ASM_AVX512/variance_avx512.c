@@ -842,4 +842,59 @@ AOM_VAR_NO_LOOP_AVX512(32, 64, 11, 2048);
 AOM_VAR_NO_LOOP_AVX512(64, 16, 10, 1024);
 AOM_VAR_NO_LOOP_AVX512(64, 32, 11, 2048);
 
+// 64 bytes = 64 / w rows of a w-wide block
+static INLINE __m512i load_rows_64b(const uint8_t* p, const int stride, const int w) {
+    if (w == 64) {
+        return _mm512_loadu_si512((const __m512i*)p);
+    }
+    if (w == 32) {
+        return _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_loadu_si256((const __m256i*)p)),
+                                  _mm256_loadu_si256((const __m256i*)(p + stride)),
+                                  1);
+    }
+    const __m256i lo = _mm256_inserti128_si256(
+        _mm256_castsi128_si256(_mm_loadu_si128((const __m128i*)p)), _mm_loadu_si128((const __m128i*)(p + stride)), 1);
+    const __m256i hi = _mm256_inserti128_si256(
+        _mm256_castsi128_si256(_mm_loadu_si128((const __m128i*)(p + 2 * stride))),
+        _mm_loadu_si128((const __m128i*)(p + 3 * stride)),
+        1);
+    return _mm512_inserti64x4(_mm512_castsi256_si512(lo), hi, 1);
+}
+
+static INLINE uint32_t variance_reduce_avx512(const __m512i vsse, const __m512i vsum, const int log2_n, uint32_t* sse) {
+    const int sum = _mm512_reduce_add_epi32(_mm512_madd_epi16(vsum, _mm512_set1_epi16(1)));
+    *sse          = (uint32_t)_mm512_reduce_add_epi32(vsse);
+    return *sse - (uint32_t)(((int64_t)sum * sum) >> log2_n);
+}
+
+// Bilinear half-pel variances of the four cardinal neighbours of the full-pel position ref (left, right, up, down),
+// identical to sub_pixel_variance at (ref - 1, 4, 0), (ref, 4, 0), (ref - stride, 0, 4), (ref, 0, 4). w: 16, 32, 64.
+void svt_aom_sub_pixel_variance_cross_half_avx512(const uint8_t* ref, int ref_stride, const uint8_t* src,
+                                                  int src_stride, int w, int h, uint32_t var[4], uint32_t sse[4]) {
+    const int rows = 64 / w;
+    __m512i   vsse[4], vsum[4];
+    for (int k = 0; k < 4; k++) {
+        vsse[k] = _mm512_setzero_si512();
+        vsum[k] = _mm512_setzero_si512();
+    }
+    for (int y = 0; y < h; y += rows) {
+        const __m512i s = load_rows_64b(src, src_stride, w);
+        const __m512i c = load_rows_64b(ref, ref_stride, w);
+        const __m512i l = load_rows_64b(ref - 1, ref_stride, w);
+        const __m512i r = load_rows_64b(ref + 1, ref_stride, w);
+        const __m512i u = load_rows_64b(ref - ref_stride, ref_stride, w);
+        const __m512i d = load_rows_64b(ref + ref_stride, ref_stride, w);
+        variance_kernel_avx512(s, _mm512_avg_epu8(l, c), &vsse[0], &vsum[0]);
+        variance_kernel_avx512(s, _mm512_avg_epu8(c, r), &vsse[1], &vsum[1]);
+        variance_kernel_avx512(s, _mm512_avg_epu8(u, c), &vsse[2], &vsum[2]);
+        variance_kernel_avx512(s, _mm512_avg_epu8(c, d), &vsse[3], &vsum[3]);
+        src += rows * src_stride;
+        ref += rows * ref_stride;
+    }
+    const int log2_n = (w == 64 ? 6 : w == 32 ? 5 : 4) + (h == 64 ? 6 : h == 32 ? 5 : h == 16 ? 4 : 3);
+    for (int k = 0; k < 4; k++) {
+        var[k] = variance_reduce_avx512(vsse[k], vsum[k], log2_n, &sse[k]);
+    }
+}
+
 #endif // !EN_AVX512_SUPPORT

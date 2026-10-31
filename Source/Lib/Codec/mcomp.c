@@ -26,6 +26,11 @@
 // =============================================================================
 #define INIT_SUBPEL_STEP_SIZE (4)
 
+#if EN_AVX512_SUPPORT
+void svt_aom_sub_pixel_variance_cross_half_avx512(const uint8_t* ref, int ref_stride, const uint8_t* src,
+                                                  int src_stride, int w, int h, uint32_t var[4], uint32_t sse[4]);
+#endif
+
 /*
  * To avoid the penalty for crossing cache-line read, preload the reference
  * area in a small buffer, which is aligned to make sure there won't be crossing
@@ -102,33 +107,41 @@ static INLINE int svt_estimated_pref_error(Mv this_mv, const SUBPEL_SEARCH_VAR_P
 
 // Estimates whether this_mv is better than best_mv. This function incorporates
 // both prediction error and residue into account. It is suffixed "fast" because
-// it uses bilinear filter to estimate the prediction.
+// it uses bilinear filter to estimate the prediction. pre_mse: precomputed prediction error, or NULL.
+static AOM_FORCE_INLINE unsigned int check_better_fast_in_range(Mv this_mv, Mv* best_mv,
+                                                                const SUBPEL_SEARCH_VAR_PARAMS* var_params,
+                                                                const svt_mv_cost_param*        mv_cost_params,
+                                                                unsigned int* besterr, int* distortion,
+                                                                const uint32_t* pre_mse) {
+    unsigned int cost;
+    int          thismse;
+    cost = svt_aom_fp_mv_err_cost(this_mv, mv_cost_params);
+    if (mv_cost_params->mv_cost_type == MV_COST_OPT) {
+        int64_t bestcost = *distortion + cost;
+        if (bestcost > (((int64_t)*besterr * (int64_t)mv_cost_params->early_exit_th) / 1000)) {
+            return (uint32_t)bestcost;
+        }
+    }
+    thismse = pre_mse ? (int)*pre_mse : svt_estimated_pref_error(this_mv, var_params);
+    cost += thismse;
+    uint64_t biased_cost = cost;
+    if (var_params->bias_fp && best_mv->x % 8 == 0 && best_mv->y % 8 == 0) {
+        biased_cost = ((uint64_t)cost * var_params->bias_fp) / 100;
+    }
+    if (biased_cost < *besterr) {
+        *besterr    = cost;
+        *best_mv    = this_mv;
+        *distortion = thismse;
+    }
+    return cost;
+}
+
 static INLINE unsigned int svt_check_better_fast(Mv this_mv, Mv* best_mv, const SubpelMvLimits* mv_limits,
                                                  const SUBPEL_SEARCH_VAR_PARAMS* var_params,
                                                  const svt_mv_cost_param* mv_cost_params, unsigned int* besterr,
                                                  int* distortion) {
     if (svt_av1_is_subpelmv_in_range(mv_limits, this_mv)) {
-        unsigned int cost;
-        int          thismse;
-        cost = svt_aom_fp_mv_err_cost(this_mv, mv_cost_params);
-        if (mv_cost_params->mv_cost_type == MV_COST_OPT) {
-            int64_t bestcost = *distortion + cost;
-            if (bestcost > (((int64_t)*besterr * (int64_t)mv_cost_params->early_exit_th) / 1000)) {
-                return (uint32_t)bestcost;
-            }
-        }
-        thismse = svt_estimated_pref_error(this_mv, var_params);
-        cost += thismse;
-        uint64_t biased_cost = cost;
-        if (var_params->bias_fp && best_mv->x % 8 == 0 && best_mv->y % 8 == 0) {
-            biased_cost = ((uint64_t)cost * var_params->bias_fp) / 100;
-        }
-        if (biased_cost < *besterr) {
-            *besterr    = cost;
-            *best_mv    = this_mv;
-            *distortion = thismse;
-        }
-        return cost;
+        return check_better_fast_in_range(this_mv, best_mv, var_params, mv_cost_params, besterr, distortion, NULL);
     }
     return INT_MAX;
 }
@@ -248,21 +261,41 @@ static AOM_FORCE_INLINE Mv first_level_check_fast(const Mv this_mv, Mv* best_mv,
                                                   const svt_mv_cost_param* mv_cost_params, unsigned int* besterr,
                                                   unsigned int orgerr, int* distortion) {
     // Check the four cardinal directions
-    const Mv           left_mv = {{this_mv.x - hstep, this_mv.y}};
-    const unsigned int left    = svt_check_better_fast(
-        left_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
-
-    const Mv           right_mv = {{this_mv.x + hstep, this_mv.y}};
-    const unsigned int right    = svt_check_better_fast(
-        right_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
-
-    const Mv           top_mv = {{this_mv.x, this_mv.y - hstep}};
-    const unsigned int up     = svt_check_better_fast(
-        top_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
-
-    const Mv           bottom_mv = {{this_mv.x, this_mv.y + hstep}};
-    const unsigned int down      = svt_check_better_fast(
-        bottom_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
+    const Mv     left_mv   = {{this_mv.x - hstep, this_mv.y}};
+    const Mv     right_mv  = {{this_mv.x + hstep, this_mv.y}};
+    const Mv     top_mv    = {{this_mv.x, this_mv.y - hstep}};
+    const Mv     bottom_mv = {{this_mv.x, this_mv.y + hstep}};
+    unsigned int left, right, up, down;
+#if EN_AVX512_SUPPORT
+    const int w = var_params->w;
+    const int h = var_params->h;
+    // Half-pel cross around a full-pel centre: all four bilinear errors in one pass
+    if (svt_aom_use_avx512 && hstep == 4 && !(this_mv.x & 7) && !(this_mv.y & 7) && (w == 16 || w == 32 || w == 64) &&
+        h >= 8 && h <= 64 && svt_av1_is_subpelmv_in_range(mv_limits, left_mv) &&
+        svt_av1_is_subpelmv_in_range(mv_limits, right_mv) && svt_av1_is_subpelmv_in_range(mv_limits, top_mv) &&
+        svt_av1_is_subpelmv_in_range(mv_limits, bottom_mv)) {
+        const MSBuffers* ms_buffers = &var_params->ms_buffers;
+        uint32_t         var[4], sse[4];
+        svt_aom_sub_pixel_variance_cross_half_avx512(svt_get_buf_from_mv(ms_buffers->ref, this_mv),
+                                                     ms_buffers->ref->stride,
+                                                     ms_buffers->src->buf,
+                                                     ms_buffers->src->stride,
+                                                     w,
+                                                     h,
+                                                     var,
+                                                     sse);
+        left  = check_better_fast_in_range(left_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[0]);
+        right = check_better_fast_in_range(right_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[1]);
+        up    = check_better_fast_in_range(top_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[2]);
+        down = check_better_fast_in_range(bottom_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[3]);
+    } else
+#endif
+    {
+        left  = svt_check_better_fast(left_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
+        right = svt_check_better_fast(right_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
+        up    = svt_check_better_fast(top_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
+        down  = svt_check_better_fast(bottom_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr, distortion);
+    }
 
     const Mv diag_step = get_best_diag_step(hstep, left, right, up, down);
     const Mv diag_mv   = {{this_mv.x + diag_step.x, this_mv.y + diag_step.y}};
