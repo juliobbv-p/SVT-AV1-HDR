@@ -923,6 +923,17 @@ static INLINE uint32_t get_rdoq_rate_key(TxSize tx_size, TxType tx_type, PlaneTy
         ((uint32_t)(uint8_t)dc_sign_ctx << 20);
 }
 
+// txb skip/dc-sign contexts of a block-level transform: the MD neighbour arrays do not change while md_encode_block
+// evaluates the block's candidates
+typedef struct TxbCtxCache {
+    uint32_t    gen;
+    const void* na;
+    uint32_t    x, y;
+    TxSize      tx_size;
+    BlockSize   bsize;
+    int16_t     skip_ctx, dc_sign_ctx;
+} TxbCtxCache;
+
 typedef struct ModeDecisionContext {
     EbDctor dctor;
 
@@ -1027,6 +1038,8 @@ typedef struct ModeDecisionContext {
     uint64_t         three_quad_energy;
     uint32_t         txb_1d_offset;
     bool             uv_intra_comp_only;
+    TxbCtxCache      txb_ctx_cache[MAX_PLANES];
+    uint32_t         txb_ctx_gen;
     bool             ind_uv_avail; // True if independent chroma search data is available
     UvPredictionMode best_uv_mode[UV_PAETH_PRED + 1];
     int8_t           best_uv_angle[UV_PAETH_PRED + 1];

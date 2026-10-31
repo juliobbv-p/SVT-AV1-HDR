@@ -4714,15 +4714,29 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     ctx->luma_txb_skip_context = 0;
     ctx->luma_dc_sign_context  = 0;
     if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
-        svt_aom_get_txb_ctx(pcs,
-                            COMPONENT_LUMA,
-                            ctx->full_loop_luma_dc_sign_level_coeff_na,
-                            ctx->blk_org_x + txb_origin_x,
-                            ctx->blk_org_y + txb_origin_y,
-                            ctx->blk_geom->bsize,
-                            tx_size,
-                            &ctx->luma_txb_skip_context,
-                            &ctx->luma_dc_sign_context);
+        // deeper tx depths read a neighbour array the previous txbs of this candidate update
+        if (ctx->tx_depth) {
+            svt_aom_get_txb_ctx(pcs,
+                                COMPONENT_LUMA,
+                                ctx->full_loop_luma_dc_sign_level_coeff_na,
+                                ctx->blk_org_x + txb_origin_x,
+                                ctx->blk_org_y + txb_origin_y,
+                                ctx->blk_geom->bsize,
+                                tx_size,
+                                &ctx->luma_txb_skip_context,
+                                &ctx->luma_dc_sign_context);
+        } else {
+            svt_aom_get_block_txb_ctx(pcs,
+                                      ctx,
+                                      0,
+                                      ctx->full_loop_luma_dc_sign_level_coeff_na,
+                                      ctx->blk_org_x + txb_origin_x,
+                                      ctx->blk_org_y + txb_origin_y,
+                                      ctx->blk_geom->bsize,
+                                      tx_size,
+                                      &ctx->luma_txb_skip_context,
+                                      &ctx->luma_dc_sign_context);
+        }
     }
     TxType best_tx_type = DCT_DCT;
     // local variables for all TX types
@@ -5740,15 +5754,16 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
         // or for intra_luma_preiction when TXS is on. TXS is assumed off in this path
         // so only update if DC sign array is needed
         tx_initialize_neighbor_arrays(pcs, ctx, is_inter);
-        svt_aom_get_txb_ctx(pcs,
-                            COMPONENT_LUMA,
-                            ctx->full_loop_luma_dc_sign_level_coeff_na,
-                            ctx->blk_org_x + tx_org_x,
-                            ctx->blk_org_y + tx_org_y,
-                            ctx->blk_geom->bsize,
-                            tx_size,
-                            &ctx->luma_txb_skip_context,
-                            &ctx->luma_dc_sign_context);
+        svt_aom_get_block_txb_ctx(pcs,
+                                  ctx,
+                                  0,
+                                  ctx->full_loop_luma_dc_sign_level_coeff_na,
+                                  ctx->blk_org_x + tx_org_x,
+                                  ctx->blk_org_y + tx_org_y,
+                                  ctx->blk_geom->bsize,
+                                  tx_size,
+                                  &ctx->luma_txb_skip_context,
+                                  &ctx->luma_dc_sign_context);
     }
 
     EbPictureBufferDesc* const recon_coeff_ptr = cand_bf->rec_coeff;
@@ -9393,6 +9408,7 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
     ctx->obmc_neighbor_luma_pred_ready   = false;
     ctx->obmc_neighbor_chroma_pred_ready = false;
     ctx->obmc_is_luma_neigh_10bit        = false;
+    ctx->txb_ctx_gen++;
     if (pcs->ppcs->frm_hdr.segmentation_params.segmentation_enabled) {
         SuperBlock*    sb_ptr  = ctx->sb_ptr;
         const Position blk_org = {.x = ctx->blk_org_x - ctx->sb_origin_x, .y = ctx->blk_org_y - ctx->sb_origin_y};

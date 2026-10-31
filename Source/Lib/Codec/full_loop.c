@@ -651,6 +651,38 @@ static INLINE int get_coeff_cost_general(int is_last, int ci, TranLow abs_qc, in
     return cost;
 }
 
+void svt_aom_get_block_txb_ctx(PictureControlSet* pcs, ModeDecisionContext* ctx, int32_t plane, NeighborArrayUnit* na,
+                               uint32_t x, uint32_t y, BlockSize plane_bsize, TxSize tx_size, int16_t* txb_skip_ctx,
+                               int16_t* dc_sign_ctx) {
+    TxbCtxCache* c = &ctx->txb_ctx_cache[plane];
+    if (c->gen != ctx->txb_ctx_gen || c->na != na || c->x != x || c->y != y || c->tx_size != tx_size ||
+        c->bsize != plane_bsize) {
+        svt_aom_get_txb_ctx(pcs,
+                            plane ? COMPONENT_CHROMA : COMPONENT_LUMA,
+                            na,
+                            x,
+                            y,
+                            plane_bsize,
+                            tx_size,
+                            &c->skip_ctx,
+                            &c->dc_sign_ctx);
+        c->gen     = ctx->txb_ctx_gen;
+        c->na      = na;
+        c->x       = x;
+        c->y       = y;
+        c->tx_size = tx_size;
+        c->bsize   = plane_bsize;
+    }
+#ifndef NDEBUG
+    int16_t skip_ctx, dc_ctx;
+    svt_aom_get_txb_ctx(
+        pcs, plane ? COMPONENT_CHROMA : COMPONENT_LUMA, na, x, y, plane_bsize, tx_size, &skip_ctx, &dc_ctx);
+    assert(skip_ctx == c->skip_ctx && dc_ctx == c->dc_sign_ctx);
+#endif
+    *txb_skip_ctx = c->skip_ctx;
+    *dc_sign_ctx  = c->dc_sign_ctx;
+}
+
 static INLINE int64_t get_coeff_dist(TranLow tcoeff, TranLow dqcoeff, int shift) {
     return SQR(((int64_t)tcoeff - dqcoeff) * (int64_t)(1lu << shift));
 }
@@ -2135,15 +2167,16 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
             ctx->cb_txb_skip_context = 0;
             ctx->cb_dc_sign_context  = 0;
             if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
-                svt_aom_get_txb_ctx(pcs,
-                                    COMPONENT_CHROMA,
-                                    ctx->cb_dc_sign_level_coeff_na,
-                                    ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
-                                    ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
-                                    ctx->blk_geom->bsize_uv,
-                                    tx_size_uv,
-                                    &ctx->cb_txb_skip_context,
-                                    &ctx->cb_dc_sign_context);
+                svt_aom_get_block_txb_ctx(pcs,
+                                          ctx,
+                                          1,
+                                          ctx->cb_dc_sign_level_coeff_na,
+                                          ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
+                                          ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
+                                          ctx->blk_geom->bsize_uv,
+                                          tx_size_uv,
+                                          &ctx->cb_txb_skip_context,
+                                          &ctx->cb_dc_sign_context);
             }
             // Configure the Chroma Residual Ptr
 
@@ -2337,15 +2370,16 @@ void svt_aom_full_loop_uv(PictureControlSet* pcs, ModeDecisionContext* ctx, Mode
             ctx->cr_txb_skip_context = 0;
             ctx->cr_dc_sign_context  = 0;
             if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
-                svt_aom_get_txb_ctx(pcs,
-                                    COMPONENT_CHROMA,
-                                    ctx->cr_dc_sign_level_coeff_na,
-                                    ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
-                                    ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
-                                    ctx->blk_geom->bsize_uv,
-                                    tx_size_uv,
-                                    &ctx->cr_txb_skip_context,
-                                    &ctx->cr_dc_sign_context);
+                svt_aom_get_block_txb_ctx(pcs,
+                                          ctx,
+                                          2,
+                                          ctx->cr_dc_sign_level_coeff_na,
+                                          ROUND_UV(ctx->blk_org_x + txb_origin_x) >> 1,
+                                          ROUND_UV(ctx->blk_org_y + txb_origin_y) >> 1,
+                                          ctx->blk_geom->bsize_uv,
+                                          tx_size_uv,
+                                          &ctx->cr_txb_skip_context,
+                                          &ctx->cr_dc_sign_context);
             }
             // Configure the Chroma Residual Ptr
 

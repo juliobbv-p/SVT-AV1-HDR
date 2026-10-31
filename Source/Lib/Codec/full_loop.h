@@ -40,6 +40,10 @@ void    svt_aom_inv_transform_recon_wrapper(PictureControlSet* pcs, ModeDecision
                                             uint32_t coeff_offset, bool hbd, TxSize txsize, TxType transform_type,
                                             PlaneType component_type, uint32_t eob);
 uint8_t svt_aom_do_md_recon(PictureParentControlSet* pcs, ModeDecisionContext* ctx);
+// svt_aom_get_txb_ctx() of a block-level transform, cached while md_encode_block evaluates the block
+void svt_aom_get_block_txb_ctx(PictureControlSet* pcs, ModeDecisionContext* ctx, int32_t plane, NeighborArrayUnit* na,
+                               uint32_t x, uint32_t y, BlockSize plane_bsize, TxSize tx_size, int16_t* txb_skip_ctx,
+                               int16_t* dc_sign_ctx);
 
 extern const int av1_get_tx_scale_tab[TX_SIZES_ALL];
 #ifdef __cplusplus
