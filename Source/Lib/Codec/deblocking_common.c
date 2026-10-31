@@ -887,3 +887,118 @@ static void mb_lpf_vertical_edge_w(uint8_t* s, int p, const uint8_t* blimit, con
 void svt_aom_lpf_vertical_14_c(uint8_t* s, int p, const uint8_t* blimit, const uint8_t* limit, const uint8_t* thresh) {
     mb_lpf_vertical_edge_w(s, p, blimit, limit, thresh, 4);
 }
+
+// Two adjacent 4-pixel edge segments: vertical edges stack 4 rows down, horizontal edges 4 columns right.
+// C fallback of the x86 grouped walk, built on the dispatched single-segment filters.
+void svt_aom_lpf_horizontal_4_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                     const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                     const uint8_t* thresh1) {
+    svt_aom_lpf_horizontal_4(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_horizontal_4(s + 4, p, blimit1, limit1, thresh1);
+}
+
+void svt_aom_lpf_horizontal_6_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                     const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                     const uint8_t* thresh1) {
+    svt_aom_lpf_horizontal_6(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_horizontal_6(s + 4, p, blimit1, limit1, thresh1);
+}
+
+void svt_aom_lpf_horizontal_8_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                     const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                     const uint8_t* thresh1) {
+    svt_aom_lpf_horizontal_8(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_horizontal_8(s + 4, p, blimit1, limit1, thresh1);
+}
+
+void svt_aom_lpf_horizontal_14_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                      const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                      const uint8_t* thresh1) {
+    svt_aom_lpf_horizontal_14(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_horizontal_14(s + 4, p, blimit1, limit1, thresh1);
+}
+
+void svt_aom_lpf_vertical_4_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                   const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                   const uint8_t* thresh1) {
+    svt_aom_lpf_vertical_4(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_vertical_4(s + 4 * p, p, blimit1, limit1, thresh1);
+}
+
+void svt_aom_lpf_vertical_6_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                   const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                   const uint8_t* thresh1) {
+    svt_aom_lpf_vertical_6(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_vertical_6(s + 4 * p, p, blimit1, limit1, thresh1);
+}
+
+void svt_aom_lpf_vertical_8_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                   const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                   const uint8_t* thresh1) {
+    svt_aom_lpf_vertical_8(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_vertical_8(s + 4 * p, p, blimit1, limit1, thresh1);
+}
+
+void svt_aom_lpf_vertical_14_dual_c(uint8_t* s, int32_t p, const uint8_t* blimit0, const uint8_t* limit0,
+                                    const uint8_t* thresh0, const uint8_t* blimit1, const uint8_t* limit1,
+                                    const uint8_t* thresh1) {
+    svt_aom_lpf_vertical_14(s, p, blimit0, limit0, thresh0);
+    svt_aom_lpf_vertical_14(s + 4 * p, p, blimit1, limit1, thresh1);
+}
+
+// Four adjacent 4-pixel edge segments with one set of thresholds.
+void svt_aom_lpf_horizontal_4_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                     const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_horizontal_4(s + i * 4, p, blimit, limit, thresh);
+    }
+}
+
+void svt_aom_lpf_horizontal_6_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                     const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_horizontal_6(s + i * 4, p, blimit, limit, thresh);
+    }
+}
+
+void svt_aom_lpf_horizontal_8_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                     const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_horizontal_8(s + i * 4, p, blimit, limit, thresh);
+    }
+}
+
+void svt_aom_lpf_horizontal_14_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                      const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_horizontal_14(s + i * 4, p, blimit, limit, thresh);
+    }
+}
+
+void svt_aom_lpf_vertical_4_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                   const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_vertical_4(s + i * 4 * p, p, blimit, limit, thresh);
+    }
+}
+
+void svt_aom_lpf_vertical_6_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                   const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_vertical_6(s + i * 4 * p, p, blimit, limit, thresh);
+    }
+}
+
+void svt_aom_lpf_vertical_8_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                   const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_vertical_8(s + i * 4 * p, p, blimit, limit, thresh);
+    }
+}
+
+void svt_aom_lpf_vertical_14_quad_c(uint8_t* s, int32_t p, const uint8_t* blimit, const uint8_t* limit,
+                                    const uint8_t* thresh) {
+    for (int i = 0; i < 4; i++) {
+        svt_aom_lpf_vertical_14(s + i * 4 * p, p, blimit, limit, thresh);
+    }
+}

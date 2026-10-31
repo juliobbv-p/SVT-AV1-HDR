@@ -30,6 +30,7 @@ set(all_files
     compute_mean_sse2.h
     convolve_2d_sse2.c
     convolve_sse2.c
+    dlf_dual_intrin_sse2.c
     dlf_intrin_sse2.c
     dlf_sse2.h
     encodetxb_sse2.c

@@ -350,6 +350,218 @@ static AOM_FORCE_INLINE TxSize set_lpf_parameters(Av1DeblockingParameters* const
     return ts;
 }
 
+static INLINE void filter_vert_edge(uint8_t* p, int32_t dst_stride, const Av1DeblockingParameters* params,
+                                    const LoopFilterThresh* limits, int32_t plane, bool is_16bit, uint32_t bit_depth) {
+    const LoopFilterThresh* const limit = limits + params->level;
+    (void)plane;
+    switch (params->filter_length) {
+    case 4: // apply 4-tap filtering
+        if (is_16bit) {
+            svt_aom_highbd_lpf_vertical_4(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_vertical_4(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    case 6: // apply 6-tap filter for chroma plane only
+        assert(plane != 0);
+        if (is_16bit) {
+            svt_aom_highbd_lpf_vertical_6(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_vertical_6(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    case 8: // apply 8-tap filtering
+        if (is_16bit) {
+            svt_aom_highbd_lpf_vertical_8(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_vertical_8(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    case 14: // apply 14-tap filtering
+        if (is_16bit) {
+            svt_aom_highbd_lpf_vertical_14(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_vertical_14(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    default: // no filtering
+        break;
+    }
+}
+
+static INLINE void filter_horz_edge(uint8_t* p, int32_t dst_stride, const Av1DeblockingParameters* params,
+                                    const LoopFilterThresh* limits, int32_t plane, bool is_16bit, uint32_t bit_depth) {
+    const LoopFilterThresh* const limit = limits + params->level;
+    (void)plane;
+    switch (params->filter_length) {
+    case 4: // apply 4-tap filtering
+        if (is_16bit) {
+            svt_aom_highbd_lpf_horizontal_4(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_horizontal_4(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    case 6: // apply 6-tap filtering
+        assert(plane != 0);
+        if (is_16bit) {
+            svt_aom_highbd_lpf_horizontal_6(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_horizontal_6(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    case 8: // apply 8-tap filtering
+        if (is_16bit) {
+            svt_aom_highbd_lpf_horizontal_8(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_horizontal_8(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    case 14: // apply 14-tap filtering
+        if (is_16bit) {
+            svt_aom_highbd_lpf_horizontal_14(
+                (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
+        } else {
+            svt_aom_lpf_horizontal_14(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+        }
+        break;
+    default: // no filtering
+        break;
+    }
+}
+
+#if SVT_X86_ONLY_KERNEL_PATHS
+// Filters the edges of up to four adjacent 4-px rows at one position (at[i]: segment i has an edge
+// here): one quad call when all four are identical, else dual calls for pairs (0,1)/(2,3) of equal length.
+static INLINE void filter_vert_group(uint8_t* p, int32_t dst_stride, const Av1DeblockingParameters* params,
+                                     const bool* at, const LoopFilterThresh* limits, int32_t plane, bool is_16bit,
+                                     uint32_t bit_depth, uint8_t is_16bit_buf) {
+    const uint32_t len = params[0].filter_length;
+    if (!is_16bit && at[0] && at[1] && at[2] && at[3] && len && params[1].filter_length == len &&
+        params[2].filter_length == len && params[3].filter_length == len && params[1].level == params[0].level &&
+        params[2].level == params[0].level && params[3].level == params[0].level) {
+        const LoopFilterThresh* const l = limits + params[0].level;
+        switch (len) {
+        case 4:
+            svt_aom_lpf_vertical_4_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        case 6:
+            svt_aom_lpf_vertical_6_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        case 8:
+            svt_aom_lpf_vertical_8_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        default:
+            svt_aom_lpf_vertical_14_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        }
+        return;
+    }
+    for (int r = 0; r < 4; r += 2) {
+        uint8_t* const p0 = p + ((r * MI_SIZE * dst_stride) << is_16bit_buf);
+        uint8_t* const p1 = p + ((((r + 1) * MI_SIZE * dst_stride)) << is_16bit_buf);
+        const uint32_t pl = params[r].filter_length;
+        if (!is_16bit && at[r] && at[r + 1] && pl && pl == params[r + 1].filter_length) {
+            const LoopFilterThresh* const l0 = limits + params[r].level;
+            const LoopFilterThresh* const l1 = limits + params[r + 1].level;
+            switch (pl) {
+            case 4:
+                svt_aom_lpf_vertical_4_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            case 6:
+                svt_aom_lpf_vertical_6_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            case 8:
+                svt_aom_lpf_vertical_8_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            default:
+                svt_aom_lpf_vertical_14_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            }
+        } else {
+            if (at[r]) {
+                filter_vert_edge(p0, dst_stride, &params[r], limits, plane, is_16bit, bit_depth);
+            }
+            if (at[r + 1]) {
+                filter_vert_edge(p1, dst_stride, &params[r + 1], limits, plane, is_16bit, bit_depth);
+            }
+        }
+    }
+}
+
+// Filters the edges of up to four adjacent 4-px columns at one position (at[i]: segment i has an edge
+// here): one quad call when all four are identical, else dual calls for pairs (0,1)/(2,3) of equal length.
+static INLINE void filter_horz_group(uint8_t* p, int32_t dst_stride, const Av1DeblockingParameters* params,
+                                     const bool* at, const LoopFilterThresh* limits, int32_t plane, bool is_16bit,
+                                     uint32_t bit_depth, uint8_t is_16bit_buf) {
+    const uint32_t len = params[0].filter_length;
+    if (!is_16bit && at[0] && at[1] && at[2] && at[3] && len && params[1].filter_length == len &&
+        params[2].filter_length == len && params[3].filter_length == len && params[1].level == params[0].level &&
+        params[2].level == params[0].level && params[3].level == params[0].level) {
+        const LoopFilterThresh* const l = limits + params[0].level;
+        switch (len) {
+        case 4:
+            svt_aom_lpf_horizontal_4_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        case 6:
+            svt_aom_lpf_horizontal_6_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        case 8:
+            svt_aom_lpf_horizontal_8_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        default:
+            svt_aom_lpf_horizontal_14_quad(p, dst_stride, l->mblim, l->lim, l->hev_thr);
+            break;
+        }
+        return;
+    }
+    for (int r = 0; r < 4; r += 2) {
+        uint8_t* const p0 = p + ((r * MI_SIZE) << is_16bit_buf);
+        uint8_t* const p1 = p + ((((r + 1) * MI_SIZE)) << is_16bit_buf);
+        const uint32_t pl = params[r].filter_length;
+        if (!is_16bit && at[r] && at[r + 1] && pl && pl == params[r + 1].filter_length) {
+            const LoopFilterThresh* const l0 = limits + params[r].level;
+            const LoopFilterThresh* const l1 = limits + params[r + 1].level;
+            switch (pl) {
+            case 4:
+                svt_aom_lpf_horizontal_4_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            case 6:
+                svt_aom_lpf_horizontal_6_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            case 8:
+                svt_aom_lpf_horizontal_8_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            default:
+                svt_aom_lpf_horizontal_14_dual(
+                    p0, dst_stride, l0->mblim, l0->lim, l0->hev_thr, l1->mblim, l1->lim, l1->hev_thr);
+                break;
+            }
+        } else {
+            if (at[r]) {
+                filter_horz_edge(p0, dst_stride, &params[r], limits, plane, is_16bit, bit_depth);
+            }
+            if (at[r + 1]) {
+                filter_horz_edge(p1, dst_stride, &params[r + 1], limits, plane, is_16bit, bit_depth);
+            }
+        }
+    }
+}
+#endif
+
 /*************************************************************************************************
 * svt_av1_filter_block_plane_vert
 * Filter all the vertical edges in the same superblock
@@ -401,69 +613,69 @@ void svt_av1_filter_block_plane_vert(const PictureControlSet* const pcs, const i
     }
 
     int mode_step = 1 << scale_horz;
-    for (int32_t y = 0; y < y_range; y += row_step) {
-        uint8_t* p = dst_ptr + ((y * MI_SIZE * dst_stride) << plane_ptr->is_16bit);
+#if SVT_X86_ONLY_KERNEL_PATHS
+    // Four 4-px rows are walked together (filter_vert_group); each row still visits its edges left to right and a
+    // column is queried in row order, so the memo and filtering order per row are unchanged.
+    for (int32_t y = 0; y < y_range; y += 4 * row_step) {
+        uint8_t* p_row[4];
+        uint32_t curr_y[4];
+        int32_t  xc[4];
+        for (int r = 0; r < 4; r++) {
+            const int32_t yr = y + r * row_step;
+            p_row[r]         = dst_ptr + ((yr * MI_SIZE * dst_stride) << plane_ptr->is_16bit);
+            curr_y[r]        = ((mi_row * MI_SIZE) >> scale_vert) + yr * MI_SIZE;
+            xc[r]            = yr < y_range ? 0 : x_range;
+        }
+        // xc[] and the next position are updated together so they stay in registers
         for (int32_t x = 0; x < x_range;) {
-            // inner loop always filter vertical edges in a MI block. If MI size
-            // is 8x8, it will filter the vertical edge aligned with a 8x8 block.
-            // If 4x4 trasnform is used, it will then filter the internal edge
-            //  aligned with a 4x4 block
-            const uint32_t          curr_x = ((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE;
-            const uint32_t          curr_y = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
-            uint32_t                advance_units;
-            TxSize                  tx_size;
-            Av1DeblockingParameters params;
-
-            tx_size = set_lpf_parameters(
-                &params, &lpf_cache[x], mode_step, pcs, VERT_EDGE, curr_x, curr_y, plane, plane_ptr);
-
-            const LoopFilterThresh* const limit = limits + params.level;
-
-            switch (params.filter_length) {
-            case 4: // apply 4-tap filtering
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_4(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_vertical_4(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+            const uint32_t          curr_x    = ((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE;
+            Av1DeblockingParameters params[4] = {{0}};
+            TxSize                  tx_size[4];
+            bool                    at[4];
+            for (int r = 0; r < 4; r++) {
+                at[r] = xc[r] == x;
+                if (at[r]) {
+                    tx_size[r] = set_lpf_parameters(
+                        &params[r], &lpf_cache[x], mode_step, pcs, VERT_EDGE, curr_x, curr_y[r], plane, plane_ptr);
                 }
-                break;
-            case 6: // apply 6-tap filter for chroma plane only
-                assert(plane != 0);
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_6(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_vertical_6(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
-                }
-                break;
-            case 8: // apply 8-tap filtering
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_8(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_vertical_8(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
-                }
-                break;
-            case 14: // apply 14-tap filtering
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_vertical_14(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_vertical_14(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
-                }
-                break;
-            default: // no filtering
-                break;
             }
-
-            // advance the destination pointer
+            filter_vert_group(p_row[0] + ((x * MI_SIZE) << plane_ptr->is_16bit),
+                              dst_stride,
+                              params,
+                              at,
+                              limits,
+                              plane,
+                              is_16bit,
+                              bit_depth,
+                              plane_ptr->is_16bit);
+            int32_t next = x_range;
+            for (int r = 0; r < 4; r++) {
+                if (at[r]) {
+                    assert(tx_size[r] < TX_SIZES_ALL);
+                    xc[r] += eb_tx_size_wide_unit[tx_size[r]];
+                }
+                next = AOMMIN(next, xc[r]);
+            }
+            x = next;
+        }
+    }
+#else
+    for (int32_t y = 0; y < y_range; y += row_step) {
+        uint8_t*       p      = dst_ptr + ((y * MI_SIZE * dst_stride) << plane_ptr->is_16bit);
+        const uint32_t curr_y = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
+        for (int32_t x = 0; x < x_range;) {
+            const uint32_t          curr_x = ((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE;
+            Av1DeblockingParameters params;
+            const TxSize            tx_size = set_lpf_parameters(
+                &params, &lpf_cache[x], mode_step, pcs, VERT_EDGE, curr_x, curr_y, plane, plane_ptr);
+            filter_vert_edge(p, dst_stride, &params, limits, plane, is_16bit, bit_depth);
             assert(tx_size < TX_SIZES_ALL);
-            advance_units = eb_tx_size_wide_unit[tx_size];
+            const uint32_t advance_units = eb_tx_size_wide_unit[tx_size];
             x += advance_units;
             p += ((advance_units * MI_SIZE) << plane_ptr->is_16bit);
         }
     }
+#endif
 }
 
 /*************************************************************************************************
@@ -516,69 +728,68 @@ void svt_av1_filter_block_plane_horz(const PictureControlSet* const pcs, const i
     }
 
     int mode_step = pcs->mi_stride << scale_vert;
-    for (int32_t x = 0; x < x_range; x += col_step) {
-        uint8_t* p = dst_ptr + ((x * MI_SIZE) << plane_ptr->is_16bit);
+#if SVT_X86_ONLY_KERNEL_PATHS
+    // Four 4-px columns are walked together (filter_horz_group); each column still visits its edges top to bottom
+    // and a row is queried in column order, so the memo and filtering order per column are unchanged.
+    for (int32_t x = 0; x < x_range; x += 4 * col_step) {
+        uint32_t curr_x[4];
+        int32_t  yc[4];
+        for (int c = 0; c < 4; c++) {
+            const int32_t xr = x + c * col_step;
+            curr_x[c]        = ((mi_col * MI_SIZE) >> scale_horz) + xr * MI_SIZE;
+            yc[c]            = xr < x_range ? 0 : y_range;
+        }
+        uint8_t* const p_col0 = dst_ptr + ((x * MI_SIZE) << plane_ptr->is_16bit);
+        // yc[] and the next position are updated together so they stay in registers
         for (int32_t y = 0; y < y_range;) {
-            // inner loop always filter vertical edges in a MI block. If MI size
-            // is 8x8, it will first filter the vertical edge aligned with a 8x8
-            // block. If 4x4 trasnform is used, it will then filter the internal
-            // edge aligned with a 4x4 block
-            const uint32_t          curr_x = ((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE;
-            const uint32_t          curr_y = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
-            uint32_t                advance_units;
-            TxSize                  tx_size;
-            Av1DeblockingParameters params;
-
-            tx_size = set_lpf_parameters(
-                &params, &lpf_cache[y], mode_step, pcs, HORZ_EDGE, curr_x, curr_y, plane, plane_ptr);
-
-            const LoopFilterThresh* const limit = limits + params.level;
-
-            switch (params.filter_length) {
-            case 4: // apply 4-tap filtering
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_4(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_horizontal_4(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
+            const uint32_t          curr_y    = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
+            Av1DeblockingParameters params[4] = {{0}};
+            TxSize                  tx_size[4];
+            bool                    at[4];
+            for (int c = 0; c < 4; c++) {
+                at[c] = yc[c] == y;
+                if (at[c]) {
+                    tx_size[c] = set_lpf_parameters(
+                        &params[c], &lpf_cache[y], mode_step, pcs, HORZ_EDGE, curr_x[c], curr_y, plane, plane_ptr);
                 }
-                break;
-            case 6: // apply 6-tap filtering
-                assert(plane != 0);
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_6(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_horizontal_6(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
-                }
-                break;
-            case 8: // apply 8-tap filtering
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_8(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_horizontal_8(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
-                }
-                break;
-            case 14: // apply 14-tap filtering
-                if (is_16bit) {
-                    svt_aom_highbd_lpf_horizontal_14(
-                        (uint16_t*)p, dst_stride, limit->mblim, limit->lim, limit->hev_thr, bit_depth);
-                } else {
-                    svt_aom_lpf_horizontal_14(p, dst_stride, limit->mblim, limit->lim, limit->hev_thr);
-                }
-                break;
-            default: // no filtering
-                break;
             }
-
-            // advance the destination pointer
+            filter_horz_group(p_col0 + ((y * dst_stride * MI_SIZE) << plane_ptr->is_16bit),
+                              dst_stride,
+                              params,
+                              at,
+                              limits,
+                              plane,
+                              is_16bit,
+                              bit_depth,
+                              plane_ptr->is_16bit);
+            int32_t next = y_range;
+            for (int c = 0; c < 4; c++) {
+                if (at[c]) {
+                    assert(tx_size[c] < TX_SIZES_ALL);
+                    yc[c] += eb_tx_size_high_unit[tx_size[c]];
+                }
+                next = AOMMIN(next, yc[c]);
+            }
+            y = next;
+        }
+    }
+#else
+    for (int32_t x = 0; x < x_range; x += col_step) {
+        uint8_t*       p      = dst_ptr + ((x * MI_SIZE) << plane_ptr->is_16bit);
+        const uint32_t curr_x = ((mi_col * MI_SIZE) >> scale_horz) + x * MI_SIZE;
+        for (int32_t y = 0; y < y_range;) {
+            const uint32_t          curr_y = ((mi_row * MI_SIZE) >> scale_vert) + y * MI_SIZE;
+            Av1DeblockingParameters params;
+            const TxSize            tx_size = set_lpf_parameters(
+                &params, &lpf_cache[y], mode_step, pcs, HORZ_EDGE, curr_x, curr_y, plane, plane_ptr);
+            filter_horz_edge(p, dst_stride, &params, limits, plane, is_16bit, bit_depth);
             assert(tx_size < TX_SIZES_ALL);
-            advance_units = eb_tx_size_high_unit[tx_size];
+            const uint32_t advance_units = eb_tx_size_high_unit[tx_size];
             y += advance_units;
             p += ((advance_units * dst_stride * MI_SIZE) << plane_ptr->is_16bit);
         }
     }
+#endif
 }
 
 /*************************************************************************************************

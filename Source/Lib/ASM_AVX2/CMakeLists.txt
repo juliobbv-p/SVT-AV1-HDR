@@ -53,6 +53,7 @@ set(all_files
     convolve_avx2.c
     convolve_avx2.h
     corner_match_avx2.c
+    dlf_quad_intrin_avx2.c
     encodetxb_avx2.c
     fft_avx2.c
     highbd_convolve_2d_avx2.c
