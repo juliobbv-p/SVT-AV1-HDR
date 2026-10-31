@@ -1639,9 +1639,10 @@ static bool process_cand_itr(ModeDecisionContext* ctx, ModeDecisionCandidate* ca
     return true;
 }
 
+// cand_list: indices (ascending) of the fast candidates of ctx->target_class.
 static void md_stage_0(PictureControlSet* pcs, ModeDecisionContext* ctx,
                        ModeDecisionCandidateBuffer** cand_bf_ptr_array_base,
-                       ModeDecisionCandidate* fast_candidate_array, uint32_t fast_cand_count,
+                       ModeDecisionCandidate* fast_candidate_array, const uint16_t* cand_list, uint32_t cand_list_count,
                        EbPictureBufferDesc* input_pic, BlockLocation* loc, uint32_t cand_bf_start_index,
                        uint32_t max_buffers) {
     const uint8_t apply_unipred_bias = pcs->scs->vq_ctrls.sharpness_ctrls.unipred_bias && pcs->ppcs->is_noise_level;
@@ -1681,12 +1682,9 @@ static void md_stage_0(PictureControlSet* pcs, ModeDecisionContext* ctx,
     uint32_t tot_processed_cand = 0;
 
     for (uint8_t itr = 0; itr < tot_itr; itr++) {
-        for (uint32_t cand_idx = 0; cand_idx < fast_cand_count; cand_idx++) {
-            if (fast_candidate_array[cand_idx].cand_class != ctx->target_class) {
-                continue;
-            }
-
-            ModeDecisionCandidateBuffer* cand_bf = cand_bf_ptr_array_base[highest_cost_index];
+        for (uint32_t k = 0; k < cand_list_count; k++) {
+            const uint32_t               cand_idx = cand_list[k];
+            ModeDecisionCandidateBuffer* cand_bf  = cand_bf_ptr_array_base[highest_cost_index];
             ModeDecisionCandidate*       cand = cand_bf->cand = &fast_candidate_array[cand_idx];
             if (ctx->intra_ctrls.prune_using_best_mode && cand->cand_class == CAND_CLASS_0 && itr == 0) {
                 // If (V better than DC), then skip H
@@ -1755,11 +1753,11 @@ static void md_stage_0(PictureControlSet* pcs, ModeDecisionContext* ctx,
                 } else {
                     highest_cost_index    = buffer_index_start;
                     uint64_t highest_cost = fast_cost_array[buffer_index_start];
+                    // Branchless first-maximum scan (the comparison is unpredictable)
                     for (uint32_t buff = buffer_index_start + 1; buff < buffer_index_end; buff++) {
-                        if (fast_cost_array[buff] > highest_cost) {
-                            highest_cost_index = buff;
-                            highest_cost       = fast_cost_array[buff];
-                        }
+                        const bool gt      = fast_cost_array[buff] > highest_cost;
+                        highest_cost_index = gt ? buff : highest_cost_index;
+                        highest_cost       = gt ? fast_cost_array[buff] : highest_cost;
                     }
                 }
             }
@@ -9608,6 +9606,22 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
     ctx->md_stage_3_total_count  = 0;
     // Derive NIC(s)
     set_md_stage_counts(pcs, ctx);
+    // Fast candidate indices grouped by class (stable), so each class pass of md_stage_0 visits only its own
+    uint16_t cand_order[MODE_DECISION_CANDIDATE_MAX_COUNT];
+    uint32_t class_start[CAND_CLASS_TOTAL + 1] = {0};
+    for (uint32_t i = 0; i < fast_candidate_total_count; i++) {
+        class_start[ctx->fast_cand_array[i].cand_class + 1]++;
+    }
+    for (int c = 0; c < CAND_CLASS_TOTAL; c++) {
+        class_start[c + 1] += class_start[c];
+    }
+    {
+        uint32_t fill[CAND_CLASS_TOTAL];
+        memcpy(fill, class_start, sizeof(fill));
+        for (uint32_t i = 0; i < fast_candidate_total_count; i++) {
+            cand_order[fill[ctx->fast_cand_array[i].cand_class]++] = (uint16_t)i;
+        }
+    }
     uint64_t best_md_stage_cost = (uint64_t)~0;
     ctx->mds0_best_idx          = 0;
     ctx->mds0_best_class_it     = 0;
@@ -9638,7 +9652,8 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
                        ctx,
                        cand_bf_ptr_array_base,
                        ctx->fast_cand_array,
-                       fast_candidate_total_count,
+                       cand_order + class_start[cand_class_it],
+                       class_start[cand_class_it + 1] - class_start[cand_class_it],
                        input_pic,
                        &loc,
                        buffer_start_idx,
