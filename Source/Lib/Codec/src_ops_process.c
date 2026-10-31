@@ -1023,6 +1023,9 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
             best_intra_mode      = tpl_src_stats_buffer->best_intra_mode;
         }
 
+        // Full-pel inter predicts straight from the reference; recon is written to dst_buffer
+        uint8_t* pred        = dst_buffer;
+        int      pred_stride = dst_buffer_stride;
         //Recon path
         if (best_mode == NEWMV) {
             // inter recon with rec_picture as reference pic
@@ -1083,12 +1086,8 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                                                  false, // is_wm
                                                  NULL); // wm_params
             } else {
-                svt_av1_copy_wxh_8bit(ref_pic_ptr->y_buffer + ref_origin_index,
-                                      ref_pic_ptr->y_stride,
-                                      dst_buffer,
-                                      dst_buffer_stride,
-                                      size,
-                                      size);
+                pred        = ref_pic_ptr->y_buffer + ref_origin_index;
+                pred_stride = ref_pic_ptr->y_stride;
             }
         } else {
             // intra recon
@@ -1185,7 +1184,7 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
         }
 
         tpl_residual_fwd_txfm(
-            tpl_ctrls, size, tx_size, src_diff, src_mb, input_pic->y_stride, dst_buffer, dst_buffer_stride, coeff);
+            tpl_ctrls, size, tx_size, src_diff, src_mb, input_pic->y_stride, pred, pred_stride, coeff);
         TxCoeffShape pf_shape = pcs->tpl_ctrls.pf_shape;
 
         uint16_t eob = 0;
@@ -1199,10 +1198,12 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
 #endif
 
         if (!disable_intra_pred || (pcs->tpl_data.is_ref)) {
-            if (eob) {
+            if (!eob && pred != dst_buffer) {
+                svt_av1_copy_wxh_8bit(pred, pred_stride, dst_buffer, dst_buffer_stride, size, size);
+            } else if (eob) {
                 svt_aom_inv_transform_recon8bit((int32_t*)dqcoeff,
-                                                dst_buffer,
-                                                dst_buffer_stride << tpl_ctrls->subsample_tx,
+                                                pred,
+                                                pred_stride << tpl_ctrls->subsample_tx,
                                                 dst_buffer,
                                                 dst_buffer_stride << tpl_ctrls->subsample_tx,
                                                 tx_size,
