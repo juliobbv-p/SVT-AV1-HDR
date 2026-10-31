@@ -917,6 +917,12 @@ typedef struct Pd0FullpelVar {
     MvReferenceFrame ref_frame;
 } Pd0FullpelVar;
 
+static INLINE uint32_t get_rdoq_rate_key(TxSize tx_size, TxType tx_type, PlaneType plane_type, int16_t txb_skip_ctx,
+                                         int16_t dc_sign_ctx) {
+    return tx_size | (tx_type << 5) | (plane_type << 10) | ((uint32_t)(uint8_t)txb_skip_ctx << 12) |
+        ((uint32_t)(uint8_t)dc_sign_ctx << 20);
+}
+
 typedef struct ModeDecisionContext {
     EbDctor dctor;
 
@@ -939,6 +945,12 @@ typedef struct ModeDecisionContext {
     SvtPicBufDescPool cand_pred_pool;
     SvtPicBufDescPool cand_rec_coeff_pool;
     SvtPicBufDescPool cand_quant_pool;
+    // Coefficient rate (eob + levels + signs) of the last RDOQ result; svt_av1_cost_coeffs_txb reuses it for the
+    // same coefficients instead of recounting them. Valid for rdoq_rate_qcoeff/rdoq_rate_eob/rdoq_rate_key.
+    const TranLow*    rdoq_rate_qcoeff;
+    int32_t           rdoq_rate;
+    uint32_t          rdoq_rate_key;
+    uint16_t          rdoq_rate_eob;
     SvtPicBufDescPool tx_recon_coeff_pool;
     SvtPicBufDescPool tx_recon_pool;
     SvtPicBufDescPool tx_quant_coeff_pool;

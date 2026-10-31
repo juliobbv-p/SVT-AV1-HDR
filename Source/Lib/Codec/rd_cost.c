@@ -343,6 +343,13 @@ static AOM_FORCE_INLINE int32_t av1_cost_coeffs_txb_loop_cost_eob(
     return cost;
 }
 
+// Debug builds recount a reused RDOQ rate and check it
+#ifdef NDEBUG
+#define CHECK_RDOQ_RATE_REUSE 0
+#else
+#define CHECK_RDOQ_RATE_REUSE 1
+#endif
+
 // Note: don't call this function when eob is 0.
 uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_cdf, FRAME_CONTEXT* ec_ctx,
                                  ModeDecisionCandidateBuffer* cand_bf, const TranLow* const qcoeff, uint16_t eob,
@@ -377,7 +384,10 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
         update_cdf(ec_ctx->txb_skip_cdf[txs_ctx][txb_skip_ctx], eob == 0, 2);
     }
 
-    if (eob > 1) {
+    // RDOQ already counted the eob, level and sign bits of these coefficients
+    const bool reuse_rdoq_rate = !allow_update_cdf && qcoeff == ctx->rdoq_rate_qcoeff && eob == ctx->rdoq_rate_eob &&
+        ctx->rdoq_rate_key == get_rdoq_rate_key(transform_size, transform_type, plane_type, txb_skip_ctx, dc_sign_ctx);
+    if (eob > 1 && (!reuse_rdoq_rate || CHECK_RDOQ_RATE_REUSE)) {
         svt_av1_txb_init_levels(qcoeff, width, get_levels_rows(scan, eob, bwl, height, tx_class), levels);
     }
     const bool is_inter = is_inter_mode(cand_bf->cand->block_mi.mode);
@@ -391,6 +401,10 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
                                                                            transform_size,
                                                                            transform_type,
                                                                            reduced_transform_set_flag);
+    if (reuse_rdoq_rate && !CHECK_RDOQ_RATE_REUSE) {
+        return cost + ctx->rdoq_rate;
+    }
+    const int32_t cost_before_coeffs = cost;
 
     // Transform eob bit estimation
     cost += get_eob_cost(eob, eob_bits, coeff_costs, tx_class);
@@ -471,6 +485,8 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
         assert(false);
         break;
     }
+    assert(!reuse_rdoq_rate || cost == cost_before_coeffs + ctx->rdoq_rate);
+    (void)cost_before_coeffs;
     return cost;
 }
 
@@ -1201,6 +1217,8 @@ uint64_t svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ct
 EbErrorType svt_aom_txb_estimate_coeff_bits_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
                                                 uint32_t txb_origin_index, EbPictureBufferDesc* coeff_buffer_sb,
                                                 uint32_t y_eob, uint64_t* y_txb_coeff_bits, TxSize txsize) {
+    // coefficients from svt_aom_quantize_inv_quantize_light(), so the recorded RDOQ rate does not apply
+    ctx->rdoq_rate_qcoeff = NULL;
     if (y_eob) {
         *y_txb_coeff_bits = svt_av1_cost_coeffs_txb(
             ctx,

@@ -1246,6 +1246,11 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
                              levels,
                              qparam->iqmatrix);
     }
+    // a cut-off pass (si_end > 1) does not cost the positions below si_end, so its rate is not the full rate
+    ctx->rdoq_rate        = accu_rate;
+    ctx->rdoq_rate_qcoeff = si > 0 ? NULL : qcoeff_ptr;
+    ctx->rdoq_rate_eob    = *eob;
+    ctx->rdoq_rate_key    = get_rdoq_rate_key(tx_size, tx_type, plane_type, txb_skip_context, dc_sign_context);
 }
 
 static INLINE TxSize aom_av1_get_adjusted_tx_size(TxSize tx_size) {
@@ -1544,6 +1549,8 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
                                       uint32_t component_type, uint32_t bit_depth, TxType tx_type,
                                       int16_t txb_skip_context, int16_t dc_sign_context, PredictionMode pred_mode,
                                       uint32_t lambda, bool is_encode_pass) {
+    ctx->rdoq_rate_qcoeff = NULL;
+
     SequenceControlSet* scs     = pcs->scs;
     EncodeContext*      enc_ctx = scs->enc_ctx;
     int32_t             plane   = component_type == COMPONENT_LUMA ? PLANE_Y
@@ -1766,6 +1773,7 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
     // in a single place.
     if (component_type == COMPONENT_LUMA && ctx->coeff_shaving_ctrls.enabled && *eob > 1) {
         *eob = shave_coeff(quant_coeff, recon_coeff, coeff, *eob, txsize, tx_type, lambda, &ctx->coeff_shaving_ctrls);
+        ctx->rdoq_rate_qcoeff = NULL;
     }
 
     if (!ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx) {
