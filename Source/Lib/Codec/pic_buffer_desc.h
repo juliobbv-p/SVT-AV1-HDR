@@ -98,6 +98,12 @@ typedef struct EbPictureBufferDesc {
     EbColorFormat color_format; // Chroma Subsumpling
 
     uint32_t buffer_enable_mask;
+    // Luma box sums of the sixteenth-resolution ME pictures for successive elimination (NULL otherwise), same
+    // origin and stride as y_buffer: 8 columns x rows 0,2,4,6 (sub-sampled SAD) and 8 columns x 8 rows.
+    uint16_t* sea_sub;
+    uint16_t* sea_full;
+    uint16_t* sea_alloc;
+    size_t    sea_alloc_size;
 } EbPictureBufferDesc;
 
 #define YV12_FLAG_HIGHBITDEPTH 8

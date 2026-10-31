@@ -813,6 +813,55 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
     }
 }
 
+#if EN_AVX512_SUPPORT
+void svt_sad_loop_16xh_sea_avx512(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                  uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                  int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
+                                  uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
+#endif
+
+// Sixteenth-resolution 16-wide full-pel search (pre-HME / HME level 0); successive elimination when box sums exist
+static void sixteenth_sad_loop(MeContext* me_ctx, EbPictureBufferDesc* ref_pic, int32_t search_region_index,
+                               uint32_t block_width, uint32_t block_height, uint64_t* best_sad, int16_t* x, int16_t* y,
+                               uint8_t skip_search_line, int16_t sa_width, int16_t sa_height) {
+    const bool full = me_ctx->hme_search_method == FULL_SAD_SEARCH;
+#if EN_AVX512_SUPPORT
+    const uint16_t* sea = full ? ref_pic->sea_full : ref_pic->sea_sub;
+    if (svt_aom_use_avx512 && sea && block_width == 16 && block_height == 16 &&
+        (sa_width == 8 || sa_width == 16 || (sa_width <= 496 && sa_height <= 128))) {
+        svt_sad_loop_16xh_sea_avx512(
+            &me_ctx->sixteenth_b64_buffer[0],
+            full ? me_ctx->sixteenth_b64_buffer_stride : me_ctx->sixteenth_b64_buffer_stride * 2,
+            &ref_pic->y_buffer[search_region_index],
+            full ? ref_pic->y_stride : ref_pic->y_stride * 2,
+            full ? block_height : block_height >> 1,
+            sea + search_region_index,
+            8 * ref_pic->y_stride,
+            best_sad,
+            x,
+            y,
+            ref_pic->y_stride,
+            skip_search_line,
+            sa_width,
+            sa_height);
+        return;
+    }
+#endif
+    svt_sad_loop_kernel(&me_ctx->sixteenth_b64_buffer[0],
+                        full ? me_ctx->sixteenth_b64_buffer_stride : me_ctx->sixteenth_b64_buffer_stride * 2,
+                        &ref_pic->y_buffer[search_region_index],
+                        full ? ref_pic->y_stride : ref_pic->y_stride * 2,
+                        full ? block_height : block_height >> 1,
+                        block_width,
+                        best_sad,
+                        x,
+                        y,
+                        ref_pic->y_stride,
+                        skip_search_line,
+                        sa_width,
+                        sa_height);
+}
+
 // Perform HME Level 0 for one 64x64 block on the given picture
 static void hme_level_0(MeContext*           me_ctx, // ME context Ptr, used to get/update ME results
                         int16_t              org_x, // Block position in the horizontal direction- sixteenth resolution
@@ -875,23 +924,17 @@ static void hme_level_0(MeContext*           me_ctx, // ME context Ptr, used to 
     int32_t search_region_index = x_top_left_search_region + y_top_left_search_region * sixteenth_ref_pic_ptr->y_stride;
 
     // Put the first search location into level0 results
-    svt_sad_loop_kernel(&me_ctx->sixteenth_b64_buffer[0],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? me_ctx->sixteenth_b64_buffer_stride
-                                                                       : me_ctx->sixteenth_b64_buffer_stride * 2,
-                        &sixteenth_ref_pic_ptr->y_buffer[search_region_index],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? sixteenth_ref_pic_ptr->y_stride
-                                                                       : sixteenth_ref_pic_ptr->y_stride * 2,
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? block_height : block_height >> 1,
-                        block_width,
-                        /* results */
-                        best_sad,
-                        hme_l0_sc_x,
-                        hme_l0_sc_y,
-                        /* range */
-                        sixteenth_ref_pic_ptr->y_stride,
-                        0, // skip search line
-                        sa_width,
-                        sa_height);
+    sixteenth_sad_loop(me_ctx,
+                       sixteenth_ref_pic_ptr,
+                       search_region_index,
+                       block_width,
+                       block_height,
+                       best_sad,
+                       hme_l0_sc_x,
+                       hme_l0_sc_y,
+                       0,
+                       sa_width,
+                       sa_height);
 
     *best_sad = (me_ctx->hme_search_method == FULL_SAD_SEARCH)
         ? *best_sad
@@ -1446,22 +1489,17 @@ static void prehme_core(MeContext* me_ctx, int16_t org_x, int16_t org_y, uint32_
     y_top_left_search_region = (org_y) + y_search_area_origin;
     search_region_index      = x_top_left_search_region + y_top_left_search_region * sixteenth_ref_pic_ptr->y_stride;
 
-    svt_sad_loop_kernel(&me_ctx->sixteenth_b64_buffer[0],
-                        me_ctx->hme_search_method == FULL_SAD_SEARCH ? me_ctx->sixteenth_b64_buffer_stride
-                                                                     : me_ctx->sixteenth_b64_buffer_stride * 2,
-                        &sixteenth_ref_pic_ptr->y_buffer[search_region_index],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? sixteenth_ref_pic_ptr->y_stride
-                                                                       : sixteenth_ref_pic_ptr->y_stride * 2,
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? sb_height : sb_height >> 1,
-                        sb_width,
-                        /* results */
-                        &prehme_data->sad,
-                        &prehme_data->best_mv.x,
-                        &prehme_data->best_mv.y,
-                        sixteenth_ref_pic_ptr->y_stride,
-                        me_ctx->prehme_ctrl.skip_search_line,
-                        search_area_width,
-                        search_area_height);
+    sixteenth_sad_loop(me_ctx,
+                       sixteenth_ref_pic_ptr,
+                       search_region_index,
+                       sb_width,
+                       sb_height,
+                       &prehme_data->sad,
+                       &prehme_data->best_mv.x,
+                       &prehme_data->best_mv.y,
+                       me_ctx->prehme_ctrl.skip_search_line,
+                       search_area_width,
+                       search_area_height);
 
     prehme_data->sad = (me_ctx->hme_search_method == FULL_SAD_SEARCH)
         ? prehme_data->sad

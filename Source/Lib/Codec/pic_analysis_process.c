@@ -1496,6 +1496,63 @@ bool svt_aom_is_input_luma_dominant(const EbPictureBufferDesc* input_pic) {
 /************************************************
  * 1/4 & 1/16 input picture downsampling (filtering)
  ************************************************/
+#if EN_AVX512_SUPPORT
+// Box sums for the HME successive elimination (see EbPictureBufferDesc::sea_sub), over the padded picture
+static void compute_sea_planes(EbPictureBufferDesc* pic) {
+    const int stride = pic->y_stride;
+    const int b      = pic->border;
+    const int w      = pic->width + 2 * b;
+    const int h      = pic->height + 2 * b;
+    // a pooled picture can be re-described larger after a resolution change
+    const size_t size = (size_t)2 * stride * h;
+    if (pic->sea_alloc_size < size) {
+        EB_FREE_ARRAY(pic->sea_alloc);
+        pic->sea_alloc_size = 0;
+        EB_CALLOC_ARRAY_NO_CHECK(pic->sea_alloc, size);
+        if (!pic->sea_alloc) {
+            pic->sea_sub = pic->sea_full = NULL;
+            return;
+        }
+        pic->sea_alloc_size = size;
+    }
+    uint16_t* hsum;
+    EB_MALLOC_ARRAY_NO_CHECK(hsum, (size_t)stride * h);
+    if (!hsum) {
+        pic->sea_sub = pic->sea_full = NULL;
+        return;
+    }
+    uint16_t* const      sub  = pic->sea_alloc;
+    uint16_t* const      full = sub + (size_t)stride * h;
+    const uint8_t* const src  = pic->y_buffer - b * stride - b;
+    for (int y = 0; y < h; y++) {
+        const uint8_t* r = src + y * stride;
+        uint16_t*      o = hsum + y * stride;
+        uint16_t       a = 0;
+        for (int x = 0; x < 8; x++) {
+            a += r[x];
+        }
+        o[0] = a;
+        for (int x = 1; x <= w - 8; x++) {
+            a    = a - r[x - 1] + r[x + 7];
+            o[x] = a;
+        }
+    }
+    for (int y = 0; y + 8 <= h; y++) {
+        const uint16_t* r = hsum + y * stride;
+        uint16_t*       s = sub + y * stride;
+        uint16_t*       f = full + y * stride;
+        for (int x = 0; x <= w - 8; x++) {
+            const uint16_t even = r[x] + r[x + 2 * stride] + r[x + 4 * stride] + r[x + 6 * stride];
+            s[x]                = even;
+            f[x]                = even + r[x + stride] + r[x + 3 * stride] + r[x + 5 * stride] + r[x + 7 * stride];
+        }
+    }
+    EB_FREE_ARRAY(hsum);
+    pic->sea_sub  = sub + b * stride + b;
+    pic->sea_full = full + b * stride + b;
+}
+#endif
+
 void svt_aom_downsample_filtering_input_picture(PictureParentControlSet* pcs, EbPictureBufferDesc* input_padded_pic,
                                                 EbPictureBufferDesc* quarter_picture_ptr,
                                                 EbPictureBufferDesc* sixteenth_picture_ptr) {
@@ -1543,6 +1600,11 @@ void svt_aom_downsample_filtering_input_picture(PictureParentControlSet* pcs, Eb
                                      sixteenth_picture_ptr->height,
                                      sixteenth_picture_ptr->border,
                                      sixteenth_picture_ptr->border);
+#if EN_AVX512_SUPPORT
+            if (svt_aom_use_avx512) {
+                compute_sea_planes(sixteenth_picture_ptr);
+            }
+#endif
         }
     }
 }

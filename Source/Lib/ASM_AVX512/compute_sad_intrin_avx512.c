@@ -1937,6 +1937,144 @@ static INLINE __m128i sad_16_sw8_avx512(const __m512i ss[16], const uint8_t* ref
     return _mm_add_epi16(_mm256_castsi256_si128(t), _mm256_extracti128_si256(t, 1));
 }
 
+// Successive elimination lower bounds of 16 / 8 consecutive positions: sum over the 2x2 sub-blocks of
+// |source sub-block sum - reference box sum|; a SAD is never below its bound. A sum above 32767 wraps negative,
+// so int16 compares against a best SAD <= 32767 never skip a position wrongly.
+static INLINE __m256i sea_lb16(const uint16_t* sea, const uint32_t sea_bl, const __m256i s[4]) {
+    const __m256i d0 = _mm256_abs_epi16(_mm256_sub_epi16(s[0], _mm256_loadu_si256((const __m256i*)sea)));
+    const __m256i d1 = _mm256_abs_epi16(_mm256_sub_epi16(s[1], _mm256_loadu_si256((const __m256i*)(sea + 8))));
+    const __m256i d2 = _mm256_abs_epi16(_mm256_sub_epi16(s[2], _mm256_loadu_si256((const __m256i*)(sea + sea_bl))));
+    const __m256i d3 = _mm256_abs_epi16(_mm256_sub_epi16(s[3], _mm256_loadu_si256((const __m256i*)(sea + sea_bl + 8))));
+    return _mm256_add_epi16(_mm256_add_epi16(d0, d1), _mm256_add_epi16(d2, d3));
+}
+
+static INLINE __m128i sea_lb8(const uint16_t* sea, const uint32_t sea_bl, const __m256i s[4]) {
+    const __m128i d0 = _mm_abs_epi16(_mm_sub_epi16(_mm256_castsi256_si128(s[0]), _mm_loadu_si128((const __m128i*)sea)));
+    const __m128i d1 = _mm_abs_epi16(
+        _mm_sub_epi16(_mm256_castsi256_si128(s[1]), _mm_loadu_si128((const __m128i*)(sea + 8))));
+    const __m128i d2 = _mm_abs_epi16(
+        _mm_sub_epi16(_mm256_castsi256_si128(s[2]), _mm_loadu_si128((const __m128i*)(sea + sea_bl))));
+    const __m128i d3 = _mm_abs_epi16(
+        _mm_sub_epi16(_mm256_castsi256_si128(s[3]), _mm_loadu_si128((const __m128i*)(sea + sea_bl + 8))));
+    return _mm_add_epi16(_mm_add_epi16(d0, d1), _mm_add_epi16(d2, d3));
+}
+
+// Full-pel search of a 16-wide block (height <= 16), same result as svt_sad_loop_kernel_avx512_intrin(), skipping
+// the groups of positions whose lower bounds all reach the best SAD so far (a later position never wins a tie).
+// sea: box sums at the search origin with row step src_stride_raw; sea_bl: offset of the bottom sub-blocks.
+void svt_sad_loop_16xh_sea_avx512(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                  uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                  int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
+                                  uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height) {
+    int sums[4] = {0};
+    for (uint32_t r = 0; r < height; r++) {
+        for (int c = 0; c < 16; c++) {
+            sums[(r >= height / 2) * 2 + (c >= 8)] += src[r * src_stride + c];
+        }
+    }
+    const __m256i s[4] = {
+        _mm256_set1_epi16((short)sums[0]),
+        _mm256_set1_epi16((short)sums[1]),
+        _mm256_set1_epi16((short)sums[2]),
+        _mm256_set1_epi16((short)sums[3]),
+    };
+    uint32_t best_s = 0xffffff;
+    int32_t  best_x = *x_search_center, best_y = *y_search_center;
+
+    if (search_area_width == 8) {
+        __m512i ss[16];
+        prep_src_16_sw8_avx512(src, src_stride, height, ss);
+        for (int32_t y = 0; y < search_area_height; y++, ref += src_stride_raw, sea += src_stride_raw) {
+            if (skip_search_line && !(y & 1)) {
+                continue;
+            }
+            if (best_s <= 32767 &&
+                !_mm_movemask_epi8(_mm_cmpgt_epi16(_mm_set1_epi16((short)best_s), sea_lb8(sea, sea_bl, s)))) {
+                continue;
+            }
+            update_best(sad_16_sw8_avx512(ss, ref, ref_stride, height), 0, y, &best_s, &best_x, &best_y);
+        }
+    } else {
+        // sad_loop_16xh_keys() with the bound check per group
+        __m128i mask128 = _mm_set1_epi32(-1);
+        for (int i = 0; i < (search_area_width & 7); i++) {
+            mask128 = _mm_slli_si128(mask128, 2);
+        }
+        const int      x_bits   = search_area_width == 16 ? 4 : 9;
+        const __m512i  lanes    = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+        const uint8_t* src_last = src + (height - 1) * src_stride;
+        __m512i        best     = _mm512_set1_epi32(-1);
+        __m256i        best8    = _mm256_set1_epi32(-1);
+        uint32_t       bound    = 0xffff;
+        const int32_t  x_end    = search_area_width - 16;
+        __m512i        ss[8][4];
+        prep_src_16_avx512(src, src_stride, height, ss);
+
+        for (int32_t y = 0; y < search_area_height; y++, ref += src_stride_raw, sea += src_stride_raw) {
+            if (skip_search_line && !(y & 1)) {
+                continue;
+            }
+            int32_t x = 0;
+            for (; x <= x_end; x += 16) {
+                if (bound <= 32767 &&
+                    !_mm256_movemask_epi8(
+                        _mm256_cmpgt_epi16(_mm256_set1_epi16((short)bound), sea_lb16(sea + x, sea_bl, s)))) {
+                    continue;
+                }
+                const __m512i sum512 = sad_16_pre_avx512(ss, src_last, ref + x, ref_stride, height);
+                const __m256i sad    = _mm256_adds_epu16(_mm512_castsi512_si256(sum512),
+                                                         _mm512_extracti64x4_epi64(sum512, 1));
+                const __m512i pos    = _mm512_add_epi32(lanes, _mm512_set1_epi32((y << x_bits) | x));
+                best = _mm512_min_epu32(best, _mm512_or_si512(_mm512_slli_epi32(_mm512_cvtepu16_epi32(sad), 16), pos));
+                const __m128i m = _mm_minpos_epu16(
+                    _mm_min_epu16(_mm256_castsi256_si128(sad), _mm256_extracti128_si256(sad, 1)));
+                bound = MIN(bound, (uint32_t)_mm_extract_epi16(m, 0));
+            }
+            for (; x < search_area_width; x += 8) {
+                __m128i lb = sea_lb8(sea + x, sea_bl, s);
+                if ((x + 8) > search_area_width) {
+                    lb = _mm_or_si128(lb, _mm_srli_epi16(mask128, 1));
+                }
+                if (bound <= 32767 && !_mm_movemask_epi8(_mm_cmpgt_epi16(_mm_set1_epi16((short)bound), lb))) {
+                    continue;
+                }
+                const uint8_t* sp     = src;
+                const uint8_t* r      = ref + x;
+                __m256i        sum256 = _mm256_setzero_si256();
+                uint32_t       h      = height;
+                while (h >= 2) {
+                    sad_loop_kernel_16_avx2(sp, src_stride, r, ref_stride, &sum256);
+                    sp += 2 * src_stride;
+                    r += 2 * ref_stride;
+                    h -= 2;
+                }
+                if (h) {
+                    sad_loop_kernel_16_oneline_avx2(sp, r, &sum256);
+                }
+                __m128i sad = _mm_adds_epu16(_mm256_castsi256_si128(sum256), _mm256_extracti128_si256(sum256, 1));
+                if ((x + 8) > search_area_width) {
+                    sad = _mm_or_si128(sad, mask128);
+                }
+                const __m256i pos = _mm256_add_epi32(_mm512_castsi512_si256(lanes),
+                                                     _mm256_set1_epi32((y << x_bits) | x));
+                best8 = _mm256_min_epu32(best8,
+                                         _mm256_or_si256(_mm256_slli_epi32(_mm256_cvtepu16_epi32(sad), 16), pos));
+                bound = MIN(bound, (uint32_t)_mm_extract_epi16(_mm_minpos_epu16(sad), 0));
+            }
+        }
+        best               = _mm512_min_epu32(best, _mm512_inserti64x4(_mm512_set1_epi32(-1), best8, 0));
+        const uint32_t key = _mm512_reduce_min_epu32(best);
+        if (key != 0xffffffff) {
+            best_s = key >> 16;
+            best_x = key & ((1 << x_bits) - 1);
+            best_y = (key & 0xFFFF) >> x_bits;
+        }
+    }
+    *best_sad        = best_s;
+    *x_search_center = (int16_t)best_x;
+    *y_search_center = (int16_t)best_y;
+}
+
 /*******************************************************************************
 * Requirement: width   = 4, 6, 8, 12, 16, 24, 32, 48 or 64 to use SIMD
 * otherwise general/slower SIMD verison is used

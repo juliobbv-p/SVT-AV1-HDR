@@ -17,6 +17,7 @@
 static void svt_picture_buffer_desc_dctor(EbPtr p) {
     EbPictureBufferDesc* obj = (EbPictureBufferDesc*)p;
     EB_FREE_ALIGNED_ARRAY(obj->buffer_alloc);
+    EB_FREE_ARRAY(obj->sea_alloc);
     obj->buffer_alloc_sz  = 0;
     obj->y_buffer         = NULL;
     obj->u_buffer         = NULL;
