@@ -308,21 +308,6 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
         _aligned_free(pointer);                 \
         pointer = NULL;                         \
     } while (0)
-#else
-#define EB_MALLOC_ALIGNED(pointer, size)                            \
-    do {                                                            \
-        if (posix_memalign((void**)&(pointer), ALVALUE, size) != 0) \
-            return EB_ErrorInsufficientResources;                   \
-        EB_ADD_MEM(pointer, size, EB_A_PTR);                        \
-    } while (0)
-
-#define EB_FREE_ALIGNED(pointer)                \
-    do {                                        \
-        EB_REMOVE_MEM_ENTRY(pointer, EB_A_PTR); \
-        free(pointer);                          \
-        pointer = NULL;                         \
-    } while (0)
-#endif
 
 #define EB_MALLOC_ALIGNED_ARRAY(pa, count) EB_MALLOC_ALIGNED(pa, sizeof(*(pa)) * (count))
 
@@ -331,6 +316,35 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
         EB_MALLOC_ALIGNED(pa, sizeof(*(pa)) * (count)); \
         memset(pa, 0, sizeof(*(pa)) * (count));         \
     } while (0)
+#else
+// Aligned blocks keep the address returned by malloc/calloc just below the aligned pointer. calloc lets large
+// zeroed buffers (e.g. pictures) use untouched fresh pages instead of being written at allocation time.
+#define EB_ALLOC_ALIGNED_WITH(pointer, size, alloc_call)                                         \
+    do {                                                                                         \
+        void* const eb_raw_addr = alloc_call;                                                    \
+        if (!eb_raw_addr)                                                                        \
+            return EB_ErrorInsufficientResources;                                                \
+        *(void**)&(pointer) = align_addr((uint8_t*)eb_raw_addr + ADDRESS_STORAGE_SIZE, ALVALUE); \
+        set_actual_malloc_address((void*)(pointer), eb_raw_addr);                                \
+        EB_ADD_MEM(pointer, size, EB_A_PTR);                                                     \
+    } while (0)
+
+#define EB_MALLOC_ALIGNED(pointer, size) \
+    EB_ALLOC_ALIGNED_WITH(pointer, size, malloc(get_aligned_malloc_size(size, ALVALUE)))
+
+#define EB_FREE_ALIGNED(pointer)                \
+    do {                                        \
+        EB_REMOVE_MEM_ENTRY(pointer, EB_A_PTR); \
+        svt_aom_free((void*)(pointer));         \
+        pointer = NULL;                         \
+    } while (0)
+
+#define EB_MALLOC_ALIGNED_ARRAY(pa, count) EB_MALLOC_ALIGNED(pa, sizeof(*(pa)) * (count))
+
+#define EB_CALLOC_ALIGNED_ARRAY(pa, count) \
+    EB_ALLOC_ALIGNED_WITH(                 \
+        pa, sizeof(*(pa)) * (count), calloc(1, get_aligned_malloc_size(sizeof(*(pa)) * (count), ALVALUE)))
+#endif
 
 #define EB_FREE_ALIGNED_ARRAY(pa) EB_FREE_ALIGNED(pa)
 

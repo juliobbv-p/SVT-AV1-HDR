@@ -1067,14 +1067,9 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     /* If 4x4 blocks are disallowed for all frames, the the MI blocks only need to be allocated for
     8x8 blocks.  The mi_grid will still be 4x4 so that the data can be accessed the same way throughout
     the code. */
-    EB_MALLOC_ARRAY(object_ptr->mip,
+    EB_CALLOC_ARRAY(object_ptr->mip,
                     all_sb * (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)) *
                         (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)));
-
-    memset(object_ptr->mip,
-           0,
-           sizeof(MbModeInfo) * all_sb * (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)) *
-               (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)));
 
     uint32_t mi_stride = picture_sb_w * (init_data_ptr->sb_size >> MI_SIZE_LOG2);
     for (uint32_t mi_h = 0; mi_h < picture_sb_h * (init_data_ptr->sb_size >> MI_SIZE_LOG2); mi_h++) {
