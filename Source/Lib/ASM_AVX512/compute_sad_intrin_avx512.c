@@ -4774,4 +4774,120 @@ uint32_t svt_nxm_sad_kernel_helper_avx512(const uint8_t* src, uint32_t src_strid
     return nxm_sad;
 }
 
+// ext_all_sad_calculation_8x8_16x16 with vdbpsadbw: a 512-bit vector holds 4 horizontally adjacent 8x8 blocks
+// (one per 128-bit lane), each lane yielding the SADs at the 8 x offsets. The source broadcasts do not depend on the
+// search position, so they are prepared once per block: prep[row][half][dword parity] for the rows the SAD reads
+// (every other row for sub_sad).
+void svt_ext_all_sad_prep_src_avx512(const uint8_t* src, uint32_t src_stride, bool sub_sad, uint8_t* prep) {
+    __m512i* const p        = (__m512i*)prep;
+    const int      row_step = sub_sad ? 2 : 1;
+    for (int row = 0; row < 64 / row_step; row++, src += row_step * src_stride) {
+        const __m512i ss = _mm512_loadu_si512((const __m512i*)src);
+        for (int h = 0; h < 2; h++) {
+            const __m512i s = h ? _mm512_shuffle_i64x2(ss, ss, 0x0E) : ss;
+            _mm512_storeu_si512(
+                p + (row * 2 + h) * 2 + 0,
+                _mm512_permutexvar_epi32(_mm512_setr_epi32(0, 0, 0, 0, 2, 2, 2, 2, 4, 4, 4, 4, 6, 6, 6, 6), s));
+            _mm512_storeu_si512(
+                p + (row * 2 + h) * 2 + 1,
+                _mm512_permutexvar_epi32(_mm512_setr_epi32(1, 1, 1, 1, 3, 3, 3, 3, 5, 5, 5, 5, 7, 7, 7, 7), s));
+        }
+    }
+}
+
+static INLINE __m512i ext_sad_8x8_row4_avx512(const __m512i* const s, const uint8_t* ref, __m512i sum) {
+    // lane k = ref bytes [8k, 8k + 16); the 40-byte masked load reads no further than the AVX2 kernel
+    const __m512i r  = _mm512_maskz_loadu_epi64(0x1F, ref);
+    const __m512i rr = _mm512_permutexvar_epi64(_mm512_setr_epi64(0, 1, 1, 2, 2, 3, 3, 4), r);
+    sum              = _mm512_adds_epu16(sum, _mm512_dbsad_epu8(_mm512_loadu_si512(s), rr, 0x94));
+    return _mm512_adds_epu16(sum, _mm512_dbsad_epu8(_mm512_loadu_si512(s + 1), rr, 0xE9));
+}
+
+// tl/tr/bl/br: eight-position SADs of the four 8x8 blocks of one 16x16
+static INLINE void ext_sad_update_16x16(const __m128i tl, const __m128i tr, const __m128i bl, const __m128i br,
+                                        const __m128i mvs, const uint32_t start_16x16_pos, uint32_t* p_best_sad_8x8,
+                                        uint32_t* p_best_sad_16x16, uint32_t* p_best_mv8x8, uint32_t* p_best_mv16x16,
+                                        uint32_t p_eight_sad16x16[16][8]) {
+    const uint32_t start_8x8_pos = 4 * start_16x16_pos;
+    const __m128i  minpos01      = _mm_unpacklo_epi16(_mm_minpos_epu16(tl), _mm_minpos_epu16(tr));
+    const __m128i  minpos23      = _mm_unpacklo_epi16(_mm_minpos_epu16(bl), _mm_minpos_epu16(br));
+    const __m128i  minpos0123    = _mm_unpacklo_epi32(minpos01, minpos23);
+    const __m128i  sad8x8        = _mm_unpacklo_epi16(minpos0123, _mm_setzero_si128());
+    const __m128i  pos8x8        = _mm_unpackhi_epi16(minpos0123, _mm_setzero_si128());
+
+    __m128i       best_sad8x8 = _mm_loadu_si128((__m128i*)(p_best_sad_8x8 + start_8x8_pos));
+    const __m128i mask        = _mm_cmplt_epi32(sad8x8, best_sad8x8);
+    best_sad8x8               = _mm_min_epi32(best_sad8x8, sad8x8);
+    _mm_storeu_si128((__m128i*)(p_best_sad_8x8 + start_8x8_pos), best_sad8x8);
+
+    __m128i best_mv8x8 = _mm_loadu_si128((__m128i*)(p_best_mv8x8 + start_8x8_pos));
+    best_mv8x8         = _mm_blendv_epi8(best_mv8x8, _mm_add_epi16(mvs, pos8x8), mask);
+    _mm_storeu_si128((__m128i*)(p_best_mv8x8 + start_8x8_pos), best_mv8x8);
+
+    const __m128i sad16x16_16 = _mm_add_epi16(_mm_add_epi16(tl, tr), _mm_add_epi16(bl, br));
+    _mm256_storeu_si256((__m256i*)(p_eight_sad16x16[start_16x16_pos]), _mm256_cvtepu16_epi32(sad16x16_16));
+
+    const __m128i  minpos16x16 = _mm_minpos_epu16(sad16x16_16);
+    const uint32_t min16x16    = _mm_extract_epi16(minpos16x16, 0);
+    if (min16x16 < p_best_sad_16x16[start_16x16_pos]) {
+        p_best_sad_16x16[start_16x16_pos] = min16x16;
+        p_best_mv16x16[start_16x16_pos]   = _mm_extract_epi32(_mm_add_epi16(mvs, _mm_srli_si128(minpos16x16, 2)), 0);
+    }
+}
+
+void svt_ext_all_sad_pre_8x8_16x16_avx512(const uint8_t* prep, uint8_t* ref, uint32_t ref_stride, uint32_t mv,
+                                          uint32_t* p_best_sad_8x8, uint32_t* p_best_sad_16x16, uint32_t* p_best_mv8x8,
+                                          uint32_t* p_best_mv16x16, uint32_t p_eight_sad16x16[16][8], bool sub_sad) {
+    static const char    offsets[16] = {0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15};
+    const __m512i* const p           = (const __m512i*)prep;
+    const __m128i        mvs         = _mm_set1_epi32(mv);
+    const int            row_step    = sub_sad ? 2 : 1;
+    const int            sad_shift   = sub_sad ? 1 : 0;
+
+    for (int y = 0; y < 4; y++) {
+        // [8x8 row (top/bottom of the 16x16 row)][blocks 0-3 / 4-7]
+        __m512i acc[2][2];
+        for (int h = 0; h < 2; h++) {
+            const int      row0 = 16 * y + 8 * h;
+            const uint8_t* r    = ref + row0 * ref_stride;
+            __m512i        a0   = _mm512_setzero_si512();
+            __m512i        a1   = _mm512_setzero_si512();
+            for (int i = 0; i < 8; i += row_step, r += row_step * ref_stride) {
+                const int pr = (row0 + i) >> sad_shift;
+                a0           = ext_sad_8x8_row4_avx512(p + (pr * 2 + 0) * 2, r, a0);
+                a1           = ext_sad_8x8_row4_avx512(p + (pr * 2 + 1) * 2, r + 32, a1);
+            }
+            acc[h][0] = _mm512_slli_epi16(a0, sad_shift);
+            acc[h][1] = _mm512_slli_epi16(a1, sad_shift);
+        }
+
+        for (int xh = 0; xh < 2; xh++) {
+            const __m512i top = acc[0][xh];
+            const __m512i bot = acc[1][xh];
+            ext_sad_update_16x16(_mm512_extracti32x4_epi32(top, 0),
+                                 _mm512_extracti32x4_epi32(top, 1),
+                                 _mm512_extracti32x4_epi32(bot, 0),
+                                 _mm512_extracti32x4_epi32(bot, 1),
+                                 mvs,
+                                 offsets[4 * y + 2 * xh],
+                                 p_best_sad_8x8,
+                                 p_best_sad_16x16,
+                                 p_best_mv8x8,
+                                 p_best_mv16x16,
+                                 p_eight_sad16x16);
+            ext_sad_update_16x16(_mm512_extracti32x4_epi32(top, 2),
+                                 _mm512_extracti32x4_epi32(top, 3),
+                                 _mm512_extracti32x4_epi32(bot, 2),
+                                 _mm512_extracti32x4_epi32(bot, 3),
+                                 mvs,
+                                 offsets[4 * y + 2 * xh + 1],
+                                 p_best_sad_8x8,
+                                 p_best_sad_16x16,
+                                 p_best_mv8x8,
+                                 p_best_mv16x16,
+                                 p_eight_sad16x16);
+        }
+    }
+}
+
 #endif // EN_AVX512_SUPPORT

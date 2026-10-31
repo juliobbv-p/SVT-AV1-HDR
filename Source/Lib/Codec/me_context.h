@@ -481,6 +481,12 @@ typedef struct MeContext {
     uint32_t b64_height;
     uint8_t  performed_phme[MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH][2];
     uint32_t prev_me_stage_based_exit_th;
+#if EN_AVX512_SUPPORT
+    // Source rows of the current 64x64 block prepared for svt_ext_all_sad_pre_8x8_16x16_avx512()
+    uint8_t        ext_sad_src_prep[64 * 2 * 2 * 64];
+    const uint8_t* ext_sad_prep_src; // b64_src_ptr the prep was built from; NULL when stale
+    bool           ext_sad_prep_sub;
+#endif
 } MeContext;
 
 typedef uint64_t (*EB_ME_DISTORTION_FUNC)(uint8_t* src, uint32_t src_stride, uint8_t* ref, uint32_t ref_stride,

@@ -242,7 +242,10 @@ static void create_me_context_and_picture_control(MotionEstimationContext_t* me_
         }
     }
 #endif
-    me_context_ptr->me_ctx->b64_src_ptr    = &(padded_pic_ptr->y_buffer[buffer_index]);
+    me_context_ptr->me_ctx->b64_src_ptr = &(padded_pic_ptr->y_buffer[buffer_index]);
+#if EN_AVX512_SUPPORT
+    me_context_ptr->me_ctx->ext_sad_prep_src = NULL;
+#endif
     me_context_ptr->me_ctx->b64_src_stride = padded_pic_ptr->y_stride;
 
     // Load the 1/4 decimated SB from the 1/4 decimated input to the 1/4 intermediate SB buffer

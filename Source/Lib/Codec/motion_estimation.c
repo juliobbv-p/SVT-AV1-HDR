@@ -402,6 +402,13 @@ void svt_ext_eight_sad_calculation_32x32_64x64_c(const uint32_t p_sad16x16[16][8
     }
 }
 
+#if EN_AVX512_SUPPORT
+void svt_ext_all_sad_prep_src_avx512(const uint8_t* src, uint32_t src_stride, bool sub_sad, uint8_t* prep);
+void svt_ext_all_sad_pre_8x8_16x16_avx512(const uint8_t* prep, uint8_t* ref, uint32_t ref_stride, uint32_t mv,
+                                          uint32_t* p_best_sad_8x8, uint32_t* p_best_sad_16x16, uint32_t* p_best_mv8x8,
+                                          uint32_t* p_best_mv16x16, uint32_t p_eight_sad16x16[16][8], bool sub_sad);
+#endif
+
 /*******************************************
  * open_loop_me_get_search_point_results_block
  *******************************************/
@@ -428,18 +435,32 @@ static void open_loop_me_get_eight_search_point_results_block(
     uint16_t curr_mv_2 = ((uint16_t)x_search_index);
     uint32_t curr_mv   = curr_mv_1 | curr_mv_2;
 
-    svt_ext_all_sad_calculation_8x8_16x16(me_ctx->b64_src_ptr,
-                                          me_ctx->b64_src_stride,
-                                          ref_ptr,
-                                          ref_luma_stride,
-                                          curr_mv,
-                                          me_ctx->p_best_sad_8x8,
-                                          me_ctx->p_best_sad_16x16,
-                                          me_ctx->p_best_mv8x8,
-                                          me_ctx->p_best_mv16x16,
-                                          me_ctx->p_eight_sad16x16,
-                                          me_ctx->p_eight_sad8x8,
-                                          sub_sad);
+#if EN_AVX512_SUPPORT
+    if (svt_aom_use_avx512) {
+        svt_ext_all_sad_pre_8x8_16x16_avx512(me_ctx->ext_sad_src_prep,
+                                             ref_ptr,
+                                             ref_luma_stride,
+                                             curr_mv,
+                                             me_ctx->p_best_sad_8x8,
+                                             me_ctx->p_best_sad_16x16,
+                                             me_ctx->p_best_mv8x8,
+                                             me_ctx->p_best_mv16x16,
+                                             me_ctx->p_eight_sad16x16,
+                                             sub_sad);
+    } else
+#endif
+        svt_ext_all_sad_calculation_8x8_16x16(me_ctx->b64_src_ptr,
+                                              me_ctx->b64_src_stride,
+                                              ref_ptr,
+                                              ref_luma_stride,
+                                              curr_mv,
+                                              me_ctx->p_best_sad_8x8,
+                                              me_ctx->p_best_sad_16x16,
+                                              me_ctx->p_best_mv8x8,
+                                              me_ctx->p_best_mv16x16,
+                                              me_ctx->p_eight_sad16x16,
+                                              me_ctx->p_eight_sad8x8,
+                                              sub_sad);
 
     svt_ext_eight_sad_calculation_32x32_64x64(me_ctx->p_eight_sad16x16,
                                               me_ctx->p_best_sad_32x32,
@@ -759,6 +780,15 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
     uint32_t search_area_width_rest_8 = search_area_width & 7;
     uint32_t search_area_width_mult_8 = search_area_width - search_area_width_rest_8;
 
+#if EN_AVX512_SUPPORT
+    const bool sub_sad = me_ctx->me_search_method == SUB_SAD_SEARCH;
+    if (svt_aom_use_avx512 && search_area_width_mult_8 &&
+        (me_ctx->ext_sad_prep_src != me_ctx->b64_src_ptr || me_ctx->ext_sad_prep_sub != sub_sad)) {
+        svt_ext_all_sad_prep_src_avx512(me_ctx->b64_src_ptr, me_ctx->b64_src_stride, sub_sad, me_ctx->ext_sad_src_prep);
+        me_ctx->ext_sad_prep_src = me_ctx->b64_src_ptr;
+        me_ctx->ext_sad_prep_sub = sub_sad;
+    }
+#endif
     for (y_search_index = 0; y_search_index < search_area_height; y_search_index++) {
         for (x_search_index = 0; x_search_index < search_area_width_mult_8; x_search_index += 8) {
             // this function will do:  x_search_index, +1, +2, ..., +7
