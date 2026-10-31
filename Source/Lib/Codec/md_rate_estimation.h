@@ -41,6 +41,9 @@ typedef struct LvMapCoeffCost {
     int32_t eob_extra_cost[EOB_COEF_CONTEXTS][2];
     int32_t dc_sign_cost[DC_SIGN_CONTEXTS][2];
     int32_t lps_cost[LEVEL_CONTEXTS][COEFF_BASE_RANGE + 1 + COEFF_BASE_RANGE + 1];
+    // base_cost[ctx][level] for level 0..3, transposed to int16 (64 contexts) for SIMD table lookups
+    int16_t base_cost16[4][64];
+    bool    base_cost16_ok;
 } LvMapCoeffCost;
 
 /**************************************

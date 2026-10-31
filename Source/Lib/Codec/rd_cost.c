@@ -277,13 +277,76 @@ COST_COEFFS_MID(TX_CLASS_HORIZ)
 COST_COEFFS_MID(TX_CLASS_VERT)
 #undef COST_COEFFS_MID
 
+#if EN_AVX512_SUPPORT
+#include <immintrin.h>
+
+#if defined(__GNUC__)
+#define TARGET_AVX512 __attribute__((target("avx512f,avx512bw,avx512vl,popcnt")))
+#else
+#define TARGET_AVX512
+#endif
+
+// Rate of the 2D-class scan positions [1, eob - 2], visited in raster order: a position is in range iff its
+// iscan is, so no gathers are needed and the base cost comes from in-register int16 tables. AVX-512 CPUs only.
+static NOINLINE TARGET_AVX512 int32_t cost_coeffs_mid_raster_2d(const int16_t* const iscan, const TranLow* const qcoeff,
+                                                                const int8_t* const   coeff_contexts,
+                                                                const LvMapCoeffCost* coeff_costs,
+                                                                const uint8_t* const levels, const int32_t bwl,
+                                                                int32_t n_pos, int32_t eob) {
+    const __m512i t0a = _mm512_loadu_si512(coeff_costs->base_cost16[0]),
+                  t0b = _mm512_loadu_si512(coeff_costs->base_cost16[0] + 32);
+    const __m512i t1a = _mm512_loadu_si512(coeff_costs->base_cost16[1]),
+                  t1b = _mm512_loadu_si512(coeff_costs->base_cost16[1] + 32);
+    const __m512i t2a = _mm512_loadu_si512(coeff_costs->base_cost16[2]),
+                  t2b = _mm512_loadu_si512(coeff_costs->base_cost16[2] + 32);
+    const __m512i t3a = _mm512_loadu_si512(coeff_costs->base_cost16[3]),
+                  t3b = _mm512_loadu_si512(coeff_costs->base_cost16[3] + 32);
+    const __m512i one = _mm512_set1_epi16(1), two = _mm512_set1_epi16(2), three = _mm512_set1_epi16(3);
+    const __m512i last = _mm512_set1_epi16((int16_t)(eob - 2)), zero = _mm512_setzero_si512();
+    const __m512i perm = _mm512_setr_epi64(0, 2, 4, 6, 1, 3, 5, 7);
+    __m512i       acc  = _mm512_setzero_si512();
+    int32_t       cost = 0, nz = 0;
+    for (int32_t p = 0; p < n_pos; p += 32) {
+        const __mmask32 lm = n_pos - p >= 32 ? 0xFFFFFFFFu : (__mmask32)((1u << (n_pos - p)) - 1);
+        const __m512i   is = _mm512_maskz_loadu_epi16(lm, iscan + p);
+        const __mmask32 m  = _mm512_cmpgt_epi16_mask(is, zero) & _mm512_cmple_epi16_mask(is, last);
+        if (!m) {
+            continue;
+        }
+        const __m512i q0  = _mm512_maskz_loadu_epi32((__mmask16)lm, qcoeff + p);
+        const __m512i q1  = _mm512_maskz_loadu_epi32((__mmask16)(lm >> 16), qcoeff + p + 16);
+        const __m512i lvl = _mm512_abs_epi16(_mm512_permutexvar_epi64(perm, _mm512_packs_epi32(q0, q1)));
+        const __m512i l3  = _mm512_min_epu16(lvl, three);
+        const __m512i cx  = _mm512_cvtepu8_epi16(_mm256_maskz_loadu_epi8(lm, coeff_contexts + p));
+        __m512i       c   = _mm512_permutex2var_epi16(t0a, cx, t0b);
+        c   = _mm512_mask_mov_epi16(c, _mm512_cmpeq_epi16_mask(l3, one), _mm512_permutex2var_epi16(t1a, cx, t1b));
+        c   = _mm512_mask_mov_epi16(c, _mm512_cmpeq_epi16_mask(l3, two), _mm512_permutex2var_epi16(t2a, cx, t2b));
+        c   = _mm512_mask_mov_epi16(c, _mm512_cmpeq_epi16_mask(l3, three), _mm512_permutex2var_epi16(t3a, cx, t3b));
+        acc = _mm512_add_epi32(acc, _mm512_madd_epi16(_mm512_maskz_mov_epi16(m, c), one));
+        nz += _mm_popcnt_u32(m & _mm512_test_epi16_mask(lvl, lvl));
+        uint32_t big = m & _mm512_cmpgt_epu16_mask(lvl, two);
+        while (big) {
+            const int32_t pos        = p + svt_ctz(big);
+            const int32_t level      = abs(qcoeff[pos]);
+            const int32_t ctx        = get_br_ctx(levels, pos, bwl, TX_CLASS_2D);
+            const int32_t base_range = level - 1 - NUM_BASE_LEVELS;
+            cost += base_range < COEFF_BASE_RANGE
+                ? coeff_costs->lps_cost[ctx][base_range]
+                : get_golomb_cost(level) + coeff_costs->lps_cost[ctx][COEFF_BASE_RANGE];
+            big &= big - 1;
+        }
+    }
+    return cost + _mm512_reduce_add_epi32(acc) + nz * av1_cost_literal(1);
+}
+#endif // EN_AVX512_SUPPORT
+
 // Takes TxClass rather than TxType and is force-inlined, so the switch at the
 // call site instantiates one copy per class with tx_class a compile-time
 // constant, letting get_br_ctx() fold its class dispatch away in the loop.
 static AOM_FORCE_INLINE int32_t av1_cost_coeffs_txb_loop_cost_eob(
     ModeDecisionContext* md_ctx, uint16_t eob, const int16_t* const scan, const TranLow* const qcoeff,
     int8_t* const coeff_contexts, const LvMapCoeffCost* coeff_costs, int16_t dc_sign_ctx, uint8_t* const levels,
-    const int32_t bwl, TxClass tx_class) {
+    const int32_t bwl, TxClass tx_class, const int16_t* const iscan, int32_t height) {
     const uint32_t cost_literal = av1_cost_literal(1);
     int32_t        cost         = 0;
 
@@ -364,6 +427,22 @@ static AOM_FORCE_INLINE int32_t av1_cost_coeffs_txb_loop_cost_eob(
     }
     switch (tx_class) {
     case TX_CLASS_2D:
+#if EN_AVX512_SUPPORT
+        if (svt_aom_use_avx512 && c_start == eob - 2 && coeff_costs->base_cost16_ok) {
+            cost += cost_coeffs_mid_raster_2d(iscan,
+                                              qcoeff,
+                                              coeff_contexts,
+                                              coeff_costs,
+                                              levels,
+                                              bwl,
+                                              get_levels_rows(scan, eob, bwl, height, TX_CLASS_2D) << bwl,
+                                              eob);
+            break;
+        }
+#else
+        (void)iscan;
+        (void)height;
+#endif
         cost += cost_coeffs_mid_TX_CLASS_2D(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, c_start);
         break;
     case TX_CLASS_HORIZ:
@@ -505,10 +584,20 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
         return 0;
     }
 
-#define COST_TXB_EOB_CASE(tx_class_literal)                                                                   \
-    case tx_class_literal:                                                                                    \
-        cost += av1_cost_coeffs_txb_loop_cost_eob(                                                            \
-            ctx, eob, scan, qcoeff, coeff_contexts, coeff_costs, dc_sign_ctx, levels, bwl, tx_class_literal); \
+#define COST_TXB_EOB_CASE(tx_class_literal)                          \
+    case tx_class_literal:                                           \
+        cost += av1_cost_coeffs_txb_loop_cost_eob(ctx,               \
+                                                  eob,               \
+                                                  scan,              \
+                                                  qcoeff,            \
+                                                  coeff_contexts,    \
+                                                  coeff_costs,       \
+                                                  dc_sign_ctx,       \
+                                                  levels,            \
+                                                  bwl,               \
+                                                  tx_class_literal,  \
+                                                  scan_order->iscan, \
+                                                  height);           \
         break;
     switch (tx_class) {
         COST_TXB_EOB_CASE(TX_CLASS_2D);

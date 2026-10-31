@@ -43,6 +43,8 @@ extern "C" {
 
 // Helper Functions
 void svt_aom_setup_rtcd_internal(EbCpuFlags flags);
+// AVX-512 enabled for the call sites that use an AVX-512 kernel directly instead of a function pointer
+RTCD_EXTERN bool svt_aom_use_avx512;
 
 int64_t svt_aom_sse_c(const uint8_t *a, int a_stride, const uint8_t *b, int b_stride, int width, int height);
 RTCD_EXTERN int64_t(*svt_aom_sse)(const uint8_t *a, int a_stride, const uint8_t *b, int b_stride, int width, int height);
