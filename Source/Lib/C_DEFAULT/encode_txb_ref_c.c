@@ -41,3 +41,11 @@ void svt_av1_get_nz_map_contexts_c(const uint8_t* const levels, const int16_t* c
         coeff_contexts[pos] = get_nz_map_ctx(levels, pos, bwl, height, i, i == eob - 1, tx_size, tx_class);
     }
 }
+
+void svt_av1_get_nz_map_contexts_2d_rows_c(const uint8_t* const levels, const TxSize tx_size, const int32_t rows,
+                                           int8_t* const coeff_contexts) {
+    const int bwl = get_txb_bwl(tx_size);
+    for (int ci = 0; ci < (rows << bwl); ++ci) {
+        coeff_contexts[ci] = get_lower_levels_ctx(levels, ci, bwl, tx_size, TX_CLASS_2D);
+    }
+}

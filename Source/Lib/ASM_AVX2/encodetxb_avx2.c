@@ -773,6 +773,26 @@ void svt_av1_get_nz_map_contexts_avx2(const uint8_t* const levels, const int16_t
     }
 }
 
+// TX_CLASS_2D contexts of the first rows rows (all rows for width 4 and 8); rows is even for width 16.
+void svt_av1_get_nz_map_contexts_2d_rows_avx2(const uint8_t* const levels, const TxSize tx_size, const int32_t rows,
+                                              int8_t* const coeff_contexts) {
+    const int32_t   real_width  = tx_size_wide[tx_size];
+    const int32_t   real_height = tx_size_high[tx_size];
+    const int32_t   width       = get_txb_wide(tx_size);
+    const int32_t   height      = get_txb_high(tx_size);
+    const int32_t   stride      = width + TX_PAD_HOR;
+    const ptrdiff_t offsets[3]  = {0 * stride + 2, 1 * stride + 1, 2 * stride + 0};
+    if (width == 4) {
+        get_4_nz_map_contexts_2d_sse2(levels, height, offsets, coeff_contexts);
+    } else if (width == 8) {
+        get_8_coeff_contexts_2d_avx2(levels, height, offsets, coeff_contexts);
+    } else if (width == 16) {
+        get_16_coeff_contexts_2d_avx2(levels, real_width, real_height, width, rows, offsets, coeff_contexts);
+    } else {
+        get_32n_coeff_contexts_2d_avx2(levels, real_width, real_height, width, rows, offsets, coeff_contexts);
+    }
+}
+
 void svt_copy_mi_map_grid_avx2(MbModeInfo** mi_grid_ptr, uint32_t mi_stride, uint8_t num_rows, uint8_t num_cols) {
     MbModeInfo* target = mi_grid_ptr[0];
     if (num_cols == 1) {
