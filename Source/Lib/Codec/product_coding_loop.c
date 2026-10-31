@@ -4740,13 +4740,20 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     }
     TxType best_tx_type = DCT_DCT;
     // local variables for all TX types
-    uint16_t        eob_txt[TX_TYPES]                                              = {0};
-    uint8_t         quantized_dc_txt[TX_TYPES]                                     = {0};
-    uint64_t        y_txb_coeff_bits_txt[TX_TYPES]                                 = {0};
-    uint64_t        txb_full_distortion_txt[DIST_TOTAL][TX_TYPES][DIST_CALC_TOTAL] = {{{0}}};
-    int32_t         candidate_num                                                  = 0;
-    TxType          tx_type_candidate[MAX_TX_TYPE_GROUP * TX_TYPES]                = {0};
-    const SsimLevel ssim_level                                                     = ctx->tune_ssim_level;
+    uint16_t eob_txt[TX_TYPES]          = {0};
+    uint8_t  quantized_dc_txt[TX_TYPES] = {0};
+    // Only entries of evaluated tx types are read, except DCT_DCT (the default best) and the SSIM plane
+    uint64_t        y_txb_coeff_bits_txt[TX_TYPES];
+    uint64_t        txb_full_distortion_txt[DIST_TOTAL][TX_TYPES][DIST_CALC_TOTAL];
+    int32_t         candidate_num = 0;
+    TxType          tx_type_candidate[MAX_TX_TYPE_GROUP * TX_TYPES];
+    const SsimLevel ssim_level                                       = ctx->tune_ssim_level;
+    y_txb_coeff_bits_txt[DCT_DCT]                                    = 0;
+    txb_full_distortion_txt[DIST_SSD][DCT_DCT][DIST_CALC_RESIDUAL]   = 0;
+    txb_full_distortion_txt[DIST_SSD][DCT_DCT][DIST_CALC_PREDICTION] = 0;
+    if (ssim_level > SSIM_LVL_0) {
+        memset(txb_full_distortion_txt[DIST_SSIM], 0, sizeof(txb_full_distortion_txt[DIST_SSIM]));
+    }
     if (ssim_level > SSIM_LVL_0) {
         assert(ctx->pd_pass == PD_PASS_1);
         assert(ctx->md_stage == MD_STAGE_3);
