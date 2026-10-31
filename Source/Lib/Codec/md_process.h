@@ -934,6 +934,27 @@ typedef struct TxbCtxCache {
     int16_t     skip_ctx, dc_sign_ctx;
 } TxbCtxCache;
 
+#define DR_EDGE_SLOTS 8
+
+// Filtered/upsampled directional-intra edges, keyed by everything their preparation depends on within a block
+typedef struct DrEdgeSlot {
+    DECLARE_ALIGNED(32, uint8_t, above_data[64 * 2 + 48]);
+    DECLARE_ALIGNED(32, uint8_t, left_data[64 * 2 + 48]);
+    uint16_t key;
+} DrEdgeSlot;
+
+// 8-bit luma intra edge of the current block, shared by its MDS0 intra candidates (see svt_av1_intra_prediction)
+typedef struct IntraEdgeCache {
+    bool       on;
+    bool       valid;
+    TxSize     tx_size;
+    int32_t    n_top_px, n_topright_px, n_left_px, n_bottomleft_px;
+    uint8_t    top[64 * 2 + 1];
+    uint8_t    left[64 * 2 + 1];
+    uint8_t    dr_count;
+    DrEdgeSlot dr[DR_EDGE_SLOTS];
+} IntraEdgeCache;
+
 typedef struct ModeDecisionContext {
     EbDctor dctor;
 
@@ -1039,6 +1060,7 @@ typedef struct ModeDecisionContext {
     uint64_t         three_quad_energy;
     uint32_t         txb_1d_offset;
     bool             uv_intra_comp_only;
+    IntraEdgeCache   intra_edge;
     TxbCtxCache      txb_ctx_cache[MAX_PLANES];
     uint32_t         txb_ctx_gen;
     bool             ind_uv_avail; // True if independent chroma search data is available

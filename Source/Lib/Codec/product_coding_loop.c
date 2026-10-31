@@ -9647,7 +9647,9 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
             buffer_total_count += buffer_count_for_curr_class;
             svt_aom_assert_err(buffer_total_count <= ctx->max_nics, "not enough cand buffers");
             //Input: md_stage_0_count[cand_class_it]  Output:  md_stage_1_count[cand_class_it]
-            ctx->target_class = cand_class_it;
+            ctx->target_class     = cand_class_it;
+            ctx->intra_edge.on    = true;
+            ctx->intra_edge.valid = false;
             md_stage_0(pcs,
                        ctx,
                        cand_bf_ptr_array_base,
@@ -9658,6 +9660,7 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
                        &loc,
                        buffer_start_idx,
                        buffer_count_for_curr_class);
+            ctx->intra_edge.on = false;
             //Sort:  md_stage_1_count[cand_class_it]
             uint32_t* cand_buff_indices = ctx->cand_buff_indices[cand_class_it];
             if (ctx->md_stage_1_count[cand_class_it] == 1) {
