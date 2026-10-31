@@ -346,7 +346,7 @@ Win64 FFmpeg (Static):
 
     - cd ${env:CI_PROJECT_DIR}/ffmpeg-build
       # The configure script symlinks src to inside the source folder, which breaks the cache. This is to fixup the existing cache.
-    - Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -Path ./src
+    - if (Test-Path -LiteralPath ./src) { Remove-Item -Recurse -Force -Path ./src }
     - bash ../ffmpeg-src/configure
       --arch=x86_64
       --pkg-config-flags="--static"
