@@ -47,9 +47,10 @@ EbPictureBufferDesc* svt_aom_get_ref_pic_buffer(PictureControlSet* pcs, MvRefere
     if (rf <= INTRA_FRAME || rf >= REF_FRAMES) {
         return NULL;
     }
-    const uint8_t list_idx = get_list_idx(rf);
-    const uint8_t ref_idx  = get_ref_frame_idx(rf);
-    return ((EbReferenceObject*)(pcs->ref_pic_ptr_array[list_idx][ref_idx]->object_ptr))->reference_picture;
+    assert(pcs->ref_pic_buf[rf] ==
+           ((EbReferenceObject*)(pcs->ref_pic_ptr_array[get_list_idx(rf)][get_ref_frame_idx(rf)]->object_ptr))
+               ->reference_picture);
+    return pcs->ref_pic_buf[rf];
 }
 
 static INLINE Mv clamp_mv_to_umv_border_sb(const MacroBlockD* xd, Mv src_mv, int32_t bw, int32_t bh, int32_t ss_x,

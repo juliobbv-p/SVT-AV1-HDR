@@ -841,10 +841,11 @@ EbErrorType svt_aom_picture_manager_kernel_iter(void* context) {
                 }
                 // Set the Reference Object
                 EbReferenceObject* ref_obj = (EbReferenceObject*)ref_entry->reference_object_ptr->object_ptr;
-                child_pcs->ref_pic_ptr_array[list_idx][ref_idx] = ref_entry->reference_object_ptr;
-                child_pcs->ref_base_q_idx[list_idx][ref_idx]    = ref_obj->base_q_idx;
-                child_pcs->ref_slice_type[list_idx][ref_idx]    = ref_obj->slice_type;
-                child_pcs->ref_pic_r0[list_idx][ref_idx]        = ref_obj->r0;
+                child_pcs->ref_pic_ptr_array[list_idx][ref_idx]                   = ref_entry->reference_object_ptr;
+                child_pcs->ref_pic_buf[svt_get_ref_frame_type(list_idx, ref_idx)] = ref_obj->reference_picture;
+                child_pcs->ref_base_q_idx[list_idx][ref_idx]                      = ref_obj->base_q_idx;
+                child_pcs->ref_slice_type[list_idx][ref_idx]                      = ref_obj->slice_type;
+                child_pcs->ref_pic_r0[list_idx][ref_idx]                          = ref_obj->r0;
                 // Increment the Reference's liveCount by the number of tiles in the
                 // input picture
                 svt_object_inc_live_count(ref_entry->reference_object_ptr, 1);

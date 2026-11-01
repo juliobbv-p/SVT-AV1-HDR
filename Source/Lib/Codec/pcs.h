@@ -174,6 +174,8 @@ typedef struct PictureControlSet {
 
     // Reference Lists
     EbObjectWrapper* ref_pic_ptr_array[MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH];
+    // reference_picture of each ref_pic_ptr_array entry, indexed by MvReferenceFrame; saves the pointer chase per use
+    EbPictureBufferDesc* ref_pic_buf[REF_FRAMES];
 
     uint8_t   ref_base_q_idx[MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH];
     SliceType ref_slice_type[MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH];
