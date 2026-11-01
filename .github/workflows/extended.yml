@@ -42,7 +42,7 @@ env:
 jobs:
   prep-test-vectors:
     name: Prepare test vectors
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: ubuntu:25.04
     outputs:
@@ -103,7 +103,7 @@ jobs:
 
   linux-gcc-static-debug-unittests:
     name: Linux (GCC, Static, Debug, Unit Tests)
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: ubuntu:25.04
     env:
@@ -141,7 +141,7 @@ jobs:
 
   macos-universal-RelWithDebInfo:
     name: macOS (Universal, RelWithDebInfo)
-    runs-on: [self-hosted, macos]
+    runs-on: macos-latest
     env:
       CC: clang
       CXX: clang++
@@ -200,7 +200,7 @@ jobs:
     needs:
       - linux-gcc-static-debug-unittests
       - prep-test-vectors
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: ubuntu:25.04
     strategy:
@@ -273,7 +273,7 @@ jobs:
     needs:
       - macos-universal-RelWithDebInfo
       - prep-test-vectors
-    runs-on: [self-hosted, macos, ARM64]
+    runs-on: macos-latest
     strategy:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -383,7 +383,7 @@ jobs:
 
   linux-sanitizer-compile:
     name: Linux Sanitizer Compile (${{ matrix.artifact_suffix }})
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     strategy:
@@ -457,7 +457,7 @@ jobs:
   linux-sanitizer-test:
     name: Linux Sanitizer Test (${{ matrix.artifact_suffix }})
     needs: linux-sanitizer-compile
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
       options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
@@ -504,7 +504,7 @@ jobs:
 
   linux-valgrind-compile:
     name: Linux Valgrind Compile
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     steps:
@@ -557,7 +557,7 @@ jobs:
   linux-valgrind-test:
     name: Linux Valgrind Test
     needs: linux-valgrind-compile
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     strategy:
@@ -610,7 +610,7 @@ jobs:
 
   windows-msvc-debug-unittests:
     name: Windows (MSVC, RelWithDebInfo, Unit Tests)
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     timeout-minutes: 120
     env:
       CFLAGS: /D_CRT_SECURE_NO_WARNINGS=1 /fp:strict /WX
@@ -654,7 +654,7 @@ jobs:
     needs:
       - windows-msvc-debug-unittests
       - prep-test-vectors
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     strategy:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]

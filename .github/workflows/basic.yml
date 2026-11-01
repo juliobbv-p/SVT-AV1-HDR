@@ -35,7 +35,7 @@ on:
 jobs:
   version-check:
     name: Check version consistency
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: node:alpine
     if:
@@ -78,7 +78,7 @@ jobs:
 
   style-check:
     name: Style check
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: node:alpine
     steps:
@@ -100,7 +100,7 @@ jobs:
 
   cppcheck:
     name: Static analysis (cppcheck)
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2004:20260303202728
     env:
@@ -153,7 +153,7 @@ jobs:
 
   linux-gcc-release:
     name: Linux (GCC, Release)
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: ubuntu:25.04
     env:
@@ -189,7 +189,7 @@ jobs:
 
   linux-enc-test:
     name: Linux Enc Test
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     needs:
@@ -228,7 +228,7 @@ jobs:
 
   linux-rc-test:
     name: Linux RC Test
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     needs:
@@ -278,7 +278,7 @@ jobs:
   # Skipped when pushing directly to the default branch (nothing to compare against).
   linux-gcc-default-release:
     name: Linux (GCC, Release, Default Branch)
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     if:
@@ -322,7 +322,7 @@ jobs:
 
   linux-default-enc-test:
     name: Linux Default Enc Test
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     needs:
@@ -361,7 +361,7 @@ jobs:
 
   enc-default-diff-test:
     name: Enc Default Diff Test
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: ubuntu:25.04
     needs:
@@ -401,7 +401,7 @@ jobs:
 
   macos-universal-release:
     name: macOS (Universal, Release)
-    runs-on: [self-hosted, macos]
+    runs-on: macos-latest
     env:
       CC: clang
       CXX: clang++
@@ -458,7 +458,7 @@ jobs:
 
   macos-enc-test:
     name: macOS Enc Test
-    runs-on: [self-hosted, macos, ARM64]
+    runs-on: macos-latest
     needs:
       - macos-universal-release
     outputs:
@@ -505,7 +505,7 @@ jobs:
 
   windows-msvc-release:
     name: Windows (MSVC, Release)
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     timeout-minutes: 120
     env:
       CFLAGS: /D_CRT_SECURE_NO_WARNINGS=1
@@ -541,7 +541,7 @@ jobs:
 
   windows-msvc-enc-test:
     name: Windows Enc Test (MSVC)
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     timeout-minutes: 120
     needs:
       - windows-msvc-release
@@ -649,7 +649,7 @@ jobs:
 
   windows-ucrt64-release:
     name: Windows (mingw-w64 ucrt, Release)
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     timeout-minutes: 120
     defaults:
       run:
@@ -723,7 +723,7 @@ jobs:
 
   windows-ucrt64-enc-test:
     name: Windows Enc Test (mingw-w64 ucrt)
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest
     timeout-minutes: 60
     needs:
       - windows-ucrt64-release
@@ -831,7 +831,7 @@ jobs:
 
   enc-os-diff-test:
     name: Enc OS Diff Test
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     container:
       image: ubuntu:25.04
     needs:
