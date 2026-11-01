@@ -1607,8 +1607,9 @@ static AOM_INLINE void tpl_model_update_b(PictureParentControlSet* ref_pcs_ptr, 
 * Genrate TPL MC Flow Synthesizer
 ************************************************/
 
-static AOM_INLINE void tpl_model_update(PictureParentControlSet* pcs_array[MAX_TPL_LA_SW], int32_t frame_idx,
-                                        int mi_row, int mi_col, const BlockSize bsize, uint8_t frames_in_sw) {
+static AOM_INLINE void tpl_model_update(PictureParentControlSet* pcs_array[MAX_TPL_LA_SW], const uint64_t* pic_num,
+                                        int32_t frame_idx, int mi_row, int mi_col, const BlockSize bsize,
+                                        uint8_t frames_in_sw) {
     const int                mi_height = mi_size_high[bsize];
     const int                mi_width  = mi_size_wide[bsize];
     PictureParentControlSet* pcs       = pcs_array[frame_idx];
@@ -1626,7 +1627,7 @@ static AOM_INLINE void tpl_model_update(PictureParentControlSet* pcs_array[MAX_T
             TplStats* tpl_stats_ptr = pcs->pa_me_data->tpl_stats[(((mi_row + idy) >> shift) * (mi_cols_sr >> shift)) +
                                                                  ((mi_col + idx) >> shift)];
 
-            while (i < frames_in_sw && pcs_array[i]->picture_number != tpl_stats_ptr->ref_frame_poc) {
+            while (i < frames_in_sw && pic_num[i] != tpl_stats_ptr->ref_frame_poc) {
                 i++;
             }
             if (i < frames_in_sw) {
@@ -1647,10 +1648,15 @@ void tpl_mc_flow_synthesizer(PictureParentControlSet* pcs_array[MAX_TPL_LA_SW], 
     const BlockSize bsize     = pcs_array[frame_idx]->tpl_ctrls.synth_blk_size == 32 ? BLOCK_32X32 : BLOCK_16X16;
     const int       mi_height = mi_size_high[bsize];
     const int       mi_width  = mi_size_wide[bsize];
+    // the reference search scans picture numbers per block; keep them local instead of chasing every pcs
+    uint64_t pic_num[MAX_TPL_LA_SW];
+    for (int i = 0; i < frames_in_sw; i++) {
+        pic_num[i] = pcs_array[i]->picture_number;
+    }
 
     for (int mi_row = 0; mi_row < cm->mi_rows; mi_row += mi_height) {
         for (int mi_col = 0; mi_col < cm->mi_cols; mi_col += mi_width) {
-            tpl_model_update(pcs_array, frame_idx, mi_row, mi_col, bsize, frames_in_sw);
+            tpl_model_update(pcs_array, pic_num, frame_idx, mi_row, mi_col, bsize, frames_in_sw);
         }
     }
     return;
