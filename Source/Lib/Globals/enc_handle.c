@@ -352,6 +352,14 @@ void set_segments_numbers(SequenceControlSet* scs) {
         scs->me_segment_row_count_array = scs->tf_segment_row_count = rows;
         scs->me_segment_col_count_array = scs->tf_segment_column_count = cols;
     }
+
+    // Random access keeps several pictures in flight, so at low parallelism levels full-width ME/TF and TPL segments
+    // still keep the workers busy; finer grids only add per-segment wake-ups and setup (measured at P5 lp4: ~1.5-3%
+    // less CPU time).
+    if (scs->static_config.pred_structure == RANDOM_ACCESS && lp != PARALLEL_LEVEL_1 && lp <= PARALLEL_LEVEL_4) {
+        scs->me_segment_col_count_array = scs->tf_segment_column_count = 1;
+        scs->tpl_segment_col_count_array                               = 1;
+    }
 }
 
 static EbErrorType load_default_buffer_configuration_settings(SequenceControlSet* scs) {
