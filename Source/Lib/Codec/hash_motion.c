@@ -103,7 +103,7 @@ EbErrorType svt_aom_rtime_alloc_svt_av1_hash_table_create(HashTable* p_hash_tabl
     const int max_addr = 1 << (crc_bits + block_size_bits);
     EB_MALLOC_ARRAY(p_hash_table->bucket_start, max_addr);
     EB_CALLOC_ARRAY(p_hash_table->bucket_count, max_addr);
-    EB_MALLOC_ARRAY(p_hash_table->fill_cursor, 1 << crc_bits);
+    EB_MALLOC_ARRAY(p_hash_table->fill_cursor, 1llu << crc_bits);
     p_hash_table->entries          = NULL;
     p_hash_table->num_entries      = 0;
     p_hash_table->entries_capacity = 0;
