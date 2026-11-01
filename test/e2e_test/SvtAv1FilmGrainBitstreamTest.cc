@@ -83,18 +83,24 @@ TEST(FilmGrainTableTest, TimedEntriesGapsReuseAndFractionalRate) {
                         (frame >= 120 && frame < 144);
         EXPECT_EQ(on, grain.apply_grain != 0) << frame;
         EXPECT_EQ(10, grain.bit_depth);
-        if (on)
+        if (on) {
             EXPECT_EQ(16, grain.scaling_points_y[0][1]);
-        if (frame == 24)
+        }
+        if (frame == 24) {
             EXPECT_EQ(62155, grain.random_seed);
-        if (frame == 25)
+        }
+        if (frame == 25) {
             EXPECT_EQ(7391, grain.random_seed);
-        if (frame == 26)
+        }
+        if (frame == 26) {
             EXPECT_EQ(10772, grain.random_seed);
-        if (frame == 72)
+        }
+        if (frame == 72) {
             EXPECT_EQ(42, grain.random_seed);
-        if (frame == 120)
+        }
+        if (frame == 120) {
             EXPECT_EQ(100, grain.random_seed);
+        }
     }
     free_film_grain_table(&table);
 }
@@ -392,8 +398,9 @@ TEST_P(FilmGrainBitstreamTest, EventsFollowPicturesAndFallBackToTable) {
                   : kind == 1 ? event_frames[i]
                               : no_grain,
                   mixed_frames[i]);
-        if (kind != 2)
+        if (kind != 2) {
             EXPECT_NE(no_grain, mixed_frames[i]);
+        }
     }
 }
 
