@@ -2643,11 +2643,11 @@ static int md_subpel_search(SUBPEL_STAGE       search_stage, //ME or PME
     src_struct.height = input_pic->height;
     src_struct.stride = input_pic->y_stride;
     ms_buffers->src   = &src_struct;
-    Mv best_mv;
     // TODO: should use get_fullmv_from_mv instead of shifting
-    best_mv.x          = me_mv_x >> 3;
-    best_mv.y          = me_mv_y >> 3;
-    Mv subpel_start_mv = get_mv_from_fullmv(best_mv);
+    Mv best_mv = {{(int16_t)(me_mv_x >> 3), (int16_t)(me_mv_y >> 3)}};
+    // Built from the scalars, not from best_mv: best_mv is address-taken, and reloading its two 16-bit halves as one
+    // word stalls on store forwarding.
+    const Mv subpel_start_mv = get_mv_from_fullmv((Mv){{(int16_t)(me_mv_x >> 3), (int16_t)(me_mv_y >> 3)}});
 
     // Assign which subpel search method to use
 #if CONFIG_ENABLE_FULL_SUBPEL
