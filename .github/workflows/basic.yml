@@ -521,7 +521,7 @@ jobs:
       - name: Configure CMake
         run: |
           $env:PATH = "C:\Program Files\NASM;$env:PATH"
-          cmake -S ${env:GITHUB_WORKSPACE} -B ${env:GITHUB_WORKSPACE}/Build -G "Visual Studio 17 2022" -A x64 `
+          cmake -S ${env:GITHUB_WORKSPACE} -B ${env:GITHUB_WORKSPACE}/Build `
             -DREPRODUCIBLE_BUILDS=ON `
             -DBUILD_SHARED_LIBS=ON `
             -DBUILD_TESTING=OFF
