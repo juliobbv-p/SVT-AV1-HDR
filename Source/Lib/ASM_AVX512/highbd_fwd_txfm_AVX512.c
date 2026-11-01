@@ -1719,6 +1719,49 @@ void svt_av1_fwd_txfm2d_64x64_avx512(int16_t* input, int32_t* output, uint32_t s
     }
 }
 
+static INLINE __m512i energy_acc_avx512(__m512i acc, const __m512i v) {
+    acc             = _mm512_add_epi64(acc, _mm512_mul_epi32(v, v));
+    const __m512i h = _mm512_srli_epi64(v, 32);
+    return _mm512_add_epi64(acc, _mm512_mul_epi32(h, h));
+}
+
+// Same as svt_av1_fwd_txfm2d_64x64_avx512() followed by svt_handle_transform64x64(): writes the top-left 32x32
+// coefficients packed with stride 32 and returns the energy of the other three quarters. For 8-bit DCT_DCT the energy
+// is summed before the final transpose (it is transpose-invariant) and only the kept quarter is transposed.
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_avx512(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type,
+                                                uint8_t bd) {
+    if (bd != EB_EIGHT_BIT || tx_type != DCT_DCT) {
+        svt_av1_fwd_txfm2d_64x64_avx512(input, output, stride, tx_type, bd);
+        return svt_handle_transform64x64(output);
+    }
+    const int32_t txw_idx = tx_size_wide_log2[TX_64X64] - tx_size_wide_log2[0];
+    const int32_t txh_idx = tx_size_high_log2[TX_64X64] - tx_size_high_log2[0];
+    __m512i       in[256], kept[64];
+    __m512i*      out = (__m512i*)output;
+    svt_lbd_fwd_col64_avx512(input, stride, out);
+    transpose_16nx16n_avx512(64, out, in);
+    fdct64x64_avx512(in, out, fwd_cos_bit_row[txw_idx][txh_idx]);
+
+    // out[r * 4 + g] is coefficient column r, rows 16g..16g+15; round by 2 (shift[2] = -2).
+    const __m512i round = _mm512_set1_epi32(2);
+    __m512i       e0 = _mm512_setzero_si512(), e1 = _mm512_setzero_si512();
+    for (int32_t r = 0; r < 32; r++) {
+        kept[r * 2 + 0] = _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 0], round), 2);
+        kept[r * 2 + 1] = _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 1], round), 2);
+        e0              = energy_acc_avx512(e0, _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 2], round), 2));
+        e1              = energy_acc_avx512(e1, _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 3], round), 2));
+    }
+    for (int32_t i = 128; i < 256; i += 2) {
+        e0 = energy_acc_avx512(e0, _mm512_srai_epi32(_mm512_add_epi32(out[i + 0], round), 2));
+        e1 = energy_acc_avx512(e1, _mm512_srai_epi32(_mm512_add_epi32(out[i + 1], round), 2));
+    }
+    transpose_16x16_stride_avx512(2, &kept[0], &out[0]);
+    transpose_16x16_stride_avx512(2, &kept[1], &out[32]);
+    transpose_16x16_stride_avx512(2, &kept[32], &out[1]);
+    transpose_16x16_stride_avx512(2, &kept[33], &out[33]);
+    return (uint64_t)_mm512_reduce_add_epi64(_mm512_add_epi64(e0, e1));
+}
+
 static INLINE void load_buffer_16_avx512(const int16_t* input, __m512i* in, int32_t stride, int32_t flipud,
                                          int32_t fliplr, const int8_t shift) {
     (void)flipud;

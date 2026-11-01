@@ -1614,6 +1614,7 @@ void svt_av1_fwd_txfm2d_64x16_avx512(int16_t *input, int32_t *output, uint32_t i
 
 void svt_av1_fwd_txfm2d_64x64_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_64x64_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
 
 void svt_av1_fwd_txfm2d_32x32_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_32x32_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
