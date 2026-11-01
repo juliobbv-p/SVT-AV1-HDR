@@ -8,8 +8,8 @@ concurrency:
 
 on:
   workflow_dispatch:
-  # TODO: Need to remove the push and pull later
   push:
+    branches: [master, gh/**]
     paths-ignore:
       - 'Config/**'
       - '*.patch'

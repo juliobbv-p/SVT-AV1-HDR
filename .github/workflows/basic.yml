@@ -9,6 +9,7 @@ concurrency:
 on:
   workflow_dispatch:
   push:
+    branches: [master, gh/**]
     paths-ignore:
       - 'Config/**'
       - '*.patch'
