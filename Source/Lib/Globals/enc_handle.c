@@ -779,6 +779,15 @@ static EbErrorType load_default_buffer_configuration_settings(SequenceControlSet
         scs->total_process_init_count += (scs->rest_process_init_count = clamp(10, 1, max_rest_proc));
     }
 #undef WORKERS_COUNT
+    // With the full-width random-access segment grid (set_segments_numbers()), workers beyond one picture's ME segments
+    // plus slack mostly wait; each extra one costs wake-ups.
+    if (scs->static_config.pred_structure == RANDOM_ACCESS && lp != PARALLEL_LEVEL_1 && lp <= PARALLEL_LEVEL_4) {
+        const uint32_t me_proc = clamp(tot_me_segs + 2, 1, max_me_proc);
+        if (me_proc < scs->motion_estimation_process_init_count) {
+            scs->total_process_init_count -= scs->motion_estimation_process_init_count - me_proc;
+            scs->motion_estimation_process_init_count = me_proc;
+        }
+    }
     scs->total_process_init_count += 6; // single processes count
     if (scs->static_config.pass == 0 || scs->static_config.pass == 2) {
         SVT_INFO("Level of Parallelism: %u\n", lp);
