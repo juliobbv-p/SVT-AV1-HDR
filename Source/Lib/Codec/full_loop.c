@@ -782,26 +782,38 @@ static INLINE int get_dqv(const int16_t* dequant, int coeff_idx, const QmVal* iq
     return dqv;
 }
 
-// nz_ctx holds the TX_CLASS_2D contexts of the positions still to be visited; after levels[ci] changes, refresh the
-// positions whose context reads it.
-static AOM_FORCE_INLINE void refresh_nz_ctx_2d(int8_t* nz_ctx, const uint8_t* levels, int ci, int bwl, TxSize tx_size) {
-    const int w   = 1 << bwl;
-    const int col = ci & (w - 1);
+// nz_ctx holds the TX_CLASS_2D contexts of the positions still to be visited; after levels[ci] is set to level, refresh
+// the positions whose context reads it. level is passed in rather than reloaded: a wider load spanning the byte just
+// stored stalls on store forwarding.
+static AOM_FORCE_INLINE void refresh_nz_ctx_2d(int8_t* nz_ctx, const uint8_t* levels, int ci, int level, int bwl,
+                                               TxSize tx_size) {
+    const int            w   = 1 << bwl;
+    const int            s   = w + TX_PAD_HOR;
+    const int            col = ci & (w - 1);
+    const uint8_t* const c   = levels + get_padded_idx(ci, bwl);
+    const int            m0  = AOMMIN(level, 3);
+#define L3(o) AOMMIN((int)c[o], 3)
     if (col >= 1) {
-        nz_ctx[ci - 1] = get_lower_levels_ctx(levels, ci - 1, bwl, tx_size, TX_CLASS_2D);
+        const int mag  = m0 + L3(s - 1) + L3(s) + L3(1) + L3(2 * s - 1);
+        nz_ctx[ci - 1] = get_nz_map_ctx_from_stats(mag, ci - 1, bwl, tx_size, TX_CLASS_2D);
         if (col >= 2) {
-            nz_ctx[ci - 2] = get_lower_levels_ctx(levels, ci - 2, bwl, tx_size, TX_CLASS_2D);
+            const int mag2 = L3(-1) + L3(s - 2) + L3(s - 1) + m0 + L3(2 * s - 2);
+            nz_ctx[ci - 2] = get_nz_map_ctx_from_stats(mag2, ci - 2, bwl, tx_size, TX_CLASS_2D);
         }
         if (ci >= w) {
-            nz_ctx[ci - w - 1] = get_lower_levels_ctx(levels, ci - w - 1, bwl, tx_size, TX_CLASS_2D);
+            const int mag3     = L3(-s) + L3(-1) + m0 + L3(1 - s) + L3(s - 1);
+            nz_ctx[ci - w - 1] = get_nz_map_ctx_from_stats(mag3, ci - w - 1, bwl, tx_size, TX_CLASS_2D);
         }
     }
     if (ci >= w) {
-        nz_ctx[ci - w] = get_lower_levels_ctx(levels, ci - w, bwl, tx_size, TX_CLASS_2D);
+        const int mag  = L3(1 - s) + m0 + L3(1) + L3(2 - s) + L3(s);
+        nz_ctx[ci - w] = get_nz_map_ctx_from_stats(mag, ci - w, bwl, tx_size, TX_CLASS_2D);
         if (ci >= 2 * w) {
-            nz_ctx[ci - 2 * w] = get_lower_levels_ctx(levels, ci - 2 * w, bwl, tx_size, TX_CLASS_2D);
+            const int mag2     = L3(1 - 2 * s) + L3(-s) + L3(1 - s) + L3(2 - 2 * s) + m0;
+            nz_ctx[ci - 2 * w] = get_nz_map_ctx_from_stats(mag2, ci - 2 * w, bwl, tx_size, TX_CLASS_2D);
         }
     }
+#undef L3
 }
 
 // Accumulates the zero-coefficient rate from si down to the first non-zero coefficient (or si_end - 1); returns
@@ -900,7 +912,7 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
                 qcoeff[last_ci]                      = 0;
                 dqcoeff[last_ci]                     = 0;
                 if (nz_ctx) {
-                    refresh_nz_ctx_2d(nz_ctx, levels, last_ci, bwl, tx_size);
+                    refresh_nz_ctx_2d(nz_ctx, levels, last_ci, 0, bwl, tx_size);
                 }
             }
             *eob        = new_eob;
@@ -918,7 +930,7 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
             dqcoeff[ci]                     = dqc_low;
             levels[get_padded_idx(ci, bwl)] = AOMMIN(abs_qc_low, INT8_MAX);
             if (nz_ctx) {
-                refresh_nz_ctx_2d(nz_ctx, levels, ci, bwl, tx_size);
+                refresh_nz_ctx_2d(nz_ctx, levels, ci, AOMMIN(abs_qc_low, INT8_MAX), bwl, tx_size);
             }
         }
         if (qcoeff[ci]) {
@@ -972,7 +984,7 @@ static INLINE void update_coeff_general(int* accu_rate, int64_t* accu_dist, int 
             dqcoeff[ci]                     = dqc_low;
             levels[get_padded_idx(ci, bwl)] = AOMMIN(abs_qc_low, INT8_MAX);
             if (nz_ctx) {
-                refresh_nz_ctx_2d(nz_ctx, levels, ci, bwl, tx_size);
+                refresh_nz_ctx_2d(nz_ctx, levels, ci, AOMMIN(abs_qc_low, INT8_MAX), bwl, tx_size);
             }
             *accu_rate += rate_low;
             *accu_dist += dist_low;
@@ -1013,7 +1025,7 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
             qcoeff[ci]                      = 0;
             dqcoeff[ci]                     = 0;
             levels[get_padded_idx(ci, bwl)] = 0;
-            refresh_nz_ctx_2d(nz_ctx, levels, ci, bwl, tx_size);
+            refresh_nz_ctx_2d(nz_ctx, levels, ci, 0, bwl, tx_size);
         }
         return;
     }
@@ -1042,7 +1054,7 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
                 dqcoeff[ci]                     = 0;
                 levels[get_padded_idx(ci, bwl)] = 0;
                 if (nz_ctx) {
-                    refresh_nz_ctx_2d(nz_ctx, levels, ci, bwl, tx_size);
+                    refresh_nz_ctx_2d(nz_ctx, levels, ci, 0, bwl, tx_size);
                 }
                 *accu_rate += rate_low;
             } else {
@@ -1072,7 +1084,7 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
             dqcoeff[ci]                     = (-sign ^ abs_dqc_low) + sign;
             levels[get_padded_idx(ci, bwl)] = AOMMIN(abs_qc_low, INT8_MAX);
             if (nz_ctx) {
-                refresh_nz_ctx_2d(nz_ctx, levels, ci, bwl, tx_size);
+                refresh_nz_ctx_2d(nz_ctx, levels, ci, AOMMIN(abs_qc_low, INT8_MAX), bwl, tx_size);
             }
             *accu_rate += rate_low;
         } else {
