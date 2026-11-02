@@ -740,6 +740,10 @@ jobs:
           rm -rf "$home_vectors"
           mkdir -p "$home_vectors"
           cp -a vectors/. "$home_vectors/"
+      - name: Print CPU info
+        shell: pwsh
+        run: |
+          Get-WmiObject -Class Win32_Processor
       - name: Run unit tests shard
         shell: pwsh
         run: |
