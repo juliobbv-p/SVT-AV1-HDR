@@ -287,6 +287,164 @@ jobs:
       #     compression-level: 9
       #     overwrite: true
 
+  linux-musl-build:
+    name: Linux (Alpine/musl, Build and Encode)
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:3.22
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build musl encoder
+        uses: $/.github/actions/compile
+        with:
+          cmake_build_type: Release
+          extra_cmake_flags: -DCMAKE_OUTPUT_DIRECTORY=${{ github.workspace }}/musl
+          extra_ldflags: -static -static-libgcc
+      - name: Encode smoke sample
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          width = height = 64
+          with Path("smoke.y4m").open("wb") as stream:
+              stream.write(f"YUV4MPEG2 W{width} H{height} F30:1 Ip A1:1\n".encode())
+              stream.write(b"FRAME\n")
+              stream.write(bytes([16]) * (width * height))
+              stream.write(bytes([128]) * (width * height // 2))
+          PY
+          "$GITHUB_WORKSPACE/musl/SvtAv1EncApp" --preset 12 -i smoke.y4m -n 1 -b smoke.ivf
+          test -s smoke.ivf
+
+  linux-aarch64-build:
+    name: Linux (AArch64)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Cross-compile for AArch64
+        uses: $/.github/actions/compile
+        with:
+          cc: aarch64-linux-gnu-gcc
+          cxx: aarch64-linux-gnu-g++
+          packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          extra_cmake_flags: --toolchain cmake/toolchains/aarch64_toolchain.cmake
+
+  linux-android-aarch64-build:
+    name: Linux (Android, AArch64)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Java for Android SDK tools
+        run: |
+          apt-get update
+          apt-get install -yq openjdk-21-jdk-headless unzip
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.4
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager --install "ndk;27.2.12479018"
+      - name: Cross-compile for Android AArch64
+        uses: $/.github/actions/compile
+        with:
+          extra_cmake_flags: >-
+            --toolchain cmake/toolchains/android_aarch64_toolchain.cmake
+            -DCMAKE_ANDROID_NDK=$ANDROID_HOME/ndk/27.2.12479018
+
+  bsd-cross-builds:
+    name: ${{ matrix.target }} (${{ matrix.build_type }})
+    runs-on: ubuntu-latest
+    container:
+      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2604-bsd:20260926152139
+    strategy:
+      matrix:
+        target: [freebsd, openbsd]
+        build_type: [Debug, Release]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Cross-compile for ${{ matrix.target }}
+        uses: $/.github/actions/compile
+        with:
+          cmake_build_type: ${{ matrix.build_type }}
+          extra_cmake_flags: --toolchain=/opt/cross-${{ matrix.target }}/toolchain.cmake
+
+  macos-xcode-build:
+    name: macOS (Xcode)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Configure with Xcode
+        run: cmake -S . -B Build -G Xcode -DREPRODUCIBLE_BUILDS=ON
+      - name: Build Release configuration
+        run: cmake --build Build --config Release --parallel
+
+  linux-rtc-minimal-build:
+    name: Linux (RTC, Minimal)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build RTC minimal configuration
+        uses: $/.github/actions/compile
+        with:
+          extra_cmake_flags: -DRTC_BUILD=ON -DMINIMAL_BUILD=ON -DBUILD_TESTING=ON
+
+  linux-mobile-minimal-build:
+    name: Linux (Mobile, Minimal)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build mobile minimal configuration
+        uses: $/.github/actions/compile
+        with:
+          extra_cmake_flags: -DMOBILE_BUILD=ON -DMINIMAL_BUILD=ON -DBUILD_TESTING=ON
+
+  linux-mobile-minimal-aarch64-build:
+    name: Linux (Mobile, Minimal, AArch64)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Cross-compile mobile minimal configuration for AArch64
+        uses: $/.github/actions/compile
+        with:
+          cc: aarch64-linux-gnu-gcc
+          cxx: aarch64-linux-gnu-g++
+          packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          extra_cmake_flags: >-
+            -DMOBILE_BUILD=ON -DMINIMAL_BUILD=ON --toolchain cmake/toolchains/aarch64_toolchain.cmake
+
   macos-unit-tests:
     name: macOS Unit Tests (Arm64, shard ${{ matrix.shard }})
     needs:

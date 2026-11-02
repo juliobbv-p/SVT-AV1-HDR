@@ -6,3 +6,4 @@ rules:
         microsoft/*: ref-pin
         ammaraskar/msvc-problem-matcher: hash-pin
         msys2/setup-msys2: ref-pin
+        android-actions/setup-android: ref-pin
