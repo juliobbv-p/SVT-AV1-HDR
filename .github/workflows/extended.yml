@@ -349,7 +349,8 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Restore test vectors cache
-        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
+        if:
+          steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
         id: vectors-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -358,7 +359,8 @@ jobs:
           fail-on-cache-miss: true
           enableCrossOsArchive: true
       - name: Download generated test vectors
-        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
+        if:
+          steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
         uses: actions/download-artifact@v8.0.1
         with:
           name: test-vectors
@@ -417,6 +419,8 @@ jobs:
         include:
           - sanitizer: address
             artifact_suffix: address
+          - sanitizer: memory
+            artifact_suffix: memory
           - sanitizer: thread
             artifact_suffix: thread
           - sanitizer: 'signed-integer-overflow,unsigned-integer-overflow'
@@ -489,6 +493,7 @@ jobs:
     env:
       LSAN_OPTIONS: verbosity=2:color=always:log_pointers=1:log_threads=1:report_objects=1
       ASAN_OPTIONS: verbosity=2:color=always:print_cmdline=1:strict_string_checks=1:symbolize=1:detect_leaks=1:fast_unwind_on_malloc=0:strict_memcmp=0
+      MSAN_OPTIONS: verbosity=2:color=always
     strategy:
       fail-fast: false
       matrix:
@@ -497,6 +502,16 @@ jobs:
             artifact_suffix: address
           - sanitizer: thread
             artifact_suffix: thread
+            rc: ''
+          - sanitizer: thread
+            artifact_suffix: thread
+            rc: '--rc 1 --tbr 1000'
+          - sanitizer: thread
+            artifact_suffix: thread
+            rc: '--rc 2 --tbr 1000 --pred-struct 1'
+          - sanitizer: memory
+            artifact_suffix: memory
+            asm: 0
           - sanitizer: 'signed-integer-overflow,unsigned-integer-overflow'
             artifact_suffix: integer-overflow
     steps:
@@ -512,20 +527,28 @@ jobs:
       - name: Run sanitizer test
         env:
           SANITIZER: ${{ matrix.sanitizer }}
+          RC: ${{ matrix.rc }}
+          ASM: ${{ matrix.asm }}
         run: |
           chmod +x sanitizer-bin/SvtAv1EncApp
-          command="$PWD/sanitizer-bin/SvtAv1EncApp -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 60 --preset 8 -b output.ivf --progress 0"
-          case $SANITIZER in
-          thread)
+          args=("$PWD/sanitizer-bin/SvtAv1EncApp" -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 60 --preset 8)
+          if [[ -n "$RC" ]]; then
+            read -r -a rc_args <<< "$RC"
+            args+=("${rc_args[@]}")
+          fi
+          if [[ -n "$ASM" ]]; then
+            args+=(--asm "$ASM")
+          fi
+          args+=(-b output.ivf --progress 0)
+          printf 'Running %s sanitizer with arguments:' "$SANITIZER"
+          printf ' %q' "${args[@]}"
+          printf '\n'
+          if [[ $SANITIZER == thread ]]; then
             # Signal 32 is not well defined as it's an internal signal for pthread. Cannot replace with a standard name.
             # shellcheck disable=SC2172
             trap '' 32
-            $command
-            ;;
-          *)
-            $command
-            ;;
-          esac
+          fi
+          "${args[@]}"
 
   linux-valgrind-compile:
     name: Linux Valgrind Compile
@@ -588,19 +611,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - rc: ''
-            ref_scale: ''
-          - rc: '--rc 1 --tbr 500'
-            ref_scale: '--resize-mode 0'
-          - rc: '--rc 1 --tbr 500'
-            ref_scale: '--resize-mode 1'
-          - rc: '--rc 1 --tbr 500'
-            ref_scale: '--resize-mode 2'
-          - rc: '--rc 1 --tbr 500'
-            ref_scale: '--resize-mode 3'
-          - rc: '-q 35'
-            ref_scale: '--resize-mode 0'
+        pass: ['', 1]
+        rate_control:
+          - name: VBR (500 kbps)
+            args: '--rc 1 --tbr 500'
+          - name: Constant quality (QP 35)
+            args: '-q 35'
+        resize_mode: [0, 1, 2, 3, 4]
     steps:
       - name: Extract input vectors
         run: |
@@ -613,17 +630,56 @@ jobs:
           path: valgrind-bin
       - name: Run valgrind test
         env:
-          RC: ${{ matrix.rc }}
-          REF_SCALE: ${{ matrix.ref_scale }}
+          PASS: ${{ matrix.pass }}
+          RC: ${{ matrix.rate_control.args }}
+          RESIZE_MODE: ${{ matrix.resize_mode }}
         run: |
           chmod +x valgrind-bin/SvtAv1EncApp
-          # shellcheck disable=SC2086
-          valgrind --error-exitcode=1 --track-origins=yes \
+          args=(valgrind-bin/SvtAv1EncApp --preset 6)
+          if [[ -n "$PASS" ]]; then
+            args+=(--pass "$PASS")
+          fi
+          args+=(-i akiyo_cif.y4m)
+          read -r -a rc_args <<< "$RC"
+          args+=("${rc_args[@]}")
+          args+=(-n 10 --lp 7 -b test1.ivf --resize-mode "$RESIZE_MODE")
+          if [[ "$RESIZE_MODE" == 4 ]]; then
+            args+=(--frame-resz-events "1,3,6,8" --frame-resz-kf-denoms "8,9,10,11" --frame-resz-denoms "16,15,14,13")
+          fi
+          command=(valgrind --error-exitcode=1 --track-origins=yes \
+            --suppressions=/usr/lib/valgrind/debian.supp -- "${args[@]}")
+          printf 'Running Valgrind:'
+          printf ' %q' "${command[@]}"
+          printf '\n'
+          "${command[@]}"
+
+  linux-valgrind-two-pass-test:
+    name: Linux Valgrind Test (Two Pass)
+    needs: linux-valgrind-compile
+    runs-on: ubuntu-latest
+    container:
+      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
+    steps:
+      - name: Extract input vectors
+        run: |
+          cp /akiyo_cif.y4m.zst .
+          zstd -df akiyo_cif.y4m.zst
+      - name: Download valgrind binary
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: valgrind-bin
+          path: valgrind-bin
+      - name: Run two-pass valgrind test
+        run: |
+          chmod +x valgrind-bin/SvtAv1EncApp
+          command=(valgrind --error-exitcode=1 --track-origins=yes \
             --suppressions=/usr/lib/valgrind/debian.supp -- \
-            valgrind-bin/SvtAv1EncApp --preset 6 \
-            -i akiyo_cif.y4m \
-            ${RC} -n 10 --lp 7 -b test1.ivf \
-            ${REF_SCALE}
+            valgrind-bin/SvtAv1EncApp --preset 6 --passes 2 \
+            -i akiyo_cif.y4m -n 10 --lp 7 -b test1.ivf)
+          printf 'Running Valgrind:'
+          printf ' %q' "${command[@]}"
+          printf '\n'
+          "${command[@]}"
 
   windows-msvc-debug-unittests:
     name: Windows (MSVC, RelWithDebInfo, Unit Tests)
@@ -735,7 +791,8 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Restore test vectors cache
-        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
+        if:
+          steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
         id: vectors-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -744,7 +801,8 @@ jobs:
           fail-on-cache-miss: true
           enableCrossOsArchive: true
       - name: Download generated test vectors
-        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
+        if:
+          steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
         uses: actions/download-artifact@v8.0.1
         with:
           name: test-vectors
