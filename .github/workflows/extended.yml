@@ -589,23 +589,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - passes: 2
-            rc: ''
+          - rc: ''
             ref_scale: ''
-          - passes: ''
-            rc: '--rc 1 --tbr 500'
+          - rc: '--rc 1 --tbr 500'
             ref_scale: '--resize-mode 0'
-          - passes: ''
-            rc: '--rc 1 --tbr 500'
+          - rc: '--rc 1 --tbr 500'
             ref_scale: '--resize-mode 1'
-          - passes: ''
-            rc: '--rc 1 --tbr 500'
+          - rc: '--rc 1 --tbr 500'
             ref_scale: '--resize-mode 2'
-          - passes: ''
-            rc: '--rc 1 --tbr 500'
+          - rc: '--rc 1 --tbr 500'
             ref_scale: '--resize-mode 3'
-          - passes: ''
-            rc: '-q 35'
+          - rc: '-q 35'
             ref_scale: '--resize-mode 0'
     steps:
       - name: Extract input vectors
@@ -619,7 +613,6 @@ jobs:
           path: valgrind-bin
       - name: Run valgrind test
         env:
-          PASSES: ${{ matrix.passes }}
           RC: ${{ matrix.rc }}
           REF_SCALE: ${{ matrix.ref_scale }}
         run: |
@@ -628,7 +621,6 @@ jobs:
           valgrind --error-exitcode=1 --track-origins=yes \
             --suppressions=/usr/lib/valgrind/debian.supp -- \
             valgrind-bin/SvtAv1EncApp --preset 6 \
-            ${PASS:+--pass $PASS} \
             -i akiyo_cif.y4m \
             ${RC} -n 10 --lp 7 -b test1.ivf \
             ${REF_SCALE}
