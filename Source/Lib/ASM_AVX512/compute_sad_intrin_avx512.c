@@ -9,6 +9,7 @@
 * PATENTS file, you can obtain it at https://www.aomedia.org/license/patent-license.
 */
 
+#include "aom_dsp_rtcd.h"
 #include "definitions.h"
 
 #if EN_AVX512_SUPPORT
@@ -1841,6 +1842,24 @@ void svt_sad_loop_kernel_avx512_intrin(uint8_t*  src, // input parameter, source
     uint32_t       best_s = 0xffffff;
     int32_t        x, y;
     uint32_t       h;
+
+    // The AVX512 odd-height tail overcounts SADs. Dispatch to the AVX2 implementation.
+    if (height & 1) {
+        svt_sad_loop_kernel_avx2_intrin(src,
+                                        src_stride,
+                                        ref,
+                                        ref_stride,
+                                        height,
+                                        width,
+                                        best_sad,
+                                        x_search_center,
+                                        y_search_center,
+                                        src_stride_raw,
+                                        skip_search_line,
+                                        search_area_width,
+                                        search_area_height);
+        return;
+    }
 
     if (search_area_width == 8) {
         switch (width) {
