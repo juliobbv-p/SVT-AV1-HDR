@@ -47,6 +47,7 @@ jobs:
       image: ubuntu:25.04
     outputs:
       test-vectors-cache-key: ${{ steps.cache.outputs.cache-primary-key }}
+      test-vectors-cache-hit: ${{ steps.cache.outputs.cache-hit }}
       test-vectors-sha256sum: ${{ steps.test-vectors-sha256sum.outputs.test-vectors-sha256sum }}
     steps:
       - name: Install dependencies
@@ -100,6 +101,15 @@ jobs:
               cut -d ' ' -f1
           )
           echo "test-vectors-sha256sum=$test_vectors_sha256sum" >> "$GITHUB_OUTPUT"
+      - name: Upload generated test vectors
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: test-vectors
+          path: vectors/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
 
   linux-gcc-static-debug-unittests:
     name: Linux (GCC, Static, Debug, Unit Tests)
@@ -232,11 +242,20 @@ jobs:
         with:
           path: ~/.cache/gtest-parallel
           key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
-      - name: Prepare test vectors
+      - name: Restore test vectors cache
+        if: needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
         uses: actions/cache/restore@v6.1.0
         with:
           path: vectors
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+      - name: Download generated test vectors
+        if: needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: test-vectors
+          path: vectors
       - name: Run tests shard
         shell: bash
         run: |
@@ -330,7 +349,7 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Restore test vectors cache
-        if: steps.home-vectors.outputs.found != 'true'
+        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
         id: vectors-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -338,6 +357,12 @@ jobs:
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
           fail-on-cache-miss: true
           enableCrossOsArchive: true
+      - name: Download generated test vectors
+        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: test-vectors
+          path: vectors
       - name: Save test vectors to home directory
         if: steps.home-vectors.outputs.found != 'true'
         shell: bash
@@ -718,7 +743,7 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Restore test vectors cache
-        if: steps.home-vectors.outputs.found != 'true'
+        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
         id: vectors-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -726,6 +751,12 @@ jobs:
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
           fail-on-cache-miss: true
           enableCrossOsArchive: true
+      - name: Download generated test vectors
+        if: steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: test-vectors
+          path: vectors
       - name: Save test vectors to home directory
         if: steps.home-vectors.outputs.found != 'true'
         shell: bash -l {0}
