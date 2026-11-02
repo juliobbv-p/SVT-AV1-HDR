@@ -216,6 +216,10 @@ jobs:
           ./Bin/Release/SvtAv1EncApp --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Linux-Release-8bit-m8.ivf
           ./Bin/Release/SvtAv1EncApp --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Linux-Release-10bit-m2.ivf
           ./Bin/Release/SvtAv1EncApp --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Linux-Release-10bit-m8.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 2 --tune 5 -i akiyo_cif.y4m -n 17 -b test-pr-Linux-Release-8bit-m2-tune5.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 --tune 5 -i akiyo_cif.y4m -n 120 -b test-pr-Linux-Release-8bit-m8-tune5.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 2 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Linux-Release-10bit-m2-tune5.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Linux-Release-10bit-m8-tune5.ivf
       - name: Hash IVF outputs
         id: hashes
         run: |
@@ -225,6 +229,80 @@ jobs:
             echo "chimera_m2=$(sha256sum test-pr-Linux-Release-10bit-m2.ivf | awk '{print $1}')"
             echo "chimera_m8=$(sha256sum test-pr-Linux-Release-10bit-m8.ivf | awk '{print $1}')"
           } >> "$GITHUB_OUTPUT"
+
+  linux-feature-test:
+    name: Linux Encoder Feature Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
+    needs:
+      - linux-gcc-release
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: svtav1-bin-linux-release
+          path: Bin/Release
+      - name: Install FFmpeg
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ffmpeg
+      - name: Extract input vectors
+        run: |
+          cp /akiyo_cif.y4m.zst /Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst /kirland_640_480_30.yuv.zst .
+          zstd -df akiyo_cif.y4m.zst Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m.zst kirland_640_480_30.yuv.zst
+      - name: Run startup mini-GOP encodes
+        run: |
+          chmod +x Bin/Release/SvtAv1EncApp
+          for preset in 5 10; do
+            for mg_size in 2 3 4; do
+              ./Bin/Release/SvtAv1EncApp \
+                --svtav1-params "startup-mg-size=${mg_size}:qp=32:aq-mode=2:hierarchical-levels=5" \
+                -n 120 --keyint -1 --preset "$preset" -w 640 -h 480 \
+                -i kirland_640_480_30.yuv -b "m${preset}_smg${mg_size}.ivf"
+            done
+          done
+      - name: Check startup mini-GOP decode order
+        run: |
+          printf '%s' '0:4:2:1:3:' > smg2_dec_order_reference.txt
+          printf '%s' '0:8:4:2:1:3:6:5:7:' > smg3_dec_order_reference.txt
+          printf '%s' '0:16:8:4:2:1:3:6:5:7:12:10:9:11:14:13:15:' > smg4_dec_order_reference.txt
+          for preset in 5 10; do
+            for mg_size in 2 3 4; do
+              output="m${preset}_smg${mg_size}.ivf"
+              expected_frames=$(((1 << mg_size) + 1))
+              ffprobe -hide_banner -loglevel level+debug -show_frames "$output" > probe.txt 2>&1
+              grep -m "$expected_frames" Frame probe.txt | awk '{print $6}' | tr -d '\n' > "${output%.ivf}_dec_order.txt"
+              diff -u "smg${mg_size}_dec_order_reference.txt" "${output%.ivf}_dec_order.txt"
+            done
+          done
+      - name: Run ROI map encodes and compare reconstructions
+        run: |
+          cat > roi-sample-kirland_640_480_30-two-events.txt <<'EOF'
+          0 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 255 0 -4 255 255 255 255 255 255 255 255 0 -10 0 0 255 255 255 255 255 0 -2 -6 -2 0 255 255 255 255 0 -2 -4 -6 -4 0 0 255 255 0 -2 -4 -6 -6 -6 -2 0 255 255 0 -2 -4 -6 -6 -6 -2 0 255
+          60 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 128 0 -4 1 1 128 128 128 128 128 1 0 -10 0 0 128 128 128 128 1 0 -2 -6 -2 0 1 128 128 128 0 -2 -4 -6 -4 0 0 128 128 1 -2 -4 -6 -6 -6 -2 0 128 128 1 -2 -4 -6 -6 -6 -2 0 128
+          EOF
+          ./Bin/Release/SvtAv1EncApp --roi-map-file roi-sample-kirland_640_480_30-two-events.txt --keyint 60 -n 120 -q 32 --preset 8 -w 640 -h 480 -i kirland_640_480_30.yuv -b roi.ivf -o roi_recon.yuv
+          ./Bin/Release/SvtAv1EncApp --roi-map-file roi-sample-kirland_640_480_30-two-events.txt --keyint 60 -n 120 -q 32 --preset 8 --tile-columns 1 -w 640 -h 480 -i kirland_640_480_30.yuv -b roi_tiles.ivf -o roi_tiles_recon.yuv
+          ffmpeg -hide_banner -loglevel error -y -i roi.ivf roi_dec.yuv
+          ffmpeg -hide_banner -loglevel error -y -i roi_tiles.ivf roi_tiles_dec.yuv
+          diff -q roi_recon.yuv roi_dec.yuv
+          diff -q roi_tiles_recon.yuv roi_tiles_dec.yuv
+      - name: Run and decode intra-period encodes
+        run: |
+          for keyint in -1 200; do
+            ./Bin/Release/SvtAv1EncApp --preset 2 --keyint "$keyint" -i akiyo_cif.y4m -n 17 -b "test-pr-Linux-intra${keyint}-8bit-m2.ivf"
+            ./Bin/Release/SvtAv1EncApp --preset 8 --keyint "$keyint" -i akiyo_cif.y4m -n 120 -b "test-pr-Linux-intra${keyint}-8bit-m8.ivf"
+            ./Bin/Release/SvtAv1EncApp --preset 2 --keyint "$keyint" -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b "test-pr-Linux-intra${keyint}-10bit-m2.ivf"
+            ./Bin/Release/SvtAv1EncApp --preset 8 --keyint "$keyint" -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b "test-pr-Linux-intra${keyint}-10bit-m8.ivf"
+          done
+          for output in test-pr-Linux-intra*-bit-m*.ivf; do
+            test -s "$output"
+            ffmpeg -hide_banner -loglevel error -i "$output" -f null -
+          done
 
   linux-rc-test:
     name: Linux RC Test
@@ -493,6 +571,10 @@ jobs:
           ./Bin/Release/SvtAv1EncApp --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Darwin-Release-8bit-m8.ivf
           ./Bin/Release/SvtAv1EncApp --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Darwin-Release-10bit-m2.ivf
           ./Bin/Release/SvtAv1EncApp --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Darwin-Release-10bit-m8.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 2 --tune 5 -i akiyo_cif.y4m -n 17 -b test-pr-Darwin-Release-8bit-m2-tune5.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 --tune 5 -i akiyo_cif.y4m -n 120 -b test-pr-Darwin-Release-8bit-m8-tune5.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 2 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Darwin-Release-10bit-m2-tune5.ivf
+          ./Bin/Release/SvtAv1EncApp --preset 8 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Darwin-Release-10bit-m8-tune5.ivf
       - name: Hash IVF outputs
         id: hashes
         run: |
@@ -607,6 +689,10 @@ jobs:
           .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-Release-8bit-m8.ivf
           .\Bin\Release\SvtAv1EncApp.exe --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-Release-10bit-m2.ivf
           .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-Release-10bit-m8.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 --tune 5 -i akiyo_cif.y4m -n 17 -b test-pr-Windows-Release-8bit-m2-tune5.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 --tune 5 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-Release-8bit-m8-tune5.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-Release-10bit-m2-tune5.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-Release-10bit-m8-tune5.ivf
       - name: Save input clips to home and cache
         if: always()
         run: |
@@ -789,6 +875,10 @@ jobs:
           .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-ucrt64-Release-8bit-m8.ivf
           .\Bin\Release\SvtAv1EncApp.exe --preset 2 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-ucrt64-Release-10bit-m2.ivf
           .\Bin\Release\SvtAv1EncApp.exe --preset 8 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-ucrt64-Release-10bit-m8.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 --tune 5 -i akiyo_cif.y4m -n 17 -b test-pr-Windows-ucrt64-Release-8bit-m2-tune5.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 --tune 5 -i akiyo_cif.y4m -n 120 -b test-pr-Windows-ucrt64-Release-8bit-m8-tune5.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 2 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b test-pr-Windows-ucrt64-Release-10bit-m2-tune5.ivf
+          .\Bin\Release\SvtAv1EncApp.exe --preset 8 --tune 5 -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b test-pr-Windows-ucrt64-Release-10bit-m8-tune5.ivf
       - name: Save input clips to home and cache
         if: always()
         run: |
