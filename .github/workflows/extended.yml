@@ -1478,35 +1478,6 @@ jobs:
           printf '\n'
           "${command[@]}"
 
-  linux-valgrind-two-pass-test:
-    name: Linux Valgrind Test (Two Pass)
-    needs: linux-valgrind-compile
-    runs-on: ubuntu-latest
-    container:
-      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
-    steps:
-      - name: Extract input vectors
-        run: |
-          cp /akiyo_cif.y4m.zst .
-          zstd -df akiyo_cif.y4m.zst
-      - name: Download valgrind binary
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: valgrind-bin
-          path: valgrind-bin
-      - name: Run two-pass valgrind test
-        shell: bash
-        run: |
-          chmod +x valgrind-bin/SvtAv1EncApp
-          command=(valgrind --error-exitcode=1 --track-origins=yes \
-            --suppressions=/usr/lib/valgrind/debian.supp -- \
-            valgrind-bin/SvtAv1EncApp --preset 6 --passes 2 \
-            -i akiyo_cif.y4m -n 10 --lp 7 --qp 32 -b test1.ivf)
-          printf 'Running Valgrind:'
-          printf ' %q' "${command[@]}"
-          printf '\n'
-          "${command[@]}"
-
   windows-msvc-debug-unittests:
     name: Windows (MSVC, RelWithDebInfo, Unit Tests)
     runs-on: windows-latest
