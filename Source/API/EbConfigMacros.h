@@ -247,6 +247,15 @@
 #ifndef CONFIG_RTC_SB64
 #define CONFIG_RTC_SB64                     1
 #endif
+// Smaller generic code in place of size- and shape-specialized SIMD kernels (bit-exact; trades a few tenths of a
+// percent of speed for binary size).
+#ifndef CONFIG_COMPACT_KERNELS
+#define CONFIG_COMPACT_KERNELS              1
+#endif
+// Luma intra edges shared between the MDS0 intra candidates of a block: ~9 KB for ~0.1% instructions.
+#ifndef CONFIG_ENABLE_INTRA_EDGE_CACHE
+#define CONFIG_ENABLE_INTRA_EDGE_CACHE      0
+#endif
 #endif // MOBILE_BUILD
 
 #ifndef MIN_ENC_PRESET
@@ -400,6 +409,14 @@
 #define CONFIG_ENABLE_VMAF                 1
 #endif
 
+#ifndef CONFIG_COMPACT_KERNELS
+#define CONFIG_COMPACT_KERNELS              0
+#endif
+
+#ifndef CONFIG_ENABLE_INTRA_EDGE_CACHE
+#define CONFIG_ENABLE_INTRA_EDGE_CACHE      1
+#endif
+
 #ifndef CONFIG_ENABLE_RESIZE
 #define CONFIG_ENABLE_RESIZE               1
 #endif
@@ -536,6 +553,14 @@
 #define SVT_RTC_OR_MOBILE_BUILD 1
 #else
 #define SVT_RTC_OR_MOBILE_BUILD 0
+#endif
+
+// Paths built around kernels that have SIMD versions only on x86. Elsewhere their C versions would replace the SIMD
+// kernels those paths bypass, so the paths are compiled out and the kernels are not registered.
+#ifdef ARCH_X86_64
+#define SVT_X86_ONLY_KERNEL_PATHS 1
+#else
+#define SVT_X86_ONLY_KERNEL_PATHS 0
 #endif
 
 // MOBILE rejects presets below MIN_ENC_PRESET (svt_av1_verify_settings()): clamping the preset where the signal
