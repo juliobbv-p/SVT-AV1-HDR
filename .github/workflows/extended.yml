@@ -287,6 +287,767 @@ jobs:
       #     compression-level: 9
       #     overwrite: true
 
+  linux-gstreamer:
+    name: Linux GStreamer (static SVT-AV1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bison cmake flex git libglib2.0-dev liborc-0.4-dev libunwind-dev \
+            meson ninja-build pkg-config python3 zstd
+      - name: Build and install candidate SVT-AV1
+        env:
+          PREFIX_DIR: ${{ runner.temp }}/gstreamer-prefix
+        run: |
+          cmake -S . -B svtav1-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+            -DBUILD_APPS=OFF \
+            -DREPRODUCIBLE_BUILDS=ON
+          cmake --build svtav1-build --parallel
+          cmake --install svtav1-build
+          export PKG_CONFIG_PATH="$PREFIX_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          echo "PKG_CONFIG_PATH=$PREFIX_DIR/lib/pkgconfig" >> "$GITHUB_ENV"
+          pkg-config --modversion SvtAv1Enc
+      - name: Checkout GStreamer GitHub mirror
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: GStreamer/gstreamer
+          ref: main
+          path: gstreamer
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Configure GStreamer and SVT-AV1 plugin
+        env:
+          GSTREAMER_PREFIX: ${{ runner.temp }}/gstreamer
+        run: |
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ### GStreamer dependency revision
+          | Dependency | Ref | Resolved commit |
+          |---|---|---|
+          | SVT-AV1 candidate | this checkout | \`$(git rev-parse HEAD)\` |
+          | GStreamer | \`main\` | \`$(git -C gstreamer rev-parse HEAD)\` |
+          EOF
+          PKG_CONFIG="pkg-config --static" meson setup \
+            -Dprefix="$GSTREAMER_PREFIX" \
+            --buildtype release \
+            -Dauto_features=disabled \
+            -Dbad=enabled \
+            -Dgst-plugins-bad:svtav1=enabled \
+            -Dgst-plugins-good:matroska=enabled \
+            -Dgst-plugins-good:y4m=enabled \
+            -Dtests=disabled \
+            gstreamer-build gstreamer
+          meson install -C gstreamer-build
+      - name: Verify the candidate plugin and encode
+        env:
+          GSTREAMER_PREFIX: ${{ runner.temp }}/gstreamer
+        run: |
+          curl -fsSL --retry 3 --retry-all-errors \
+            https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/akiyo_cif.y4m.zst \
+            -o akiyo_cif.y4m.zst
+          zstd -df akiyo_cif.y4m.zst
+          gst_plugin=$(find "$GSTREAMER_PREFIX" -type f -name 'libgstsvtav1.so' -print -quit)
+          test -n "$gst_plugin"
+          gst_core=$(find "$GSTREAMER_PREFIX" -type f -name 'libgstreamer-1.0.so.*' -print -quit)
+          test -n "$gst_core"
+          gst_libdir=$(dirname "$gst_core")
+          test -x "$GSTREAMER_PREFIX/bin/gst-inspect-1.0"
+          test -x "$GSTREAMER_PREFIX/bin/gst-launch-1.0"
+          export LD_LIBRARY_PATH="$gst_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          GST_PLUGIN_PATH=$(dirname "$gst_plugin")
+          export GST_PLUGIN_PATH
+          inspect_output=$("$GSTREAMER_PREFIX/bin/gst-inspect-1.0" svtav1enc)
+          printf '%s\n' "$inspect_output"
+          grep -Fq "$gst_plugin" <<< "$inspect_output"
+          "$GSTREAMER_PREFIX/bin/gst-launch-1.0" -v \
+            filesrc location=akiyo_cif.y4m \
+            ! y4mdec \
+            ! svtav1enc \
+            ! webmmux \
+            ! filesink location=akiyo.mkv
+          test -s akiyo.mkv
+
+  linux-libavif:
+    name: Linux libavif (static SVT-AV1, Valgrind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake git libjpeg-dev libpng-dev meson ninja-build pkg-config \
+            valgrind
+      - name: Build candidate SVT-AV1 and dav1d
+        env:
+          PREFIX_DIR: ${{ runner.temp }}/libavif-prefix
+        run: |
+          cmake -S . -B svtav1-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+            -DBUILD_APPS=OFF \
+            -DREPRODUCIBLE_BUILDS=ON
+          cmake --build svtav1-build --parallel
+          cmake --install svtav1-build
+          git clone --depth 1 --branch master \
+            https://code.videolan.org/videolan/dav1d.git dav1d-src
+          meson setup \
+            --default-library static \
+            --buildtype release \
+            --libdir lib \
+            --prefix "$PREFIX_DIR" \
+            -Denable_tests=false \
+            -Denable_examples=false \
+            -Denable_tools=false \
+            dav1d-build dav1d-src
+          meson install -C dav1d-build
+          export PKG_CONFIG_PATH="$PREFIX_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          echo "PKG_CONFIG_PATH=$PREFIX_DIR/lib/pkgconfig" >> "$GITHUB_ENV"
+          pkg-config --modversion SvtAv1Enc dav1d
+      - name: Checkout libavif
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: AOMediaCodec/libavif
+          ref: main
+          path: libavif-src
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Configure and build libavif
+        env:
+          PREFIX_DIR: ${{ runner.temp }}/libavif-prefix
+        run: |
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ### libavif dependency revisions
+          | Dependency | Ref | Resolved commit |
+          |---|---|---|
+          | SVT-AV1 candidate | this checkout | \`$(git rev-parse HEAD)\` |
+          | libavif | \`main\` | \`$(git -C libavif-src rev-parse HEAD)\` |
+          | dav1d | \`master\` | \`$(git -C dav1d-src rev-parse HEAD)\` |
+          EOF
+          cmake \
+            -S libavif-src \
+            -B libavif-build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+            -DAVIF_CODEC_AOM=OFF \
+            -DAVIF_CODEC_DAV1D=SYSTEM \
+            -DAVIF_CODEC_SVT=SYSTEM \
+            -DAVIF_BUILD_EXAMPLES=ON \
+            -DAVIF_BUILD_APPS=ON \
+            -DAVIF_LIBYUV=OFF
+          cmake --build libavif-build --parallel
+          cmake --install libavif-build
+      - name: Encode with candidate libavif under Valgrind
+        env:
+          PREFIX_DIR: ${{ runner.temp }}/libavif-prefix
+        run: |
+          pkg-config --modversion SvtAv1Enc dav1d
+          valgrind --error-exitcode=1 --track-origins=yes \
+            --suppressions=/usr/lib/valgrind/debian.supp -- \
+            "$PREFIX_DIR/bin/avifenc" -c svt -d 8 -y 420 -r limited -j 2 \
+            ./Docs/img/me_fig_new.png out.avif
+
+  ffmpeg-static-dependencies:
+    name: FFmpeg ${{ matrix.platform }} ${{ matrix.dependency }} static output
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux, macos, windows]
+        dependency: [svtav1, aom, dav1d, libvpx, vmaf]
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+            prefix: /usr/local
+          - platform: macos
+            runner: macos-latest
+            prefix: /usr/local
+          - platform: windows
+            runner: windows-latest
+            prefix: C:/msys64/ucrt64
+    env:
+      DEPENDENCY: ${{ matrix.dependency }}
+      PREFIX_DIR: ${{ matrix.prefix }}
+      PLATFORM: ${{ matrix.platform }}
+      CC: gcc
+      CXX: g++
+      CHERE_INVOKING: 1
+      MSYS2_PATH_TYPE: inherit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git meson nasm ninja-build pkg-config \
+            python3 yasm
+      - name: Install macOS build dependencies
+        if: matrix.platform == 'macos'
+        run: brew install cmake meson nasm ninja pkg-config yasm
+      - name: Set up MSYS2 UCRT64
+        if: matrix.platform == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          pacboy: >-
+            cmake gcc git meson nasm ninja perl pkgconf python yasm
+      - name: Build static dependency (Linux and macOS)
+        if: matrix.platform != 'windows'
+        env:
+          CC: ${{ matrix.platform == 'macos' && 'clang' || 'gcc' }}
+          CXX: ${{ matrix.platform == 'macos' && 'clang++' || 'g++' }}
+        run: |
+          stage="$GITHUB_WORKSPACE/install-root"
+          jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+          mkdir -p "$stage"
+          case "$DEPENDENCY" in
+            svtav1)
+              cmake -S . -B svtav1-build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+                -DBUILD_APPS=OFF \
+                -DREPRODUCIBLE_BUILDS=ON
+              cmake --build svtav1-build --parallel "$jobs"
+              DESTDIR="$stage" cmake --install svtav1-build
+              ;;
+            aom)
+              git clone --depth 1 --branch main https://aomedia.googlesource.com/aom aom-src
+              cmake -S aom-src -B aom-build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+                -DENABLE_TESTS=0 \
+                -DENABLE_EXAMPLES=0 \
+                -DENABLE_DOCS=0 \
+                -DENABLE_TESTDATA=0 \
+                -DENABLE_TOOLS=0
+              cmake --build aom-build --parallel "$jobs"
+              DESTDIR="$stage" cmake --install aom-build
+              ;;
+            dav1d)
+              git clone --depth 1 --branch master https://code.videolan.org/videolan/dav1d.git dav1d-src
+              meson setup \
+                --default-library static \
+                --buildtype release \
+                --libdir lib \
+                --prefix "$PREFIX_DIR" \
+                -Denable_tests=false \
+                -Denable_examples=false \
+                -Denable_tools=false \
+                dav1d-build dav1d-src
+              DESTDIR="$stage" meson install -C dav1d-build
+              ;;
+            libvpx)
+              git clone --depth 1 --branch main https://chromium.googlesource.com/webm/libvpx libvpx-src
+              mkdir vpx-build
+              (
+                cd vpx-build
+                ../libvpx-src/configure \
+                  --disable-dependency-tracking \
+                  --disable-docs \
+                  --disable-examples \
+                  --disable-libyuv \
+                  --disable-shared \
+                  --disable-tools \
+                  --disable-unit-tests \
+                  --disable-webm-io \
+                  --enable-postproc \
+                  --enable-runtime-cpu-detect \
+                  --enable-vp8 --enable-vp9 \
+                  --enable-vp9-highbitdepth \
+                  --enable-vp9-postproc \
+                  --prefix="$PREFIX_DIR"
+                DIST_DIR="$stage" make -j"$jobs" install
+              )
+              ;;
+            vmaf)
+              git clone --depth 1 --branch master https://github.com/Netflix/vmaf.git vmaf-src
+              meson setup \
+                --default-library static \
+                --buildtype release \
+                --libdir lib \
+                --prefix "$PREFIX_DIR" \
+                -Denable_tests=false \
+                -Denable_docs=false \
+                -Dbuilt_in_models=true \
+                -Denable_float=true \
+                vmaf-build vmaf-src/libvmaf
+              DESTDIR="$stage" meson install -C vmaf-build
+              ;;
+            *)
+              echo "Unsupported dependency: $DEPENDENCY" >&2
+              exit 2
+              ;;
+          esac
+          case "$DEPENDENCY" in
+            aom) source_dir=aom-src; source_ref=main ;;
+            dav1d) source_dir=dav1d-src; source_ref=master ;;
+            libvpx) source_dir=libvpx-src; source_ref=main ;;
+            vmaf) source_dir=vmaf-src; source_ref=master ;;
+            svtav1) source_dir=.; source_ref="this checkout" ;;
+          esac
+          source_commit=$(git -C "$source_dir" rev-parse HEAD)
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ### ${DEPENDENCY} static output (${PLATFORM})
+          | Dependency | Ref | Resolved commit |
+          |---|---|---|
+          | $DEPENDENCY | ${source_ref:-this checkout} | $source_commit |
+          EOF
+      - name: Build static dependency (Windows)
+        if: matrix.platform == 'windows'
+        shell: msys2 {0}
+        run: |
+          stage="$(cygpath -u "$GITHUB_WORKSPACE")/install-root"
+          jobs=$(nproc 2>/dev/null || echo 2)
+          mkdir -p "$stage"
+          case "$DEPENDENCY" in
+            svtav1)
+              cmake -S . -B svtav1-build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+                -DBUILD_APPS=OFF \
+                -DREPRODUCIBLE_BUILDS=ON
+              cmake --build svtav1-build --parallel "$jobs"
+              DESTDIR="$stage" cmake --install svtav1-build
+              ;;
+            aom)
+              git clone --depth 1 --branch main https://aomedia.googlesource.com/aom aom-src
+              cmake -S aom-src -B aom-build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+                -DENABLE_TESTS=0 \
+                -DENABLE_EXAMPLES=0 \
+                -DENABLE_DOCS=0 \
+                -DENABLE_TESTDATA=0 \
+                -DENABLE_TOOLS=0
+              cmake --build aom-build --parallel "$jobs"
+              DESTDIR="$stage" cmake --install aom-build
+              ;;
+            dav1d)
+              git clone --depth 1 --branch master https://code.videolan.org/videolan/dav1d.git dav1d-src
+              meson setup \
+                --default-library static \
+                --buildtype release \
+                --libdir lib \
+                --prefix "$PREFIX_DIR" \
+                -Denable_tests=false \
+                -Denable_examples=false \
+                -Denable_tools=false \
+                dav1d-build dav1d-src
+              DESTDIR="$stage" meson install -C dav1d-build
+              ;;
+            libvpx)
+              git clone --depth 1 --branch main https://chromium.googlesource.com/webm/libvpx libvpx-src
+              mkdir vpx-build
+              (
+                cd vpx-build
+                ../libvpx-src/configure \
+                  --disable-dependency-tracking \
+                  --disable-docs \
+                  --disable-examples \
+                  --disable-libyuv \
+                  --disable-shared \
+                  --disable-tools \
+                  --disable-unit-tests \
+                  --disable-webm-io \
+                  --enable-postproc \
+                  --enable-runtime-cpu-detect \
+                  --enable-vp8 --enable-vp9 \
+                  --enable-vp9-highbitdepth \
+                  --enable-vp9-postproc \
+                  --prefix="$PREFIX_DIR"
+                DIST_DIR="$stage" make -j"$jobs" install
+              )
+              ;;
+            vmaf)
+              git clone --depth 1 --branch master https://github.com/Netflix/vmaf.git vmaf-src
+              meson setup \
+                --default-library static \
+                --buildtype release \
+                --libdir lib \
+                --prefix "$PREFIX_DIR" \
+                -Denable_tests=false \
+                -Denable_docs=false \
+                -Dbuilt_in_models=true \
+                -Denable_float=true \
+                vmaf-build vmaf-src/libvmaf
+              DESTDIR="$stage" meson install -C vmaf-build
+              ;;
+            *)
+              echo "Unsupported dependency: $DEPENDENCY" >&2
+              exit 2
+              ;;
+          esac
+          if [[ "$DEPENDENCY" == svtav1 ]]; then
+            source_commit=$(git rev-parse HEAD)
+            source_ref="this checkout"
+          else
+            case "$DEPENDENCY" in
+              aom) source_dir=aom-src; source_ref=main ;;
+              dav1d) source_dir=dav1d-src; source_ref=master ;;
+              libvpx) source_dir=libvpx-src; source_ref=main ;;
+              vmaf) source_dir=vmaf-src; source_ref=master ;;
+            esac
+            source_commit=$(git -C "$source_dir" rev-parse HEAD)
+          fi
+          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+          ### ${DEPENDENCY} static output (Windows)
+          | Dependency | Ref | Resolved commit |
+          |---|---|---|
+          | $DEPENDENCY | $source_ref | $source_commit |
+          EOF
+      - name: Upload Linux and macOS libvpx output
+        if: matrix.platform != 'windows' && matrix.dependency == 'libvpx'
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: ffmpeg-${{ matrix.platform }}-${{ matrix.dependency }}
+          path: |
+            install-root/include/
+            install-root/lib/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+      - name: Upload other Linux and macOS installed outputs
+        if: matrix.platform != 'windows' && matrix.dependency != 'libvpx'
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: ffmpeg-${{ matrix.platform }}-${{ matrix.dependency }}
+          path: |
+            install-root/usr/local/include/
+            install-root/usr/local/lib/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+      - name: Upload Windows installed outputs
+        if: matrix.platform == 'windows' && matrix.dependency == 'libvpx'
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: ffmpeg-${{ matrix.platform }}-${{ matrix.dependency }}
+          path: |
+            install-root/include/
+            install-root/lib/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+      - name: Upload other Windows installed outputs
+        if: matrix.platform == 'windows' && matrix.dependency != 'libvpx'
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: ffmpeg-${{ matrix.platform }}-${{ matrix.dependency }}
+          path: |
+            install-root/msys64/ucrt64/include/
+            install-root/msys64/ucrt64/lib/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+
+  linux-ffmpeg-n5:
+    name: Linux FFmpeg n5.0 (static SVT-AV1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git nasm ninja-build pkg-config \
+            python3 yasm zlib1g-dev
+      - name: Build and install candidate SVT-AV1
+        run: |
+          cmake -S . -B svtav1-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DBUILD_APPS=OFF \
+            -DREPRODUCIBLE_BUILDS=ON
+          cmake --build svtav1-build --parallel
+          sudo cmake --install svtav1-build
+          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
+          PKG_CONFIG_PATH=/usr/local/lib/pkgconfig pkg-config --modversion SvtAv1Enc
+      - name: Build and smoke-test FFmpeg n5.0
+        run: |
+          git clone https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          git -C ffmpeg-src checkout n5.0
+          echo "FFmpeg n5.0 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C ffmpeg-src config user.name "GitHub Actions"
+          for patch in ffmpeg_plugin/n5.0/*.patch; do
+            test -f "$patch"
+            git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/$patch"
+          done
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
+          mkdir ffmpeg-build
+          cd ffmpeg-build
+          if ! ../ffmpeg-src/configure \
+            --pkg-config-flags=--static \
+            --cc="gcc" --cxx="g++" --ld="g++" \
+            --enable-gpl --enable-static --disable-shared --disable-doc \
+            --disable-autodetect --prefix=/usr/local --enable-libsvtav1; then
+            tail -n 150 ffbuild/config.log
+            exit 1
+          fi
+          make -j"$(nproc)" install
+          cd ..
+          ./ffmpeg-build/ffmpeg -y \
+            -s:v 64x64 -f rawvideo -i /dev/zero \
+            -vframes 10 -c:v libsvtav1 test.mkv \
+            -vframes 10 -c:v libsvtav1 test.mp4 \
+            -vframes 10 -c:v libsvtav1 test.webm \
+            -vframes 10 -c:v libsvtav1 test.ivf \
+            -vframes 10 -c:v libsvtav1 test.obu
+          for output in test.mkv test.mp4 test.webm test.ivf test.obu; do
+            test -s "$output"
+          done
+
+  linux-ffmpeg-n7:
+    name: Linux FFmpeg n7.1 (static codecs and encode/decode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    needs: [ffmpeg-static-dependencies]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git meson nasm ninja-build pkg-config \
+            python3 yasm zlib1g-dev
+      - name: Download Linux static dependency outputs
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: ffmpeg-linux-*
+          path: ffmpeg-dependencies
+      - name: Restore installed dependency outputs
+        run: |
+          test "$(find ffmpeg-dependencies -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 5
+          sudo mkdir -p /usr/local/include /usr/local/lib
+          for dependency in ffmpeg-dependencies/ffmpeg-linux-*; do
+            test -d "$dependency/include"
+            test -d "$dependency/lib"
+            sudo cp -a "$dependency/include/." /usr/local/include/
+            sudo cp -a "$dependency/lib/." /usr/local/lib/
+          done
+          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
+          PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+            pkg-config --modversion aom dav1d SvtAv1Enc libvmaf vpx
+      - name: Check static library symbol conflicts
+        run: |
+          conflicts=$(
+            nm -Ag --defined-only /usr/local/lib/lib{SvtAv1Enc,aom,dav1d,vpx,vmaf}.a 2>/dev/null |
+            grep -v ' W ' |
+            sort -k3 |
+            uniq -D -f2 |
+            sed '/:$/d;/^$/d'
+          )
+          if [ -n "$conflicts" ]; then
+            printf 'Conflicts Found!\n%s\n' "$conflicts"
+            exit 1
+          fi
+      - name: Build and smoke-test FFmpeg n7.1
+        run: |
+          git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          echo "FFmpeg n7.1 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C ffmpeg-src config user.name "GitHub Actions"
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
+          mkdir ffmpeg-build
+          cd ffmpeg-build
+          if ! ../ffmpeg-src/configure \
+            --pkg-config-flags=--static \
+            --cc="gcc" --cxx="g++" --ld="g++" \
+            --enable-gpl --enable-static --disable-shared --disable-doc \
+            --disable-autodetect --prefix=/usr/local \
+            --enable-libaom --enable-libdav1d --enable-libsvtav1 \
+            --enable-libvmaf --enable-libvpx; then
+            tail -n 150 ffbuild/config.log
+            exit 1
+          fi
+          make -j"$(nproc)" install
+          cd ..
+          ./ffmpeg-build/ffmpeg -y \
+            -s:v 64x64 -f rawvideo -i /dev/zero -vframes 10 \
+            -c:v libsvtav1 -svtav1-params tune=5 -f ivf tune5.ivf
+          ./ffmpeg-build/ffmpeg -v error -c:v libdav1d -i tune5.ivf -f null -
+
+  macos-ffmpeg-n7:
+    name: macOS FFmpeg n7.1 (static codecs and symbol check)
+    runs-on: macos-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    needs: [ffmpeg-static-dependencies]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: brew install cmake meson nasm ninja pkg-config yasm
+      - name: Download macOS static dependency outputs
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: ffmpeg-macos-*
+          path: ffmpeg-dependencies
+      - name: Restore installed dependency outputs
+        run: |
+          test "$(find ffmpeg-dependencies -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 5
+          sudo mkdir -p /usr/local/include /usr/local/lib
+          for dependency in ffmpeg-dependencies/ffmpeg-macos-*; do
+            test -d "$dependency/include"
+            test -d "$dependency/lib"
+            sudo cp -a "$dependency/include/." /usr/local/include/
+            sudo cp -a "$dependency/lib/." /usr/local/lib/
+          done
+          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
+          PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
+            pkg-config --modversion aom dav1d SvtAv1Enc libvmaf vpx
+      - name: Check static library symbol conflicts
+        run: |
+          conflicts=$(
+            nm -Ag --defined-only /usr/local/lib/lib{SvtAv1Enc,aom,dav1d,vpx,vmaf}.a 2>/dev/null |
+            grep -v ' W ' |
+            cut -d' ' -f4 |
+            sort |
+            uniq -d
+          )
+          if [ -n "$conflicts" ]; then
+            printf 'Conflicts Found!\n'
+            for conflict in $conflicts; do
+              nm -Ag --defined-only /usr/local/lib/lib{SvtAv1Enc,aom,dav1d,vpx,vmaf}.a 2>/dev/null |
+                sort -k3 |
+                grep -- " $conflict$"
+            done
+            exit 1
+          fi
+      - name: Build FFmpeg n7.1
+        run: |
+          git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          echo "FFmpeg n7.1 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C ffmpeg-src config user.name "GitHub Actions"
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
+          mkdir ffmpeg-build
+          cd ffmpeg-build
+          if ! ../ffmpeg-src/configure \
+            --pkg-config-flags=--static \
+            --cc="clang" --cxx="clang++" --ld="clang++" \
+            --enable-gpl --enable-static --disable-shared --disable-doc \
+            --disable-autodetect --prefix=/usr/local \
+            --enable-libaom --enable-libdav1d --enable-libsvtav1 \
+            --enable-libvmaf --enable-libvpx; then
+            tail -n 150 ffbuild/config.log
+            exit 1
+          fi
+          make -j"$(sysctl -n hw.ncpu)" install
+
+  windows-ffmpeg-n7:
+    name: Windows FFmpeg n7.1 (static codecs)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    needs: [ffmpeg-static-dependencies]
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CC: gcc
+      CXX: g++
+      PREFIX_DIR: C:/msys64/ucrt64
+      PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig
+      CHERE_INVOKING: 1
+      MSYS2_PATH_TYPE: inherit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          pacboy: >-
+            cmake gcc git meson nasm ninja perl pkgconf python yasm
+      - name: Download Windows static dependency outputs
+        uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: ffmpeg-windows-*
+          path: ffmpeg-dependencies
+      - name: Restore installed dependency outputs
+        run: |
+          test "$(find ffmpeg-dependencies -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 5
+          mkdir -p /ucrt64/include /ucrt64/lib
+          for dependency in ffmpeg-dependencies/ffmpeg-windows-*; do
+            test -d "$dependency/include"
+            test -d "$dependency/lib"
+            cp -a "$dependency/include/." /ucrt64/include/
+            cp -a "$dependency/lib/." /ucrt64/lib/
+          done
+          export PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig
+          pkg-config --modversion aom dav1d SvtAv1Enc libvmaf vpx
+      - name: Build FFmpeg n7.1
+        run: |
+          git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
+          echo "FFmpeg n7.1 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C ffmpeg-src config user.name "GitHub Actions"
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
+          mkdir ffmpeg-build
+          cd ffmpeg-build
+          if ! ../ffmpeg-src/configure \
+            --arch=x86_64 \
+            --pkg-config-flags=--static \
+            --cc="$CC" --cxx="$CXX" --ld="$CXX" \
+            --disable-autodetect \
+            --enable-gpl --enable-static --disable-shared --disable-doc \
+            --prefix="$PREFIX_DIR" \
+            --enable-libaom --enable-libdav1d --enable-libsvtav1 \
+            --enable-libvmaf --enable-libvpx; then
+            tail -n 150 ffbuild/config.log
+            exit 1
+          fi
+          make -j"$(nproc)" install
+
   linux-musl-build:
     name: Linux (Alpine/musl, Build and Encode)
     runs-on: ubuntu-latest
