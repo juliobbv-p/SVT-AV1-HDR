@@ -286,22 +286,32 @@ static void pack_transpose(const int32_t* input, int16_t* out, int w, int h) {
     }
 }
 
-// Packs a sparse DCT_DCT block of dim x dim coded coefficients: the coded area is zeroed and only the
-// default-scan nonzero region is copied, transposed to dav1d's column-major order. Returns false
-// (nothing written) when the nonzero region is larger than 8x8.
-static bool pack_sparse_dct_dct(const int32_t* input, int16_t* out, TxSize tx_size, int eob, int dim) {
-    int eobx, eoby;
-    get_eobx_eoby_scan_default(&eobx, &eoby, tx_size, eob);
-    if (eobx >= 8 || eoby >= 8) {
-        return false;
-    }
-    memset(out, 0, dim * dim * sizeof(*out));
-    for (int c = 0; c <= eobx; c++) {
-        for (int r = 0; r <= eoby; r++) {
-            out[c * dim + r] = (int16_t)input[r * dim + c];
+// pack_transpose for a dim x dim DCT_DCT block (dim 16 or 32), writing only what dav1d reads. Its first pass reads
+// 8-row strips of the coefficients and skips strips 2, 3 and 4 below a last scan index (eob) of 36, 136 and 300.
+// The default scan walks anti-diagonals, so those eobs also confine the nonzero coefficients to r + c < 8, 16 and
+// 24: tiles of 8x8 past that band are stored as zeros instead of being loaded and transposed.
+static void pack_dct_dct(const int32_t* input, int16_t* out, int dim, int eob) {
+    const int band   = eob < 36 ? 0 : eob < 136 ? 1 : eob < 300 ? 2 : dim;
+    const int strips = AOMMIN(band + 1, dim >> 3);
+    for (int s = 0; s < strips; s++) {
+        for (int t = 0; t < dim >> 3; t++) {
+            int16x8_t v[8];
+            if (s + t <= band) {
+                for (int i = 0; i < 8; i++) {
+                    const int32_t* p = input + (8 * s + i) * dim + 8 * t;
+                    v[i]             = vcombine_s16(vmovn_s32(vld1q_s32(p)), vmovn_s32(vld1q_s32(p + 4)));
+                }
+                transpose_elems_inplace_s16_8x8(&v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
+            } else {
+                for (int i = 0; i < 8; i++) {
+                    v[i] = vdupq_n_s16(0);
+                }
+            }
+            for (int i = 0; i < 8; i++) {
+                vst1q_s16(out + (8 * t + i) * dim + 8 * s, v[i]);
+            }
         }
     }
-    return true;
 }
 
 static void inv_txf_add_4x4_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t stride, TxType tx_type, int eob) {
@@ -4605,7 +4615,9 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 
     switch (txfm_param->tx_size) {
     case TX_32X32:
-        if (tx_type != DCT_DCT || !pack_sparse_dct_dct(dqcoeff, dqcoeff_16, tx_size, txfm_param->eob, 32)) {
+        if (tx_type == DCT_DCT) {
+            pack_dct_dct(dqcoeff, dqcoeff_16, 32, eob);
+        } else {
             pack_transpose(dqcoeff, dqcoeff_16, 32, 32);
         }
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
@@ -4631,7 +4643,9 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #endif
         break;
     case TX_16X16:
-        if (tx_type != DCT_DCT || !pack_sparse_dct_dct(dqcoeff, dqcoeff_16, tx_size, txfm_param->eob, 16)) {
+        if (tx_type == DCT_DCT) {
+            pack_dct_dct(dqcoeff, dqcoeff_16, 16, eob);
+        } else {
             pack_transpose(dqcoeff, dqcoeff_16, 16, 16);
         }
         inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
@@ -4707,7 +4721,9 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #endif
         break;
     case TX_64X64:
-        if (tx_type != DCT_DCT || !pack_sparse_dct_dct(dqcoeff, dqcoeff_16, tx_size, txfm_param->eob, 32)) {
+        if (tx_type == DCT_DCT) {
+            pack_dct_dct(dqcoeff, dqcoeff_16, 32, eob);
+        } else {
             pack_transpose(dqcoeff, dqcoeff_16, 32, 32);
         }
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
