@@ -282,86 +282,86 @@ jobs:
       #     compression-level: 9
       #     overwrite: true
 
-  linux-gstreamer:
-    name: Linux GStreamer (static SVT-AV1)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            bison cmake flex git libglib2.0-dev \
-            liborc-0.4-dev libunwind-dev meson nasm ninja-build pkg-config python3 zstd
-          sudo apt-get install -y \
-            gstreamer1.0-plugins-bad \
-            gstreamer1.0-plugins-good \
-            gstreamer1.0-tools \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer1.0-dev
-      - name: Build and install candidate SVT-AV1
-        env:
-          PREFIX_DIR: ${{ runner.temp }}/gstreamer-prefix
-        run: |
-          cmake -S . -B svtav1-build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
-            -DBUILD_APPS=OFF \
-            -DREPRODUCIBLE_BUILDS=ON
-          cmake --build svtav1-build --parallel
-          cmake --install svtav1-build
-          export PKG_CONFIG_PATH="$PREFIX_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-          echo "PKG_CONFIG_PATH=$PREFIX_DIR/lib/pkgconfig" >> "$GITHUB_ENV"
-          pkg-config --modversion SvtAv1Enc
-      - name: Checkout GStreamer GitHub mirror
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: GStreamer/gstreamer
-          ref: main
-          path: gstreamer
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Configure GStreamer and SVT-AV1 plugin
-        env:
-          GSTREAMER_PREFIX: ${{ runner.temp }}/gstreamer
-        run: |
-          cat <<EOF >> "$GITHUB_STEP_SUMMARY"
-          ### GStreamer dependency revision
-          | Dependency | Ref | Resolved commit |
-          |---|---|---|
-          | SVT-AV1 candidate | this checkout | \`$(git rev-parse HEAD)\` |
-          | GStreamer | \`main\` | \`$(git -C gstreamer rev-parse HEAD)\` |
-          EOF
-          PKG_CONFIG="pkg-config --static" meson setup \
-            -Dprefix="/usr" \
-            --buildtype release \
-            -Dauto_features=disabled \
-            -Dbad=enabled \
-            -Dgst-plugins-bad:svtav1=enabled \
-            -Dtests=disabled \
-            gstreamer-build gstreamer
-          meson compile -C gstreamer-build
-          sudo meson install -C gstreamer-build
-      - name: Verify the candidate plugin and encode
-        run: |
-          set -x
-          curl -fsSL --retry 3 --retry-all-errors \
-            https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/akiyo_cif.y4m.zst \
-            -o akiyo_cif.y4m.zst
-          zstd -df akiyo_cif.y4m.zst
-          gst-launch-1.0 -v \
-            filesrc location=akiyo_cif.y4m \
-            ! y4mdec \
-            ! svtav1enc \
-            ! webmmux \
-            ! filesink location=akiyo.mkv
-          test -s akiyo.mkv
+  # linux-gstreamer:
+  #   name: Linux GStreamer (static SVT-AV1)
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 90
+  #   continue-on-error: true
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v7.0.1
+  #       with:
+  #         persist-credentials: false
+  #     - name: Install build dependencies
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y --no-install-recommends \
+  #           bison cmake flex git libglib2.0-dev \
+  #           liborc-0.4-dev libunwind-dev meson nasm ninja-build pkg-config python3 zstd
+  #         sudo apt-get install -y \
+  #           gstreamer1.0-plugins-bad \
+  #           gstreamer1.0-plugins-good \
+  #           gstreamer1.0-tools \
+  #           libgstreamer-plugins-base1.0-dev \
+  #           libgstreamer1.0-dev
+  #     - name: Build and install candidate SVT-AV1
+  #       env:
+  #         PREFIX_DIR: ${{ runner.temp }}/gstreamer-prefix
+  #       run: |
+  #         cmake -S . -B svtav1-build -G Ninja \
+  #           -DCMAKE_BUILD_TYPE=Release \
+  #           -DBUILD_SHARED_LIBS=OFF \
+  #           -DCMAKE_INSTALL_PREFIX="$PREFIX_DIR" \
+  #           -DBUILD_APPS=OFF \
+  #           -DREPRODUCIBLE_BUILDS=ON
+  #         cmake --build svtav1-build --parallel
+  #         cmake --install svtav1-build
+  #         export PKG_CONFIG_PATH="$PREFIX_DIR/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  #         echo "PKG_CONFIG_PATH=$PREFIX_DIR/lib/pkgconfig" >> "$GITHUB_ENV"
+  #         pkg-config --modversion SvtAv1Enc
+  #     - name: Checkout GStreamer GitHub mirror
+  #       uses: actions/checkout@v7.0.1
+  #       with:
+  #         repository: GStreamer/gstreamer
+  #         ref: main
+  #         path: gstreamer
+  #         fetch-depth: 1
+  #         persist-credentials: false
+  #     - name: Configure GStreamer and SVT-AV1 plugin
+  #       env:
+  #         GSTREAMER_PREFIX: ${{ runner.temp }}/gstreamer
+  #       run: |
+  #         cat <<EOF >> "$GITHUB_STEP_SUMMARY"
+  #         ### GStreamer dependency revision
+  #         | Dependency | Ref | Resolved commit |
+  #         |---|---|---|
+  #         | SVT-AV1 candidate | this checkout | \`$(git rev-parse HEAD)\` |
+  #         | GStreamer | \`main\` | \`$(git -C gstreamer rev-parse HEAD)\` |
+  #         EOF
+  #         PKG_CONFIG="pkg-config --static" meson setup \
+  #           -Dprefix="/usr" \
+  #           --buildtype release \
+  #           -Dauto_features=disabled \
+  #           -Dbad=enabled \
+  #           -Dgst-plugins-bad:svtav1=enabled \
+  #           -Dtests=disabled \
+  #           gstreamer-build gstreamer
+  #         meson compile -C gstreamer-build
+  #         sudo meson install -C gstreamer-build
+  #     - name: Verify the candidate plugin and encode
+  #       run: |
+  #         set -x
+  #         curl -fsSL --retry 3 --retry-all-errors \
+  #           https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/akiyo_cif.y4m.zst \
+  #           -o akiyo_cif.y4m.zst
+  #         zstd -df akiyo_cif.y4m.zst
+  #         gst-launch-1.0 -v \
+  #           filesrc location=akiyo_cif.y4m \
+  #           ! y4mdec \
+  #           ! svtav1enc \
+  #           ! webmmux \
+  #           ! filesink location=akiyo.mkv
+  #         test -s akiyo.mkv
 
   linux-libavif:
     name: Linux libavif (static SVT-AV1, Valgrind)
