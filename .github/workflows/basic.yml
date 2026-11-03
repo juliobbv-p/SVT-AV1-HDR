@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
   push:
     branches: [master, gh/**]
-    paths-ignore:
+    paths-ignore: &ignored-paths
       - 'Config/**'
       - '*.patch'
       - 'third_party/**'
@@ -21,16 +21,7 @@ on:
       - '*.PNG'
       - '*.pdf'
   pull_request:
-    paths-ignore:
-      - 'Config/**'
-      - '*.patch'
-      - 'third_party/**'
-      - 'test/e2e_test/test_vector_list.txt'
-      - 'test/vectors/smoking_test.cfg'
-      - 'test/vectors/video_src.cfg'
-      - '*.png'
-      - '*.PNG'
-      - '*.pdf'
+    paths-ignore: *ignored-paths
 
 jobs:
   version-check:
@@ -182,10 +173,10 @@ jobs:
         with:
           name: svtav1-bin-linux-release
           path: Bin/Release/SvtAv1EncApp
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: &artifact-if-no-files-found error
+          retention-days: &artifact-retention-days 1
+          compression-level: &artifact-compression-level 9
+          overwrite: &artifact-overwrite true
 
   linux-enc-test:
     name: Linux Enc Test
@@ -194,7 +185,7 @@ jobs:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     needs:
       - linux-gcc-release
-    outputs:
+    outputs: &encoder-test-outputs
       akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
       akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
       chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
@@ -393,10 +384,10 @@ jobs:
         with:
           name: svtav1-bin-linux-default-release
           path: Bin/Release/SvtAv1EncApp
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   linux-default-enc-test:
     name: Linux Default Enc Test
@@ -405,11 +396,7 @@ jobs:
       image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
     needs:
       - linux-gcc-default-release
-    outputs:
-      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
-      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
-      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
-      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    outputs: *encoder-test-outputs
     steps:
       - name: Download default-branch release artifacts
         uses: actions/download-artifact@v8.0.1
@@ -529,21 +516,17 @@ jobs:
         with:
           name: svtav1-bin-macos-release
           path: Bin/Release/SvtAv1EncApp
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   macos-enc-test:
     name: macOS Enc Test
     runs-on: macos-latest
     needs:
       - macos-universal-release
-    outputs:
-      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
-      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
-      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
-      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    outputs: *encoder-test-outputs
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v8.0.1
@@ -616,10 +599,10 @@ jobs:
           path: |
             Bin/Release/SvtAv1EncApp.exe
             Bin/Release/SvtAv1Enc.dll
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   windows-msvc-enc-test:
     name: Windows Enc Test (MSVC)
@@ -627,11 +610,7 @@ jobs:
     timeout-minutes: 120
     needs:
       - windows-msvc-release
-    outputs:
-      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
-      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
-      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
-      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    outputs: *encoder-test-outputs
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v8.0.1
@@ -802,10 +781,10 @@ jobs:
         with:
           name: svtav1-bin-windows-ucrt64-release
           path: Bin/Release/SvtAv1EncApp.exe
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   windows-ucrt64-enc-test:
     name: Windows Enc Test (mingw-w64 ucrt)
@@ -813,11 +792,7 @@ jobs:
     timeout-minutes: 60
     needs:
       - windows-ucrt64-release
-    outputs:
-      akiyo_m2: ${{ steps.hashes.outputs.akiyo_m2 }}
-      akiyo_m8: ${{ steps.hashes.outputs.akiyo_m8 }}
-      chimera_m2: ${{ steps.hashes.outputs.chimera_m2 }}
-      chimera_m8: ${{ steps.hashes.outputs.chimera_m8 }}
+    outputs: *encoder-test-outputs
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@v8.0.1

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
   push:
     branches: [master, gh/**]
-    paths-ignore:
+    paths-ignore: &ignored-paths
       - 'Config/**'
       - '*.patch'
       - 'third_party/**'
@@ -21,16 +21,7 @@ on:
       - '*.PNG'
       - '*.pdf'
   pull_request:
-    paths-ignore:
-      - 'Config/**'
-      - '*.patch'
-      - 'third_party/**'
-      - 'test/e2e_test/test_vector_list.txt'
-      - 'test/vectors/smoking_test.cfg'
-      - 'test/vectors/video_src.cfg'
-      - '*.png'
-      - '*.PNG'
-      - '*.pdf'
+    paths-ignore: *ignored-paths
 
 env:
   SVT_AV1_TEST_VECTOR_PATH: ${{ github.workspace }}/vectors
@@ -107,9 +98,9 @@ jobs:
         with:
           name: test-vectors
           path: vectors/
-          if-no-files-found: error
+          if-no-files-found: &artifact-if-no-files-found error
           include-hidden-files: true
-          retention-days: 1
+          retention-days: &artifact-retention-days 1
 
   linux-gcc-static-debug-unittests:
     name: Linux (GCC, Static, Debug, Unit Tests)
@@ -144,10 +135,10 @@ jobs:
         with:
           name: linux-unit-test-artifacts
           path: Bin/RelWithDebInfo/SvtAv1*Tests
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: &artifact-compression-level 9
+          overwrite: &artifact-overwrite true
 
   macos-universal-RelWithDebInfo:
     name: macOS (Universal, RelWithDebInfo)
@@ -200,10 +191,10 @@ jobs:
         with:
           name: macos-unit-test-artifacts
           path: Bin/RelWithDebInfo/SvtAv1*Tests
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   linux-unit-tests:
     name: Linux Unit Tests (shard ${{ matrix.shard }})
@@ -213,19 +204,20 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:25.04
-    strategy:
+    strategy: &unit-test-shard-strategy
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
       fail-fast: true
     env:
-      TOTAL_SHARDS: 16
+      TOTAL_SHARDS: &unit-test-shard-count 16
       DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Install dependencies
         run: |
           apt-get update
           apt-get install -yq nodejs python3 zstd
-      - name: Checkout gtest-parallel
+      - &gtest-parallel-checkout
+        name: Checkout gtest-parallel
         uses: actions/checkout@v7.0.1
         with:
           sparse-checkout: test/
@@ -236,7 +228,8 @@ jobs:
           name: linux-unit-test-artifacts
           path: Bin/RelWithDebInfo/
       # gtest-parallel expects the cache to be ~/.cache/gtest-parallel
-      - name: Restore cached test times
+      - &restore-unit-test-times-cache
+        name: Restore cached test times
         id: cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -256,7 +249,8 @@ jobs:
         with:
           name: test-vectors
           path: vectors
-      - name: Run tests shard
+      - &run-unit-test-shard
+        name: Run tests shard
         shell: bash
         run: |
           mkdir -p reports ~/.cache
@@ -269,11 +263,12 @@ jobs:
             Bin/RelWithDebInfo/SvtAv1E2ETests \
             Bin/RelWithDebInfo/SvtAv1ApiTests \
             -- --gtest_output="xml:reports/{#}.xml"
-      - name: Save test times cache
+      - &save-unit-test-times-cache
+        name: Save test times cache
         uses: actions/cache/save@v6.1.0
         if:
-          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
-          github.event.repository.default_branch)
+          &default-branch-cache-save-condition always() && steps.cache.outputs.cache-hit != 'true' && github.ref ==
+          format('refs/heads/{0}', github.event.repository.default_branch)
         with:
           path: ~/.cache/gtest-parallel
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -732,9 +727,9 @@ jobs:
           path: |
             install-root/include/
             install-root/lib/
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
       - name: Upload other Linux and macOS installed outputs
         if: matrix.platform != 'windows' && matrix.dependency != 'libvpx'
         uses: actions/upload-artifact@v7.0.0
@@ -743,9 +738,9 @@ jobs:
           path: |
             install-root/usr/local/include/
             install-root/usr/local/lib/
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
       - name: Upload Windows installed outputs
         if: matrix.platform == 'windows' && matrix.dependency == 'libvpx'
         uses: actions/upload-artifact@v7.0.0
@@ -754,9 +749,9 @@ jobs:
           path: |
             install-root/include/
             install-root/lib/
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
       - name: Upload other Windows installed outputs
         if: matrix.platform == 'windows' && matrix.dependency != 'libvpx'
         uses: actions/upload-artifact@v7.0.0
@@ -765,9 +760,9 @@ jobs:
           path: |
             install-root/msys64/ucrt64/include/
             install-root/msys64/ucrt64/lib/
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
 
   linux-ffmpeg-n5:
     name: Linux FFmpeg n5.0 (static SVT-AV1)
@@ -856,18 +851,49 @@ jobs:
           pattern: ffmpeg-linux-*
           path: ffmpeg-dependencies
       - name: Restore installed dependency outputs
-        run: |
-          test "$(find ffmpeg-dependencies -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 5
-          sudo mkdir -p /usr/local/include /usr/local/lib
-          for dependency in ffmpeg-dependencies/ffmpeg-linux-*; do
+        run: &restore-ffmpeg-static-dependencies |
+          set -euo pipefail
+
+          case "${RUNNER_OS:?RUNNER_OS is required}" in
+            Linux)
+              platform=linux
+              prefix=/usr/local
+              install_command=(sudo)
+              ;;
+            macOS)
+              platform=macos
+              prefix=/usr/local
+              install_command=(sudo)
+              ;;
+            Windows)
+              platform=windows
+              prefix=/ucrt64
+              install_command=()
+              ;;
+            *)
+              echo "Unsupported runner OS: $RUNNER_OS" >&2
+              exit 2
+              ;;
+          esac
+
+          shopt -s nullglob
+          dependencies=(ffmpeg-dependencies/ffmpeg-"$platform"-*)
+          if (( ${#dependencies[@]} != 5 )); then
+            echo "Expected 5 $platform FFmpeg dependency artifacts, found ${#dependencies[@]}." >&2
+            exit 1
+          fi
+
+          "${install_command[@]}" mkdir -p "$prefix/include" "$prefix/lib"
+          for dependency in "${dependencies[@]}"; do
             test -d "$dependency/include"
             test -d "$dependency/lib"
-            sudo cp -a "$dependency/include/." /usr/local/include/
-            sudo cp -a "$dependency/lib/." /usr/local/lib/
+            "${install_command[@]}" cp -a "$dependency/include/." "$prefix/include/"
+            "${install_command[@]}" cp -a "$dependency/lib/." "$prefix/lib/"
           done
-          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
-          PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
-            pkg-config --modversion aom dav1d SvtAv1Enc libvmaf vpx
+
+          export PKG_CONFIG_PATH="$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          pkg-config --modversion aom dav1d SvtAv1Enc libvmaf vpx
       - name: Check static library symbol conflicts
         run: |
           conflicts=$(
@@ -882,31 +908,72 @@ jobs:
             exit 1
           fi
       - name: Build and smoke-test FFmpeg n7.1
-        run: |
+        run: &build-ffmpeg-n7 |
+          set -euo pipefail
+
           git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
-          echo "FFmpeg n7.1 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "FFmpeg n7.1 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" |
+            tee -a "$GITHUB_STEP_SUMMARY"
           git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
           git -C ffmpeg-src config user.name "GitHub Actions"
           git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
           git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
+
+          configure_args=(
+            --pkg-config-flags=--static
+            --enable-gpl
+            --enable-static
+            --disable-shared
+            --disable-doc
+            --disable-autodetect
+            --enable-libaom
+            --enable-libdav1d
+            --enable-libsvtav1
+            --enable-libvmaf
+            --enable-libvpx
+          )
+
+          case "${RUNNER_OS:?RUNNER_OS is required}" in
+            Linux)
+              configure_args+=(--cc=gcc --cxx=g++ --ld=g++ --prefix=/usr/local)
+              jobs=$(nproc)
+              ;;
+            macOS)
+              configure_args+=(--cc=clang --cxx=clang++ --ld=clang++ --prefix=/usr/local)
+              jobs=$(sysctl -n hw.ncpu)
+              ;;
+            Windows)
+              configure_args+=(
+                --arch=x86_64
+                --cc="${CC:?CC is required}"
+                --cxx="${CXX:?CXX is required}"
+                --ld="${CXX:?CXX is required}"
+                --prefix="${PREFIX_DIR:?PREFIX_DIR is required}"
+              )
+              jobs=$(nproc)
+              ;;
+            *)
+              echo "Unsupported runner OS: $RUNNER_OS" >&2
+              exit 2
+              ;;
+          esac
+
           mkdir ffmpeg-build
-          cd ffmpeg-build
-          if ! ../ffmpeg-src/configure \
-            --pkg-config-flags=--static \
-            --cc="gcc" --cxx="g++" --ld="g++" \
-            --enable-gpl --enable-static --disable-shared --disable-doc \
-            --disable-autodetect --prefix=/usr/local \
-            --enable-libaom --enable-libdav1d --enable-libsvtav1 \
-            --enable-libvmaf --enable-libvpx; then
-            tail -n 150 ffbuild/config.log
-            exit 1
+          (
+            cd ffmpeg-build
+            if ! ../ffmpeg-src/configure "${configure_args[@]}"; then
+              tail -n 150 ffbuild/config.log
+              exit 1
+            fi
+            make -j"$jobs" install
+          )
+
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            ./ffmpeg-build/ffmpeg -y \
+              -s:v 64x64 -f rawvideo -i /dev/zero -vframes 10 \
+              -c:v libsvtav1 -svtav1-params tune=5 -f ivf tune5.ivf
+            ./ffmpeg-build/ffmpeg -v error -c:v libdav1d -i tune5.ivf -f null -
           fi
-          make -j"$(nproc)" install
-          cd ..
-          ./ffmpeg-build/ffmpeg -y \
-            -s:v 64x64 -f rawvideo -i /dev/zero -vframes 10 \
-            -c:v libsvtav1 -svtav1-params tune=5 -f ivf tune5.ivf
-          ./ffmpeg-build/ffmpeg -v error -c:v libdav1d -i tune5.ivf -f null -
 
   macos-ffmpeg-n7:
     name: macOS FFmpeg n7.1 (static codecs and symbol check)
@@ -927,18 +994,7 @@ jobs:
           pattern: ffmpeg-macos-*
           path: ffmpeg-dependencies
       - name: Restore installed dependency outputs
-        run: |
-          test "$(find ffmpeg-dependencies -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 5
-          sudo mkdir -p /usr/local/include /usr/local/lib
-          for dependency in ffmpeg-dependencies/ffmpeg-macos-*; do
-            test -d "$dependency/include"
-            test -d "$dependency/lib"
-            sudo cp -a "$dependency/include/." /usr/local/include/
-            sudo cp -a "$dependency/lib/." /usr/local/lib/
-          done
-          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig" >> "$GITHUB_ENV"
-          PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
-            pkg-config --modversion aom dav1d SvtAv1Enc libvmaf vpx
+        run: *restore-ffmpeg-static-dependencies
       - name: Check static library symbol conflicts
         run: |
           conflicts=$(
@@ -958,26 +1014,7 @@ jobs:
             exit 1
           fi
       - name: Build FFmpeg n7.1
-        run: |
-          git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
-          echo "FFmpeg n7.1 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
-          git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
-          git -C ffmpeg-src config user.name "GitHub Actions"
-          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
-          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
-          mkdir ffmpeg-build
-          cd ffmpeg-build
-          if ! ../ffmpeg-src/configure \
-            --pkg-config-flags=--static \
-            --cc="clang" --cxx="clang++" --ld="clang++" \
-            --enable-gpl --enable-static --disable-shared --disable-doc \
-            --disable-autodetect --prefix=/usr/local \
-            --enable-libaom --enable-libdav1d --enable-libsvtav1 \
-            --enable-libvmaf --enable-libvpx; then
-            tail -n 150 ffbuild/config.log
-            exit 1
-          fi
-          make -j"$(sysctl -n hw.ncpu)" install
+        run: *build-ffmpeg-n7
 
   windows-ffmpeg-n7:
     name: Windows FFmpeg n7.1 (static codecs)
@@ -1013,40 +1050,9 @@ jobs:
           pattern: ffmpeg-windows-*
           path: ffmpeg-dependencies
       - name: Restore installed dependency outputs
-        run: |
-          test "$(find ffmpeg-dependencies -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 5
-          mkdir -p /ucrt64/include /ucrt64/lib
-          for dependency in ffmpeg-dependencies/ffmpeg-windows-*; do
-            test -d "$dependency/include"
-            test -d "$dependency/lib"
-            cp -a "$dependency/include/." /ucrt64/include/
-            cp -a "$dependency/lib/." /ucrt64/lib/
-          done
-          export PKG_CONFIG_PATH=/ucrt64/lib/pkgconfig
-          pkg-config --modversion aom dav1d SvtAv1Enc libvmaf vpx
+        run: *restore-ffmpeg-static-dependencies
       - name: Build FFmpeg n7.1
-        run: |
-          git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg-src
-          echo "FFmpeg n7.1 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
-          git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
-          git -C ffmpeg-src config user.name "GitHub Actions"
-          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
-          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
-          mkdir ffmpeg-build
-          cd ffmpeg-build
-          if ! ../ffmpeg-src/configure \
-            --arch=x86_64 \
-            --pkg-config-flags=--static \
-            --cc="$CC" --cxx="$CXX" --ld="$CXX" \
-            --disable-autodetect \
-            --enable-gpl --enable-static --disable-shared --disable-doc \
-            --prefix="$PREFIX_DIR" \
-            --enable-libaom --enable-libdav1d --enable-libsvtav1 \
-            --enable-libvmaf --enable-libvpx; then
-            tail -n 150 ffbuild/config.log
-            exit 1
-          fi
-          make -j"$(nproc)" install
+        run: *build-ffmpeg-n7
 
   linux-musl-build:
     name: Linux (Alpine/musl, Build and Encode)
@@ -1212,37 +1218,25 @@ jobs:
       - macos-universal-RelWithDebInfo
       - prep-test-vectors
     runs-on: macos-latest
-    strategy:
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-      fail-fast: true
+    strategy: *unit-test-shard-strategy
     env:
-      TOTAL_SHARDS: 16
+      TOTAL_SHARDS: *unit-test-shard-count
     steps:
-      - name: Checkout gtest-parallel
-        uses: actions/checkout@v7.0.1
-        with:
-          sparse-checkout: test/
-          persist-credentials: false
+      - *gtest-parallel-checkout
       - name: Download unit test artifacts
         uses: actions/download-artifact@v8.0.1
         with:
           name: macos-unit-test-artifacts
           path: Bin/RelWithDebInfo/
       # gtest-parallel expects the cache to be ~/.cache/gtest-parallel
-      - name: Restore cached test times
-        id: cache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: ~/.cache/gtest-parallel
-          key: test-times-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ matrix.shard }}
+      - *restore-unit-test-times-cache
       - name: Prepare test vectors
         id: home-vectors
         shell: bash
         env:
-          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
-          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
-          RUNNER_NAME: ${{ runner.name }}
+          CACHE_KEY: &test-vectors-cache-key ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
+          EXPECTED_SHA256: &test-vectors-expected-sha256 ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
+          RUNNER_NAME: &test-vectors-runner-name ${{ runner.name }}
         run: |
           home_vectors="$HOME/.cache/svtav1-test-vectors/$RUNNER_NAME/$CACHE_KEY-$EXPECTED_SHA256"
           if ! [ -d "$home_vectors" ]; then
@@ -1267,7 +1261,8 @@ jobs:
             echo "Home directory test vectors do not match the expected checksum."
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Restore test vectors cache
+      - &restore-test-vectors-cache
+        name: Restore test vectors cache
         if:
           steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
         id: vectors-cache
@@ -1277,7 +1272,8 @@ jobs:
           key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
           fail-on-cache-miss: true
           enableCrossOsArchive: true
-      - name: Download generated test vectors
+      - &download-generated-test-vectors
+        name: Download generated test vectors
         if:
           steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
         uses: actions/download-artifact@v8.0.1
@@ -1288,35 +1284,16 @@ jobs:
         if: steps.home-vectors.outputs.found != 'true'
         shell: bash
         env:
-          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
-          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
-          RUNNER_NAME: ${{ runner.name }}
+          CACHE_KEY: *test-vectors-cache-key
+          EXPECTED_SHA256: *test-vectors-expected-sha256
+          RUNNER_NAME: *test-vectors-runner-name
         run: |
           home_vectors="$HOME/.cache/svtav1-test-vectors/$RUNNER_NAME/$CACHE_KEY-$EXPECTED_SHA256"
           rm -rf "$home_vectors"
           mkdir -p "$home_vectors"
           cp -a vectors/. "$home_vectors/"
-      - name: Run tests shard
-        shell: bash
-        run: |
-          mkdir -p reports ~/.cache
-          chmod +x Bin/RelWithDebInfo/*Tests
-          python3 ./test/gtest_parallel.py \
-            --print_test_times \
-            --shard_index=${{ matrix.shard }} \
-            --shard_count=${{ env.TOTAL_SHARDS }} \
-            Bin/RelWithDebInfo/SvtAv1UnitTests \
-            Bin/RelWithDebInfo/SvtAv1E2ETests \
-            Bin/RelWithDebInfo/SvtAv1ApiTests \
-             -- --gtest_output="xml:reports/{#}.xml"
-      - name: Save test times cache
-        uses: actions/cache/save@v6.1.0
-        if:
-          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
-          github.event.repository.default_branch)
-        with:
-          path: ~/.cache/gtest-parallel
-          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - *run-unit-test-shard
+      - *save-unit-test-times-cache
       # - name: Upload junit reports
       #   uses: actions/upload-artifact@v7.0.0
       #   with:
@@ -1380,9 +1357,7 @@ jobs:
           ccache -s || true
       - name: Save ccache
         uses: actions/cache/save@v6.1.0
-        if:
-          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
-          github.event.repository.default_branch)
+        if: *default-branch-cache-save-condition
         with:
           path: .ccache
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -1397,10 +1372,10 @@ jobs:
         with:
           name: sanitizer-bin-${{ matrix.artifact_suffix }}
           path: sanitizer-bin/SvtAv1EncApp
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   linux-sanitizer-test:
     name: Linux Sanitizer Test (${{ matrix.artifact_suffix }})
@@ -1505,9 +1480,7 @@ jobs:
           ccache -s || true
       - name: Save ccache
         uses: actions/cache/save@v6.1.0
-        if:
-          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
-          github.event.repository.default_branch)
+        if: *default-branch-cache-save-condition
         with:
           path: .ccache
           key: ${{ steps.cache.outputs.cache-primary-key }}
@@ -1516,10 +1489,10 @@ jobs:
         with:
           name: valgrind-bin
           path: valgrind/SvtAv1EncApp
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   linux-valgrind-test:
     name: Linux Valgrind Test
@@ -1635,10 +1608,10 @@ jobs:
           path: |
             Bin/RelWithDebInfo/*.exe
             Bin/RelWithDebInfo/*.dll
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 9
-          overwrite: true
+          if-no-files-found: *artifact-if-no-files-found
+          retention-days: *artifact-retention-days
+          compression-level: *artifact-compression-level
+          overwrite: *artifact-overwrite
 
   windows-msvc-unit-tests:
     name: Windows Unit Tests (MSVC, shard ${{ matrix.shard }})
@@ -1647,18 +1620,11 @@ jobs:
       - windows-msvc-debug-unittests
       - prep-test-vectors
     runs-on: windows-latest
-    strategy:
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-      fail-fast: true
+    strategy: *unit-test-shard-strategy
     env:
-      TOTAL_SHARDS: 16
+      TOTAL_SHARDS: *unit-test-shard-count
     steps:
-      - name: Checkout gtest-parallel
-        uses: actions/checkout@v7.0.1
-        with:
-          sparse-checkout: test/
-          persist-credentials: false
+      - *gtest-parallel-checkout
       - name: Download unit test artifacts
         uses: actions/download-artifact@v8.0.1
         with:
@@ -1677,9 +1643,9 @@ jobs:
         id: home-vectors
         shell: bash -l {0}
         env:
-          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
-          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
-          RUNNER_NAME: ${{ runner.name }}
+          CACHE_KEY: *test-vectors-cache-key
+          EXPECTED_SHA256: *test-vectors-expected-sha256
+          RUNNER_NAME: *test-vectors-runner-name
           CHERE_INVOKING: 1
           MSYS2_PATH_TYPE: inherit
         run: |
@@ -1709,30 +1675,15 @@ jobs:
             echo "Home directory test vectors do not match the expected checksum."
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Restore test vectors cache
-        if:
-          steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit == 'true'
-        id: vectors-cache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: vectors
-          key: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
-          fail-on-cache-miss: true
-          enableCrossOsArchive: true
-      - name: Download generated test vectors
-        if:
-          steps.home-vectors.outputs.found != 'true' && needs.prep-test-vectors.outputs.test-vectors-cache-hit != 'true'
-        uses: actions/download-artifact@v8.0.1
-        with:
-          name: test-vectors
-          path: vectors
+      - *restore-test-vectors-cache
+      - *download-generated-test-vectors
       - name: Save test vectors to home directory
         if: steps.home-vectors.outputs.found != 'true'
         shell: bash -l {0}
         env:
-          CACHE_KEY: ${{ needs.prep-test-vectors.outputs.test-vectors-cache-key }}
-          EXPECTED_SHA256: ${{ needs.prep-test-vectors.outputs.test-vectors-sha256sum }}
-          RUNNER_NAME: ${{ runner.name }}
+          CACHE_KEY: *test-vectors-cache-key
+          EXPECTED_SHA256: *test-vectors-expected-sha256
+          RUNNER_NAME: *test-vectors-runner-name
           CHERE_INVOKING: 1
           MSYS2_PATH_TYPE: inherit
         run: |
@@ -1757,11 +1708,4 @@ jobs:
             Bin/RelWithDebInfo/SvtAv1E2ETests.exe `
             Bin/RelWithDebInfo/SvtAv1ApiTests.exe `
             -- --gtest_output="xml:reports/{#}.xml"
-      - name: Save test times cache
-        uses: actions/cache/save@v6.1.0
-        if:
-          always() && steps.cache.outputs.cache-hit != 'true' && github.ref == format('refs/heads/{0}',
-          github.event.repository.default_branch)
-        with:
-          path: ~/.cache/gtest-parallel
-          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - *save-unit-test-times-cache
