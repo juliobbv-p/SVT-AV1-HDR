@@ -53,12 +53,16 @@ inputs:
     description: 'Whether to save the ccache cache (true/false)'
     required: false
     default: 'true'
+  shell:
+    description: 'Shell to use for running commands'
+    required: false
+    default: 'bash'
 
 runs:
   using: 'composite'
   steps:
     - name: Install build deps
-      shell: bash
+      shell: ${{ inputs.shell }}
       env:
         PACKAGES: ${{ inputs.packages }}
       run: |
@@ -87,7 +91,7 @@ runs:
           hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','test/**','third_party/**', '**/*.patch') }}
         restore-keys: ${{ runner.os }}-svtav1-${{ inputs.cc }}-${{ inputs.cmake_build_type }}-
     - name: Configure with CMake
-      shell: bash
+      shell: ${{ inputs.shell }}
       env:
         CC: ${{ inputs.cc }}
         CXX: ${{ inputs.cxx }}
@@ -127,14 +131,19 @@ runs:
         exit $ret
         }
     - name: Build
-      shell: bash
+      shell: ${{ inputs.shell }}
       env:
         CCACHE_DIR: ${{ github.workspace }}/.ccache
         TARGET: ${{ inputs.build_targets }}
       run: |
         if [ -n "${TARGET}" ]; then
-          IFS=',' read -r -a targets <<< "${TARGET}"
-          time cmake --build Build --target "${targets[@]}"
+          OLD_IFS="$IFS"
+          IFS=,
+          set -f
+          set -- $TARGET
+          time cmake --build Build --target "$@"
+          IFS="$OLD_IFS"
+          unset OLD_IFS
         else
           time cmake --build Build
         fi

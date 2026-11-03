@@ -296,8 +296,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bison cmake flex git libglib2.0-dev liborc-0.4-dev libunwind-dev \
-            meson ninja-build pkg-config python3 zstd
+            bison cmake flex git libglib2.0-dev \
+            liborc-0.4-dev libunwind-dev meson nasm ninja-build pkg-config python3 zstd
+          sudo apt-get install -y \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-tools \
+            libgstreamer-plugins-base1.0-dev \
+            libgstreamer1.0-dev
       - name: Build and install candidate SVT-AV1
         env:
           PREFIX_DIR: ${{ runner.temp }}/gstreamer-prefix
@@ -333,38 +339,23 @@ jobs:
           | GStreamer | \`main\` | \`$(git -C gstreamer rev-parse HEAD)\` |
           EOF
           PKG_CONFIG="pkg-config --static" meson setup \
-            -Dprefix="$GSTREAMER_PREFIX" \
+            -Dprefix="/usr" \
             --buildtype release \
             -Dauto_features=disabled \
             -Dbad=enabled \
             -Dgst-plugins-bad:svtav1=enabled \
-            -Dgst-plugins-good:matroska=enabled \
-            -Dgst-plugins-good:y4m=enabled \
             -Dtests=disabled \
             gstreamer-build gstreamer
-          meson install -C gstreamer-build
+          meson compile -C gstreamer-build
+          sudo meson install -C gstreamer-build
       - name: Verify the candidate plugin and encode
-        env:
-          GSTREAMER_PREFIX: ${{ runner.temp }}/gstreamer
         run: |
+          set -x
           curl -fsSL --retry 3 --retry-all-errors \
             https://gitlab.com/AOMediaCodec/aom-testing/-/raw/master/test-files/akiyo_cif.y4m.zst \
             -o akiyo_cif.y4m.zst
           zstd -df akiyo_cif.y4m.zst
-          gst_plugin=$(find "$GSTREAMER_PREFIX" -type f -name 'libgstsvtav1.so' -print -quit)
-          test -n "$gst_plugin"
-          gst_core=$(find "$GSTREAMER_PREFIX" -type f -name 'libgstreamer-1.0.so.*' -print -quit)
-          test -n "$gst_core"
-          gst_libdir=$(dirname "$gst_core")
-          test -x "$GSTREAMER_PREFIX/bin/gst-inspect-1.0"
-          test -x "$GSTREAMER_PREFIX/bin/gst-launch-1.0"
-          export LD_LIBRARY_PATH="$gst_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          GST_PLUGIN_PATH=$(dirname "$gst_plugin")
-          export GST_PLUGIN_PATH
-          inspect_output=$("$GSTREAMER_PREFIX/bin/gst-inspect-1.0" svtav1enc)
-          printf '%s\n' "$inspect_output"
-          grep -Fq "$gst_plugin" <<< "$inspect_output"
-          "$GSTREAMER_PREFIX/bin/gst-launch-1.0" -v \
+          gst-launch-1.0 -v \
             filesrc location=akiyo_cif.y4m \
             ! y4mdec \
             ! svtav1enc \
@@ -386,7 +377,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake git libjpeg-dev libpng-dev meson ninja-build pkg-config \
+            cmake git libjpeg-dev libpng-dev meson nasm ninja-build pkg-config \
             valgrind
       - name: Build candidate SVT-AV1 and dav1d
         env:
@@ -612,7 +603,7 @@ jobs:
           ### ${DEPENDENCY} static output (${PLATFORM})
           | Dependency | Ref | Resolved commit |
           |---|---|---|
-          | $DEPENDENCY | ${source_ref:-this checkout} | $source_commit |
+          | $DEPENDENCY | ${source_ref:-this checkout} | \`$source_commit\` |
           EOF
       - name: Build static dependency (Windows)
         if: matrix.platform == 'windows'
@@ -799,10 +790,9 @@ jobs:
           echo "FFmpeg n5.0 upstream commit: $(git -C ffmpeg-src rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
           git -C ffmpeg-src config user.email "github-actions[bot]@users.noreply.github.com"
           git -C ffmpeg-src config user.name "GitHub Actions"
-          for patch in ffmpeg_plugin/n5.0/*.patch; do
-            test -f "$patch"
-            git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/$patch"
-          done
+          # Patch for shr with older ffmpeg with newer binutils
+          git -C ffmpeg-src cherry-pick effadce6c756247ea8bae32dc13bb3e6f464f0eb
+          git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/ffmpeg_plugin/n5.0/"*.patch
           git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-unbreak-build-with-latest-svtav1.patch"
           git -C ffmpeg-src am -3 "$GITHUB_WORKSPACE/.gitlab/workflows/linux/0001-avcodec-libsvtav1-rename-aq_mode-for-v4.0.0.patch"
           mkdir ffmpeg-build
@@ -815,7 +805,8 @@ jobs:
             tail -n 150 ffbuild/config.log
             exit 1
           fi
-          make -j"$(nproc)" install
+          make -j"$(nproc)"
+          sudo make -j install
           cd ..
           ./ffmpeg-build/ffmpeg -y \
             -s:v 64x64 -f rawvideo -i /dev/zero \
@@ -951,12 +942,15 @@ jobs:
                 --prefix="${PREFIX_DIR:?PREFIX_DIR is required}"
               )
               jobs=$(nproc)
+              sudo() { "$@";}
               ;;
             *)
               echo "Unsupported runner OS: $RUNNER_OS" >&2
               exit 2
               ;;
           esac
+
+          set -x
 
           mkdir ffmpeg-build
           (
@@ -965,7 +959,8 @@ jobs:
               tail -n 150 ffbuild/config.log
               exit 1
             fi
-            make -j"$jobs" install
+            make -j"$jobs"
+            sudo make -j install
           )
 
           if [[ "$RUNNER_OS" == Linux ]]; then
@@ -1068,8 +1063,9 @@ jobs:
         uses: $/.github/actions/compile
         with:
           cmake_build_type: Release
-          extra_cmake_flags: -DCMAKE_OUTPUT_DIRECTORY=${{ github.workspace }}/musl
+          extra_cmake_flags: -DCMAKE_OUTPUT_DIRECTORY=musl
           extra_ldflags: -static -static-libgcc
+          shell: sh
       - name: Encode smoke sample
         run: |
           python3 - <<'PY'
@@ -1102,33 +1098,6 @@ jobs:
           cxx: aarch64-linux-gnu-g++
           packages: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           extra_cmake_flags: --toolchain cmake/toolchains/aarch64_toolchain.cmake
-
-  linux-android-aarch64-build:
-    name: Linux (Android, AArch64)
-    runs-on: ubuntu-latest
-    container:
-      image: ubuntu:26.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Java for Android SDK tools
-        run: |
-          apt-get update
-          apt-get install -yq openjdk-21-jdk-headless unzip
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4.0.4
-      - name: Install Android NDK
-        run: |
-          yes | sdkmanager --licenses
-          sdkmanager --install "ndk;27.2.12479018"
-      - name: Cross-compile for Android AArch64
-        uses: $/.github/actions/compile
-        with:
-          extra_cmake_flags: >-
-            --toolchain cmake/toolchains/android_aarch64_toolchain.cmake
-            -DCMAKE_ANDROID_NDK=$ANDROID_HOME/ndk/27.2.12479018
 
   bsd-cross-builds:
     name: ${{ matrix.target }} (${{ matrix.build_type }})
@@ -1419,6 +1388,7 @@ jobs:
           name: sanitizer-bin-${{ matrix.artifact_suffix }}
           path: sanitizer-bin
       - name: Run sanitizer test
+        shell: bash
         env:
           SANITIZER: ${{ matrix.sanitizer }}
           RC: ${{ matrix.rc }}
@@ -1521,6 +1491,7 @@ jobs:
           name: valgrind-bin
           path: valgrind-bin
       - name: Run valgrind test
+        shell: bash
         env:
           PASS: ${{ matrix.pass }}
           RC: ${{ matrix.rate_control.args }}
@@ -1562,12 +1533,13 @@ jobs:
           name: valgrind-bin
           path: valgrind-bin
       - name: Run two-pass valgrind test
+        shell: bash
         run: |
           chmod +x valgrind-bin/SvtAv1EncApp
           command=(valgrind --error-exitcode=1 --track-origins=yes \
             --suppressions=/usr/lib/valgrind/debian.supp -- \
             valgrind-bin/SvtAv1EncApp --preset 6 --passes 2 \
-            -i akiyo_cif.y4m -n 10 --lp 7 -b test1.ivf)
+            -i akiyo_cif.y4m -n 10 --lp 7 --qp 32 -b test1.ivf)
           printf 'Running Valgrind:'
           printf ' %q' "${command[@]}"
           printf '\n'

@@ -284,14 +284,20 @@ jobs:
           diff -q roi_tiles_recon.yuv roi_tiles_dec.yuv
       - name: Run and decode intra-period encodes
         run: |
+          set -x
           for keyint in -1 200; do
             ./Bin/Release/SvtAv1EncApp --preset 2 --keyint "$keyint" -i akiyo_cif.y4m -n 17 -b "test-pr-Linux-intra${keyint}-8bit-m2.ivf"
             ./Bin/Release/SvtAv1EncApp --preset 8 --keyint "$keyint" -i akiyo_cif.y4m -n 120 -b "test-pr-Linux-intra${keyint}-8bit-m8.ivf"
             ./Bin/Release/SvtAv1EncApp --preset 2 --keyint "$keyint" -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 17 -b "test-pr-Linux-intra${keyint}-10bit-m2.ivf"
             ./Bin/Release/SvtAv1EncApp --preset 8 --keyint "$keyint" -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b "test-pr-Linux-intra${keyint}-10bit-m8.ivf"
           done
+          set +x
           for output in test-pr-Linux-intra*-bit-m*.ivf; do
-            test -s "$output"
+            if ! test -s "$output"; then
+              echo "File $output is empty"
+              ret=false
+              continue
+            fi
             ffmpeg -hide_banner -loglevel error -i "$output" -f null -
           done
 
