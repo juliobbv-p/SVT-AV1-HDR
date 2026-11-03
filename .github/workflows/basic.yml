@@ -377,7 +377,6 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           path: action-src
-          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 1
           sparse-checkout: ./.github/actions/compile/action.yaml
           persist-credentials: false
