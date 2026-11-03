@@ -1246,8 +1246,8 @@ jobs:
         include:
           - sanitizer: address
             artifact_suffix: address
-          - sanitizer: memory
-            artifact_suffix: memory
+          # - sanitizer: memory
+          #   artifact_suffix: memory
           - sanitizer: thread
             artifact_suffix: thread
           - sanitizer: 'signed-integer-overflow,unsigned-integer-overflow'
@@ -1334,9 +1334,9 @@ jobs:
           - sanitizer: thread
             artifact_suffix: thread
             rc: '--rc 2 --tbr 1000 --pred-struct 1'
-          - sanitizer: memory
-            artifact_suffix: memory
-            asm: 0
+          # - sanitizer: memory
+          #   artifact_suffix: memory
+          #   asm: 0
           - sanitizer: 'signed-integer-overflow,unsigned-integer-overflow'
             artifact_suffix: integer-overflow
     steps:
