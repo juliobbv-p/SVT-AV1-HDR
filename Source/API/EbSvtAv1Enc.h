@@ -1102,8 +1102,9 @@ typedef struct EbSvtAv1EncConfiguration {
      * after svt_av1_enc_init_handle(), which clears this field.
      */
     uint8_t fast_decode_user_opts;
+
     /**
-     * ROI QP offset map block size. The supported value is 64 pixels.
+     * ROI QP offset map block size. Supported values are 16 and 64 pixels.
      * Zero is treated as 64 for compatibility with applications built against
      * older headers that zero-initialize the reserved configuration padding.
      */

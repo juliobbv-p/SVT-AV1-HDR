@@ -90,27 +90,21 @@ static void roi_map_apply_segmentation_based_quantization(PictureControlSet* pcs
     SequenceControlSet*    scs                 = pcs->ppcs->scs;
     const SvtAv1RoiMapEvt* roi_map             = pcs->ppcs->roi_map_evt;
     SegmentationParams*    segmentation_params = &pcs->ppcs->frm_hdr.segmentation_params;
-    const int              stride_b64          = (scs->max_input_luma_width + 63) / 64;
+    const int              map_block_size      = scs->static_config.roi_map_block_size;
+    const int              map_columns         = (scs->max_input_luma_width + map_block_size - 1) / map_block_size;
+    const int              map_rows            = (scs->max_input_luma_height + map_block_size - 1) / map_block_size;
     uint8_t                segment_id          = MAX_SEGMENTS;
-    if (scs->seq_header.sb_size == BLOCK_64X64) {
-        const int column_b64 = sb_ptr->org_x >> 6;
-        const int row_b64    = sb_ptr->org_y >> 6;
-        segment_id           = roi_map->b64_seg_map[row_b64 * stride_b64 + column_b64];
-    } else { // sb128
-        // 4 b64 blocks to check intersection
-        const int b64_seg_columns[4] = {sb_ptr->org_x, sb_ptr->org_x + 64, sb_ptr->org_x, sb_ptr->org_x + 64};
-        const int b64_seg_rows[4]    = {sb_ptr->org_y, sb_ptr->org_y, sb_ptr->org_y + 64, sb_ptr->org_y + 64};
-        const int blk_org_x          = sb_ptr->org_x + org_x;
-        const int blk_org_y          = sb_ptr->org_y + org_y;
-        const int bwidth             = block_size_wide[bsize];
-        const int bheight            = block_size_high[bsize];
-        for (int i = 0; i < 4; ++i) {
-            if (blk_org_x < b64_seg_columns[i] + 64 && blk_org_x + bwidth > b64_seg_columns[i] &&
-                blk_org_y < b64_seg_rows[i] + 64 && blk_org_y + bheight > b64_seg_rows[i]) {
-                const int column_b64 = b64_seg_columns[i] >> 6;
-                const int row_b64    = b64_seg_rows[i] >> 6;
-                segment_id           = MIN(segment_id, roi_map->b64_seg_map[row_b64 * stride_b64 + column_b64]);
-            }
+    const int              blk_org_x           = sb_ptr->org_x + org_x;
+    const int              blk_org_y           = sb_ptr->org_y + org_y;
+    const int              bwidth              = block_size_wide[bsize];
+    const int              bheight             = block_size_high[bsize];
+    const int              first_col           = blk_org_x / map_block_size;
+    const int              first_row           = blk_org_y / map_block_size;
+    const int              last_col            = MIN((blk_org_x + bwidth - 1) / map_block_size, map_columns - 1);
+    const int              last_row            = MIN((blk_org_y + bheight - 1) / map_block_size, map_rows - 1);
+    for (int row = first_row; row <= last_row; ++row) {
+        for (int column = first_col; column <= last_col; ++column) {
+            segment_id = MIN(segment_id, roi_map->b64_seg_map[row * map_columns + column]);
         }
     }
     assert(segment_id != MAX_SEGMENTS);

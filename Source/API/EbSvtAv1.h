@@ -268,7 +268,7 @@ typedef struct EbRefFrameScale {
 
 typedef struct SvtAv1RoiMapEvt {
     uint64_t                start_picture_number;
-    uint8_t*                b64_seg_map;
+    uint8_t*                b64_seg_map; // legacy name; one entry per configured ROI map block
     int16_t                 seg_qp[8]; // 8: MAX_SEGMENTS
     int8_t                  max_seg_id;
     struct SvtAv1RoiMapEvt* next;

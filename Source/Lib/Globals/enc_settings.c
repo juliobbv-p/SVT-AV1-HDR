@@ -45,8 +45,8 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     if (config->roi_map_block_size == 0) {
         config->roi_map_block_size = 64;
     }
-    if (config->roi_map_block_size != 64) {
-        SVT_ERROR("roi_map_block_size must be 64 (got %u)\n", (unsigned)config->roi_map_block_size);
+    if (config->roi_map_block_size != 16 && config->roi_map_block_size != 64) {
+        SVT_ERROR("roi_map_block_size must be 16 or 64 (got %u)\n", (unsigned)config->roi_map_block_size);
         return_error = EB_ErrorBadParameter;
     }
     if (config->enc_mode > MAX_ENC_PRESET || config->enc_mode < MIN_ENC_PRESET) {

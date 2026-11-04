@@ -884,7 +884,7 @@ ConfigDescription config_entry_rc[] = {
     {MAX_CHROMA_QM_LEVEL_TOKEN, "Max chroma quant matrix flatness, default is 15 [0-15]"},
 #endif
     {ROI_MAP_FILE_TOKEN, "Enable Region Of Interest and specify a picture based QP Offset map file, default is off"},
-    {ROI_MAP_BLOCK_SIZE_TOKEN, "ROI QP offset map block size [64], default is 64"},
+    {ROI_MAP_BLOCK_SIZE_TOKEN, "ROI QP offset map block size [16 or 64], default is 64"},
     // TF Strength
     {TF_STRENGTH_FILTER_TOKEN, "Adjust temporal filtering strength, default is 3 [0-4]"},
     // Frame-level luminance-based QP bias

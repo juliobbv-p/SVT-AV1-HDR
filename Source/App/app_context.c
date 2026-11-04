@@ -216,24 +216,27 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
         return EB_ErrorBadParameter;
     }
 
-    if (app_cfg->config.roi_map_block_size != 64) {
-        fprintf(stderr, "Error: ROI map block size must be 64\n");
+    const int block_size = app_cfg->config.roi_map_block_size;
+    if (block_size != 16 && block_size != 64) {
+        fprintf(stderr, "Error: ROI map block size must be 16 or 64\n");
         return EB_ErrorBadParameter;
     }
 
     // ROI map file format:
     // One ROI event per line. The event is in below format
-    // <pic_num> <b64_qp_offset> <b64_qp_offset> ... <b64_qp_offset>\n
-    // b64_qp_offset range -255 ~ 255
-    EbErrorType      ret      = EB_ErrorNone;
-    SvtAv1RoiMap*    roi_map  = calloc(1, sizeof(*app_cfg->roi_map));
-    SvtAv1RoiMapEvt* last_evt = NULL;
-    const size_t     b64_num = ((app_cfg->config.source_width + 63) / 64) * ((app_cfg->config.source_height + 63) / 64);
+    // <pic_num> <qp_offset> <qp_offset> ... <qp_offset>\n
+    // qp_offset range -255 ~ 255
+    EbErrorType      ret         = EB_ErrorNone;
+    SvtAv1RoiMap*    roi_map     = calloc(1, sizeof(*app_cfg->roi_map));
+    SvtAv1RoiMapEvt* last_evt    = NULL;
+    const size_t     map_columns = (app_cfg->config.source_width + block_size - 1) / block_size;
+    const size_t     map_rows    = (app_cfg->config.source_height + block_size - 1) / block_size;
+    const size_t     map_num     = map_columns * map_rows;
     // Multiplied by 5 because each qp_offset value requires at most 4 chars plus a space.
     // Multiplied by 2 to make some extra space.
-    const size_t buf_size = b64_num * 5 * 2;
+    const size_t buf_size = map_num * 5 * 2;
     char*        buf      = malloc(buf_size);
-    int16_t*     qp_map   = malloc(sizeof(*qp_map) * b64_num);
+    int16_t*     qp_map   = malloc(sizeof(*qp_map) * map_num);
     if (!roi_map || !buf || !qp_map) {
         ret = EB_ErrorInsufficientResources;
         goto fail;
@@ -268,7 +271,7 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
                 ret = EB_ErrorInsufficientResources;
                 goto fail;
             }
-            evt->b64_seg_map = malloc(b64_num);
+            evt->b64_seg_map = malloc(map_num);
             if (!evt->b64_seg_map) {
                 free(evt);
                 ret = EB_ErrorInsufficientResources;
@@ -288,7 +291,7 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
             // 2. decide qp offset of each segment from qp offset map
             // 3. translate qp offset map to a segment id map
             size_t i;
-            for (i = 0; i < b64_num; ++i) {
+            for (i = 0; i < map_num; ++i) {
                 p            = end;
                 long int val = strtol(p, &end, 10);
                 if (end == p) {
@@ -323,7 +326,7 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
                     break;
                 }
             }
-            if (i < b64_num) {
+            if (i < map_num) {
                 ret = EB_ErrorBadParameter;
                 fprintf(stderr, "Error: Invalid ROI map file - not enough qp offset within a ROI event\n");
             }
@@ -338,7 +341,7 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
             }
 
             // translate the qp offset map provided in the ROI map file to a segment id map.
-            for (i = 0; i < b64_num; ++i) {
+            for (i = 0; i < map_num; ++i) {
                 for (int seg_id = 0; seg_id <= evt->max_seg_id; ++seg_id) {
                     if (qp_map[i] == evt->seg_qp[seg_id]) {
                         evt->b64_seg_map[i] = seg_id;
@@ -358,11 +361,9 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
                 fprintf(stdout, "%d ", evt->seg_qp[i]);
             }
             fprintf(stdout, "\n");
-            int column_b64 = (app_cfg->config.source_width + 63) / 64;
-            int row_b64    = (app_cfg->config.source_height + 63) / 64;
-            for (int i = 0; i < row_b64; ++i) {
-                for (int j = 0; j < column_b64; ++j) {
-                    fprintf(stdout, "%d ", evt->b64_seg_map[i * column_b64 + j]);
+            for (size_t row = 0; row < map_rows; ++row) {
+                for (size_t column = 0; column < map_columns; ++column) {
+                    fprintf(stdout, "%d ", evt->b64_seg_map[row * map_columns + column]);
                 }
                 fprintf(stdout, "\n");
             }
