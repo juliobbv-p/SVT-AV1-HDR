@@ -459,11 +459,10 @@ void svt_av1_highbd_convolve_2d_scale_sse4_1(const uint16_t* src, int src_stride
     const int ytaps   = filter_params_y->taps;
     const int fo_vert = ytaps / 2 - 1;
 
-    memset(tmp, 0, sizeof(tmp));
     assert((xtaps == 8) && (ytaps == 8));
     (void)xtaps;
 
-    // horizontal filter
+    // The horizontal pass initializes all w * im_h samples used by the vertical pass.
     highbd_hfilter8(src - fo_vert * src_stride,
                     src_stride,
                     tmp,

@@ -508,6 +508,63 @@ class HighBDConvolveScaleTest
         SetParams(block, bd);
     }
 
+#ifdef ARCH_X86_64
+    void RunScaled() {
+        // A step of 2 * SCALE_SUBPEL_SHIFTS can sample twice the block size.
+        delete image_;
+        image_ = new TestImage<uint16_t>(2 * width_, 2 * height_, bd_);
+        ACMRandom rnd(ACMRandom::DeterministicSeed());
+        std::vector<ConvolveParams> params = GetConvParams();
+        params.push_back(get_conv_params_no_round(0, nullptr, 0, 1, bd_));
+        const int steps[][2] = {{64, 2048},
+                                {512, 1024},
+                                {1024, 512},
+                                {1024, 1024},
+                                {1280, 1536},
+                                {1536, 1280},
+                                {2048, 64},
+                                {2048, 2048}};
+        const int phases[][2] = {{0, 0},
+                                 {0, SCALE_SUBPEL_MASK},
+                                 {SCALE_SUBPEL_MASK, 0},
+                                 {SCALE_SUBPEL_MASK, SCALE_SUBPEL_MASK}};
+        for (const auto &step : steps) {
+            x_step_qn_ = step[0];
+            y_step_qn_ = step[1];
+            for (int fy = 0; fy < kNumFilterBanks; ++fy) {
+                filter_y_ = av1_get_interp_filter_params_with_block_size(
+                    static_cast<InterpFilter>(fy), height_);
+                for (int fx = 0; fx < kNumFilterBanks; ++fx) {
+                    filter_x_ = av1_get_interp_filter_params_with_block_size(
+                        static_cast<InterpFilter>(fx), width_);
+                    for (const auto &c : params) {
+                        convolve_params_ = c;
+                        convolve_params_.dst_stride = image_->dst_stride();
+                        for (int phase = 0; phase < 5; ++phase) {
+                            Prep(&rnd);
+                            if (phase < 4) {
+                                subpel_x_ = phases[phase][0];
+                                subpel_y_ = phases[phase][1];
+                            }
+                            SCOPED_TRACE(
+                                ::testing::Message()
+                                << "step=" << x_step_qn_ << "," << y_step_qn_
+                                << " subpel=" << subpel_x_ << "," << subpel_y_
+                                << " filter=" << fx << "," << fy << " compound="
+                                << c.is_compound << " average=" << c.do_average
+                                << " weighted=" << c.use_dist_wtd_comp_avg);
+                            RunOne(true);
+                            RunOne(false);
+                            image_->Check();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+#endif
+
     void RunOne(bool ref) {
         const uint16_t *src = image_->GetSrcData(ref, false);
         uint16_t *dst = image_->GetDstData(ref, false);
@@ -525,9 +582,9 @@ class HighBDConvolveScaleTest
                                                &filter_x_,
                                                &filter_y_,
                                                subpel_x_,
-                                               kXStepQn,
+                                               x_step_qn_,
                                                subpel_y_,
-                                               kYStepQn,
+                                               y_step_qn_,
                                                &convolve_params_,
                                                bd_);
         } else {
@@ -540,9 +597,9 @@ class HighBDConvolveScaleTest
                      &filter_x_,
                      &filter_y_,
                      subpel_x_,
-                     kXStepQn,
+                     x_step_qn_,
                      subpel_y_,
-                     kYStepQn,
+                     y_step_qn_,
                      &convolve_params_,
                      bd_);
         }
@@ -550,12 +607,19 @@ class HighBDConvolveScaleTest
 
   private:
     HighbdConvolveFunc tst_fun_;
+    int x_step_qn_ = kXStepQn;
+    int y_step_qn_ = kYStepQn;
 };
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(HighBDConvolveScaleTest);
 
 TEST_P(HighBDConvolveScaleTest, Check) {
     Run();
 }
+#ifdef ARCH_X86_64
+TEST_P(HighBDConvolveScaleTest, ScaledCheck) {
+    RunScaled();
+}
+#endif
 TEST_P(HighBDConvolveScaleTest, DISABLED_Speed) {
     SpeedTest();
 }
