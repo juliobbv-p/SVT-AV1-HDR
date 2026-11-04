@@ -20,6 +20,37 @@
 #include "mem_neon.h"
 #include "transpose_neon.h"
 
+// A DC-only DCT is constant after each 1-D pass. Keep the two roundings
+// (and the rectangular normalization) in the same order as the full transform.
+static void highbd_dct_dc_add_neon(int32_t dc, uint16_t* dst_r, int stride_r, uint16_t* dst_w, int stride_w,
+                                   TxSize tx_size, int bd) {
+    const int     w     = tx_size_wide[tx_size];
+    const int     h     = tx_size_high[tx_size];
+    const int8_t* shift = svt_aom_inv_txfm_shift_ls[tx_size];
+    if (w == 2 * h || h == 2 * w) {
+        dc = round_shift((int64_t)dc * new_inv_sqrt2, new_sqrt2_bits);
+    }
+    dc = clamp(dc, -(1 << (bd + 7)), (1 << (bd + 7)) - 1);
+    dc = round_shift((int64_t)dc * cospi_arr(INV_COS_BIT)[32], INV_COS_BIT);
+    if (shift[0]) {
+        dc = round_shift(dc, -shift[0]);
+    }
+    const int col_range        = AOMMAX(bd + 6, 16) - 1;
+    dc                         = clamp(dc, -(1 << col_range), (1 << col_range) - 1);
+    dc                         = round_shift((int64_t)dc * cospi_arr(INV_COS_BIT)[32], INV_COS_BIT);
+    dc                         = round_shift(dc, -shift[1]);
+    const int32x4_t  residual  = vdupq_n_s32(dc);
+    const uint16x4_t max_value = vdup_n_u16((1 << bd) - 1);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; x += 4) {
+            const int32x4_t sum = vaddq_s32(vreinterpretq_s32_u32(vmovl_u16(vld1_u16(dst_r + x))), residual);
+            vst1_u16(dst_w + x, vmin_u16(vqmovun_s32(sum), max_value));
+        }
+        dst_r += stride_r;
+        dst_w += stride_w;
+    }
+}
+
 static inline void round_shift_neon(int32x4_t* in, int32_t shift, int n) {
     const int32x4_t vshift = vdupq_n_s32(shift);
     for (int i = 0; i < n; i++) {
@@ -3021,4 +3052,94 @@ void svt_av1_inv_txfm2d_add_64x32_neon(const int32_t* input, uint16_t* output_r,
         highbd_write_buffer_8xn_neon(
             buf0 + 2 * i * txfm_size_row, output_r + 8 * i, stride_r, output_w + 8 * i, stride_w, 0, txfm_size_row, bd);
     }
+}
+
+// Four independent rows/columns in 32-bit lanes. Unlike the 8-bit dav1d
+// wrapper, highbd coefficients must not be narrowed while loading them.
+static void highbd_idct4_rows_neon(int32x4_t* in, int32x4_t* out, int size) {
+    switch (size) {
+    case 8:
+        idct8_x4_neon(in, out, INV_COS_BIT);
+        break;
+    case 16:
+        idct16_x4_neon(in, out, INV_COS_BIT);
+        break;
+    case 32:
+        idct32_x4_neon(in, out, INV_COS_BIT);
+        break;
+    case 64:
+        idct64_x4_neon(in, out, INV_COS_BIT);
+        break;
+    default:
+        assert(0);
+        break;
+    }
+}
+
+static void highbd_sparse_idct_add_neon(const int32_t* input, uint16_t* dst_r, int stride_r, uint16_t* dst_w,
+                                        int stride_w, TxSize tx_size, int band, int bd) {
+    const int     size         = tx_size_wide[tx_size];
+    const int     coded_stride = AOMMIN(size, 32);
+    const int8_t* shift        = svt_aom_inv_txfm_shift_ls[tx_size];
+    int32x4_t     rows[16 * 64 / 4];
+    int32x4_t     in[64], out[64];
+    // Only rows reached by the default scan need a horizontal transform.
+    // Transpose while loading four rows; no full-block zeroing or transpose.
+    for (int y = 0; y < band; y += 4) {
+        for (int x = 0; x < band; x += 4) {
+            transpose_elems_s32_4x4(vld1q_s32(input + (y + 0) * coded_stride + x),
+                                    vld1q_s32(input + (y + 1) * coded_stride + x),
+                                    vld1q_s32(input + (y + 2) * coded_stride + x),
+                                    vld1q_s32(input + (y + 3) * coded_stride + x),
+                                    &in[x],
+                                    &in[x + 1],
+                                    &in[x + 2],
+                                    &in[x + 3]);
+        }
+        for (int x = band; x < size; ++x) {
+            in[x] = vdupq_n_s32(0);
+        }
+        highbd_idct4_rows_neon(in, rows + y * size / 4, size);
+        round_shift_neon(rows + y * size / 4, shift[0], size);
+    }
+    for (int x = 0; x < size; x += 4) {
+        for (int y = 0; y < band; y += 4) {
+            const int32x4_t* row = rows + y * size / 4 + x;
+            transpose_elems_s32_4x4(row[0], row[1], row[2], row[3], &in[y], &in[y + 1], &in[y + 2], &in[y + 3]);
+        }
+        for (int y = band; y < size; ++y) {
+            in[y] = vdupq_n_s32(0);
+        }
+        highbd_idct4_rows_neon(in, out, size);
+        round_shift_neon(out, shift[1], size);
+        const uint16x4_t max_value = vdup_n_u16((1 << bd) - 1);
+        for (int y = 0; y < size; ++y) {
+            const int32x4_t pred = vreinterpretq_s32_u32(vmovl_u16(vld1_u16(dst_r + y * stride_r + x)));
+            vst1_u16(dst_w + y * stride_w + x, vmin_u16(vqmovun_s32(vaddq_s32(pred, out[y])), max_value));
+        }
+    }
+}
+
+void svt_av1_highbd_inv_txfm_add_neon(const TranLow* input, uint8_t* dest_r, int32_t stride_r, uint8_t* dest_w,
+                                      int32_t stride_w, const TxfmParam* txfm_param) {
+    if (txfm_param->tx_type == DCT_DCT && !txfm_param->lossless) {
+        const TxSize tx_size = txfm_param->tx_size;
+        const int    eob     = txfm_param->eob;
+        uint16_t*    dst_r   = CONVERT_TO_SHORTPTR(dest_r);
+        uint16_t*    dst_w   = CONVERT_TO_SHORTPTR(dest_w);
+        if (eob <= 1) {
+            highbd_dct_dc_add_neon(eob ? input[0] : 0, dst_r, stride_r, dst_w, stride_w, tx_size, txfm_param->bd);
+            return;
+        }
+        // A square default scan fills anti-diagonals: counts 10, 36 and
+        // 136 bound nonzero coefficients to 4x4, 8x8 and 16x16 respectively.
+        const int band = eob <= 10 ? 4 : eob <= 36 ? 8 : 16;
+        if (tx_size >= TX_16X16 && tx_size <= TX_64X64 && eob <= 136 && band < tx_size_wide[tx_size]) {
+            highbd_sparse_idct_add_neon(input, dst_r, stride_r, dst_w, stride_w, tx_size, band, txfm_param->bd);
+            return;
+        }
+    }
+    // The existing dispatcher retains optimized non-DCT and dense transforms,
+    // and the distinct lossless WHT semantics.
+    svt_av1_highbd_inv_txfm_add_c(input, dest_r, stride_r, dest_w, stride_w, txfm_param);
 }

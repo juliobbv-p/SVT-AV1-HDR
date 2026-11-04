@@ -203,6 +203,7 @@ static AOM_FORCE_INLINE void highbd_fidentity4_x4_neon(const int32x4_t* in, int3
         out[i]                = vrshrq_n_s32(a_low, new_sqrt2_bits);
     }
 }
+
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 void svt_av1_fwd_txfm2d_4x4_neon(int16_t* input, int32_t* output, uint32_t input_stride, TxType tx_type, uint8_t bd) {
@@ -434,16 +435,19 @@ static AOM_FORCE_INLINE void butterfly_0130_neon(const int32_t* cospi, const int
 
 static AOM_FORCE_INLINE void butterfly_cospi32_0002_neon(const int32_t* cospi, const int32x4_t n0, const int32x4_t n1,
                                                          int32x4_t* out0, int32x4_t* out1, const int32x4_t v_bit) {
-    int32x2_t w01 = vld1_s32(cospi + 2 * 32);
-    butterfly_half_neon(w01, 0, 0, n0, n1, out0, v_bit);
-    butterfly_half_neon(w01, 0, 2, n0, n1, out1, v_bit);
+    // Equal weights allow addition before multiplication, with one rounding.
+    // Keep 32-bit lanes for 10-bit stage ranges; the lowbd int16 path is not
+    // wide enough here. Scaling the cosine to Q31 makes SQRDMULH exact.
+    const int32x4_t weight = vshlq_s32(vdupq_n_s32(cospi[2 * 32]), vaddq_s32(v_bit, vdupq_n_s32(31)));
+    *out0                  = vqrdmulhq_s32(vaddq_s32(n0, n1), weight);
+    *out1                  = vqrdmulhq_s32(vsubq_s32(n0, n1), weight);
 }
 
 static AOM_FORCE_INLINE void butterfly_cospi32_0222_neon(const int32_t* cospi, const int32x4_t n0, const int32x4_t n1,
                                                          int32x4_t* out0, int32x4_t* out1, const int32x4_t v_bit) {
-    int32x2_t w01 = vld1_s32(cospi + 2 * 32);
-    butterfly_half_neon(w01, 0, 2, n0, n1, out0, v_bit);
-    butterfly_half_neon(w01, 2, 2, n0, n1, out1, v_bit);
+    const int32x4_t weight = vshlq_s32(vdupq_n_s32(cospi[2 * 32]), vaddq_s32(v_bit, vdupq_n_s32(31)));
+    *out0                  = vqrdmulhq_s32(vsubq_s32(n0, n1), weight);
+    *out1                  = vqrdmulhq_s32(vnegq_s32(vaddq_s32(n0, n1)), weight);
 }
 
 // Butterfly pre-processing:
@@ -487,6 +491,54 @@ static AOM_FORCE_INLINE void butterfly_dct_post(const int32x4_t* in0, const int3
         output[(3 * n) / 4 + i] = vaddq_s32(in0[(3 * n) / 4 + i], in1[(3 * n) / 4 - i - 1]);
     }
 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static AOM_FORCE_INLINE void butterfly_cospi32_s16(int16x8_t a, int16x8_t b, int16x8_t* sum, int16x8_t* diff,
+                                                   int16_t weight) {
+    *sum  = vqrdmulhq_n_s16(vaddq_s16(a, b), weight);
+    *diff = vqrdmulhq_n_s16(vsubq_s16(a, b), weight);
+}
+
+static AOM_FORCE_INLINE void butterfly_dct_pre_s16(const int16x8_t* input, int16x8_t* output, int n) {
+    for (int i = 0; i < n / 2; ++i) {
+        output[i] = vaddq_s16(input[i], input[n - i - 1]);
+    }
+    for (int i = 0; i < n / 2; ++i) {
+        output[n / 2 + i] = vsubq_s16(input[n / 2 - i - 1], input[n / 2 + i]);
+    }
+}
+
+static AOM_FORCE_INLINE void butterfly_dct_post_s16(const int16x8_t* in0, const int16x8_t* in1, int16x8_t* output,
+                                                    int n) {
+    for (int i = 0; i < n / 4; ++i) {
+        output[i] = vaddq_s16(in0[i], in1[n / 2 - i - 1]);
+    }
+    for (int i = 0; i < n / 4; ++i) {
+        output[n / 4 + i] = vsubq_s16(in0[n / 4 - i - 1], in1[n / 4 + i]);
+    }
+    for (int i = 0; i < n / 4; ++i) {
+        output[n / 2 + i] = vsubq_s16(in0[n - i - 1], in1[n / 2 + i]);
+    }
+    for (int i = 0; i < n / 4; ++i) {
+        output[(3 * n) / 4 + i] = vaddq_s16(in0[(3 * n) / 4 + i], in1[(3 * n) / 4 - i - 1]);
+    }
+}
+
+// Transpose eight rows at a time while still narrow, then widen for row
+// transforms. Buffers contain one height-vector slab per eight columns.
+static AOM_FORCE_INLINE void transpose_widen_s16_neon(const int16x8_t* in, int32x4_t* out, int width, int height) {
+    for (int y = 0; y < height; y += 8) {
+        for (int x = 0; x < width; x += 8) {
+            int16x8_t tile[8];
+            transpose_arrays_s16_8x8(in + x / 8 * height + y, tile);
+            for (int i = 0; i < 8; ++i) {
+                out[y / 4 * width + x + i]       = vmovl_s16(vget_low_s16(tile[i]));
+                out[(y / 4 + 1) * width + x + i] = vmovl_s16(vget_high_s16(tile[i]));
+            }
+        }
+    }
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 static AOM_FORCE_INLINE void highbd_fdct8_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) {
@@ -627,12 +679,230 @@ static AOM_FORCE_INLINE void highbd_fidentity8_xn_neon(const int32x4_t* in, int3
 }
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
+static AOM_FORCE_INLINE int16x8_t fwd_half_s16_13_neon(int16x8_t a, int16x8_t b, int16_t wa, int16_t wb) {
+    const int32x4_t lo = vmlal_n_s16(vmull_n_s16(vget_low_s16(a), wa), vget_low_s16(b), wb);
+    const int32x4_t hi = vmlal_n_s16(vmull_n_s16(vget_high_s16(a), wa), vget_high_s16(b), wb);
+    return vcombine_s16(vrshrn_n_s32(lo, 13), vrshrn_n_s32(hi, 13));
+}
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static AOM_FORCE_INLINE void butterfly_0112_s16_13_neon(const int32_t* cs, int idx, int16x8_t a, int16x8_t b,
+                                                        int16x8_t* out0, int16x8_t* out1) {
+    *out0 = fwd_half_s16_13_neon(a, b, cs[idx], cs[64 - idx]);
+    *out1 = fwd_half_s16_13_neon(a, b, cs[64 - idx], -cs[idx]);
+}
+
+static AOM_FORCE_INLINE void butterfly_2312_s16_13_neon(const int32_t* cs, int idx, int16x8_t a, int16x8_t b,
+                                                        int16x8_t* out0, int16x8_t* out1) {
+    *out0 = fwd_half_s16_13_neon(a, b, -cs[idx], -cs[64 - idx]);
+    *out1 = fwd_half_s16_13_neon(a, b, cs[64 - idx], -cs[idx]);
+}
+
+static AOM_FORCE_INLINE void butterfly_0130_s16_13_neon(const int32_t* cs, int idx, int16x8_t a, int16x8_t b,
+                                                        int16x8_t* out0, int16x8_t* out1) {
+    *out0 = fwd_half_s16_13_neon(a, b, cs[idx], cs[64 - idx]);
+    *out1 = fwd_half_s16_13_neon(a, b, -cs[64 - idx], cs[idx]);
+}
+
+static AOM_FORCE_INLINE void butterfly_0332_s16_13_neon(const int32_t* cs, int idx, int16x8_t a, int16x8_t b,
+                                                        int16x8_t* out0, int16x8_t* out1) {
+    *out0 = fwd_half_s16_13_neon(a, b, cs[idx], -cs[64 - idx]);
+    *out1 = fwd_half_s16_13_neon(a, b, -cs[64 - idx], -cs[idx]);
+}
+
+static AOM_FORCE_INLINE void butterfly_cospi32_0222_s16_neon(int16x8_t a, int16x8_t b, int16x8_t* out0, int16x8_t* out1,
+                                                             int16_t weight) {
+    *out0 = vqrdmulhq_n_s16(vsubq_s16(a, b), weight);
+    *out1 = vqrdmulhq_n_s16(vnegq_s16(vaddq_s16(a, b)), weight);
+}
+
+// Eight-point columns with |input| <= 4092 fit int16 throughout. The DCT's
+// largest equal-weight pre-add is 32736; products still accumulate in int32.
+static AOM_FORCE_INLINE void fdct8_s16_neon(const int16x8_t* in, int16x8_t* out) {
+    const int32_t* cs  = cospi_arr(13);
+    const int16_t  w32 = (int16_t)(cs[32] * 4);
+    int16x8_t      a[8], b[8], c[8];
+    for (int i = 0; i < 4; ++i) {
+        a[i]     = vaddq_s16(in[i], in[7 - i]);
+        a[7 - i] = vsubq_s16(in[i], in[7 - i]);
+    }
+    b[0]   = vaddq_s16(a[0], a[3]);
+    b[1]   = vaddq_s16(a[1], a[2]);
+    b[2]   = vsubq_s16(a[1], a[2]);
+    b[3]   = vsubq_s16(a[0], a[3]);
+    b[5]   = vqrdmulhq_n_s16(vsubq_s16(a[6], a[5]), w32);
+    b[6]   = vqrdmulhq_n_s16(vaddq_s16(a[6], a[5]), w32);
+    c[0]   = vqrdmulhq_n_s16(vaddq_s16(b[0], b[1]), w32);
+    c[1]   = vqrdmulhq_n_s16(vsubq_s16(b[0], b[1]), w32);
+    c[2]   = fwd_half_s16_13_neon(b[2], b[3], cs[48], cs[16]);
+    c[3]   = fwd_half_s16_13_neon(b[3], b[2], cs[48], -cs[16]);
+    c[4]   = vaddq_s16(a[4], b[5]);
+    c[5]   = vsubq_s16(a[4], b[5]);
+    c[6]   = vsubq_s16(a[7], b[6]);
+    c[7]   = vaddq_s16(a[7], b[6]);
+    out[0] = c[0];
+    out[1] = fwd_half_s16_13_neon(c[4], c[7], cs[56], cs[8]);
+    out[2] = c[2];
+    out[3] = fwd_half_s16_13_neon(c[6], c[5], cs[24], -cs[40]);
+    out[4] = c[1];
+    out[5] = fwd_half_s16_13_neon(c[5], c[6], cs[24], cs[40]);
+    out[6] = c[3];
+    out[7] = fwd_half_s16_13_neon(c[7], c[4], cs[56], -cs[8]);
+}
+
+static AOM_FORCE_INLINE void fadst8_s16_neon(const int16x8_t* in, int16x8_t* out) {
+    const int32_t* cs  = cospi_arr(13);
+    const int16_t  w32 = (int16_t)(cs[32] * 4);
+    int16x8_t      a[8], b[8], c[8];
+    b[2] = vqrdmulhq_n_s16(vsubq_s16(in[4], in[3]), w32);
+    b[3] = vqrdmulhq_n_s16(vnegq_s16(vaddq_s16(in[3], in[4])), w32);
+    b[6] = vqrdmulhq_n_s16(vsubq_s16(in[2], in[5]), w32);
+    b[7] = vqrdmulhq_n_s16(vaddq_s16(in[2], in[5]), w32);
+    a[0] = vaddq_s16(in[0], b[2]);
+    a[1] = vsubq_s16(b[3], in[7]);
+    a[2] = vsubq_s16(in[0], b[2]);
+    a[3] = vnegq_s16(vaddq_s16(in[7], b[3]));
+    a[4] = vsubq_s16(b[6], in[1]);
+    a[5] = vaddq_s16(in[6], b[7]);
+    a[6] = vnegq_s16(vaddq_s16(in[1], b[6]));
+    a[7] = vsubq_s16(in[6], b[7]);
+    b[4] = fwd_half_s16_13_neon(a[4], a[5], cs[16], cs[48]);
+    b[5] = fwd_half_s16_13_neon(a[4], a[5], cs[48], -cs[16]);
+    b[6] = fwd_half_s16_13_neon(a[6], a[7], -cs[48], cs[16]);
+    b[7] = fwd_half_s16_13_neon(a[6], a[7], cs[16], cs[48]);
+    for (int i = 0; i < 4; ++i) {
+        c[i]     = vaddq_s16(a[i], b[i + 4]);
+        c[i + 4] = vsubq_s16(a[i], b[i + 4]);
+    }
+    out[0] = fwd_half_s16_13_neon(c[0], c[1], cs[60], -cs[4]);
+    out[1] = fwd_half_s16_13_neon(c[6], c[7], cs[52], cs[12]);
+    out[2] = fwd_half_s16_13_neon(c[2], c[3], cs[44], -cs[20]);
+    out[3] = fwd_half_s16_13_neon(c[4], c[5], cs[36], cs[28]);
+    out[4] = fwd_half_s16_13_neon(c[4], c[5], cs[28], -cs[36]);
+    out[5] = fwd_half_s16_13_neon(c[2], c[3], cs[20], cs[44]);
+    out[6] = fwd_half_s16_13_neon(c[6], c[7], cs[12], -cs[52]);
+    out[7] = fwd_half_s16_13_neon(c[0], c[1], cs[4], cs[60]);
+}
+
+static AOM_FORCE_INLINE void fwd8_s16_neon(int16x8_t* buf, TxType1D type) {
+    if (type == DCT_1D) {
+        fdct8_s16_neon(buf, buf);
+    } else if (type == IDTX_1D) {
+        for (int i = 0; i < 8; ++i) {
+            buf[i] = vshlq_n_s16(buf[i], 1);
+        }
+    } else {
+        fadst8_s16_neon(buf, buf);
+    }
+}
+
+static AOM_FORCE_INLINE void tenbd_fwd_txfm2d_8x8_type_neon(const int16_t* input, int32_t* output, uint32_t stride,
+                                                            TxType tx_type) {
+    int ud_flip, lr_flip;
+    get_flip_cfg(tx_type, &ud_flip, &lr_flip);
+    int16x8_t buf[8];
+    for (int y = 0; y < 8; ++y) {
+        int16x8_t row = vld1q_s16(input + (ud_flip ? 7 - y : y) * stride);
+        if (lr_flip) {
+            row = vrev64q_s16(row);
+            row = vextq_s16(row, row, 4);
+        }
+        buf[y] = vshlq_n_s16(row, 2);
+    }
+    fwd8_s16_neon(buf, vtx_tab[tx_type]);
+    for (int y = 0; y < 8; ++y) {
+        buf[y] = vrshrq_n_s16(buf[y], 1);
+    }
+    transpose_arrays_s16_8x8(buf, buf);
+    if (vtx_tab[tx_type] == IDTX_1D || htx_tab[tx_type] == IDTX_1D) {
+        // Single-axis transforms fit through both passes. With vertical
+        // identity the horizontal DCT/ADST input is bounded by 4092 again.
+        fwd8_s16_neon(buf, htx_tab[tx_type]);
+        transpose_arrays_s16_8x8(buf, buf);
+        for (int y = 0; y < 8; ++y) {
+            vst1q_s32(output + y * 8, vmovl_s16(vget_low_s16(buf[y])));
+            vst1q_s32(output + y * 8 + 4, vmovl_s16(vget_high_s16(buf[y])));
+        }
+    } else {
+        int32x4_t row[16], result[16];
+        for (int y = 0; y < 8; ++y) {
+            row[y]     = vmovl_s16(vget_low_s16(buf[y]));
+            row[y + 8] = vmovl_s16(vget_high_s16(buf[y]));
+        }
+        if (htx_tab[tx_type] == DCT_1D) {
+            highbd_fdct8_xn_neon(row, row, 13, 2);
+        } else {
+            highbd_fadst8_xn_neon(row, row, 13, 2);
+        }
+        transpose_arrays_s32_8x8(row, result);
+        store_buffer_8x8(result, output, 8);
+    }
+}
+
+static void tenbd_fwd_txfm2d_8x8_neon(const int16_t* input, int32_t* output, uint32_t stride, TxType tx_type) {
+    switch (tx_type) {
+    case DCT_DCT:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, DCT_DCT);
+        break;
+    case ADST_DCT:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, ADST_DCT);
+        break;
+    case DCT_ADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, DCT_ADST);
+        break;
+    case ADST_ADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, ADST_ADST);
+        break;
+    case FLIPADST_DCT:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, FLIPADST_DCT);
+        break;
+    case DCT_FLIPADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, DCT_FLIPADST);
+        break;
+    case FLIPADST_FLIPADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, FLIPADST_FLIPADST);
+        break;
+    case ADST_FLIPADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, ADST_FLIPADST);
+        break;
+    case FLIPADST_ADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, FLIPADST_ADST);
+        break;
+    case V_DCT:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, V_DCT);
+        break;
+    case H_DCT:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, H_DCT);
+        break;
+    case V_ADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, V_ADST);
+        break;
+    case H_ADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, H_ADST);
+        break;
+    case V_FLIPADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, V_FLIPADST);
+        break;
+    case H_FLIPADST:
+        tenbd_fwd_txfm2d_8x8_type_neon(input, output, stride, H_FLIPADST);
+        break;
+    default:
+        assert(0);
+    }
+}
+#endif
+
 void svt_av1_fwd_txfm2d_8x8_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
     if (bd == 8) {
         svt_lbd_fwd_txfm2d_8x8_neon(input, output, stride, tx_type);
         return;
     }
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
+
+    if (bd == 10 && tx_type != IDTX) {
+        tenbd_fwd_txfm2d_8x8_neon(input, output, stride, tx_type);
+        return;
+    }
 
     int ud_flip, lr_flip;
     get_flip_cfg(tx_type, &ud_flip, &lr_flip);
@@ -790,30 +1060,10 @@ void svt_av1_fwd_txfm2d_8x8_neon(int16_t* input, int32_t* output, uint32_t strid
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 }
 
-static void highbd_fdct16_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) {
+static AOM_FORCE_INLINE void fdct16_after_stage3_neon(int32x4_t* u, int32x4_t* out, int bit) {
     const int32_t* const cospi = cospi_arr_s32(bit);
     const int32x4_t      v_bit = vdupq_n_s32(-bit);
-
-    int32x4_t u[16], v[16];
-
-    // stage 1
-    butterfly_dct_pre(in, u, 16);
-
-    // stage 2
-    butterfly_dct_pre(u, v, 8);
-    v[8] = u[8];
-    v[9] = u[9];
-    butterfly_cospi32_0002_neon(cospi, u[13], u[10], &v[13], &v[10], v_bit);
-    butterfly_cospi32_0002_neon(cospi, u[12], u[11], &v[12], &v[11], v_bit);
-    v[14] = u[14];
-    v[15] = u[15];
-
-    // stage 3
-    butterfly_dct_pre(v, u, 4);
-    u[4] = v[4];
-    butterfly_cospi32_0002_neon(cospi, v[6], v[5], &u[6], &u[5], v_bit);
-    u[7] = v[7];
-    butterfly_dct_post(v + 8, v + 8, u + 8, 8);
+    int32x4_t            v[16];
 
     // stage 4
     butterfly_cospi32_0002_neon(cospi, u[0], u[1], &v[0], &v[1], v_bit);
@@ -868,7 +1118,143 @@ static void highbd_fdct16_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) 
     out[15] = v[15];
 }
 
+static void highbd_fdct16_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) {
+    const int32_t* const cospi = cospi_arr_s32(bit);
+    const int32x4_t      v_bit = vdupq_n_s32(-bit);
+
+    int32x4_t u[16], v[16];
+
+    // stage 1
+    butterfly_dct_pre(in, u, 16);
+
+    // stage 2
+    butterfly_dct_pre(u, v, 8);
+    v[8] = u[8];
+    v[9] = u[9];
+    butterfly_cospi32_0002_neon(cospi, u[13], u[10], &v[13], &v[10], v_bit);
+    butterfly_cospi32_0002_neon(cospi, u[12], u[11], &v[12], &v[11], v_bit);
+    v[14] = u[14];
+    v[15] = u[15];
+
+    // stage 3
+    butterfly_dct_pre(v, u, 4);
+    u[4] = v[4];
+    butterfly_cospi32_0002_neon(cospi, v[6], v[5], &u[6], &u[5], v_bit);
+    u[7] = v[7];
+    butterfly_dct_post(v + 8, v + 8, u + 8, 8);
+
+    fdct16_after_stage3_neon(u, out, bit);
+}
+
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// |residual << 2| <= 4092. Stages 1..3 and their equal-weight pre-adds
+// are bounded by 32736; stage 4 must widen before adding or rotating.
+static AOM_FORCE_INLINE void tenbd_fdct16_prefix_neon(const int16x8_t* in, int16x8_t* result) {
+    const int16_t weight = (int16_t)(cospi_arr(13)[32] * 4);
+    int16x8_t     v[16];
+    // stage 1
+    butterfly_dct_pre_s16(in, result, 16);
+
+    // stage 2
+    butterfly_dct_pre_s16(result, v, 8);
+    v[8] = result[8];
+    v[9] = result[9];
+    butterfly_cospi32_s16(result[13], result[10], &v[13], &v[10], weight);
+    butterfly_cospi32_s16(result[12], result[11], &v[12], &v[11], weight);
+    v[14] = result[14];
+    v[15] = result[15];
+
+    // stage 3
+    butterfly_dct_pre_s16(v, result, 4);
+    result[4] = v[4];
+    butterfly_cospi32_s16(v[6], v[5], &result[6], &result[5], weight);
+    result[7] = v[7];
+    butterfly_dct_post_s16(v + 8, v + 8, result + 8, 8);
+}
+
+static AOM_FORCE_INLINE void tenbd_fdct16_col_neon(const int16_t* input, int16x8_t* output, uint32_t stride,
+                                                   int lr_flip) {
+    int16x8_t samples[16], prefix[16];
+    for (int i = 0; i < 16; ++i) {
+        int16x8_t row = vld1q_s16(input + i * stride);
+        if (lr_flip) {
+            row = vrev64q_s16(row);
+            row = vextq_s16(row, row, 4);
+        }
+        samples[i] = vshlq_n_s16(row, 2);
+    }
+    tenbd_fdct16_prefix_neon(samples, prefix);
+    int32x4_t wide[16];
+    int16x4_t low[16];
+    for (int i = 0; i < 16; ++i) {
+        wide[i] = vmovl_s16(vget_low_s16(prefix[i]));
+    }
+    fdct16_after_stage3_neon(wide, wide, 13);
+    // After the column shift, |output| <= 11575.
+    for (int i = 0; i < 16; ++i) {
+        low[i]  = vrshrn_n_s32(wide[i], 2);
+        wide[i] = vmovl_s16(vget_high_s16(prefix[i]));
+    }
+    fdct16_after_stage3_neon(wide, wide, 13);
+    for (int i = 0; i < 16; ++i) {
+        output[i] = vcombine_s16(low[i], vrshrn_n_s32(wide[i], 2));
+    }
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static AOM_FORCE_INLINE void fadst16_after_stage6_neon(const int32x4_t* v, int32x4_t* out, int bit) {
+    const int32_t* const cospi = cospi_arr_s32(bit);
+    const int32x4_t      v_bit = vdupq_n_s32(-bit);
+    int32x4_t            u[16], result[16];
+
+    // stage 7
+    u[0]  = vaddq_s32(v[0], v[8]);
+    u[1]  = vaddq_s32(v[1], v[9]);
+    u[2]  = vaddq_s32(v[2], v[10]);
+    u[3]  = vaddq_s32(v[3], v[11]);
+    u[4]  = vaddq_s32(v[4], v[12]);
+    u[5]  = vaddq_s32(v[5], v[13]);
+    u[6]  = vaddq_s32(v[6], v[14]);
+    u[7]  = vsubq_s32(v[15], v[7]);
+    u[8]  = vsubq_s32(v[0], v[8]);
+    u[9]  = vsubq_s32(v[1], v[9]);
+    u[10] = vsubq_s32(v[2], v[10]);
+    u[11] = vsubq_s32(v[3], v[11]);
+    u[12] = vsubq_s32(v[4], v[12]);
+    u[13] = vsubq_s32(v[5], v[13]);
+    u[14] = vsubq_s32(v[6], v[14]);
+    u[15] = vaddq_s32(v[7], v[15]);
+
+    // stage 8
+    butterfly_0112_neon(cospi, 2, u[0], u[1], &result[0], &result[1], v_bit);
+    butterfly_0112_neon(cospi, 10, u[2], u[3], &result[2], &result[3], v_bit);
+    butterfly_0112_neon(cospi, 18, u[4], u[5], &result[4], &result[5], v_bit);
+    butterfly_0112_neon(cospi, 26, u[6], u[7], &result[6], &result[7], v_bit);
+    butterfly_0130_neon(cospi, 30, u[9], u[8], &result[8], &result[9], v_bit);
+    butterfly_0130_neon(cospi, 22, u[11], u[10], &result[10], &result[11], v_bit);
+    butterfly_0130_neon(cospi, 14, u[13], u[12], &result[12], &result[13], v_bit);
+    butterfly_0112_neon(cospi, 6, u[14], u[15], &result[15], &result[14], v_bit);
+
+    // stage 9
+    out[0]  = result[1];
+    out[1]  = result[14];
+    out[2]  = result[3];
+    out[3]  = result[12];
+    out[4]  = result[5];
+    out[5]  = result[10];
+    out[6]  = result[7];
+    out[7]  = result[8];
+    out[8]  = result[9];
+    out[9]  = result[6];
+    out[10] = result[11];
+    out[11] = result[4];
+    out[12] = result[13];
+    out[13] = result[2];
+    out[14] = result[15];
+    out[15] = result[0];
+}
+
 static void highbd_fadst16_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) {
     const int32_t* const cospi = cospi_arr_s32(bit);
     const int32x4_t      v_bit = vdupq_n_s32(-bit);
@@ -974,51 +1360,142 @@ static void highbd_fadst16_x4_neon(const int32x4_t* in, int32x4_t* out, int bit)
     butterfly_0130_neon(cospi, 24, u[11], u[10], &v[10], &v[11], v_bit);
     butterfly_0130_neon(cospi, 24, u[14], u[15], &v[14], &v[15], v_bit);
 
-    // stage 7
-    u[0]  = vaddq_s32(v[0], v[8]);
-    u[1]  = vaddq_s32(v[1], v[9]);
-    u[2]  = vaddq_s32(v[2], v[10]);
-    u[3]  = vaddq_s32(v[3], v[11]);
-    u[4]  = vaddq_s32(v[4], v[12]);
-    u[5]  = vaddq_s32(v[5], v[13]);
-    u[6]  = vaddq_s32(v[6], v[14]);
-    u[7]  = vsubq_s32(v[15], v[7]);
-    u[8]  = vsubq_s32(v[0], v[8]);
-    u[9]  = vsubq_s32(v[1], v[9]);
-    u[10] = vsubq_s32(v[2], v[10]);
-    u[11] = vsubq_s32(v[3], v[11]);
-    u[12] = vsubq_s32(v[4], v[12]);
-    u[13] = vsubq_s32(v[5], v[13]);
-    u[14] = vsubq_s32(v[6], v[14]);
-    u[15] = vaddq_s32(v[7], v[15]);
+    fadst16_after_stage6_neon(v, out, bit);
+}
 
-    // stage 8
-    butterfly_0112_neon(cospi, 2, u[0], u[1], &v[0], &v[1], v_bit);
-    butterfly_0112_neon(cospi, 10, u[2], u[3], &v[2], &v[3], v_bit);
-    butterfly_0112_neon(cospi, 18, u[4], u[5], &v[4], &v[5], v_bit);
-    butterfly_0112_neon(cospi, 26, u[6], u[7], &v[6], &v[7], v_bit);
-    butterfly_0130_neon(cospi, 30, u[9], u[8], &v[8], &v[9], v_bit);
-    butterfly_0130_neon(cospi, 22, u[11], u[10], &v[10], &v[11], v_bit);
-    butterfly_0130_neon(cospi, 14, u[13], u[12], &v[12], &v[13], v_bit);
-    butterfly_0112_neon(cospi, 6, u[14], u[15], &v[15], &v[14], v_bit);
+// With |input| <= 4092, ADST16 stored values through stage 6 are
+// bounded by 20978. Stage 7 sums must widen (bound 41552).
+static AOM_FORCE_INLINE void tenbd_fadst16_prefix_neon(const int16x8_t* in, int16x8_t* v) {
+    const int32_t* cs     = cospi_arr(13);
+    const int16_t  weight = (int16_t)(cs[32] * 4);
+    int16x8_t      u[16];
+    // stage 0-1
+    u[0]  = in[0];
+    u[1]  = in[15];
+    u[2]  = in[7];
+    u[3]  = in[8];
+    u[4]  = in[3];
+    u[5]  = in[12];
+    u[6]  = in[4];
+    u[7]  = in[11];
+    u[8]  = in[1];
+    u[9]  = in[14];
+    u[10] = in[6];
+    u[11] = in[9];
+    u[12] = in[2];
+    u[13] = in[13];
+    u[14] = in[5];
+    u[15] = in[10];
 
-    // stage 9
-    out[0]  = v[1];
-    out[1]  = v[14];
-    out[2]  = v[3];
-    out[3]  = v[12];
-    out[4]  = v[5];
-    out[5]  = v[10];
-    out[6]  = v[7];
-    out[7]  = v[8];
-    out[8]  = v[9];
-    out[9]  = v[6];
-    out[10] = v[11];
-    out[11] = v[4];
-    out[12] = v[13];
-    out[13] = v[2];
-    out[14] = v[15];
-    out[15] = v[0];
+    // stage 2
+    v[0] = u[0];
+    v[1] = u[1];
+    butterfly_cospi32_0222_s16_neon(u[3], u[2], &v[2], &v[3], weight);
+    v[4] = u[4];
+    v[5] = u[5];
+    butterfly_cospi32_s16(u[6], u[7], &v[7], &v[6], weight);
+    v[8] = u[8];
+    v[9] = u[9];
+    butterfly_cospi32_s16(u[10], u[11], &v[11], &v[10], weight);
+    v[12] = u[12];
+    v[13] = u[13];
+    butterfly_cospi32_0222_s16_neon(u[15], u[14], &v[14], &v[15], weight);
+
+    // stage 3
+    u[0]  = vaddq_s16(v[0], v[2]);
+    u[1]  = vsubq_s16(v[3], v[1]);
+    u[2]  = vsubq_s16(v[0], v[2]);
+    u[3]  = vaddq_s16(v[1], v[3]);
+    u[4]  = vsubq_s16(v[6], v[4]);
+    u[5]  = vaddq_s16(v[5], v[7]);
+    u[6]  = vaddq_s16(v[4], v[6]);
+    u[7]  = vsubq_s16(v[5], v[7]);
+    u[8]  = vsubq_s16(v[10], v[8]);
+    u[9]  = vaddq_s16(v[9], v[11]);
+    u[10] = vaddq_s16(v[8], v[10]);
+    u[11] = vsubq_s16(v[9], v[11]);
+    u[12] = vaddq_s16(v[12], v[14]);
+    u[13] = vsubq_s16(v[15], v[13]);
+    u[14] = vsubq_s16(v[12], v[14]);
+    u[15] = vaddq_s16(v[13], v[15]);
+
+    // stage 4
+    v[0] = u[0];
+    v[1] = u[1];
+    v[2] = u[2];
+    v[3] = u[3];
+    butterfly_0112_s16_13_neon(cs, 16, u[4], u[5], &v[4], &v[5]);
+    butterfly_0112_s16_13_neon(cs, 16, u[7], u[6], &v[6], &v[7]);
+
+    v[8]  = u[8];
+    v[9]  = u[9];
+    v[10] = u[10];
+    v[11] = u[11];
+
+    butterfly_0112_s16_13_neon(cs, 16, u[12], u[13], &v[12], &v[13]);
+    butterfly_0332_s16_13_neon(cs, 16, u[14], u[15], &v[15], &v[14]);
+
+    // stage 5
+    u[0]  = vaddq_s16(v[0], v[4]);
+    u[1]  = vaddq_s16(v[1], v[5]);
+    u[2]  = vaddq_s16(v[2], v[6]);
+    u[3]  = vsubq_s16(v[7], v[3]);
+    u[4]  = vsubq_s16(v[0], v[4]);
+    u[5]  = vsubq_s16(v[1], v[5]);
+    u[6]  = vsubq_s16(v[2], v[6]);
+    u[7]  = vaddq_s16(v[3], v[7]);
+    u[8]  = vaddq_s16(v[8], v[12]);
+    u[9]  = vaddq_s16(v[9], v[13]);
+    u[10] = vsubq_s16(v[14], v[10]);
+    u[11] = vaddq_s16(v[11], v[15]);
+    u[12] = vsubq_s16(v[8], v[12]);
+    u[13] = vsubq_s16(v[9], v[13]);
+    u[14] = vaddq_s16(v[10], v[14]);
+    u[15] = vsubq_s16(v[11], v[15]);
+
+    // stage 6
+    v[0] = u[0];
+    v[1] = u[1];
+    v[2] = u[2];
+    v[3] = u[3];
+    v[4] = u[4];
+    v[5] = u[5];
+    v[6] = u[6];
+    v[7] = u[7];
+
+    butterfly_0112_s16_13_neon(cs, 8, u[8], u[9], &v[8], &v[9]);
+    butterfly_0130_s16_13_neon(cs, 8, u[12], u[13], &v[13], &v[12]);
+    butterfly_0130_s16_13_neon(cs, 24, u[11], u[10], &v[10], &v[11]);
+    butterfly_0130_s16_13_neon(cs, 24, u[14], u[15], &v[14], &v[15]);
+}
+
+static AOM_FORCE_INLINE void tenbd_fadst16_col_neon(const int16_t* input, int16x8_t* output, uint32_t stride,
+                                                    int lr_flip, int ud_flip) {
+    int16x8_t samples[16], prefix[16];
+    for (int i = 0; i < 16; ++i) {
+        int16x8_t row = vld1q_s16(input + (ud_flip ? 15 - i : i) * stride);
+        if (lr_flip) {
+            row = vrev64q_s16(row);
+            row = vextq_s16(row, row, 4);
+        }
+        samples[i] = vshlq_n_s16(row, 2);
+    }
+    tenbd_fadst16_prefix_neon(samples, prefix);
+    int32x4_t wide[16];
+    int16x4_t low[16];
+    for (int i = 0; i < 16; ++i) {
+        wide[i] = vmovl_s16(vget_low_s16(prefix[i]));
+    }
+    fadst16_after_stage6_neon(wide, wide, 13);
+    // The rounded middle values are bounded by 10427.
+    for (int i = 0; i < 16; ++i) {
+        low[i]  = vrshrn_n_s32(wide[i], 2);
+        wide[i] = vmovl_s16(vget_high_s16(prefix[i]));
+    }
+    fadst16_after_stage6_neon(wide, wide, 13);
+    for (int i = 0; i < 16; ++i) {
+        output[i] = vcombine_s16(low[i], vrshrn_n_s32(wide[i], 2));
+    }
 }
 
 static void highbd_fidentity16_x4_neon(const int32x4_t* in, int32x4_t* out, int bit) {
@@ -1058,12 +1535,93 @@ static void highbd_fidentity16_xn_neon(const int32x4_t* in, int32x4_t* out, int 
 }
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static AOM_FORCE_INLINE void tenbd_fwd_txfm2d_16x16_type_neon(const int16_t* input, int32_t* output, uint32_t stride,
+                                                              TxType type) {
+    int ud_flip, lr_flip;
+    get_flip_cfg(type, &ud_flip, &lr_flip);
+    int16x8_t middle[32];
+    for (int x = 0; x < 16; x += 8) {
+        const int16_t* col = input + (lr_flip ? 8 - x : x);
+        if (vtx_tab[type] == DCT_1D) {
+            tenbd_fdct16_col_neon(col, middle + x / 8 * 16, stride, lr_flip);
+        } else {
+            tenbd_fadst16_col_neon(col, middle + x / 8 * 16, stride, lr_flip, ud_flip);
+        }
+    }
+    if (htx_tab[type] == IDTX_1D) {
+        // Horizontal identity is pointwise, so neither transpose is needed.
+        for (int x = 0; x < 16; x += 8) {
+            for (int y = 0; y < 16; ++y) {
+                const int16x8_t v  = middle[x / 8 * 16 + y];
+                const int32x4_t lo = vmull_n_s16(vget_low_s16(v), 2 * new_sqrt2);
+                const int32x4_t hi = vmull_n_s16(vget_high_s16(v), 2 * new_sqrt2);
+                vst1q_s32(output + y * 16 + x, vrshrq_n_s32(lo, new_sqrt2_bits));
+                vst1q_s32(output + y * 16 + x + 4, vrshrq_n_s32(hi, new_sqrt2_bits));
+            }
+        }
+        return;
+    }
+    int32x4_t rows[64], result[64];
+    transpose_widen_s16_neon(middle, rows, 16, 16);
+    if (htx_tab[type] == DCT_1D) {
+        highbd_fdct16_xn_neon(rows, rows, 12, 4);
+    } else {
+        highbd_fadst16_xn_neon(rows, rows, 12, 4);
+    }
+    transpose_arrays_s32_16x16(rows, result);
+    store_buffer_16x16(result, output, 16);
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
 void svt_av1_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
     if (bd == 8) {
         svt_lbd_fwd_txfm2d_16x16_neon(input, output, stride, tx_type);
         return;
     }
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (bd == 10) {
+        switch (tx_type) {
+        case DCT_DCT:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, DCT_DCT);
+            return;
+        case DCT_ADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, DCT_ADST);
+            return;
+        case DCT_FLIPADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, DCT_FLIPADST);
+            return;
+        case V_DCT:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, V_DCT);
+            return;
+        case ADST_DCT:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, ADST_DCT);
+            return;
+        case ADST_ADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, ADST_ADST);
+            return;
+        case FLIPADST_DCT:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, FLIPADST_DCT);
+            return;
+        case FLIPADST_FLIPADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, FLIPADST_FLIPADST);
+            return;
+        case ADST_FLIPADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, ADST_FLIPADST);
+            return;
+        case FLIPADST_ADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, FLIPADST_ADST);
+            return;
+        case V_ADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, V_ADST);
+            return;
+        case V_FLIPADST:
+            tenbd_fwd_txfm2d_16x16_type_neon(input, output, stride, V_FLIPADST);
+            return;
+        default:
+            break;
+        }
+    }
     int ud_flip, lr_flip;
     get_flip_cfg(tx_type, &ud_flip, &lr_flip);
     ud_adjust_input_and_stride(ud_flip, &input, &stride, 16);
@@ -1667,41 +2225,10 @@ void svt_av1_fwd_txfm2d_8x16_neon(int16_t* input, int32_t* coeff, uint32_t strid
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 }
 
-static void highbd_fdct32_x4_neon(const int32x4_t* input, int32x4_t* output, int cos_bit) {
+static AOM_FORCE_INLINE void fdct32_after_stage3_neon(int32x4_t* buf1, int32x4_t* output, int cos_bit) {
     const int32_t* const cospi     = cospi_arr_s32(cos_bit);
     const int32x4_t      v_cos_bit = vdupq_n_s32(-cos_bit);
-
-    // Workspaces for intermediate transform steps.
-    int32x4_t buf0[32];
-    int32x4_t buf1[32];
-
-    // stage 1
-    butterfly_dct_pre(input, buf1, 32);
-
-    // stage 2
-    butterfly_dct_pre(buf1, buf0, 16);
-    buf0[16] = buf1[16];
-    buf0[17] = buf1[17];
-    buf0[18] = buf1[18];
-    buf0[19] = buf1[19];
-    butterfly_0112_neon(cospi, 32, buf1[27], buf1[20], &buf0[27], &buf0[20], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, buf1[26], buf1[21], &buf0[26], &buf0[21], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, buf1[25], buf1[22], &buf0[25], &buf0[22], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, buf1[24], buf1[23], &buf0[24], &buf0[23], v_cos_bit);
-    buf0[28] = buf1[28];
-    buf0[29] = buf1[29];
-    buf0[30] = buf1[30];
-    buf0[31] = buf1[31];
-
-    // stage 3
-    butterfly_dct_pre(buf0, buf1, 8);
-    buf1[8] = buf0[8];
-    buf1[9] = buf0[9];
-    butterfly_0112_neon(cospi, 32, buf0[13], buf0[10], &buf1[13], &buf1[10], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, buf0[12], buf0[11], &buf1[12], &buf1[11], v_cos_bit);
-    buf1[14] = buf0[14];
-    buf1[15] = buf0[15];
-    butterfly_dct_post(buf0 + 16, buf0 + 16, buf1 + 16, 16);
+    int32x4_t            buf0[32];
 
     // stage 4
     butterfly_dct_pre(buf1, buf0, 4);
@@ -1838,6 +2365,110 @@ static void highbd_fdct32_x4_neon(const int32x4_t* input, int32x4_t* output, int
     output[30] = buf0[15];
     output[31] = buf0[31];
 }
+
+static void highbd_fdct32_x4_neon(const int32x4_t* input, int32x4_t* output, int cos_bit) {
+    const int32_t* const cospi     = cospi_arr_s32(cos_bit);
+    const int32x4_t      v_cos_bit = vdupq_n_s32(-cos_bit);
+
+    // Workspaces for intermediate transform steps.
+    int32x4_t buf0[32];
+    int32x4_t buf1[32];
+
+    // stage 1
+    butterfly_dct_pre(input, buf1, 32);
+
+    // stage 2
+    butterfly_dct_pre(buf1, buf0, 16);
+    buf0[16] = buf1[16];
+    buf0[17] = buf1[17];
+    buf0[18] = buf1[18];
+    buf0[19] = buf1[19];
+    butterfly_0112_neon(cospi, 32, buf1[27], buf1[20], &buf0[27], &buf0[20], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, buf1[26], buf1[21], &buf0[26], &buf0[21], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, buf1[25], buf1[22], &buf0[25], &buf0[22], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, buf1[24], buf1[23], &buf0[24], &buf0[23], v_cos_bit);
+    buf0[28] = buf1[28];
+    buf0[29] = buf1[29];
+    buf0[30] = buf1[30];
+    buf0[31] = buf1[31];
+
+    // stage 3
+    butterfly_dct_pre(buf0, buf1, 8);
+    buf1[8] = buf0[8];
+    buf1[9] = buf0[9];
+    butterfly_0112_neon(cospi, 32, buf0[13], buf0[10], &buf1[13], &buf1[10], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, buf0[12], buf0[11], &buf1[12], &buf1[11], v_cos_bit);
+    buf1[14] = buf0[14];
+    buf1[15] = buf0[15];
+    butterfly_dct_post(buf0 + 16, buf0 + 16, buf1 + 16, 16);
+
+    fdct32_after_stage3_neon(buf1, output, cos_bit);
+}
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// |residual << 2| <= 4092. Stages 1..3 and their equal-weight pre-adds
+// are bounded by 32736; stage 4 must widen before adding or rotating.
+static AOM_FORCE_INLINE void tenbd_fdct32_prefix_neon(const int16x8_t* input, int16x8_t* result) {
+    const int16_t weight = (int16_t)(cospi_arr(12)[32] * 8);
+    int16x8_t     buf0[32];
+    // stage 1
+    butterfly_dct_pre_s16(input, result, 32);
+
+    // stage 2
+    butterfly_dct_pre_s16(result, buf0, 16);
+    buf0[16] = result[16];
+    buf0[17] = result[17];
+    buf0[18] = result[18];
+    buf0[19] = result[19];
+    butterfly_cospi32_s16(result[27], result[20], &buf0[27], &buf0[20], weight);
+    butterfly_cospi32_s16(result[26], result[21], &buf0[26], &buf0[21], weight);
+    butterfly_cospi32_s16(result[25], result[22], &buf0[25], &buf0[22], weight);
+    butterfly_cospi32_s16(result[24], result[23], &buf0[24], &buf0[23], weight);
+    buf0[28] = result[28];
+    buf0[29] = result[29];
+    buf0[30] = result[30];
+    buf0[31] = result[31];
+
+    // stage 3
+    butterfly_dct_pre_s16(buf0, result, 8);
+    result[8] = buf0[8];
+    result[9] = buf0[9];
+    butterfly_cospi32_s16(buf0[13], buf0[10], &result[13], &result[10], weight);
+    butterfly_cospi32_s16(buf0[12], buf0[11], &result[12], &result[11], weight);
+    result[14] = buf0[14];
+    result[15] = buf0[15];
+    butterfly_dct_post_s16(buf0 + 16, buf0 + 16, result + 16, 16);
+}
+
+static AOM_FORCE_INLINE void tenbd_fdct32_col_neon(const int16_t* input, int16x8_t* output, uint32_t stride,
+                                                   int lr_flip) {
+    int16x8_t samples[32], prefix[32];
+    for (int i = 0; i < 32; ++i) {
+        int16x8_t row = vld1q_s16(input + i * stride);
+        if (lr_flip) {
+            row = vrev64q_s16(row);
+            row = vextq_s16(row, row, 4);
+        }
+        samples[i] = vshlq_n_s16(row, 2);
+    }
+    tenbd_fdct32_prefix_neon(samples, prefix);
+    int32x4_t wide[32];
+    int16x4_t low[32];
+    for (int i = 0; i < 32; ++i) {
+        wide[i] = vmovl_s16(vget_low_s16(prefix[i]));
+    }
+    fdct32_after_stage3_neon(wide, wide, 12);
+    // After the column shift, |output| <= 5787.
+    for (int i = 0; i < 32; ++i) {
+        low[i]  = vrshrn_n_s32(wide[i], 4);
+        wide[i] = vmovl_s16(vget_high_s16(prefix[i]));
+    }
+    fdct32_after_stage3_neon(wide, wide, 12);
+    for (int i = 0; i < 32; ++i) {
+        output[i] = vcombine_s16(low[i], vrshrn_n_s32(wide[i], 4));
+    }
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 static void highbd_fidentity32_x4_neon(const int32x4_t* input, int32x4_t* output, int cos_bit) {
@@ -2100,115 +2731,9 @@ void svt_av1_fwd_txfm2d_16x32_neon(int16_t* input, int32_t* coeff, uint32_t stri
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 }
 
-static void highbd_fdct64_x4_neon(const int32x4_t* input, int32x4_t* output, int8_t cos_bit) {
+static AOM_FORCE_INLINE void fdct64_after_stage5_neon(const int32x4_t* x5, int32x4_t* output, int cos_bit) {
     const int32_t* const cospi     = cospi_arr_s32(cos_bit);
     const int32x4_t      v_cos_bit = vdupq_n_s32(-cos_bit);
-
-    // stage 1
-    int32x4_t x1[64];
-    butterfly_dct_pre(input, x1, 64);
-
-    // stage 2
-    int32x4_t x2[64];
-    butterfly_dct_pre(x1, x2, 32);
-    x2[32] = x1[32];
-    x2[33] = x1[33];
-    x2[34] = x1[34];
-    x2[35] = x1[35];
-    x2[36] = x1[36];
-    x2[37] = x1[37];
-    x2[38] = x1[38];
-    x2[39] = x1[39];
-    butterfly_0112_neon(cospi, 32, x1[55], x1[40], &x2[55], &x2[40], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x1[54], x1[41], &x2[54], &x2[41], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x1[53], x1[42], &x2[53], &x2[42], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x1[52], x1[43], &x2[52], &x2[43], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x1[51], x1[44], &x2[51], &x2[44], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x1[50], x1[45], &x2[50], &x2[45], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x1[49], x1[46], &x2[49], &x2[46], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x1[48], x1[47], &x2[48], &x2[47], v_cos_bit);
-    x2[56] = x1[56];
-    x2[57] = x1[57];
-    x2[58] = x1[58];
-    x2[59] = x1[59];
-    x2[60] = x1[60];
-    x2[61] = x1[61];
-    x2[62] = x1[62];
-    x2[63] = x1[63];
-
-    // stage 3
-    int32x4_t x3[64];
-    butterfly_dct_pre(x2, x3, 16);
-    x3[16] = x2[16];
-    x3[17] = x2[17];
-    x3[18] = x2[18];
-    x3[19] = x2[19];
-    butterfly_0112_neon(cospi, 32, x2[27], x2[20], &x3[27], &x3[20], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x2[26], x2[21], &x3[26], &x3[21], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x2[25], x2[22], &x3[25], &x3[22], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x2[24], x2[23], &x3[24], &x3[23], v_cos_bit);
-    x3[28] = x2[28];
-    x3[29] = x2[29];
-    x3[30] = x2[30];
-    x3[31] = x2[31];
-    butterfly_dct_post(x2 + 32, x2 + 32, x3 + 32, 32);
-
-    // stage 4
-    int32x4_t x4[64];
-    butterfly_dct_pre(x3, x4, 8);
-    x4[8] = x3[8];
-    x4[9] = x3[9];
-    butterfly_0112_neon(cospi, 32, x3[13], x3[10], &x4[13], &x4[10], v_cos_bit);
-    butterfly_0112_neon(cospi, 32, x3[12], x3[11], &x4[12], &x4[11], v_cos_bit);
-    x4[14] = x3[14];
-    x4[15] = x3[15];
-    butterfly_dct_post(x3 + 16, x3 + 16, x4 + 16, 16);
-    x4[32] = x3[32];
-    x4[33] = x3[33];
-    x4[34] = x3[34];
-    x4[35] = x3[35];
-    butterfly_0112_neon(cospi, 16, x3[59], x3[36], &x4[59], &x4[36], v_cos_bit);
-    butterfly_0112_neon(cospi, 16, x3[58], x3[37], &x4[58], &x4[37], v_cos_bit);
-    butterfly_0112_neon(cospi, 16, x3[57], x3[38], &x4[57], &x4[38], v_cos_bit);
-    butterfly_0112_neon(cospi, 16, x3[56], x3[39], &x4[56], &x4[39], v_cos_bit);
-    butterfly_2312_neon(cospi, 16, x3[55], x3[40], &x4[40], &x4[55], v_cos_bit);
-    butterfly_2312_neon(cospi, 16, x3[54], x3[41], &x4[41], &x4[54], v_cos_bit);
-    butterfly_2312_neon(cospi, 16, x3[53], x3[42], &x4[42], &x4[53], v_cos_bit);
-    butterfly_2312_neon(cospi, 16, x3[52], x3[43], &x4[43], &x4[52], v_cos_bit);
-    x4[44] = x3[44];
-    x4[45] = x3[45];
-    x4[46] = x3[46];
-    x4[47] = x3[47];
-    x4[48] = x3[48];
-    x4[49] = x3[49];
-    x4[50] = x3[50];
-    x4[51] = x3[51];
-    x4[60] = x3[60];
-    x4[61] = x3[61];
-    x4[62] = x3[62];
-    x4[63] = x3[63];
-
-    // stage 5
-    int32x4_t x5[64];
-    butterfly_dct_pre(x4, x5, 4);
-    x5[4] = x4[4];
-    butterfly_0112_neon(cospi, 32, x4[6], x4[5], &x5[6], &x5[5], v_cos_bit);
-    x5[7] = x4[7];
-    butterfly_dct_post(x4 + 8, x4 + 8, x5 + 8, 8);
-    x5[16] = x4[16];
-    x5[17] = x4[17];
-    butterfly_0112_neon(cospi, 16, x4[29], x4[18], &x5[29], &x5[18], v_cos_bit);
-    butterfly_0112_neon(cospi, 16, x4[28], x4[19], &x5[28], &x5[19], v_cos_bit);
-    butterfly_2312_neon(cospi, 16, x4[27], x4[20], &x5[20], &x5[27], v_cos_bit);
-    butterfly_2312_neon(cospi, 16, x4[26], x4[21], &x5[21], &x5[26], v_cos_bit);
-    x5[22] = x4[22];
-    x5[23] = x4[23];
-    x5[24] = x4[24];
-    x5[25] = x4[25];
-    x5[30] = x4[30];
-    x5[31] = x4[31];
-    butterfly_dct_post(x4 + 32, x4 + 32, x5 + 32, 16);
-    butterfly_dct_post(x4 + 48, x4 + 48, x5 + 48, 16);
 
     // stage 6
     int32x4_t x6[64];
@@ -2472,6 +2997,255 @@ static void highbd_fdct64_x4_neon(const int32x4_t* input, int32x4_t* output, int
     output[63] = x10[63];
 }
 
+static void highbd_fdct64_x4_neon(const int32x4_t* input, int32x4_t* output, int8_t cos_bit) {
+    const int32_t* const cospi     = cospi_arr_s32(cos_bit);
+    const int32x4_t      v_cos_bit = vdupq_n_s32(-cos_bit);
+
+    // stage 1
+    int32x4_t x1[64];
+    butterfly_dct_pre(input, x1, 64);
+
+    // stage 2
+    int32x4_t x2[64];
+    butterfly_dct_pre(x1, x2, 32);
+    x2[32] = x1[32];
+    x2[33] = x1[33];
+    x2[34] = x1[34];
+    x2[35] = x1[35];
+    x2[36] = x1[36];
+    x2[37] = x1[37];
+    x2[38] = x1[38];
+    x2[39] = x1[39];
+    butterfly_0112_neon(cospi, 32, x1[55], x1[40], &x2[55], &x2[40], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x1[54], x1[41], &x2[54], &x2[41], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x1[53], x1[42], &x2[53], &x2[42], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x1[52], x1[43], &x2[52], &x2[43], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x1[51], x1[44], &x2[51], &x2[44], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x1[50], x1[45], &x2[50], &x2[45], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x1[49], x1[46], &x2[49], &x2[46], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x1[48], x1[47], &x2[48], &x2[47], v_cos_bit);
+    x2[56] = x1[56];
+    x2[57] = x1[57];
+    x2[58] = x1[58];
+    x2[59] = x1[59];
+    x2[60] = x1[60];
+    x2[61] = x1[61];
+    x2[62] = x1[62];
+    x2[63] = x1[63];
+
+    // stage 3
+    int32x4_t x3[64];
+    butterfly_dct_pre(x2, x3, 16);
+    x3[16] = x2[16];
+    x3[17] = x2[17];
+    x3[18] = x2[18];
+    x3[19] = x2[19];
+    butterfly_0112_neon(cospi, 32, x2[27], x2[20], &x3[27], &x3[20], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x2[26], x2[21], &x3[26], &x3[21], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x2[25], x2[22], &x3[25], &x3[22], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x2[24], x2[23], &x3[24], &x3[23], v_cos_bit);
+    x3[28] = x2[28];
+    x3[29] = x2[29];
+    x3[30] = x2[30];
+    x3[31] = x2[31];
+    butterfly_dct_post(x2 + 32, x2 + 32, x3 + 32, 32);
+
+    // stage 4
+    int32x4_t x4[64];
+    butterfly_dct_pre(x3, x4, 8);
+    x4[8] = x3[8];
+    x4[9] = x3[9];
+    butterfly_0112_neon(cospi, 32, x3[13], x3[10], &x4[13], &x4[10], v_cos_bit);
+    butterfly_0112_neon(cospi, 32, x3[12], x3[11], &x4[12], &x4[11], v_cos_bit);
+    x4[14] = x3[14];
+    x4[15] = x3[15];
+    butterfly_dct_post(x3 + 16, x3 + 16, x4 + 16, 16);
+    x4[32] = x3[32];
+    x4[33] = x3[33];
+    x4[34] = x3[34];
+    x4[35] = x3[35];
+    butterfly_0112_neon(cospi, 16, x3[59], x3[36], &x4[59], &x4[36], v_cos_bit);
+    butterfly_0112_neon(cospi, 16, x3[58], x3[37], &x4[58], &x4[37], v_cos_bit);
+    butterfly_0112_neon(cospi, 16, x3[57], x3[38], &x4[57], &x4[38], v_cos_bit);
+    butterfly_0112_neon(cospi, 16, x3[56], x3[39], &x4[56], &x4[39], v_cos_bit);
+    butterfly_2312_neon(cospi, 16, x3[55], x3[40], &x4[40], &x4[55], v_cos_bit);
+    butterfly_2312_neon(cospi, 16, x3[54], x3[41], &x4[41], &x4[54], v_cos_bit);
+    butterfly_2312_neon(cospi, 16, x3[53], x3[42], &x4[42], &x4[53], v_cos_bit);
+    butterfly_2312_neon(cospi, 16, x3[52], x3[43], &x4[43], &x4[52], v_cos_bit);
+    x4[44] = x3[44];
+    x4[45] = x3[45];
+    x4[46] = x3[46];
+    x4[47] = x3[47];
+    x4[48] = x3[48];
+    x4[49] = x3[49];
+    x4[50] = x3[50];
+    x4[51] = x3[51];
+    x4[60] = x3[60];
+    x4[61] = x3[61];
+    x4[62] = x3[62];
+    x4[63] = x3[63];
+
+    // stage 5
+    int32x4_t x5[64];
+    butterfly_dct_pre(x4, x5, 4);
+    x5[4] = x4[4];
+    butterfly_0112_neon(cospi, 32, x4[6], x4[5], &x5[6], &x5[5], v_cos_bit);
+    x5[7] = x4[7];
+    butterfly_dct_post(x4 + 8, x4 + 8, x5 + 8, 8);
+    x5[16] = x4[16];
+    x5[17] = x4[17];
+    butterfly_0112_neon(cospi, 16, x4[29], x4[18], &x5[29], &x5[18], v_cos_bit);
+    butterfly_0112_neon(cospi, 16, x4[28], x4[19], &x5[28], &x5[19], v_cos_bit);
+    butterfly_2312_neon(cospi, 16, x4[27], x4[20], &x5[20], &x5[27], v_cos_bit);
+    butterfly_2312_neon(cospi, 16, x4[26], x4[21], &x5[21], &x5[26], v_cos_bit);
+    x5[22] = x4[22];
+    x5[23] = x4[23];
+    x5[24] = x4[24];
+    x5[25] = x4[25];
+    x5[30] = x4[30];
+    x5[31] = x4[31];
+    butterfly_dct_post(x4 + 32, x4 + 32, x5 + 32, 16);
+    butterfly_dct_post(x4 + 48, x4 + 48, x5 + 48, 16);
+
+    fdct64_after_stage5_neon(x5, output, cos_bit);
+}
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// The 64-point column input is unshifted: |input| <= 1023. Its first
+// five stages, including equal-weight pre-adds, are bounded by 32736.
+static AOM_FORCE_INLINE void tenbd_fdct64_prefix_neon(const int16x8_t* input, int16x8_t* x5) {
+    const int32_t* cs     = cospi_arr(13);
+    const int16_t  weight = (int16_t)(cs[32] * 4);
+    // stage 1
+    int16x8_t x1[64];
+    butterfly_dct_pre_s16(input, x1, 64);
+
+    // stage 2
+    int16x8_t x2[64];
+    butterfly_dct_pre_s16(x1, x2, 32);
+    x2[32] = x1[32];
+    x2[33] = x1[33];
+    x2[34] = x1[34];
+    x2[35] = x1[35];
+    x2[36] = x1[36];
+    x2[37] = x1[37];
+    x2[38] = x1[38];
+    x2[39] = x1[39];
+    butterfly_cospi32_s16(x1[55], x1[40], &x2[55], &x2[40], weight);
+    butterfly_cospi32_s16(x1[54], x1[41], &x2[54], &x2[41], weight);
+    butterfly_cospi32_s16(x1[53], x1[42], &x2[53], &x2[42], weight);
+    butterfly_cospi32_s16(x1[52], x1[43], &x2[52], &x2[43], weight);
+    butterfly_cospi32_s16(x1[51], x1[44], &x2[51], &x2[44], weight);
+    butterfly_cospi32_s16(x1[50], x1[45], &x2[50], &x2[45], weight);
+    butterfly_cospi32_s16(x1[49], x1[46], &x2[49], &x2[46], weight);
+    butterfly_cospi32_s16(x1[48], x1[47], &x2[48], &x2[47], weight);
+    x2[56] = x1[56];
+    x2[57] = x1[57];
+    x2[58] = x1[58];
+    x2[59] = x1[59];
+    x2[60] = x1[60];
+    x2[61] = x1[61];
+    x2[62] = x1[62];
+    x2[63] = x1[63];
+
+    // stage 3
+    int16x8_t x3[64];
+    butterfly_dct_pre_s16(x2, x3, 16);
+    x3[16] = x2[16];
+    x3[17] = x2[17];
+    x3[18] = x2[18];
+    x3[19] = x2[19];
+    butterfly_cospi32_s16(x2[27], x2[20], &x3[27], &x3[20], weight);
+    butterfly_cospi32_s16(x2[26], x2[21], &x3[26], &x3[21], weight);
+    butterfly_cospi32_s16(x2[25], x2[22], &x3[25], &x3[22], weight);
+    butterfly_cospi32_s16(x2[24], x2[23], &x3[24], &x3[23], weight);
+    x3[28] = x2[28];
+    x3[29] = x2[29];
+    x3[30] = x2[30];
+    x3[31] = x2[31];
+    butterfly_dct_post_s16(x2 + 32, x2 + 32, x3 + 32, 32);
+
+    // stage 4
+    int16x8_t x4[64];
+    butterfly_dct_pre_s16(x3, x4, 8);
+    x4[8] = x3[8];
+    x4[9] = x3[9];
+    butterfly_cospi32_s16(x3[13], x3[10], &x4[13], &x4[10], weight);
+    butterfly_cospi32_s16(x3[12], x3[11], &x4[12], &x4[11], weight);
+    x4[14] = x3[14];
+    x4[15] = x3[15];
+    butterfly_dct_post_s16(x3 + 16, x3 + 16, x4 + 16, 16);
+    x4[32] = x3[32];
+    x4[33] = x3[33];
+    x4[34] = x3[34];
+    x4[35] = x3[35];
+    butterfly_0112_s16_13_neon(cs, 16, x3[59], x3[36], &x4[59], &x4[36]);
+    butterfly_0112_s16_13_neon(cs, 16, x3[58], x3[37], &x4[58], &x4[37]);
+    butterfly_0112_s16_13_neon(cs, 16, x3[57], x3[38], &x4[57], &x4[38]);
+    butterfly_0112_s16_13_neon(cs, 16, x3[56], x3[39], &x4[56], &x4[39]);
+    butterfly_2312_s16_13_neon(cs, 16, x3[55], x3[40], &x4[40], &x4[55]);
+    butterfly_2312_s16_13_neon(cs, 16, x3[54], x3[41], &x4[41], &x4[54]);
+    butterfly_2312_s16_13_neon(cs, 16, x3[53], x3[42], &x4[42], &x4[53]);
+    butterfly_2312_s16_13_neon(cs, 16, x3[52], x3[43], &x4[43], &x4[52]);
+    x4[44] = x3[44];
+    x4[45] = x3[45];
+    x4[46] = x3[46];
+    x4[47] = x3[47];
+    x4[48] = x3[48];
+    x4[49] = x3[49];
+    x4[50] = x3[50];
+    x4[51] = x3[51];
+    x4[60] = x3[60];
+    x4[61] = x3[61];
+    x4[62] = x3[62];
+    x4[63] = x3[63];
+
+    // stage 5
+    butterfly_dct_pre_s16(x4, x5, 4);
+    x5[4] = x4[4];
+    butterfly_cospi32_s16(x4[6], x4[5], &x5[6], &x5[5], weight);
+    x5[7] = x4[7];
+    butterfly_dct_post_s16(x4 + 8, x4 + 8, x5 + 8, 8);
+    x5[16] = x4[16];
+    x5[17] = x4[17];
+    butterfly_0112_s16_13_neon(cs, 16, x4[29], x4[18], &x5[29], &x5[18]);
+    butterfly_0112_s16_13_neon(cs, 16, x4[28], x4[19], &x5[28], &x5[19]);
+    butterfly_2312_s16_13_neon(cs, 16, x4[27], x4[20], &x5[20], &x5[27]);
+    butterfly_2312_s16_13_neon(cs, 16, x4[26], x4[21], &x5[21], &x5[26]);
+    x5[22] = x4[22];
+    x5[23] = x4[23];
+    x5[24] = x4[24];
+    x5[25] = x4[25];
+    x5[30] = x4[30];
+    x5[31] = x4[31];
+    butterfly_dct_post_s16(x4 + 32, x4 + 32, x5 + 32, 16);
+    butterfly_dct_post_s16(x4 + 48, x4 + 48, x5 + 48, 16);
+}
+
+static AOM_FORCE_INLINE void tenbd_fdct64_col_neon(const int16_t* input, int16x8_t* output, uint32_t stride) {
+    int16x8_t samples[64], prefix[64];
+    for (int i = 0; i < 64; ++i) {
+        samples[i] = vld1q_s16(input + i * stride);
+    }
+    tenbd_fdct64_prefix_neon(samples, prefix);
+    int32x4_t wide[64];
+    int16x4_t low[64];
+    for (int i = 0; i < 64; ++i) {
+        wide[i] = vmovl_s16(vget_low_s16(prefix[i]));
+    }
+    fdct64_after_stage5_neon(wide, wide, 13);
+    // The rounded middle values are bounded by 11575.
+    for (int i = 0; i < 64; ++i) {
+        low[i]  = vrshrn_n_s32(wide[i], 2);
+        wide[i] = vmovl_s16(vget_high_s16(prefix[i]));
+    }
+    fdct64_after_stage5_neon(wide, wide, 13);
+    for (int i = 0; i < 64; ++i) {
+        output[i] = vcombine_s16(low[i], vrshrn_n_s32(wide[i], 2));
+    }
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
 void svt_av1_fwd_txfm2d_16x64_neon(int16_t* input, int32_t* coeff, uint32_t stride, TxType tx_type, uint8_t bd) {
     (void)bd;
     const int bitcol = fwd_cos_bit_col[2][4];
@@ -2626,12 +3400,49 @@ void svt_av1_fwd_txfm2d_32x16_neon(int16_t* input, int32_t* output, uint32_t str
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static AOM_FORCE_INLINE void tenbd_fwd_txfm2d_32x32_dct_neon(const int16_t* input, int32_t* output, uint32_t stride,
+                                                             TxType type) {
+    int16x8_t middle[128];
+    for (int x = 0; x < 32; x += 8) {
+        tenbd_fdct32_col_neon(input + x, middle + x / 8 * 32, stride, 0);
+    }
+    if (type == V_DCT) {
+        // Horizontal identity is pointwise, so neither transpose is needed.
+        for (int x = 0; x < 32; x += 8) {
+            for (int y = 0; y < 32; ++y) {
+                const int16x8_t v = middle[x / 8 * 32 + y];
+                vst1q_s32(output + y * 32 + x, vshll_n_s16(vget_low_s16(v), 2));
+                vst1q_s32(output + y * 32 + x + 4, vshll_n_s16(vget_high_s16(v), 2));
+            }
+        }
+        return;
+    }
+    int32x4_t rows[256], result[256];
+    transpose_widen_s16_neon(middle, rows, 32, 32);
+    highbd_fdct32_row_many_neon(rows, result, 12, 8, 32);
+    transpose_32xh(result, (int32x4_t*)output, 256);
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
 void svt_av1_fwd_txfm2d_32x32_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
     if (bd == 8) {
         svt_lbd_fwd_txfm2d_32x32_neon(input, output, stride, tx_type);
         return;
     }
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (bd == 10) {
+        switch (tx_type) {
+        case DCT_DCT:
+            tenbd_fwd_txfm2d_32x32_dct_neon(input, output, stride, DCT_DCT);
+            return;
+        case V_DCT:
+            tenbd_fwd_txfm2d_32x32_dct_neon(input, output, stride, V_DCT);
+            return;
+        default:
+            break;
+        }
+    }
     const fwd_transform_1d_col_many_neon col_txfm = col_highbd_txfm32_xn_arr[tx_type];
     const fwd_transform_1d_row_many_neon row_txfm = row_highbd_txfm32_x4_arr[tx_type];
 
@@ -2813,8 +3624,18 @@ static inline void fidtx64x64_neon(int32x4_t* input, int32x4_t* output, const in
     }
 }
 
-// 64x64 DCT_DCT before the final rounding shift by 2. out[g * 64 + c] holds rows 4g..4g+3 of column c.
-static void fdct64x64_unshifted_neon(int16_t* input, uint32_t stride, uint8_t bd, int32x4_t* out) {
+// Column transform, middle rounding, and transpose into groups of four rows.
+static void fdct64x64_columns_neon(int16_t* input, uint32_t stride, uint8_t bd, int32x4_t* out) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (bd == 10) {
+        int16x8_t middle[512];
+        for (int x = 0; x < 64; x += 8) {
+            tenbd_fdct64_col_neon(input + x, middle + x / 8 * 64, stride);
+        }
+        transpose_widen_s16_neon(middle, out, 64, 64);
+        return;
+    }
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
     // Column-wise transform.
     int32x4_t buf0[1024];
     if (bd == 8) {
@@ -2827,11 +3648,14 @@ static void fdct64x64_unshifted_neon(int16_t* input, uint32_t stride, uint8_t bd
     }
 #endif
 
-    int32x4_t buf1[1024];
-    transpose_arrays_s32_64x64(buf0, buf1);
+    transpose_arrays_s32_64x64(buf0, out);
+}
 
-    // Row-wise transform.
-    highbd_fdct64_row_many_neon(buf1, out, 10, /*howmany=*/16, /*hm_stride=*/64);
+// 64x64 DCT_DCT before the final rounding shift by 2. out[g * 64 + c] holds rows 4g..4g+3 of column c.
+static void fdct64x64_unshifted_neon(int16_t* input, uint32_t stride, uint8_t bd, int32x4_t* out) {
+    int32x4_t rows[1024];
+    fdct64x64_columns_neon(input, stride, bd, rows);
+    highbd_fdct64_row_many_neon(rows, out, 10, 16, 64);
 }
 
 void svt_av1_fwd_txfm2d_64x64_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
@@ -2873,13 +3697,24 @@ uint64_t svt_av1_fwd_txfm2d_64x64_energy_neon(int16_t* input, int32_t* output, u
         return svt_handle_transform64x64_neon(output);
     }
     int32x4_t buf[1024];
-    fdct64x64_unshifted_neon(input, stride, bd, buf);
+    if (bd == 10) {
+        fdct64x64_columns_neon(input, stride, bd, buf);
+    } else {
+        fdct64x64_unshifted_neon(input, stride, bd, buf);
+    }
 
     // Four accumulators break the multiply-accumulate dependency chain.
     int64x2_t energy[4] = {vdupq_n_s64(0), vdupq_n_s64(0), vdupq_n_s64(0), vdupq_n_s64(0)};
     for (int g = 0; g < 16; g++) {
-        const int32x4_t* in      = buf + g * 64;
-        int              c_start = 0;
+        int32x4_t        group[64];
+        const int32x4_t* in = buf + g * 64;
+        if (bd == 10) {
+            // Consume four transformed rows immediately, keeping the final
+            // rounding, retained coefficients and energy in the same group.
+            highbd_fdct64_x4_neon(in, group, 10);
+            in = group;
+        }
+        int c_start = 0;
         if (g < 8) {
             for (int c = 0; c < 32; c += 4) {
                 int32x4_t r0, r1, r2, r3;
@@ -3651,6 +4486,89 @@ static inline void load_buffer_16x4_in_16x16_flip(const int16_t* input, int32x4_
     load_buffer_4x4(input + 1 * 4, buf + 2 * 16, stride, 1);
     load_buffer_4x4(input + 2 * 4, buf + 1 * 16, stride, 1);
     load_buffer_4x4(input + 3 * 4, buf + 0 * 16, stride, 1);
+}
+
+// TPL uses 8-bit proxy pictures even for 10-bit input. The shifted residual
+// is at most 1020, and this column pass fits int16. Keep the row pass int32:
+// its pre-rotation sums need more range. Unequal weights round only once.
+static AOM_FORCE_INLINE void fdct16_n4_col8_neon(const int16x8_t* in, int32x4_t* out) {
+    const int32_t* cs  = cospi_arr(13);
+    const int16_t  c32 = (int16_t)(cs[32] << 2);
+    int16x8_t      u[16], v[16], result[4];
+    for (int i = 0; i < 8; ++i) {
+        u[i]      = vaddq_s16(in[i], in[15 - i]);
+        u[15 - i] = vsubq_s16(in[i], in[15 - i]);
+    }
+    for (int i = 0; i < 4; ++i) {
+        v[i]     = vaddq_s16(u[i], u[7 - i]);
+        v[7 - i] = vsubq_s16(u[i], u[7 - i]);
+    }
+    v[8]  = u[8];
+    v[9]  = u[9];
+    v[14] = u[14];
+    v[15] = u[15];
+    v[13] = vqrdmulhq_n_s16(vaddq_s16(u[13], u[10]), c32);
+    v[10] = vqrdmulhq_n_s16(vsubq_s16(u[13], u[10]), c32);
+    v[12] = vqrdmulhq_n_s16(vaddq_s16(u[12], u[11]), c32);
+    v[11] = vqrdmulhq_n_s16(vsubq_s16(u[12], u[11]), c32);
+
+    u[0]  = vaddq_s16(v[0], v[3]);
+    u[1]  = vaddq_s16(v[1], v[2]);
+    u[4]  = v[4];
+    u[6]  = vqrdmulhq_n_s16(vaddq_s16(v[6], v[5]), c32);
+    u[5]  = vqrdmulhq_n_s16(vsubq_s16(v[6], v[5]), c32);
+    u[7]  = v[7];
+    u[8]  = vaddq_s16(v[8], v[11]);
+    u[11] = vsubq_s16(v[8], v[11]);
+    u[9]  = vaddq_s16(v[9], v[10]);
+    u[10] = vsubq_s16(v[9], v[10]);
+    u[12] = vsubq_s16(v[15], v[12]);
+    u[15] = vaddq_s16(v[15], v[12]);
+    u[13] = vsubq_s16(v[14], v[13]);
+    u[14] = vaddq_s16(v[14], v[13]);
+
+    v[0]  = vqrdmulhq_n_s16(vaddq_s16(u[0], u[1]), c32);
+    v[4]  = vaddq_s16(u[4], u[5]);
+    v[7]  = vaddq_s16(u[7], u[6]);
+    v[9]  = fwd_half_s16_13_neon(u[9], u[14], -cs[16], cs[48]);
+    v[14] = fwd_half_s16_13_neon(u[9], u[14], cs[48], cs[16]);
+    v[10] = fwd_half_s16_13_neon(u[10], u[13], -cs[48], -cs[16]);
+    v[13] = fwd_half_s16_13_neon(u[10], u[13], -cs[16], cs[48]);
+
+    result[0] = v[0];
+    result[2] = fwd_half_s16_13_neon(v[4], v[7], cs[56], cs[8]);
+    result[1] = fwd_half_s16_13_neon(vaddq_s16(u[8], v[9]), vaddq_s16(u[15], v[14]), cs[60], cs[4]);
+    result[3] = fwd_half_s16_13_neon(vaddq_s16(u[12], v[13]), vaddq_s16(u[11], v[10]), cs[12], -cs[52]);
+    for (int k = 0; k < 4; ++k) {
+        const int16x8_t x = vrshrq_n_s16(result[k], 2);
+        out[k]            = vmovl_s16(vget_low_s16(x));
+        out[k + 16]       = vmovl_s16(vget_high_s16(x));
+    }
+}
+
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* pred,
+                                              uint32_t pred_stride, int32_t* coeff) {
+    int32x4_t col[64], row[16];
+    for (int x = 0; x < 16; x += 8) {
+        int16x8_t in[16];
+        for (int y = 0; y < 16; ++y) {
+            const uint8x8_t s = vld1_u8(src + y * src_stride + x);
+            const uint8x8_t p = vld1_u8(pred + y * pred_stride + x);
+            in[y]             = vshlq_n_s16(vreinterpretq_s16_u16(vsubl_u8(s, p)), 2);
+        }
+        fdct16_n4_col8_neon(in, col + 4 * x);
+    }
+    transpose_16x4_in_16x16(col, row);
+    highbd_fdct16_N4_x4_neon(row, row, fwd_cos_bit_row[2][2]);
+    transpose_arrays_s32_4x4(row, col);
+    // The fused interface writes only the four coefficient rows read by TPL.
+    const int32x4_t zero = vdupq_n_s32(0);
+    for (int y = 0; y < 4; ++y) {
+        vst1q_s32(coeff + y * 16, col[y]);
+        vst1q_s32(coeff + y * 16 + 4, zero);
+        vst1q_s32(coeff + y * 16 + 8, zero);
+        vst1q_s32(coeff + y * 16 + 12, zero);
+    }
 }
 
 void svt_av1_fwd_txfm2d_16x16_N4_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
