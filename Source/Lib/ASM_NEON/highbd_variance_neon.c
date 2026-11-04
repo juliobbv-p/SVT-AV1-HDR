@@ -70,6 +70,48 @@ static inline void highbd_variance_4xh_neon(const uint16_t* src_ptr, int src_str
 static inline void highbd_variance_large_neon(const uint16_t* src_ptr, int src_stride, const uint16_t* ref_ptr,
                                               int ref_stride, int w, int h, uint64_t* sse, int64_t* sum) {
     int32x4_t sum_s32    = vdupq_n_s32(0);
+    int32x4_t sse_s32[4] = {vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0)};
+
+    // Each signed 16-bit sum lane receives at most 32 differences:
+    // 32 * 1023 = 32736. Widen at that boundary, not once per vector.
+    const int rows_per_chunk = 512 / w;
+    for (int row = 0; row < h; row += rows_per_chunk) {
+        int16x8_t sum0 = vdupq_n_s16(0);
+        int16x8_t sum1 = vdupq_n_s16(0);
+        const int rows = AOMMIN(h - row, rows_per_chunk);
+        for (int i = 0; i < rows; i += w == 8 ? 2 : 1) {
+            for (int j = 0; j < w; j += 16) {
+                // For width eight, pair two rows without reading their padding.
+                const int       src_next = w == 8 ? src_stride : 8;
+                const int       ref_next = w == 8 ? ref_stride : 8;
+                const int16x8_t d0 = vreinterpretq_s16_u16(vsubq_u16(vld1q_u16(src_ptr + j), vld1q_u16(ref_ptr + j)));
+                const int16x8_t d1 = vreinterpretq_s16_u16(
+                    vsubq_u16(vld1q_u16(src_ptr + j + src_next), vld1q_u16(ref_ptr + j + ref_next)));
+                sum0 = vaddq_s16(sum0, d0);
+                sum1 = vaddq_s16(sum1, d1);
+                // Independent multiply-accumulate chains hide multiply latency.
+                sse_s32[0] = vmlal_s16(sse_s32[0], vget_low_s16(d0), vget_low_s16(d0));
+                sse_s32[1] = vmlal_high_s16(sse_s32[1], d0, d0);
+                sse_s32[2] = vmlal_s16(sse_s32[2], vget_low_s16(d1), vget_low_s16(d1));
+                sse_s32[3] = vmlal_high_s16(sse_s32[3], d1, d1);
+            }
+            src_ptr += (w == 8 ? 2 : 1) * src_stride;
+            ref_ptr += (w == 8 ? 2 : 1) * ref_stride;
+        }
+        sum_s32 = vpadalq_s16(sum_s32, sum0);
+        sum_s32 = vpadalq_s16(sum_s32, sum1);
+    }
+
+    *sum = vaddvq_s32(sum_s32);
+    // Even at 128x128 each unsigned lane holds at most 4096 * 1023^2,
+    // below UINT32_MAX. Widen before the horizontal reduction.
+    *sse = vaddlvq_u32(
+        vreinterpretq_u32_s32(vaddq_s32(vaddq_s32(sse_s32[0], sse_s32[1]), vaddq_s32(sse_s32[2], sse_s32[3]))));
+}
+
+static inline void highbd_variance_small_neon(const uint16_t* src_ptr, int src_stride, const uint16_t* ref_ptr,
+                                              int ref_stride, int w, int h, uint64_t* sse, int64_t* sum) {
+    int32x4_t sum_s32    = vdupq_n_s32(0);
     int32x4_t sse_s32[2] = {vdupq_n_s32(0), vdupq_n_s32(0)};
 
     int i = h;
@@ -98,7 +140,11 @@ static inline void highbd_variance_large_neon(const uint16_t* src_ptr, int src_s
 
 static inline void highbd_variance_8xh_neon(const uint16_t* src, int src_stride, const uint16_t* ref, int ref_stride,
                                             int h, uint64_t* sse, int64_t* sum) {
-    highbd_variance_large_neon(src, src_stride, ref, ref_stride, 8, h, sse, sum);
+    if (h <= 8) {
+        highbd_variance_small_neon(src, src_stride, ref, ref_stride, 8, h, sse, sum);
+    } else {
+        highbd_variance_large_neon(src, src_stride, ref, ref_stride, 8, h, sse, sum);
+    }
 }
 
 static inline void highbd_variance_16xh_neon(const uint16_t* src, int src_stride, const uint16_t* ref, int ref_stride,
