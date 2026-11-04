@@ -3313,3 +3313,47 @@ void svt_av1_upsample_intra_edge_neon(uint8_t* p, int sz) {
         sz -= 8;
     } while (sz > 0);
 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+void svt_aom_highbd_filter_intra_predictor_neon(uint16_t* dst, ptrdiff_t stride, TxSize tx_size, const uint16_t* above,
+                                                const uint16_t* left, int mode, int bd) {
+    if (bd > 10) {
+        svt_aom_highbd_filter_intra_predictor_c(dst, stride, tx_size, above, left, mode, bd);
+        return;
+    }
+    const int w = tx_size_wide[tx_size];
+    const int h = tx_size_high[tx_size];
+    assert(w <= 32 && h <= 32);
+    const int16x8_t f0 = vnegq_s16(vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][0]))));
+    const int16x8_t f1 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][1])));
+    const int16x8_t f2 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][2])));
+    const int16x8_t f3 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][3])));
+    const int16x8_t f4 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][4])));
+    const int16x8_t f5 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][5])));
+    const int16x8_t f6 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][6])));
+    const int16x8_t max_value = vdupq_n_s16((1 << bd) - 1);
+    for (int y = 0; y < h; y += 2) {
+        const uint16_t* top      = y ? dst + (y - 1) * stride : above;
+        int             p0       = y ? left[y - 1] : above[-1];
+        int16x8_t       previous = vsetq_lane_s16(left[y], vdupq_n_s16(0), 3);
+        previous                 = vsetq_lane_s16(left[y + 1], previous, 7);
+        for (int x = 0; x < w; x += 4) {
+            const int16x4_t p = vreinterpret_s16_u16(vld1_u16(top + x));
+            // Tap sums lie in [-12, 28], so every partial sum fits in
+            // int16 for 10-bit pixels: [-12276, 28644].
+            int16x8_t sum = vmulq_n_s16(f0, p0);
+            sum           = vmlaq_lane_s16(sum, f1, p, 0);
+            sum           = vmlaq_lane_s16(sum, f2, p, 1);
+            sum           = vmlaq_lane_s16(sum, f3, p, 2);
+            sum           = vmlaq_lane_s16(sum, f4, p, 3);
+            sum           = vmlaq_laneq_s16(sum, f5, previous, 3);
+            sum           = vmlaq_laneq_s16(sum, f6, previous, 7);
+            // Negative rounding differences disappear when clipping to zero.
+            previous = vminq_s16(vmaxq_s16(vrshrq_n_s16(sum, 4), vdupq_n_s16(0)), max_value);
+            vst1_u16(dst + y * stride + x, vreinterpret_u16_s16(vget_low_s16(previous)));
+            vst1_u16(dst + (y + 1) * stride + x, vreinterpret_u16_s16(vget_high_s16(previous)));
+            p0 = vget_lane_s16(p, 3);
+        }
+    }
+}
+#endif

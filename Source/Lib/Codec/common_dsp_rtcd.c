@@ -517,6 +517,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2(svt_cfl_predict_hbd, svt_cfl_predict_hbd_c, svt_cfl_predict_hbd_sse4_1, svt_cfl_predict_hbd_avx2);
 #endif
 #if CONFIG_ENABLE_FILTER_INTRA
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_ONLY_C(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c);
+#endif
     SET_SSE41(svt_av1_filter_intra_predictor, svt_av1_filter_intra_predictor_c, svt_av1_filter_intra_predictor_sse4_1);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
@@ -1135,6 +1138,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_cfl_predict_lbd, svt_cfl_predict_lbd_c, svt_aom_cfl_predict_lbd_neon);
     SET_NEON(svt_cfl_predict_hbd, svt_cfl_predict_hbd_c, svt_cfl_predict_hbd_neon);
 #if CONFIG_ENABLE_FILTER_INTRA
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_NEON(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c, svt_aom_highbd_filter_intra_predictor_neon);
+#endif
     SET_NEON_NEON_I8MM(svt_av1_filter_intra_predictor, svt_av1_filter_intra_predictor_c, svt_av1_filter_intra_predictor_neon, svt_av1_filter_intra_predictor_neon_i8mm);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
@@ -1722,6 +1728,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_cfl_predict_lbd, svt_cfl_predict_lbd_c);
     SET_ONLY_C(svt_cfl_predict_hbd, svt_cfl_predict_hbd_c);
 #if CONFIG_ENABLE_FILTER_INTRA
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_ONLY_C(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c);
+#endif
     SET_ONLY_C(svt_av1_filter_intra_predictor, svt_av1_filter_intra_predictor_c);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH

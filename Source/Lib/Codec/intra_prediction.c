@@ -2546,8 +2546,8 @@ void filter_intra_edge_corner_high(uint16_t* p_above, uint16_t* p_left) {
 ////////////########...........Recurssive intra prediction starting...........#########
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-void svt_aom_highbd_filter_intra_predictor(uint16_t* dst, ptrdiff_t stride, TxSize tx_size, const uint16_t* above,
-                                           const uint16_t* left, int mode, int bd) {
+void svt_aom_highbd_filter_intra_predictor_c(uint16_t* dst, ptrdiff_t stride, TxSize tx_size, const uint16_t* above,
+                                             const uint16_t* left, int mode, int bd) {
     uint16_t  buffer[33][33];
     const int bw = tx_size_wide[tx_size];
     const int bh = tx_size_high[tx_size];

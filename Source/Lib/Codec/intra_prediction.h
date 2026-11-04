@@ -107,8 +107,8 @@ void svt_aom_highbd_dr_predictor(uint16_t* dst, ptrdiff_t stride, TxSize tx_size
 
 void filter_intra_edge_corner_high(uint16_t* p_above, uint16_t* p_left);
 
-void svt_aom_highbd_filter_intra_predictor(uint16_t* dst, ptrdiff_t stride, TxSize tx_size, const uint16_t* above,
-                                           const uint16_t* left, int mode, int bd);
+void svt_aom_highbd_filter_intra_predictor_c(uint16_t* dst, ptrdiff_t stride, TxSize tx_size, const uint16_t* above,
+                                             const uint16_t* left, int mode, int bd);
 
 void svt_cfl_luma_subsampling_420_lbd_c(const uint8_t* input, // AMIR-> Changed to 8 bit
                                         int32_t input_stride, int16_t* output_q3, int32_t width, int32_t height);
