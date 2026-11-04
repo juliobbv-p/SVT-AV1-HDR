@@ -246,7 +246,8 @@ void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep
 static AOM_INLINE void tpl_residual_fwd_txfm(const TplControls* tpl_ctrls, uint32_t size, TxSize tx_size,
                                              int16_t* src_diff, const uint8_t* src, uint32_t src_stride,
                                              const uint8_t* pred, uint32_t pred_stride, int32_t* coeff) {
-    if (SVT_X86_ONLY_KERNEL_PATHS && tx_size == TX_16X16 && tpl_ctrls->pf_shape == N4_SHAPE) {
+    if ((SVT_X86_ONLY_KERNEL_PATHS || svt_av1_fwd_txfm2d_16x16_N4_sub_dct != svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c) &&
+        tx_size == TX_16X16 && tpl_ctrls->pf_shape == N4_SHAPE) {
         svt_av1_fwd_txfm2d_16x16_N4_sub_dct(src, src_stride, pred, pred_stride, coeff);
         return;
     }
