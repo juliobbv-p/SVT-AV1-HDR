@@ -1287,9 +1287,39 @@ void svt_inter_predictor_pd0(const uint8_t* src, int32_t src_stride, uint8_t* ds
     }
 }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b, int src_stride, uint16_t* dst,
+                                      int dst_stride, int w, int h, const SubpelParams* subpel, ConvolveParams* params,
+                                      int bd) {
+    // Match the unscaled copy dispatch; keep --asm restrictions and uncommon
+    // round configurations on the original pack/convolve path.
+    if (bd != EB_TEN_BIT || !src_2b || subpel->subpel_x || subpel->subpel_y || has_scale(subpel->xs, subpel->ys) ||
+        !(w == 2 || w == 4 || (w > 0 && !(w & 7))) || h <= 0 ||
+        svt_av1_highbd_jnt_convolve_2d_copy != svt_av1_highbd_jnt_convolve_2d_copy_neon) {
+        return false;
+    }
+    if (params->is_compound && (params->round_0 != ROUND0_BITS || params->round_1 != COMPOUND_ROUND1_BITS)) {
+        return false;
+    }
+    if (params->do_average && params->use_jnt_comp_avg &&
+        (params->fwd_offset < 0 || params->bck_offset < 0 || params->fwd_offset + params->bck_offset != 16)) {
+        return false;
+    }
+    svt_aom_highbd_10_fullpel_split_neon(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, params);
+    return true;
+}
+#endif
+
 void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
                                    int32_t w, int32_t h, InterpFilters interp_filters, SubpelParams* subpel_params,
                                    ConvolveParams* conv_params, int32_t bd) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (svt_aom_try_highbd_fullpel_split(
+            src, src_2b, src_stride, (uint16_t*)dst, dst_stride, w, h, subpel_params, conv_params, bd)) {
+        return;
+    }
+#endif
+
     InterpFilterParams filter_params_x, filter_params_y;
     av1_get_convolve_filter_params(interp_filters, &filter_params_x, &filter_params_y, w, h);
     const int32_t is_scaled = has_scale(subpel_params->xs, subpel_params->ys);
