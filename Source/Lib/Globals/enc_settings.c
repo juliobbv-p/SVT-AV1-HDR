@@ -42,6 +42,13 @@
 EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     EbErrorType               return_error = EB_ErrorNone;
     EbSvtAv1EncConfiguration* config       = &scs->static_config;
+    if (config->roi_map_block_size == 0) {
+        config->roi_map_block_size = 64;
+    }
+    if (config->roi_map_block_size != 64) {
+        SVT_ERROR("roi_map_block_size must be 64 (got %u)\n", (unsigned)config->roi_map_block_size);
+        return_error = EB_ErrorBadParameter;
+    }
     if (config->enc_mode > MAX_ENC_PRESET || config->enc_mode < MIN_ENC_PRESET) {
         SVT_ERROR("EncoderMode must be in the range of [%d-%d]\n", MIN_ENC_PRESET, MAX_ENC_PRESET);
         return_error = EB_ErrorBadParameter;
@@ -1141,6 +1148,7 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->frame_scale_evts.resize_kf_denoms = NULL;
     config_ptr->frame_scale_evts.start_frame_nums = NULL;
     config_ptr->enable_roi_map                    = false;
+    config_ptr->roi_map_block_size                = 64;
     config_ptr->fgs_table                         = NULL;
     config_ptr->enable_variance_boost             = false;
     config_ptr->variance_boost_strength           = 2;
@@ -2420,6 +2428,7 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
         {"enable-tf", &config_struct->enable_tf},
         {"tf-strength", &config_struct->tf_strength},
         {"max-tx-size", &config_struct->max_tx_size},
+        {"roi-map-block-size", &config_struct->roi_map_block_size},
     };
 
     const size_t uint8_opts_size = sizeof(uint8_opts) / sizeof(uint8_opts[0]);

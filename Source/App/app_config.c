@@ -196,6 +196,7 @@
 #define STARTUP_MG_SIZE_TOKEN "--startup-mg-size"
 #define STARTUP_QP_OFFSET_TOKEN "--startup-qp-offset"
 #define ROI_MAP_FILE_TOKEN "--roi-map-file"
+#define ROI_MAP_BLOCK_SIZE_TOKEN "--roi-map-block-size"
 
 #define ENABLE_VARIANCE_BOOST_TOKEN "--enable-variance-boost"
 #define VARIANCE_BOOST_STRENGTH_TOKEN "--variance-boost-strength"
@@ -883,6 +884,7 @@ ConfigDescription config_entry_rc[] = {
     {MAX_CHROMA_QM_LEVEL_TOKEN, "Max chroma quant matrix flatness, default is 15 [0-15]"},
 #endif
     {ROI_MAP_FILE_TOKEN, "Enable Region Of Interest and specify a picture based QP Offset map file, default is off"},
+    {ROI_MAP_BLOCK_SIZE_TOKEN, "ROI QP offset map block size [64], default is 64"},
     // TF Strength
     {TF_STRENGTH_FILTER_TOKEN, "Adjust temporal filtering strength, default is 3 [0-4]"},
     // Frame-level luminance-based QP bias
@@ -1240,6 +1242,7 @@ ConfigEntry config_entry[] = {
 #endif
     // ROI
     {ROI_MAP_FILE_TOKEN, "RoiMapFile", set_cfg_roi_map_file},
+    {ROI_MAP_BLOCK_SIZE_TOKEN, "RoiMapBlockSize", set_cfg_generic_token},
 
     // Sharpness
     {SHARPNESS_TOKEN, "Sharpness", set_cfg_generic_token},

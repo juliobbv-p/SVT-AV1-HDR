@@ -216,6 +216,11 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
         return EB_ErrorBadParameter;
     }
 
+    if (app_cfg->config.roi_map_block_size != 64) {
+        fprintf(stderr, "Error: ROI map block size must be 64\n");
+        return EB_ErrorBadParameter;
+    }
+
     // ROI map file format:
     // One ROI event per line. The event is in below format
     // <pic_num> <b64_qp_offset> <b64_qp_offset> ... <b64_qp_offset>\n
@@ -299,10 +304,10 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
                             break;
                         }
                     }
-                    if (seg_id > evt->max_seg_id && evt->max_seg_id < MAX_SEGMENTS) {
+                    if (seg_id > evt->max_seg_id && seg_id < MAX_SEGMENTS) {
                         evt->seg_qp[seg_id] = qp_map[i];
                         evt->max_seg_id     = seg_id;
-                    } else if (seg_id > evt->max_seg_id && evt->max_seg_id >= MAX_SEGMENTS) {
+                    } else if (seg_id > evt->max_seg_id && seg_id >= MAX_SEGMENTS) {
                         ret = EB_ErrorBadParameter;
                         fprintf(stderr,
                                 "Error: Invalid ROI map file - Maximum number of segment supported "
