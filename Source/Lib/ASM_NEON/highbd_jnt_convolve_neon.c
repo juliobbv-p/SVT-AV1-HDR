@@ -1152,3 +1152,126 @@ void svt_av1_highbd_jnt_convolve_2d_copy_neon(const uint16_t* src, int src_strid
         }
     }
 }
+
+// mode: single-reference pixels, first compound reference, average, weighted average.
+static INLINE uint16x8_t fullpel_split_result_neon(uint16x8_t pixels, uint16x8_t ref, const ConvolveParams* params,
+                                                   int mode) {
+    if (mode == 0) {
+        return pixels;
+    }
+    const uint16x8_t offset = vdupq_n_u16(24576);
+    const uint16x8_t value  = vaddq_u16(vshlq_n_u16(pixels, 4), offset);
+    if (mode == 1) {
+        return value;
+    }
+    const uint16x8_t max = vdupq_n_u16(1023);
+    if (mode == 2) {
+        // value is [24576,40944], ref is any uint16 convolution result.
+        // floor((value + ref)/2) - 24576 is [-12288,28663], so the
+        // subtraction and rounded shift are exact in signed 16-bit lanes.
+        const uint16x8_t avg     = vhaddq_u16(value, ref);
+        const int16x8_t  delta   = vreinterpretq_s16_u16(vsubq_u16(avg, offset));
+        const int16x8_t  rounded = vrshrq_n_s16(delta, 4);
+        return vminq_u16(vqshluq_n_s16(rounded, 0), max);
+    }
+    // Distance weights sum to 16. The numerator is at most 65535*16,
+    // and weighted offset removal can exceed int16, so retain 32-bit lanes.
+    const uint16x4_t fwd = vdup_n_u16(params->fwd_offset);
+    const uint16x4_t bck = vdup_n_u16(params->bck_offset);
+    uint32x4_t       lo  = vmull_u16(vget_low_u16(ref), fwd);
+    uint32x4_t       hi  = vmull_u16(vget_high_u16(ref), fwd);
+    lo                   = vmlal_u16(lo, vget_low_u16(value), bck);
+    hi                   = vmlal_u16(hi, vget_high_u16(value), bck);
+    const int32x4_t dlo  = vreinterpretq_s32_u32(vsubq_u32(vshrq_n_u32(lo, DIST_PRECISION_BITS), vdupq_n_u32(24576)));
+    const int32x4_t dhi  = vreinterpretq_s32_u32(vsubq_u32(vshrq_n_u32(hi, DIST_PRECISION_BITS), vdupq_n_u32(24576)));
+    return vminq_u16(vcombine_u16(vqrshrun_n_s32(dlo, 4), vqrshrun_n_s32(dhi, 4)), max);
+}
+
+static INLINE uint16x8_t pack_split8_neon(uint8x8_t msb, uint8x8_t lsb) {
+    const uint8x16_t m = vcombine_u8(msb, vdup_n_u8(0));
+    const uint8x16_t l = vcombine_u8(lsb, vdup_n_u8(0));
+    return vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l, m)), 6);
+}
+
+static INLINE void fullpel_split_neon(const uint8_t* msb, int msb_stride, const uint8_t* lsb, int lsb_stride,
+                                      uint16_t* dst, int dst_stride, int w, int h, ConvolveParams* params, int mode) {
+    uint16_t*       out        = mode == 1 ? params->dst : dst;
+    const int       out_stride = mode == 1 ? params->dst_stride : dst_stride;
+    const uint16_t* ref        = params->dst;
+    for (int y = 0; y < h; ++y) {
+        if (w <= 4) {
+            uint8x8_t  m, l;
+            uint16x8_t r = vdupq_n_u16(0);
+            if (w == 2) {
+                uint16_t m2, l2;
+                memcpy(&m2, msb, sizeof(m2));
+                memcpy(&l2, lsb, sizeof(l2));
+                m = vcreate_u8(m2);
+                l = vcreate_u8(l2);
+                if (mode >= 2) {
+                    uint32_t r2;
+                    memcpy(&r2, ref, sizeof(r2));
+                    r = vcombine_u16(vcreate_u16(r2), vdup_n_u16(0));
+                }
+            } else {
+                m = load_unaligned_u8_4x1(msb);
+                l = load_unaligned_u8_4x1(lsb);
+                if (mode >= 2) {
+                    r = vcombine_u16(vld1_u16(ref), vdup_n_u16(0));
+                }
+            }
+            const uint16x4_t result = vget_low_u16(fullpel_split_result_neon(pack_split8_neon(m, l), r, params, mode));
+            if (w == 2) {
+                store_u16_2x1(out, result);
+            } else {
+                vst1_u16(out, result);
+            }
+        } else if (w <= 16) {
+            for (int x = 0; x < w; x += 8) {
+                const uint16x8_t pixels = pack_split8_neon(vld1_u8(msb + x), vld1_u8(lsb + x));
+                const uint16x8_t r      = mode >= 2 ? vld1q_u16(ref + x) : vdupq_n_u16(0);
+                vst1q_u16(out + x, fullpel_split_result_neon(pixels, r, params, mode));
+            }
+        } else {
+            int x = 0;
+            for (; x + 16 <= w; x += 16) {
+                const uint8x16_t m   = vld1q_u8(msb + x);
+                const uint8x16_t l   = vld1q_u8(lsb + x);
+                const uint16x8_t lo  = vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l, m)), 6);
+                const uint16x8_t hi  = vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(l, m)), 6);
+                const uint16x8_t rlo = mode >= 2 ? vld1q_u16(ref + x) : vdupq_n_u16(0);
+                const uint16x8_t rhi = mode >= 2 ? vld1q_u16(ref + x + 8) : vdupq_n_u16(0);
+                vst1q_u16(out + x, fullpel_split_result_neon(lo, rlo, params, mode));
+                vst1q_u16(out + x + 8, fullpel_split_result_neon(hi, rhi, params, mode));
+            }
+            if (x < w) {
+                const uint16x8_t pixels = pack_split8_neon(vld1_u8(msb + x), vld1_u8(lsb + x));
+                const uint16x8_t r      = mode >= 2 ? vld1q_u16(ref + x) : vdupq_n_u16(0);
+                vst1q_u16(out + x, fullpel_split_result_neon(pixels, r, params, mode));
+            }
+        }
+        msb += msb_stride;
+        lsb += lsb_stride;
+        out += out_stride;
+        if (mode >= 2) {
+            ref += params->dst_stride;
+        }
+    }
+}
+
+void svt_aom_highbd_10_fullpel_split_neon(const uint8_t* msb, int msb_stride, const uint8_t* lsb, int lsb_stride,
+                                          uint16_t* dst, int dst_stride, int w, int h, ConvolveParams* params) {
+    assert(w == 2 || w == 4 || (w > 0 && !(w & 7)));
+    assert(h > 0);
+    assert(!params->is_compound || (params->round_0 == ROUND0_BITS && params->round_1 == COMPOUND_ROUND1_BITS));
+    if (!params->is_compound) {
+        fullpel_split_neon(msb, msb_stride, lsb, lsb_stride, dst, dst_stride, w, h, params, 0);
+    } else if (!params->do_average) {
+        fullpel_split_neon(msb, msb_stride, lsb, lsb_stride, dst, dst_stride, w, h, params, 1);
+    } else if (!params->use_jnt_comp_avg) {
+        fullpel_split_neon(msb, msb_stride, lsb, lsb_stride, dst, dst_stride, w, h, params, 2);
+    } else {
+        assert(params->fwd_offset >= 0 && params->bck_offset >= 0 && params->fwd_offset + params->bck_offset == 16);
+        fullpel_split_neon(msb, msb_stride, lsb, lsb_stride, dst, dst_stride, w, h, params, 3);
+    }
+}
