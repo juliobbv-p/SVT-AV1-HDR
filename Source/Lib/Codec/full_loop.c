@@ -1208,8 +1208,10 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
         svt_av1_txb_init_levels(qcoeff_ptr, width, get_levels_rows(scan, *eob, bwl, height, tx_class), levels);
     }
     DECLARE_ALIGNED(32, int8_t, nz_ctx_buf[32 * 32]);
-    int8_t* nz_ctx = NULL;
-    if (SVT_X86_ONLY_KERNEL_PATHS && tx_class == TX_CLASS_2D && *eob > 8) {
+    int8_t*    nz_ctx       = NULL;
+    const bool use_nz_cache = SVT_X86_ONLY_KERNEL_PATHS ||
+        svt_av1_get_nz_map_contexts_2d_rows != svt_av1_get_nz_map_contexts_2d_rows_c;
+    if (use_nz_cache && tx_class == TX_CLASS_2D && *eob > 8) {
         // the visited positions lie on the anti-diagonals up to that of the last one
         const int last = scan[*eob - 1];
         const int rows = AOMMIN(height, ((last >> bwl) + (last & (width - 1)) + 2) & ~1);
