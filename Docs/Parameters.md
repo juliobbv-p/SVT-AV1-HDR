@@ -227,7 +227,7 @@ size is 64x64; set `--roi-map-block-size 16` to provide finer 16x16 maps. Below 
 0 12 -32 -32 -32 -32 -32 12 -32 -32 -32 -32 -32 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16 16
 ```
 
-The encoder uses alternate quantizer segment feature to set block level qindex and uses alternate loop filter segment feature to set loop filter strength level.
+The encoder uses alternate quantizer segment feature to set block level qindex and uses alternate loop filter segment feature to set loop filter strength level. AV1 supports at most eight segment QP offsets per frame. If the map contains more than eight distinct offsets, SVT-AV1 groups map entries by population and uses each group's weighted median offset as its segment value.
 When both AQ mode 1 (variance base adaptive QP) and ROI are enabled, segment QP is decided by ROI map instead of by variance.
 
 An example command line is:
@@ -252,6 +252,20 @@ cat > roi-16x16.txt <<'EOF'
 EOF
 SvtAv1EncApp -i roi-input.y4m -b roi-16x16.ivf --roi-map-file roi-16x16.txt --roi-map-block-size 16 --preset 8 --lp 1
 ```
+
+A second example uses the same input with 16 distinct offsets, from -8 to 7:
+
+```bash
+cat > roi-continuous.txt <<'EOF'
+0 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7
+EOF
+SvtAv1EncApp -i roi-input.y4m -b roi-continuous.ivf --roi-map-file roi-continuous.txt --roi-map-block-size 16 --preset 8 --lp 1
+```
+
+Each offset occurs once, so the sorted offsets form eight groups of two entries.
+Each group's representative is its lower median, giving segment offsets
+`-8, -6, -4, -2, 0, 2, 4, 6`. For example, both -8 and -7 map to -8, while
+both 6 and 7 map to 6. Maps with at most eight distinct offsets keep their exact values.
 
 ### Multi-pass Options
 

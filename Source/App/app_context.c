@@ -199,23 +199,24 @@ static EbErrorType preload_frames_info_ram(EbConfig* app_cfg) {
     return return_error;
 }
 
-static int compare_seg_qp(const void* qp_first, const void* qp_second) {
-    if (*(const int16_t*)qp_first < *(const int16_t*)qp_second) {
-        return 1;
-    } else if (*(const int16_t*)qp_first == *(const int16_t*)qp_second) {
-        return 0;
-    } else {
-        return -1;
+static int16_t roi_map_weighted_median(const size_t histogram[511], int low, int high, size_t rank) {
+    size_t cumulative = 0;
+    for (int qp_offset = low; qp_offset <= high; ++qp_offset) {
+        cumulative += histogram[qp_offset + 255];
+        if (cumulative >= rank) {
+            return (int16_t)qp_offset;
+        }
     }
+    return (int16_t)high;
 }
 
 static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
-    const int32_t MAX_SEGMENTS = 8;
-    FILE*         file         = app_cfg->roi_map_file;
+    enum { MAX_SEGMENTS = 8 };
+
+    FILE* file = app_cfg->roi_map_file;
     if (file == NULL) {
         return EB_ErrorBadParameter;
     }
-
     const int block_size = app_cfg->config.roi_map_block_size;
     if (block_size != 16 && block_size != 64) {
         fprintf(stderr, "Error: ROI map block size must be 16 or 64\n");
@@ -287,9 +288,8 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
             evt->start_picture_number = picture_number;
             evt->max_seg_id           = -1;
 
-            // 1. parsing qp offset
-            // 2. decide qp offset of each segment from qp offset map
-            // 3. translate qp offset map to a segment id map
+            // Parse all offsets first; maps with more than eight distinct
+            // values are reduced to weighted-quantile representatives below.
             size_t i;
             for (i = 0; i < map_num; ++i) {
                 p            = end;
@@ -300,23 +300,6 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
                 }
                 if (val <= 255 && val >= -255) {
                     qp_map[i] = (int16_t)val;
-                    // map qp offset to segment id
-                    int8_t seg_id = 0;
-                    for (; seg_id <= evt->max_seg_id; ++seg_id) {
-                        if (qp_map[i] == evt->seg_qp[seg_id]) {
-                            break;
-                        }
-                    }
-                    if (seg_id > evt->max_seg_id && seg_id < MAX_SEGMENTS) {
-                        evt->seg_qp[seg_id] = qp_map[i];
-                        evt->max_seg_id     = seg_id;
-                    } else if (seg_id > evt->max_seg_id && seg_id >= MAX_SEGMENTS) {
-                        ret = EB_ErrorBadParameter;
-                        fprintf(stderr,
-                                "Error: Invalid ROI map file - Maximum number of segment supported "
-                                "by AV1 spec is eight\n");
-                        break;
-                    }
                 } else {
                     ret = EB_ErrorBadParameter;
                     fprintf(stderr,
@@ -334,20 +317,56 @@ static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
                 break;
             }
 
-            // sort seg_qp array in descending order
-            qsort(evt->seg_qp, evt->max_seg_id + 1, sizeof(evt->seg_qp[0]), compare_seg_qp);
+            size_t histogram[511] = {0};
+            for (i = 0; i < map_num; ++i) {
+                ++histogram[qp_map[i] + 255];
+            }
+            int unique_offsets = 0;
+            for (int qp_offset = -255; qp_offset <= 255; ++qp_offset) {
+                unique_offsets += histogram[qp_offset + 255] != 0;
+            }
+
+            int8_t  offset_group[511];
+            int16_t group_qp[MAX_SEGMENTS];
+            memset(offset_group, -1, sizeof(offset_group));
+            const size_t target_group_size = unique_offsets <= MAX_SEGMENTS
+                ? 1
+                : (map_num + (size_t)MAX_SEGMENTS - 1) / (size_t)MAX_SEGMENTS;
+            size_t       group_size        = 0;
+            int          group_low         = -255;
+            int          group_high        = -255;
+            int          group_count       = 0;
+            for (int qp_offset = -255; qp_offset <= 255; ++qp_offset) {
+                if (histogram[qp_offset + 255] == 0) {
+                    continue;
+                }
+                if (group_size >= target_group_size && group_count < MAX_SEGMENTS - 1) {
+                    group_qp[group_count++] = roi_map_weighted_median(
+                        histogram, group_low, group_high, (group_size + 1) / 2);
+                    group_size = 0;
+                }
+                if (group_size == 0) {
+                    group_low = qp_offset;
+                }
+                group_high                    = qp_offset;
+                offset_group[qp_offset + 255] = (int8_t)group_count;
+                group_size += histogram[qp_offset + 255];
+            }
+            if (group_size > 0) {
+                group_qp[group_count++] = roi_map_weighted_median(
+                    histogram, group_low, group_high, (group_size + 1) / 2);
+            }
+            evt->max_seg_id = (int8_t)(group_count - 1);
+            for (int group = 0; group < group_count; ++group) {
+                evt->seg_qp[group_count - group - 1] = group_qp[group];
+            }
             if (evt->seg_qp[0] < 0) {
                 fprintf(stderr, "Warning: All qp offsets are negative may result in undecodable bitstream\n");
             }
 
             // translate the qp offset map provided in the ROI map file to a segment id map.
             for (i = 0; i < map_num; ++i) {
-                for (int seg_id = 0; seg_id <= evt->max_seg_id; ++seg_id) {
-                    if (qp_map[i] == evt->seg_qp[seg_id]) {
-                        evt->b64_seg_map[i] = seg_id;
-                        break;
-                    }
-                }
+                evt->b64_seg_map[i] = (uint8_t)(group_count - offset_group[qp_map[i] + 255] - 1);
             }
 
             ++roi_map->evt_num;
