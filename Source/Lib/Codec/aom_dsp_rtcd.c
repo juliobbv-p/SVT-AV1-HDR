@@ -1038,6 +1038,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_aom_ifft2x2_float, svt_aom_ifft2x2_float_c);
     SET_ONLY_C(svt_aom_ifft4x4_float, svt_aom_ifft4x4_float_c);
 #endif // CONFIG_ENABLE_FILM_GRAIN
+    SET_NEON(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c, svt_av1_get_nz_map_contexts_2d_rows_neon);
     SET_NEON(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c, svt_av1_get_nz_map_contexts_neon);
     SET_NEON(svt_search_one_dual, svt_search_one_dual_c, svt_search_one_dual_neon);
     SET_NEON_NEON_DOTPROD_SVE_NEOVERSE_V2(svt_sad_loop_kernel, svt_sad_loop_kernel_c, svt_sad_loop_kernel_neon, svt_sad_loop_kernel_neon_dotprod, svt_sad_loop_kernel_sve, svt_sad_loop_kernel_neoverse_v2);
@@ -1450,6 +1451,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_aom_ifft2x2_float, svt_aom_ifft2x2_float_c);
     SET_ONLY_C(svt_aom_ifft4x4_float, svt_aom_ifft4x4_float_c);
 #endif // CONFIG_ENABLE_FILM_GRAIN
+    SET_ONLY_C(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c);
     SET_ONLY_C(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c);
     SET_ONLY_C(svt_search_one_dual, svt_search_one_dual_c);
     SET_ONLY_C(svt_sad_loop_kernel, svt_sad_loop_kernel_c);
