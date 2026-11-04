@@ -649,9 +649,73 @@ AOM_FORCE_INLINE int16x8_t constrain16(int16x8_t a, int16x8_t b, int16x8_t thres
     return veorq_s16(vaddq_s16(vminq_s16(abs_diff, s), sign), sign);
 }
 
+static AOM_FORCE_INLINE int16x8_t load_cdef_hbd_row(const int16_t* in, int width, int sub) {
+    return width == 8 ? vld1q_s16(in) : vcombine_s16(vld1_s16(in), vld1_s16(in + sub * CDEF_BSTRIDE));
+}
+
+// With only one filter active its tap weights sum to 12, below the divisor
+// 16. Constrain only reduces each tap's contribution, so the rounded result
+// stays inside the active neighbours' range without a min/max pass.
+static AOM_FORCE_INLINE void cdef_filter_hbd_single_neon(uint16_t* dst, int stride, const uint16_t* in,
+                                                         int pri_strength, int sec_strength, int dir, int pri_damping,
+                                                         int sec_damping, int coeff_shift, int width, int height,
+                                                         int sub) {
+    const bool      primary   = pri_strength != 0;
+    const int       strength  = primary ? pri_strength : sec_strength;
+    const int       damping   = strength ? AOMMAX(0, (primary ? pri_damping : sec_damping) - get_msb(strength)) : 0;
+    const int16x8_t threshold = vdupq_n_s16(strength);
+    const int16x8_t shift     = vdupq_n_s16(-damping);
+    const int*      taps      = primary ? svt_aom_eb_cdef_pri_taps[(pri_strength >> coeff_shift) & 1]
+                                        : svt_aom_eb_cdef_sec_taps[0];
+    const int*      offsets   = svt_aom_eb_cdef_directions[primary ? dir : dir + 2];
+    const int*      other     = svt_aom_eb_cdef_directions[dir - 2];
+    for (int y = 0; y < height; y += (width == 8 ? sub : 2 * sub)) {
+        const int16_t*  src = (const int16_t*)(in + y * CDEF_BSTRIDE);
+        const int16x8_t row = load_cdef_hbd_row(src, width, sub);
+        int16x8_t       sum = vdupq_n_s16(0);
+        if (strength) {
+            for (int k = 0; k < 2; ++k) {
+                int16x8_t pair = vaddq_s16(
+                    constrain16(load_cdef_hbd_row(src + offsets[k], width, sub), row, threshold, shift),
+                    constrain16(load_cdef_hbd_row(src - offsets[k], width, sub), row, threshold, shift));
+                if (!primary) {
+                    pair = vaddq_s16(
+                        pair,
+                        vaddq_s16(constrain16(load_cdef_hbd_row(src + other[k], width, sub), row, threshold, shift),
+                                  constrain16(load_cdef_hbd_row(src - other[k], width, sub), row, threshold, shift)));
+                }
+                sum = vmlaq_n_s16(sum, pair, taps[k]);
+            }
+        }
+        sum                    = vaddq_s16(sum, vreinterpretq_s16_u16(vcltq_s16(sum, vdupq_n_s16(0))));
+        const int16x8_t result = vrsraq_n_s16(row, sum, 4);
+        if (width == 8) {
+            vst1q_s16((int16_t*)(dst + y * stride), result);
+        } else {
+            vst1_s16((int16_t*)(dst + y * stride), vget_low_s16(result));
+            vst1_s16((int16_t*)(dst + (y + sub) * stride), vget_high_s16(result));
+        }
+    }
+}
+
 void svt_av1_cdef_filter_block_8xn_16_neon(uint16_t* dst, int dstride, const uint16_t* in, int pri_strength,
                                            int sec_strength, int dir, int pri_damping, int sec_damping, int coeff_shift,
                                            uint8_t height, uint8_t subsampling_factor) {
+    if (!pri_strength || !sec_strength) {
+        cdef_filter_hbd_single_neon(dst,
+                                    dstride,
+                                    in,
+                                    pri_strength,
+                                    sec_strength,
+                                    dir,
+                                    pri_damping,
+                                    sec_damping,
+                                    coeff_shift,
+                                    8,
+                                    height,
+                                    subsampling_factor);
+        return;
+    }
     int             i;
     const int16x8_t large = vdupq_n_s16(CDEF_VERY_LARGE);
     const int32_t   po1   = svt_aom_eb_cdef_directions[dir][0];
@@ -784,6 +848,21 @@ void svt_av1_cdef_filter_block_8xn_16_neon(uint16_t* dst, int dstride, const uin
 void svt_av1_cdef_filter_block_4xn_16_neon(uint16_t* dst, int dstride, const uint16_t* in, int pri_strength,
                                            int sec_strength, int dir, int pri_damping, int sec_damping, int coeff_shift,
                                            uint8_t height, uint8_t subsampling_factor) {
+    if (!pri_strength || !sec_strength) {
+        cdef_filter_hbd_single_neon(dst,
+                                    dstride,
+                                    in,
+                                    pri_strength,
+                                    sec_strength,
+                                    dir,
+                                    pri_damping,
+                                    sec_damping,
+                                    coeff_shift,
+                                    4,
+                                    height,
+                                    subsampling_factor);
+        return;
+    }
     int             i;
     const int16x8_t large = vdupq_n_s16(CDEF_VERY_LARGE);
     const int32_t   po1   = svt_aom_eb_cdef_directions[dir][0];
