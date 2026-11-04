@@ -1496,7 +1496,7 @@ bool svt_aom_is_input_luma_dominant(const EbPictureBufferDesc* input_pic) {
 /************************************************
  * 1/4 & 1/16 input picture downsampling (filtering)
  ************************************************/
-#if EN_AVX512_SUPPORT
+#if EN_AVX512_SUPPORT || defined(ARCH_AARCH64)
 // Box sums for the HME successive elimination (see EbPictureBufferDesc::sea_sub), over the padded picture
 static void compute_sea_planes(EbPictureBufferDesc* pic) {
     const int stride = pic->y_stride;
@@ -1602,6 +1602,11 @@ void svt_aom_downsample_filtering_input_picture(PictureParentControlSet* pcs, Eb
                                      sixteenth_picture_ptr->border);
 #if EN_AVX512_SUPPORT
             if (svt_aom_use_avx512) {
+                compute_sea_planes(sixteenth_picture_ptr);
+            }
+#endif
+#if defined(ARCH_AARCH64)
+            if (svt_sad_loop_16xh_sea != svt_sad_loop_16xh_sea_c) {
                 compute_sea_planes(sixteenth_picture_ptr);
             }
 #endif

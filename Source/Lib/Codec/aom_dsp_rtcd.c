@@ -587,6 +587,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2_AVX2(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c, svt_av1_get_nz_map_contexts_sse2, svt_av1_get_nz_map_contexts_avx2);
     SET_AVX2(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c, svt_av1_get_nz_map_contexts_2d_rows_avx2);
     SET_AVX2_AVX512(svt_search_one_dual, svt_search_one_dual_c, svt_search_one_dual_avx2, svt_search_one_dual_avx512);
+    SET_ONLY_C(svt_sad_loop_16xh_sea, svt_sad_loop_16xh_sea_c);
     SET_SSE41_AVX2_AVX512(svt_sad_loop_kernel, svt_sad_loop_kernel_c, svt_sad_loop_kernel_sse4_1_intrin, svt_sad_loop_kernel_avx2_intrin, svt_sad_loop_kernel_avx512_intrin);
     SET_SSE41_AVX2(svt_av1_apply_zz_based_temporal_filter_planewise_medium, svt_av1_apply_zz_based_temporal_filter_planewise_medium_c, svt_av1_apply_zz_based_temporal_filter_planewise_medium_sse4_1, svt_av1_apply_zz_based_temporal_filter_planewise_medium_avx2);
     SET_SSE41_AVX2(svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_sse4_1, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_avx2);
@@ -1041,6 +1042,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c, svt_av1_get_nz_map_contexts_2d_rows_neon);
     SET_NEON(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c, svt_av1_get_nz_map_contexts_neon);
     SET_NEON(svt_search_one_dual, svt_search_one_dual_c, svt_search_one_dual_neon);
+    SET_NEON(svt_sad_loop_16xh_sea, svt_sad_loop_16xh_sea_c, svt_sad_loop_16xh_sea_neon);
     SET_NEON_NEON_DOTPROD_SVE_NEOVERSE_V2(svt_sad_loop_kernel, svt_sad_loop_kernel_c, svt_sad_loop_kernel_neon, svt_sad_loop_kernel_neon_dotprod, svt_sad_loop_kernel_sve, svt_sad_loop_kernel_neoverse_v2);
 #if CONFIG_ENABLE_PSAD_SEARCH
     SET_NEON(svt_pme_sad_loop_kernel, svt_pme_sad_loop_kernel_c, svt_pme_sad_loop_kernel_neon);
@@ -1454,6 +1456,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c);
     SET_ONLY_C(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c);
     SET_ONLY_C(svt_search_one_dual, svt_search_one_dual_c);
+    SET_ONLY_C(svt_sad_loop_16xh_sea, svt_sad_loop_16xh_sea_c);
     SET_ONLY_C(svt_sad_loop_kernel, svt_sad_loop_kernel_c);
     SET_ONLY_C(svt_av1_apply_zz_based_temporal_filter_planewise_medium, svt_av1_apply_zz_based_temporal_filter_planewise_medium_c);
     SET_ONLY_C(svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c);

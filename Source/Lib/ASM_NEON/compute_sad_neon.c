@@ -1157,3 +1157,95 @@ uint32_t svt_aom_sad_16b_kernel_neon(uint16_t* src, uint32_t src_stride, uint16_
 
     return acc;
 }
+
+// Eight adjacent search positions share the source row and reference loads.
+// Each 16-bit lane sums two pixels per row; even the final SAD fits in 16 bits
+// for a 16x16 block (65280). The source rows are loaded once per search.
+static inline uint16x8_t sad16xhx8_prepared_neon(const uint8x16_t* src, const uint8_t* ref, uint32_t ref_stride,
+                                                 uint32_t height) {
+    uint16x8_t sum[8] = {vdupq_n_u16(0),
+                         vdupq_n_u16(0),
+                         vdupq_n_u16(0),
+                         vdupq_n_u16(0),
+                         vdupq_n_u16(0),
+                         vdupq_n_u16(0),
+                         vdupq_n_u16(0),
+                         vdupq_n_u16(0)};
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint8x16_t a = vld1q_u8(ref);
+        const uint8x16_t b = vcombine_u8(vld1_u8(ref + 16), vdup_n_u8(0));
+        const uint8x16_t s = src[y];
+        sum[0]             = vpadalq_u8(sum[0], vabdq_u8(s, a));
+        sum[1]             = vpadalq_u8(sum[1], vabdq_u8(s, vextq_u8(a, b, 1)));
+        sum[2]             = vpadalq_u8(sum[2], vabdq_u8(s, vextq_u8(a, b, 2)));
+        sum[3]             = vpadalq_u8(sum[3], vabdq_u8(s, vextq_u8(a, b, 3)));
+        sum[4]             = vpadalq_u8(sum[4], vabdq_u8(s, vextq_u8(a, b, 4)));
+        sum[5]             = vpadalq_u8(sum[5], vabdq_u8(s, vextq_u8(a, b, 5)));
+        sum[6]             = vpadalq_u8(sum[6], vabdq_u8(s, vextq_u8(a, b, 6)));
+        sum[7]             = vpadalq_u8(sum[7], vabdq_u8(s, vextq_u8(a, b, 7)));
+        ref += ref_stride;
+    }
+    return vpaddq_u16(vpaddq_u16(vpaddq_u16(sum[0], sum[1]), vpaddq_u16(sum[2], sum[3])),
+                      vpaddq_u16(vpaddq_u16(sum[4], sum[5]), vpaddq_u16(sum[6], sum[7])));
+}
+
+void svt_sad_loop_16xh_sea_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
+                                uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height) {
+    assert(height == 8 || height == 16);
+    uint8x16_t prepared[16];
+    uint16x8_t sums[4] = {vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0)};
+    for (uint32_t y = 0; y < height; ++y) {
+        prepared[y]    = vld1q_u8(src + y * src_stride);
+        const int half = y >= height / 2 ? 2 : 0;
+        sums[half]     = vaddw_u8(sums[half], vget_low_u8(prepared[y]));
+        sums[half + 1] = vaddw_u8(sums[half + 1], vget_high_u8(prepared[y]));
+    }
+    for (int k = 0; k < 4; ++k) {
+        sums[k] = vdupq_n_u16(vaddvq_u16(sums[k]));
+    }
+    *best_sad = 0xffffff;
+    for (int y = 0; y < search_area_height; ++y, ref += src_stride_raw, sea += src_stride_raw) {
+        if (skip_search_line && !(y & 1)) {
+            continue;
+        }
+        int x = 0;
+        for (; x + 8 <= search_area_width; x += 8) {
+            // Triangle inequality on four quadrants gives a lower bound for
+            // each SAD. Unsigned lanes also handle bounds above 32767 exactly.
+            const uint16x8_t top = vaddq_u16(vabdq_u16(sums[0], vld1q_u16(sea + x)),
+                                             vabdq_u16(sums[1], vld1q_u16(sea + x + 8)));
+            const uint16x8_t bot = vaddq_u16(vabdq_u16(sums[2], vld1q_u16(sea + x + sea_bl)),
+                                             vabdq_u16(sums[3], vld1q_u16(sea + x + sea_bl + 8)));
+            if (vminvq_u16(vaddq_u16(top, bot)) >= *best_sad) {
+                continue;
+            }
+            const uint32_t half = height / 2;
+            uint16x8_t     sad  = sad16xhx8_prepared_neon(prepared, ref + x, ref_stride, half);
+            if (vminvq_u16(sad) >= *best_sad) {
+                continue;
+            }
+            sad = vaddq_u16(sad,
+                            sad16xhx8_prepared_neon(prepared + half, ref + x + half * ref_stride, ref_stride, half));
+            update_best_sad_u16(sad, best_sad, x_search_center, y_search_center, x, y);
+            // The first zero SAD is unbeatable, including on ties.
+            if (*best_sad == 0) {
+                return;
+            }
+        }
+        // A scalar-position tail avoids considering padded candidates, and
+        // reads exactly the 16 pixels of each real candidate row.
+        for (; x < search_area_width; ++x) {
+            uint32_t sad = 0;
+            for (uint32_t row = 0; row < height; ++row) {
+                sad += vaddlvq_u8(vabdq_u8(prepared[row], vld1q_u8(ref + x + row * ref_stride)));
+            }
+            update_best_sad(sad, best_sad, x_search_center, y_search_center, x, y);
+            // The first zero SAD is unbeatable, including on ties.
+            if (*best_sad == 0) {
+                return;
+            }
+        }
+    }
+}
