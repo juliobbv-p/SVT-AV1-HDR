@@ -171,6 +171,12 @@ static INLINE int valid_ref_frame_size(int ref_width, int ref_height, int this_w
         this_height <= 16 * ref_height;
 }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b, int src_stride, uint16_t* dst,
+                                      int dst_stride, int w, int h, const SubpelParams* subpel, ConvolveParams* params,
+                                      int bd);
+#endif
+
 void svt_aom_pack_block(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8_t* inn_bit_buffer, uint32_t inn_stride,
                         uint16_t* out16_bit_buffer, uint32_t out_stride, uint32_t width, uint32_t height);
 

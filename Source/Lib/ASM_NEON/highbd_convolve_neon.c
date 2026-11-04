@@ -971,6 +971,44 @@ static inline void highbd_convolve_2d_sr_horiz_neon(const uint16_t* src_ptr, int
     }
 }
 
+static inline uint16x8_t highbd_convolve2_8_h(const uint16_t* src, const uint16x4_t filter) {
+    uint16x8_t sum = vmulq_lane_u16(vld1q_u16(src), filter, 0);
+    sum            = vmlaq_lane_u16(sum, vld1q_u16(src + 1), filter, 1);
+    return vrshrq_n_u16(sum, ROUND0_BITS - 1);
+}
+
+static inline uint16x8_t highbd_convolve2_8_v(const uint16x8_t s0, const uint16x8_t s1, const uint16x4_t filter) {
+    uint32x4_t lo = vmull_lane_u16(vget_low_u16(s0), filter, 0);
+    lo            = vmlal_lane_u16(lo, vget_low_u16(s1), filter, 1);
+    uint32x4_t hi = vmull_lane_u16(vget_high_u16(s0), filter, 0);
+    hi            = vmlal_lane_u16(hi, vget_high_u16(s1), filter, 1);
+    return vcombine_u16(vrshrn_n_u32(lo, 2 * FILTER_BITS - ROUND0_BITS - 1),
+                        vrshrn_n_u32(hi, 2 * FILTER_BITS - ROUND0_BITS - 1));
+}
+
+static inline void highbd_convolve_2d_sr_2tap_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                                   int w, int h, const int16_t* x_filter_ptr,
+                                                   const int16_t* y_filter_ptr) {
+    // Bilinear taps are nonnegative, even and sum to 128. Halving the taps
+    // keeps the horizontal sum within 1023 * 64 = 65472, so unsigned 16-bit
+    // MACs are exact. The unbiased rounded result fits in 14 bits; the vertical
+    // MACs need 32 bits. Both passes remain convex, so clipping is unnecessary.
+    const uint16x4_t x_filter = vshr_n_u16(vreinterpret_u16_s16(vld1_s16(x_filter_ptr + 3)), 1);
+    const uint16x4_t y_filter = vshr_n_u16(vreinterpret_u16_s16(vld1_s16(y_filter_ptr + 3)), 1);
+    for (int x = 0; x < w; x += 8) {
+        const uint16_t* s    = src + x;
+        uint16_t*       d    = dst + x;
+        uint16x8_t      prev = highbd_convolve2_8_h(s, x_filter);
+        for (int y = 0; y < h; ++y) {
+            s += src_stride;
+            const uint16x8_t next = highbd_convolve2_8_h(s, x_filter);
+            vst1q_u16(d, highbd_convolve2_8_v(prev, next, y_filter));
+            prev = next;
+            d += dst_stride;
+        }
+    }
+}
+
 void svt_av1_highbd_convolve_2d_sr_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride, int w,
                                         int h, const InterpFilterParams* filter_params_x,
                                         const InterpFilterParams* filter_params_y, const int subpel_x_qn,
@@ -1010,6 +1048,11 @@ void svt_av1_highbd_convolve_2d_sr_neon(const uint16_t* src, int src_stride, uin
 
     const int16_t* x_filter_ptr = av1_get_interp_filter_subpel_kernel(*filter_params_x, subpel_x_qn & SUBPEL_MASK);
     const int16_t* y_filter_ptr = av1_get_interp_filter_subpel_kernel(*filter_params_y, subpel_y_qn & SUBPEL_MASK);
+
+    if (x_filter_taps == 2 && y_filter_taps == 2 && w >= 8 && bd <= 10) {
+        highbd_convolve_2d_sr_2tap_neon(src, src_stride, dst, dst_stride, w, h, x_filter_ptr, y_filter_ptr);
+        return;
+    }
 
     if (x_filter_taps <= 6 && w != 4) {
         highbd_convolve_2d_sr_horiz_6tap_neon(
