@@ -5570,9 +5570,10 @@ static void set_inter_intra_ctrls(ModeDecisionContext* ctx, uint8_t inter_intra_
 
 static void set_pd0_ctrls(ModeDecisionContext* ctx, uint8_t lpd0_lvl) {
     Pd0Ctrls* ctrls = &ctx->pd0_ctrls;
+    // High-bit-depth PD0 keeps the light DCT/quantization path. The variance-only
+    // shortcuts and their cached ME costs use 8-bit reference samples.
     if (SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
-        ctx->pd0_ctrls.pd0_level = PD0_LVL_0;
-        return;
+        lpd0_lvl = 0;
     }
     switch (lpd0_lvl) {
     case 0:
@@ -7368,7 +7369,7 @@ static void set_depth_early_exit_ctrls(ModeDecisionContext* ctx, uint8_t early_e
 }
 
 // Set signals used for light-pd0 path; only PD0 should call this function
-// assumes NSQ OFF, no 4x4, no chroma, no TXT/TXS/RDOQ/SSSE, SB_64x64
+// Luma-only light search with depth-0 DCTs and quantization, in 8-bit or 10-bit MD.
 void svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx) {
     const Pd0Level           pd0_level = ctx->pd0_ctrls.pd0_level;
     PictureParentControlSet* ppcs      = pcs->ppcs;
@@ -7472,7 +7473,7 @@ void svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* p
         ctx->parent_cost_bias = CLIP3(900, 1200, ctx->parent_cost_bias);
     }
 
-    if (allintra || SVT_EFFECTIVE_HBD_MD(pcs->hbd_md)) {
+    if (allintra) {
         ctx->pd0_use_src_samples = true;
     } else {
         ctx->pd0_use_src_samples = false;
