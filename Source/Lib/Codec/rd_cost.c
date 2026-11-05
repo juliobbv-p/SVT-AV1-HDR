@@ -1468,11 +1468,11 @@ EbErrorType svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionCandidat
     uint64_t coeff_rate = (*y_coeff_bits + (uint64_t)ctx->md_rate_est_ctx->skip_fac_bits[0][0]);
 
     // Assign full cost
-    // Use context index 0 for the partition rate as an approximation to skip call to
-    // av1_partition_rate_cost Partition cost is only needed for > 4x4 blocks, but light-PD0 assumes
-    // 4x4 blocks are disallowed
-    *(cand_bf->full_cost) = RDCOST(
-        lambda, coeff_rate + ctx->md_rate_est_ctx->partition_fac_bits[0][PARTITION_NONE], y_distortion[0]);
+    // Keep the light context approximation, but 4x4 leaves have no partition flag.
+    const uint64_t partition_rate = ctx->blk_geom->bsize == BLOCK_4X4
+        ? 0
+        : ctx->md_rate_est_ctx->partition_fac_bits[0][PARTITION_NONE];
+    *(cand_bf->full_cost)         = RDCOST(lambda, coeff_rate + partition_rate, y_distortion[0]);
     return return_error;
 }
 
