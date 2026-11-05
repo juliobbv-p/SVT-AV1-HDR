@@ -5089,6 +5089,7 @@ EB_API EbErrorType svt_av1_enc_stream_header(EbComponentType*     svt_enc_compon
     memset(&output_bitstream, 0, sizeof(OutputBitstreamUnit));
     bitstream.output_bitstream_ptr = &output_bitstream;
     EB_MALLOC_OBJECT(output_stream_buffer);
+    memset(output_stream_buffer, 0, sizeof(EbBufferHeaderType));
     EB_MALLOC_ARRAY_NO_CHECK(output_stream_buffer->p_buffer, output_buffer_size);
     if (!output_stream_buffer->p_buffer) {
         EB_FREE(output_stream_buffer);
