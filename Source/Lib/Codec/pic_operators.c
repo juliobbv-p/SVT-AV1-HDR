@@ -260,6 +260,29 @@ void svt_aom_yv12_copy_v_c(const Yv12BufferConfig* src_bc, Yv12BufferConfig* dst
     }
 }
 
+// Fills n bytes with v using 8-byte stores (overlapping tail) instead of a memset call per padded run.
+static INLINE void pad_fill(uint8_t* dst, uint8_t v, uint32_t n) {
+    const uint64_t v8 = 0x0101010101010101ull * v;
+    if (n >= 16) {
+        uint32_t i = 0;
+        for (; i + 16 <= n; i += 16) {
+            memcpy(dst + i, &v8, 8);
+            memcpy(dst + i + 8, &v8, 8);
+        }
+        if (i < n) {
+            memcpy(dst + n - 16, &v8, 8);
+            memcpy(dst + n - 8, &v8, 8);
+        }
+    } else if (n >= 8) {
+        memcpy(dst, &v8, 8);
+        memcpy(dst + n - 8, &v8, 8);
+    } else {
+        for (uint32_t i = 0; i < n; i++) {
+            dst[i] = v;
+        }
+    }
+}
+
 /** svt_aom_generate_padding()
         is used to pad the target picture. The horizontal padding happens first and then the vertical padding.
  */
@@ -278,8 +301,8 @@ void svt_aom_generate_padding(EbByte src_pic, uint32_t src_stride, uint32_t orig
         const uint8_t left_pixel  = row[0];
         const uint8_t right_pixel = row[original_src_width - 1];
 
-        svt_memset(row - padding_width, left_pixel, padding_width);
-        svt_memset(row + original_src_width, right_pixel, padding_width);
+        pad_fill(row - padding_width, left_pixel, padding_width);
+        pad_fill(row + original_src_width, right_pixel, padding_width);
 
         row += src_stride;
     }
@@ -291,11 +314,13 @@ void svt_aom_generate_padding(EbByte src_pic, uint32_t src_stride, uint32_t orig
     EbByte top_dst_row    = top_src_row;
     EbByte bottom_dst_row = bottom_src_row;
 
+    // One store stream at a time (top block, then bottom block).
     for (uint32_t y = 0; y < padding_height; ++y) {
         top_dst_row -= src_stride;
-        bottom_dst_row += src_stride;
-
         svt_memcpy(top_dst_row, top_src_row, row_bytes);
+    }
+    for (uint32_t y = 0; y < padding_height; ++y) {
+        bottom_dst_row += src_stride;
         svt_memcpy(bottom_dst_row, bottom_src_row, row_bytes);
     }
 }
