@@ -32,6 +32,20 @@ extern "C" {
 /*returns an addr aligned to the byte boundary specified by align*/
 #define align_addr(addr, align) (void*)(((size_t)(addr) + ((align) - 1)) & ~(size_t)((align) - 1))
 
+// The allocation macros below go through these. On Android they place small blocks in allocation order (see
+// svt_malloc.c); elsewhere they are the C library functions.
+#ifdef __ANDROID__
+void* svt_malloc(size_t size);
+void* svt_calloc(size_t count, size_t size);
+void* svt_realloc(void* ptr, size_t size);
+void  svt_free(void* ptr);
+#else
+#define svt_malloc malloc
+#define svt_calloc calloc
+#define svt_realloc realloc
+#define svt_free free
+#endif
+
 // Returns 0 in case of overflow of nmemb * size.
 static inline int32_t check_size_argument_overflow(uint64_t nmemb, uint64_t size) {
     const uint64_t total_size = nmemb * size;
@@ -73,7 +87,7 @@ static inline void* svt_aom_memalign(size_t align, size_t size) {
         return NULL;
     }
 #endif
-    void* const addr = malloc(aligned_size);
+    void* const addr = svt_malloc(aligned_size);
     if (addr) {
         x = align_addr((uint8_t*)addr + ADDRESS_STORAGE_SIZE, align);
         set_actual_malloc_address(x, addr);
@@ -88,7 +102,7 @@ static inline void* svt_aom_malloc(size_t size) {
 static inline void svt_aom_free(void* memblk) {
     if (memblk) {
         void* addr = get_actual_malloc_address(memblk);
-        free(addr);
+        svt_free(addr);
     }
 }
 
@@ -158,7 +172,7 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
 
 #define EB_NO_THROW_MALLOC(pointer, size)                \
     do {                                                 \
-        void* malloced_p = malloc(size);                 \
+        void* malloced_p = svt_malloc(size);             \
         EB_NO_THROW_ADD_MEM(malloced_p, size, EB_N_PTR); \
         pointer = malloced_p;                            \
     } while (0)
@@ -187,7 +201,7 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
 
 #define EB_NO_THROW_CALLOC(pointer, count, size)              \
     do {                                                      \
-        pointer = calloc(count, size);                        \
+        pointer = svt_calloc(count, size);                    \
         EB_NO_THROW_ADD_MEM(pointer, count * size, EB_C_PTR); \
     } while (0)
 
@@ -205,7 +219,7 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
 #define EB_FREE(pointer)                        \
     do {                                        \
         EB_REMOVE_MEM_ENTRY(pointer, EB_N_PTR); \
-        free(pointer);                          \
+        svt_free(pointer);                      \
         pointer = NULL;                         \
     } while (0)
 
@@ -224,7 +238,7 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
 #define EB_REALLOC_ARRAY(pa, count)            \
     do {                                       \
         size_t s_ra = sizeof(*(pa)) * (count); \
-        void*  p_ra = realloc(pa, s_ra);       \
+        void*  p_ra = svt_realloc(pa, s_ra);   \
         if (p_ra) {                            \
             EB_REMOVE_MEM_ENTRY(pa, EB_N_PTR); \
             EB_ADD_MEM(p_ra, s_ra, EB_N_PTR);  \
@@ -238,7 +252,7 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
     do {                                                \
         size_t    s_ra = sizeof(*(pa)) * (count);       \
         uintptr_t pa_i = (uintptr_t)pa;                 \
-        void*     p_ra = realloc(pa, s_ra);             \
+        void*     p_ra = svt_realloc(pa, s_ra);         \
         if (p_ra) {                                     \
             EB_REMOVE_MEM_ENTRY((void*)pa_i, EB_N_PTR); \
             EB_NO_THROW_ADD_MEM(p_ra, s_ra, EB_N_PTR);  \
@@ -330,7 +344,7 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
     } while (0)
 
 #define EB_MALLOC_ALIGNED(pointer, size) \
-    EB_ALLOC_ALIGNED_WITH(pointer, size, malloc(get_aligned_malloc_size(size, ALVALUE)))
+    EB_ALLOC_ALIGNED_WITH(pointer, size, svt_malloc(get_aligned_malloc_size(size, ALVALUE)))
 
 #define EB_FREE_ALIGNED(pointer)                \
     do {                                        \
@@ -343,7 +357,7 @@ void svt_remove_mem_entry(void* ptr, EbPtrType type);
 
 #define EB_CALLOC_ALIGNED_ARRAY(pa, count) \
     EB_ALLOC_ALIGNED_WITH(                 \
-        pa, sizeof(*(pa)) * (count), calloc(1, get_aligned_malloc_size(sizeof(*(pa)) * (count), ALVALUE)))
+        pa, sizeof(*(pa)) * (count), svt_calloc(1, get_aligned_malloc_size(sizeof(*(pa)) * (count), ALVALUE)))
 #endif
 
 #define EB_FREE_ALIGNED_ARRAY(pa) EB_FREE_ALIGNED(pa)

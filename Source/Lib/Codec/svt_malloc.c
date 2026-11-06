@@ -17,6 +17,164 @@ void svt_print_alloc_fail_impl(const char* file, int line) {
     SVT_FATAL("allocate memory failed, at %s:%d\n", file, line);
 }
 
+#ifdef __ANDROID__
+#include <pthread.h>
+#include <string.h>
+
+// Android's allocator (scudo) keeps every size class in its own region and hands out blocks in shuffled order,
+// so objects allocated together (a context, its arrays, its descriptors) never share a page. Blocks of up to
+// POOL_MAX bytes are instead carved in allocation order from chunks taken from malloc, with one free list per
+// size class, which halves the encoder's D-TLB stall cycles on Cortex-A510. Each block starts after a header
+// holding its size class (POOL_SYSTEM for blocks that come straight from malloc) and its requested size. The
+// chunks go back to malloc when the last pooled block is freed.
+#define POOL_MAX (64 << 10)
+#define POOL_CHUNK (512 << 10)
+#define POOL_CLASSES 106
+#define POOL_SYSTEM POOL_CLASSES
+#define POOL_FREED (POOL_CLASSES + 1)
+
+typedef struct PoolHdr {
+    size_t cls;
+    size_t size;
+} PoolHdr;
+
+typedef struct PoolChunk {
+    struct PoolChunk* next;
+    size_t            pad;
+} PoolChunk;
+
+static pthread_mutex_t g_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+static PoolHdr*        g_pool_free[POOL_CLASSES];
+static PoolChunk*      g_pool_chunks;
+static uint8_t*        g_pool_cur;
+static size_t          g_pool_left;
+static size_t          g_pool_live;
+
+// Size class of a block of total bytes (header included): 16-byte steps up to 1 KB, 256-byte steps up to 8 KB,
+// 4 KB steps up to POOL_MAX. Stores the class size in *size.
+static size_t pool_class(size_t total, size_t* size) {
+    if (total <= 1024) {
+        *size = (total + 15) & ~(size_t)15;
+        return (*size >> 4) - 1;
+    }
+    if (total <= 8192) {
+        *size = (total + 255) & ~(size_t)255;
+        return 59 + (*size >> 8);
+    }
+    *size = (total + 4095) & ~(size_t)4095;
+    return 89 + (*size >> 12);
+}
+
+static void* pool_alloc(size_t n) {
+    // A free block keeps its free-list link where the data goes.
+    size_t       size;
+    const size_t cls = pool_class(sizeof(PoolHdr) + (n > sizeof(PoolHdr*) ? n : sizeof(PoolHdr*)), &size);
+    pthread_mutex_lock(&g_pool_mutex);
+    PoolHdr* h = g_pool_free[cls];
+    if (h) {
+        g_pool_free[cls] = *(PoolHdr**)(h + 1);
+    } else {
+        if (g_pool_left < size) {
+            PoolChunk* chunk = malloc(POOL_CHUNK);
+            if (!chunk) {
+                pthread_mutex_unlock(&g_pool_mutex);
+                return NULL;
+            }
+            chunk->next   = g_pool_chunks;
+            g_pool_chunks = chunk;
+            g_pool_cur    = (uint8_t*)(chunk + 1);
+            g_pool_left   = POOL_CHUNK - sizeof(PoolChunk);
+        }
+        h = (PoolHdr*)g_pool_cur;
+        g_pool_cur += size;
+        g_pool_left -= size;
+    }
+    g_pool_live++;
+    pthread_mutex_unlock(&g_pool_mutex);
+    h->cls  = cls;
+    h->size = n;
+    return h + 1;
+}
+
+static void* system_alloc(PoolHdr* h, size_t n) {
+    if (!h) {
+        return NULL;
+    }
+    h->cls  = POOL_SYSTEM;
+    h->size = n;
+    return h + 1;
+}
+
+void* svt_malloc(size_t size) {
+    if (size > POOL_MAX - sizeof(PoolHdr)) {
+        return size > SIZE_MAX - sizeof(PoolHdr) ? NULL : system_alloc(malloc(size + sizeof(PoolHdr)), size);
+    }
+    return pool_alloc(size);
+}
+
+void* svt_calloc(size_t count, size_t size) {
+    if (size && count > (SIZE_MAX - sizeof(PoolHdr)) / size) {
+        return NULL;
+    }
+    const size_t n = count * size;
+    if (n > POOL_MAX - sizeof(PoolHdr)) {
+        return system_alloc(calloc(1, n + sizeof(PoolHdr)), n);
+    }
+    void* p = pool_alloc(n);
+    if (p) {
+        memset(p, 0, n);
+    }
+    return p;
+}
+
+void svt_free(void* ptr) {
+    if (!ptr) {
+        return;
+    }
+    PoolHdr*     h   = (PoolHdr*)ptr - 1;
+    const size_t cls = h->cls;
+    if (cls == POOL_SYSTEM) {
+        free(h);
+        return;
+    }
+    // Not from these functions, or freed twice: continuing would corrupt the free lists.
+    if (cls >= POOL_CLASSES) {
+        abort();
+    }
+    h->cls = POOL_FREED;
+    pthread_mutex_lock(&g_pool_mutex);
+    *(PoolHdr**)ptr  = g_pool_free[cls];
+    g_pool_free[cls] = h;
+    if (!--g_pool_live) {
+        while (g_pool_chunks) {
+            PoolChunk* next = g_pool_chunks->next;
+            free(g_pool_chunks);
+            g_pool_chunks = next;
+        }
+        memset(g_pool_free, 0, sizeof(g_pool_free));
+        g_pool_cur  = NULL;
+        g_pool_left = 0;
+    }
+    pthread_mutex_unlock(&g_pool_mutex);
+}
+
+void* svt_realloc(void* ptr, size_t size) {
+    if (!ptr) {
+        return svt_malloc(size);
+    }
+    PoolHdr* h = (PoolHdr*)ptr - 1;
+    if (h->cls == POOL_SYSTEM && size > POOL_MAX - sizeof(PoolHdr)) {
+        return size > SIZE_MAX - sizeof(PoolHdr) ? NULL : system_alloc(realloc(h, size + sizeof(PoolHdr)), size);
+    }
+    void* p = svt_malloc(size);
+    if (p) {
+        memcpy(p, ptr, size < h->size ? size : h->size);
+        svt_free(ptr);
+    }
+    return p;
+}
+#endif
+
 #ifdef DEBUG_MEMORY_USAGE
 #include <stdint.h>
 #include <limits.h>
