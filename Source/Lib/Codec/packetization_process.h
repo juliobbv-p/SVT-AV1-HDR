@@ -13,6 +13,7 @@
 #define EbPacketization_h
 
 #include "definitions.h"
+#include "svt_threads.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,7 +24,7 @@ extern "C" {
 EbErrorType svt_aom_packetization_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                                int rate_control_index, int demux_index, int me_port_index);
 
-void* svt_aom_packetization_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_packetization_kernel(void* input_ptr);
 // Release the pd_dpb and ref_pic_list at the end of the sequence
 void release_references_eos(SequenceControlSet* scs);
 #ifdef __cplusplus

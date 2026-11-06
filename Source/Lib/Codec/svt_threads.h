@@ -16,6 +16,15 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#ifndef __USE_GNU
+#define __USE_GNU
+#endif
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <sched.h>
+#include <pthread.h>
 #endif
 
 #ifdef __cplusplus
@@ -25,10 +34,16 @@ extern "C" {
 // semaphores, mutex, etc. These wrappers also hide
 // platform specific implementations of these objects.
 
+#ifdef _WIN32
+#define THREAD_FUNC_RETURN DWORD WINAPI
+#else
+#define THREAD_FUNC_RETURN void*
+#endif
+
 /**************************************
      * Threads
      **************************************/
-EbHandle svt_create_thread(void* thread_function(void*), void* thread_context, const char* name);
+EbHandle svt_create_thread(THREAD_FUNC_RETURN thread_function(void*), void* thread_context, const char* name);
 
 EbErrorType svt_destroy_thread(EbHandle thread_handle);
 
@@ -54,16 +69,6 @@ EbHandle    svt_create_mutex(void);
 EbErrorType svt_release_mutex(EbHandle mutex_handle);
 EbErrorType svt_block_on_mutex(EbHandle mutex_handle);
 EbErrorType svt_destroy_mutex(EbHandle mutex_handle);
-#ifndef _WIN32
-#ifndef __USE_GNU
-#define __USE_GNU
-#endif
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <sched.h>
-#include <pthread.h>
-#endif
 #define EB_CREATE_THREAD_NAMED(pointer, thread_function, thread_context, name) \
     do {                                                                       \
         pointer = svt_create_thread(thread_function, thread_context, name);    \

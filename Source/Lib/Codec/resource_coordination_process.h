@@ -13,6 +13,7 @@
 #define EbResourceCoordination_h
 
 #include "definitions.h"
+#include "svt_threads.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -22,7 +23,7 @@ extern "C" {
 EbErrorType svt_aom_resource_coordination_context_ctor(EbThreadContext* thread_ctx, EbEncHandle* enc_handle_ptr);
 bool        buffer_update_needed(EbBufferHeaderType* input_buffer, struct SequenceControlSet* scs);
 
-void* svt_aom_resource_coordination_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_resource_coordination_kernel(void* input_ptr);
 #ifdef __cplusplus
 }
 #endif

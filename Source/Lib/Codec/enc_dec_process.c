@@ -3253,13 +3253,13 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_mode_decision_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_mode_decision_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_mode_decision_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

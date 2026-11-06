@@ -1470,13 +1470,13 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_resource_coordination_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_resource_coordination_kernel(void* input_ptr) {
     EbThreadContext* enc_contxt_ptr = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_resource_coordination_kernel_iter(enc_contxt_ptr->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

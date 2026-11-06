@@ -178,7 +178,7 @@ void svt_format_thread_name(char* buf, size_t size, const char* prefix, uint32_t
 /****************************************
  * svt_create_thread
  ****************************************/
-EbHandle svt_create_thread(void* thread_function(void*), void* thread_context, const char* name) {
+EbHandle svt_create_thread(THREAD_FUNC_RETURN thread_function(void*), void* thread_context, const char* name) {
     EbHandle thread_handle = NULL;
 
     // Drop the `svt_aom_` prefix that EB_CREATE_THREAD pulls in via
@@ -215,8 +215,8 @@ EbHandle svt_create_thread(void* thread_function(void*), void* thread_context, c
             HMODULE kernel_base_handle = GetModuleHandle("KernelBase.dll");
             if (kernel_base_handle != NULL) {
                 typedef HRESULT (*set_thread_description_t)(HANDLE hThread, PCWSTR lpThreadDescription);
-                set_thread_description_t set_thread_description = (set_thread_description_t)GetProcAddress(
-                    kernel_base_handle, "SetThreadDescription");
+                set_thread_description_t set_thread_description = (void*)GetProcAddress(kernel_base_handle,
+                                                                                        "SetThreadDescription");
                 if (set_thread_description != NULL) {
                     set_thread_description((HANDLE)thread_handle, wname);
                 }

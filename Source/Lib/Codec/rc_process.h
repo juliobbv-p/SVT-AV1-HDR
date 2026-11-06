@@ -13,7 +13,7 @@
 #define EbRateControl_h
 
 #include "EbDebugMacros.h"
-#include "definitions.h"
+#include "svt_threads.h"
 #include "sys_resource_manager.h"
 #include "EbSvtAv1Enc.h"
 #include "pcs.h"
@@ -312,6 +312,6 @@ void recode_loop_update_q(struct PictureParentControlSet* ppcs, bool* const loop
 EbErrorType svt_aom_rate_control_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                               int me_port_index);
 
-void* svt_aom_rate_control_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_rate_control_kernel(void* input_ptr);
 
 #endif // EbRateControl_h

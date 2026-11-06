@@ -12,6 +12,7 @@
 #ifndef EbDlfProcess_h
 #define EbDlfProcess_h
 
+#include "svt_threads.h"
 #include "sys_resource_manager.h"
 #include "object.h"
 #include "pic_buffer_desc.h"
@@ -33,6 +34,6 @@ typedef struct DlfContext {
  **************************************/
 EbErrorType svt_aom_dlf_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr, int index);
 
-void* svt_aom_dlf_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_dlf_kernel(void* input_ptr);
 
 #endif // EbEntropyCodingProcess_h

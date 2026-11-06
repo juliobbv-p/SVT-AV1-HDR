@@ -2187,15 +2187,15 @@ EbErrorType svt_aom_tpl_disp_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_tpl_disp_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_tpl_disp_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_tpl_disp_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }
 
 static void sbo_send_picture_out(SourceBasedOperationsContext* context_ptr, PictureParentControlSet* pcs,
@@ -2363,13 +2363,13 @@ EbErrorType svt_aom_source_based_operations_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_source_based_operations_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_source_based_operations_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_source_based_operations_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

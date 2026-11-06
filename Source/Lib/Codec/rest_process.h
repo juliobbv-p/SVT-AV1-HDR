@@ -13,6 +13,7 @@
 #define EbRestProcess_h
 
 #include "definitions.h"
+#include "svt_threads.h"
 
 /**************************************
  * Extern Function Declarations
@@ -20,6 +21,6 @@
 EbErrorType svt_aom_rest_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr, int index,
                                       int demux_index);
 
-void* svt_aom_rest_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_rest_kernel(void* input_ptr);
 
 #endif

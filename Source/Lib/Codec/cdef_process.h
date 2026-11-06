@@ -12,6 +12,7 @@
 #ifndef EbCdefProcess_h
 #define EbCdefProcess_h
 
+#include "svt_threads.h"
 #include "sys_resource_manager.h"
 #include "object.h"
 
@@ -20,6 +21,6 @@
  **************************************/
 EbErrorType svt_aom_cdef_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr, int index);
 
-void* svt_aom_cdef_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_cdef_kernel(void* input_ptr);
 
 #endif

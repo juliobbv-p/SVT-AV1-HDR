@@ -19,6 +19,7 @@
 #include "mode_decision.h"
 #include "enc_inter_prediction.h"
 #include "entropy_coding.h"
+#include "svt_threads.h"
 #include "reference_object.h"
 #include "neighbor_arrays.h"
 #include "coding_unit.h"
@@ -80,7 +81,7 @@ typedef struct EncDecContext {
 EbErrorType svt_aom_enc_dec_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr, int index,
                                          int tasks_index);
 
-void* svt_aom_mode_decision_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_mode_decision_kernel(void* input_ptr);
 
 // Computes the SSIM score from the five per-block integer sums (used by the C and
 // SIMD svt_ssim_* kernels).
