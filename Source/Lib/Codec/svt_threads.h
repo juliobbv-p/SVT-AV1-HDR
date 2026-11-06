@@ -130,6 +130,9 @@ typedef INIT_ONCE OnceType;
 #define ONCE_ROUTINE(name) BOOL CALLBACK name(PINIT_ONCE InitOnce, PVOID Parameter, PVOID* lpContext)
 #define ONCE_ROUTINE_EPILOG \
     do {                    \
+        UNUSED(InitOnce);   \
+        UNUSED(Parameter);  \
+        UNUSED(lpContext);  \
         return TRUE;        \
     } while (0)
 typedef PINIT_ONCE_FN OnceFn;
