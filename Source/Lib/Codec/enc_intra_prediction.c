@@ -611,8 +611,8 @@ static void prepare_dr_edges(const uint8_t* above_ref, const uint8_t* left_ref, 
     memset(above_data, 0x80, MAX_TX_SIZE * 2 + 48);
     if (need_left) {
         const int32_t num_left_pixels_needed = txhpx + (need_bottom ? txwpx : 0);
-        int32_t       i                      = 0;
         if (n_left_px > 0) {
+            int32_t i = 0;
             for (; i < n_left_px; i++) {
                 left_col[i] = left_ref[i];
             }

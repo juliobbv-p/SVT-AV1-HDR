@@ -128,10 +128,12 @@ jobs:
             -rp="$PWD" \
             -ithird_party \
             --cppcheck-build-dir=.cppcheck \
-            --suppress=unusedFunction \
-            --suppress=missingIncludeSystem \
-            --template="::error file={file},line={line},col={column}::{bold}{file}:{line}:{column}: {magenta}warning:{default} {message} [{id}]{reset}\\n{code}" \
-            --template-location="{bold}{file}:{line}:{column}: {dim}note:{reset} {info}\\n{code}"
+            --inline-suppr \
+            --suppress="unusedFunction:" \
+            --suppress="missingIncludeSystem:" \
+            --suppress="*:third_party/*" \
+            --template="::error file={file},line={line},col={column}::{file}:{line}:{column}: warning: {message} [{id}]\\n{code}" \
+            --template-location="{file}:{line}:{column}: {dim}note: {info}\\n{code}"
         continue-on-error: true
       - name: Save cppcheck results to cache
         uses: actions/cache/save@v6.1.0
