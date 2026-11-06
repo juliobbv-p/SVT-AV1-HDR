@@ -36,6 +36,17 @@ static inline void svt_cdef_copy_rect8(uint8_t* dst, int dstride, const uint8_t*
             base += sstride;             \
         }                                \
     } while (0)
+    // AArch64 inlines a constant memcpy of at most four stores (64 bytes); wider rows are split so
+    // that each part stays inline instead of becoming a libc call per row.
+#define CDEF_RECT_CW_WIDE(W)                       \
+    do {                                           \
+        for (int _r = 0; _r < v; _r++) {           \
+            memcpy(dst, base, 64);                 \
+            memcpy(dst + 64, base + 64, (W) - 64); \
+            dst += dstride;                        \
+            base += sstride;                       \
+        }                                          \
+    } while (0)
     switch (h) {
     case 2:
         CDEF_RECT_CW(2);
@@ -53,15 +64,16 @@ static inline void svt_cdef_copy_rect8(uint8_t* dst, int dstride, const uint8_t*
         CDEF_RECT_CW(64);
         return;
     case 66:
-        CDEF_RECT_CW(66);
+        CDEF_RECT_CW_WIDE(66);
         return;
     case 68:
-        CDEF_RECT_CW(68);
+        CDEF_RECT_CW_WIDE(68);
         return;
     default:
         break;
     }
 #undef CDEF_RECT_CW
+#undef CDEF_RECT_CW_WIDE
     // Other widths are legitimate when the coded frame width is not a multiple of the CDEF block
     // size (e.g. reference scaling / --resize-mode produces partial right-edge filter blocks).
     // The fast cases above cover the common geometries; any other width uses this variable-width
