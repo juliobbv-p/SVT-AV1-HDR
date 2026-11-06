@@ -132,7 +132,6 @@ jobs:
             --suppress=missingIncludeSystem \
             --template="::error file={file},line={line},col={column}::{bold}{file}:{line}:{column}: {magenta}warning:{default} {message} [{id}]{reset}\\n{code}" \
             --template-location="{bold}{file}:{line}:{column}: {dim}note:{reset} {info}\\n{code}"
-        continue-on-error: true
       - name: Save cppcheck results to cache
         uses: actions/cache/save@v6.1.0
         if:
@@ -475,9 +474,9 @@ jobs:
     env:
       CC: clang
       CXX: clang++
-      CFLAGS: -Wshadow -pipe
-      CXXFLAGS: -Wshadow -pipe
-      LDFLAGS: -Wshadow -pipe
+      CFLAGS: -Werror -Wshadow -pipe
+      CXXFLAGS: -Werror -Wshadow -pipe
+      LDFLAGS: -Werror -Wshadow -pipe
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -578,8 +577,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 120
     env:
-      CFLAGS: /D_CRT_SECURE_NO_WARNINGS=1
-      CXXFLAGS: /D_CRT_SECURE_NO_WARNINGS=1
+      CFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1
+      CXXFLAGS: /WX /D_CRT_SECURE_NO_WARNINGS=1
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -757,9 +756,9 @@ jobs:
         env:
           CC: gcc
           CXX: g++
-          CFLAGS: -Wshadow -pipe
-          CXXFLAGS: -Wshadow -pipe
-          LDFLAGS: -static -static-libgcc -static-libstdc++ -Wshadow -pipe
+          CFLAGS: -Werror -Wshadow -pipe
+          CXXFLAGS: -Werror -Wshadow -pipe
+          LDFLAGS: -static -static-libgcc -static-libstdc++ -Werror -Wshadow -pipe
         run: |
           cmake -S "${GITHUB_WORKSPACE}" -B "${GITHUB_WORKSPACE}/Build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \

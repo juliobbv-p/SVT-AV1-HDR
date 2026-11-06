@@ -146,9 +146,9 @@ jobs:
     env:
       CC: clang
       CXX: clang++
-      CFLAGS: -Wshadow -pipe
-      CXXFLAGS: -Wshadow -pipe
-      LDFLAGS: -Wshadow -pipe
+      CFLAGS: -Werror -Wshadow -pipe
+      CXXFLAGS: -Werror -Wshadow -pipe
+      LDFLAGS: -Werror -Wshadow -pipe
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
