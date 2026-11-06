@@ -4469,7 +4469,7 @@ void svt_av1_fwd_txfm2d_8x16_avx2(int16_t* input, int32_t* output, uint32_t stri
 
 /* call this function for all 16 transform types */
 void svt_av1_fwd_txfm2d_16x8_avx2(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
-    __m256i                  in[16], out[16];
+    __m256i                  in[16] = {_mm256_undefined_si256()}, out[16] = {_mm256_undefined_si256()};
     const int8_t*            shift    = fwd_txfm_shift_ls[TX_16X8];
     const int32_t            txw_idx  = get_txw_idx(TX_16X8);
     const int32_t            txh_idx  = get_txh_idx(TX_16X8);
@@ -9913,7 +9913,7 @@ void svt_av1_fwd_txfm2d_16x4_N2_avx2(int16_t* input, int32_t* output, uint32_t s
 
 void svt_av1_fwd_txfm2d_32x64_N2_avx2(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
     (void)tx_type;
-    __m256i       in[256];
+    __m256i       in[256]       = {_mm256_undefined_si256()};
     __m256i*      outcoef256    = (__m256i*)output;
     const int8_t* shift         = fwd_txfm_shift_ls[TX_32X64];
     const int32_t txw_idx       = get_txw_idx(TX_32X64);
