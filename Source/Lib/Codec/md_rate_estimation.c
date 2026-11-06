@@ -484,38 +484,24 @@ static void svt_av1_build_nmv_cost_table(int32_t* mvjoint, int32_t* mvcost[2], c
  * based on the frame CDF
  ***************************************************************************/
 void svt_aom_estimate_mv_rate(PictureControlSet* pcs, MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc) {
+    int32_t* mvcost[2]               = {&md_rate_est_ctx->mv_costs[0][MV_MAX], &md_rate_est_ctx->mv_costs[1][MV_MAX]};
+    md_rate_est_ctx->nmvcoststack[0] = mvcost[0];
+    md_rate_est_ctx->nmvcoststack[1] = mvcost[1];
     if (pcs->approx_inter_rate) {
         if (!md_rate_est_ctx->nmv_costs_zero) {
             memset(md_rate_est_ctx->nmv_vec_cost, 0, sizeof(int32_t) * MV_JOINTS);
-            memset(md_rate_est_ctx->nmv_costs, 0, sizeof(int32_t) * MV_VALS * 2);
+            memset(md_rate_est_ctx->mv_costs, 0, sizeof(int32_t) * MV_VALS * 2);
             md_rate_est_ctx->nmv_costs_zero = true;
         }
-        md_rate_est_ctx->nmvcoststack[0] = &md_rate_est_ctx->nmv_costs[0][MV_MAX];
-        md_rate_est_ctx->nmvcoststack[1] = &md_rate_est_ctx->nmv_costs[1][MV_MAX];
         return;
     }
-    int32_t*     nmvcost[2];
-    int32_t*     nmvcost_hp[2];
-    FrameHeader* frm_hdr = &pcs->ppcs->frm_hdr;
-
-    md_rate_est_ctx->nmv_costs_zero       = false;
-    nmvcost[0]                            = &md_rate_est_ctx->nmv_costs[0][MV_MAX];
-    nmvcost[1]                            = &md_rate_est_ctx->nmv_costs[1][MV_MAX];
-    nmvcost_hp[0]                         = &md_rate_est_ctx->nmv_costs_hp[0][MV_MAX];
-    nmvcost_hp[1]                         = &md_rate_est_ctx->nmv_costs_hp[1][MV_MAX];
-    const uint8_t allow_high_precision_mv = frm_hdr->allow_high_precision_mv;
-    svt_av1_build_nmv_cost_table(md_rate_est_ctx->nmv_vec_cost, // out
-                                 allow_high_precision_mv ? nmvcost_hp : nmvcost, // out
-                                 &fc->nmvc,
-                                 allow_high_precision_mv);
-    md_rate_est_ctx->nmvcoststack[0] = allow_high_precision_mv ? &md_rate_est_ctx->nmv_costs_hp[0][MV_MAX]
-                                                               : &md_rate_est_ctx->nmv_costs[0][MV_MAX];
-    md_rate_est_ctx->nmvcoststack[1] = allow_high_precision_mv ? &md_rate_est_ctx->nmv_costs_hp[1][MV_MAX]
-                                                               : &md_rate_est_ctx->nmv_costs[1][MV_MAX];
-
+    FrameHeader* frm_hdr            = &pcs->ppcs->frm_hdr;
+    md_rate_est_ctx->nmv_costs_zero = false;
     if (frm_hdr->allow_intrabc) {
-        int32_t* dvcost[2] = {&md_rate_est_ctx->dv_cost[0][MV_MAX], &md_rate_est_ctx->dv_cost[1][MV_MAX]};
-        svt_av1_build_nmv_cost_table(md_rate_est_ctx->dv_joint_cost, dvcost, &fc->ndvc, MV_SUBPEL_NONE);
+        svt_av1_build_nmv_cost_table(md_rate_est_ctx->dv_joint_cost, mvcost, &fc->ndvc, MV_SUBPEL_NONE);
+    } else {
+        svt_av1_build_nmv_cost_table(
+            md_rate_est_ctx->nmv_vec_cost, mvcost, &fc->nmvc, frm_hdr->allow_high_precision_mv);
     }
 }
 

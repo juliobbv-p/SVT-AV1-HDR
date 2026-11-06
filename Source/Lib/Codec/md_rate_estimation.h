@@ -67,12 +67,12 @@ typedef struct MdRateEstimationContext {
     int32_t motion_mode_fac_bits[BLOCK_SIZES_ALL][MOTION_MODES];
     int32_t motion_mode_fac_bits1[BLOCK_SIZES_ALL][2];
 
-    int32_t        nmv_vec_cost[MV_JOINTS];
-    int32_t        nmv_costs[2][MV_VALS];
-    int32_t        nmv_costs_hp[2][MV_VALS];
-    const int32_t* nmvcoststack[2];
-    bool           nmv_costs_zero; // nmv_vec_cost and nmv_costs hold only zeros
-    int32_t        dv_cost[2][MV_VALS];
+    int32_t nmv_vec_cost[MV_JOINTS];
+    // Costs of the frame's vector components: the MV costs at the frame's MV precision, or the DV costs when
+    // intra-BC is allowed (intra frames only, which have no MVs)
+    int32_t        mv_costs[2][MV_VALS];
+    const int32_t* nmvcoststack[2]; // mv_costs centred on a zero component
+    bool           nmv_costs_zero; // nmv_vec_cost and mv_costs hold only zeros
     int32_t        dv_joint_cost[MV_JOINTS];
 
     // Compouned Mode

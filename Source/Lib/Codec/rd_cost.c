@@ -671,12 +671,10 @@ uint64_t svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ct
     if (svt_aom_allow_intrabc(&pcs->ppcs->frm_hdr, pcs->ppcs->slice_type) && cand->block_mi.use_intrabc) {
         uint64_t rate = 0;
 
-        Mv         mv        = {.as_int = cand->block_mi.mv[0].as_int};
-        Mv         ref_mv    = {.as_int = cand->pred_mv[0].as_int};
-        const int* dvcost[2] = {(int*)&ctx->md_rate_est_ctx->dv_cost[0][MV_MAX],
-                                (int*)&ctx->md_rate_est_ctx->dv_cost[1][MV_MAX]};
-        int32_t    mv_rate   = svt_av1_mv_bit_cost(
-            mv, ref_mv, ctx->md_rate_est_ctx->dv_joint_cost, dvcost, MV_COST_WEIGHT_SUB);
+        Mv      mv      = {.as_int = cand->block_mi.mv[0].as_int};
+        Mv      ref_mv  = {.as_int = cand->pred_mv[0].as_int};
+        int32_t mv_rate = svt_av1_mv_bit_cost(
+            mv, ref_mv, ctx->md_rate_est_ctx->dv_joint_cost, ctx->md_rate_est_ctx->nmvcoststack, MV_COST_WEIGHT_SUB);
 
         rate                      = mv_rate + ctx->md_rate_est_ctx->intrabc_fac_bits[cand->block_mi.use_intrabc];
         cand_bf->fast_luma_rate   = rate;
