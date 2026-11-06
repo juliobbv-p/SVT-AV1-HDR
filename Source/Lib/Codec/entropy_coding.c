@@ -353,7 +353,7 @@ static void av1_write_tx_type(PictureParentControlSet* pcs, FRAME_CONTEXT* frame
 }
 
 static int32_t av1_write_coeffs_txb_1d(PictureParentControlSet* ppcs, FRAME_CONTEXT* frame_context, MbModeInfo* mbmi,
-                                       AomWriter* ec_writer, EcBlkStruct* blk_ptr, TxSize tx_size, uint32_t txb_index,
+                                       AomWriter* writer, EcBlkStruct* blk_ptr, TxSize tx_size, uint32_t txb_index,
                                        uint32_t intraLumaDir, int32_t* coeff_buffer_ptr, COMPONENT_TYPE component_type,
                                        int16_t txb_skip_ctx, int16_t dc_sign_ctx, int16_t eob,
                                        EntropyCodingContext* ec_ctx) {
@@ -363,7 +363,7 @@ static int32_t av1_write_coeffs_txb_1d(PictureParentControlSet* ppcs, FRAME_CONT
 
     assert(txs_ctx < TX_SIZES);
 
-    aom_write_symbol(ec_writer, eob == 0, frame_context->txb_skip_cdf[txs_ctx][txb_skip_ctx], 2);
+    aom_write_symbol(writer, eob == 0, frame_context->txb_skip_cdf[txs_ctx][txb_skip_ctx], 2);
 
     assert(IMPLIES((component_type == 0 && eob == 0), tx_type == DCT_DCT));
     assert(IMPLIES((is_inter_mode(mbmi->block_mi.mode) && component_type == 0 && eob == 0 && txb_index == 0),
@@ -372,8 +372,13 @@ static int32_t av1_write_coeffs_txb_1d(PictureParentControlSet* ppcs, FRAME_CONT
         return 0;
     }
     if (component_type == COMPONENT_LUMA) {
-        av1_write_tx_type(ppcs, frame_context, mbmi, ec_writer, intraLumaDir, tx_type, tx_size);
+        av1_write_tx_type(ppcs, frame_context, mbmi, writer, intraLumaDir, tx_type, tx_size);
     }
+    // Code the remaining symbols on a local copy of the writer: stores through the coefficient, level and CDF
+    // pointers may alias *writer, which would keep the coder state in memory across every symbol.
+    AomWriter        ec_writer_local = *writer;
+    AomWriter* const ec_writer       = &ec_writer_local;
+
     int         eob_extra;
     const int   eob_pt         = get_eob_pos_token(eob, &eob_extra);
     const int   eob_multi_size = txsize_log2_minus4[tx_size];
@@ -440,6 +445,7 @@ static int32_t av1_write_coeffs_txb_1d(PictureParentControlSet* ppcs, FRAME_CONT
 
         int32_t cul_level = AOMMIN(level, COEFF_CONTEXT_MASK);
         set_dc_sign(&cul_level, coeff_buffer_ptr[0]);
+        *writer = ec_writer_local;
         return cul_level;
     }
 
@@ -541,6 +547,7 @@ static int32_t av1_write_coeffs_txb_1d(PictureParentControlSet* ppcs, FRAME_CONT
 
     cul_level = AOMMIN(COEFF_CONTEXT_MASK, cul_level);
     set_dc_sign(&cul_level, coeff_buffer_ptr[0]);
+    *writer = ec_writer_local;
     return cul_level;
 }
 

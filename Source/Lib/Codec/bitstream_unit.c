@@ -103,11 +103,19 @@ static inline void propagate_carry_bwd(unsigned char* ptr) {
    URL="http://researchcommons.waikato.ac.nz/bitstream/handle/10289/78/content.pdf"
   }*/
 
+// Write pointer and low after a flush.
+typedef struct OdEcFlushed {
+    unsigned char* ptr;
+    OdEcWindow     low;
+} OdEcFlushed;
+
 /*Flush accumulated bytes from the arithmetic coder to the output buffer.
   This is the cold path of normalize, kept out-of-line to reduce icache
-  pressure on the hot (no-flush) path.
-  Returns the residual low value after flushing.*/
-static NOINLINE void od_ec_enc_flush(OdEcEnc* enc, OdEcWindow low, unsigned rng, int c, int d) {
+  pressure on the hot (no-flush) path. It takes and returns the write pointer
+  instead of the encoder, so a caller's encoder copy does not escape and its
+  state can stay in registers across symbols.
+  Returns the advanced write pointer and the new (shifted) low.*/
+static NOINLINE OdEcFlushed od_ec_enc_flush(unsigned char* ptr, OdEcWindow low, int c, int d) {
     // Need to add 1 byte here since enc->cnt always counts 1 byte less
     // (enc->cnt = -9) to ensure correct operation
     int s              = c + d;
@@ -125,22 +133,16 @@ static NOINLINE void od_ec_enc_flush(OdEcEnc* enc, OdEcWindow low, unsigned rng,
     uint64_t mask = (uint64_t)1 << num_bits_ready;
 
     if (output & mask) {
-        assert(enc->ptr > enc->buf);
-        propagate_carry_bwd(enc->ptr);
+        propagate_carry_bwd(ptr);
     }
 
     // Write to buffer. Carry bit will be shifted away, no need to mask
     // output &= mask - 1;
     const uint64_t reg = HToBE64(output << (64 - num_bits_ready));
-    memcpy(enc->ptr, &reg, 8);
-
-    enc->ptr += num_bits_ready >> 3;
+    memcpy(ptr, &reg, 8);
 
     low &= (((uint64_t)1 << c) - 1);
-
-    enc->low = low << d;
-    enc->rng = rng << d;
-    enc->cnt = (s & 7) - 8;
+    return (OdEcFlushed){ptr + (num_bits_ready >> 3), low << d};
 }
 
 /*Takes updated low and range values, renormalizes them so that
@@ -165,7 +167,11 @@ static inline void svt_od_ec_enc_normalize(OdEcEnc* enc, OdEcWindow low, unsigne
        the leading 0x00's as a special case.
     */
     if (EB_UNLIKELY(c + d >= 40)) { // 56 - 16
-        od_ec_enc_flush(enc, low, rng, c, d);
+        const OdEcFlushed f = od_ec_enc_flush(enc->ptr, low, c, d);
+        enc->ptr            = f.ptr;
+        enc->low            = f.low;
+        enc->rng            = rng << d;
+        enc->cnt            = ((c + d) & 7) - 8;
     } else {
         enc->low = low << d;
         enc->rng = rng << d;
