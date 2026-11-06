@@ -37,13 +37,13 @@ echo "Checking for trailing spaces" >&2
 
 # Test only "new" commits, that is, commits that are not upstream on
 # the default branch.
-if git -C "$REPO_DIR" fetch -q "${CI_REPOSITORY_URL:-https://gitlab.com/AOMediaCodec/SVT-AV1.git}" "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-HEAD}"; then
+if git -C "$REPO_DIR" fetch -q "${CI_REPOSITORY_URL:-https://github.com/AOMediaCodec/SVT-AV1.git}" "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-HEAD}"; then
     FETCH_HEAD=$(git -C "$REPO_DIR" rev-parse FETCH_HEAD)
 else
     # in case the fetch failed, maybe internet issues, try to resolve a local default branch's ref, checked-out or not
     FETCH_HEAD=$(git -C "$REPO_DIR" rev-parse refs/remotes/origin/HEAD) ||
-        # default to master if we have no origin remote
-        FETCH_HEAD=master
+        # default to main if we have no origin remote
+        FETCH_HEAD=main
 fi
 
 if ! git -C "$REPO_DIR" merge-tree --write-tree HEAD "$FETCH_HEAD" > /dev/null 2>&1; then
