@@ -1908,7 +1908,11 @@ static void svt_init_mv_cost_params(svt_mv_cost_param* mv_cost_params, ModeDecis
     mv_cost_params->ref_mv        = ref_mv;
     mv_cost_params->full_ref_mv   = get_fullmv_from_mv(ref_mv);
     mv_cost_params->early_exit_th = 1020 - (ctx->blk_geom->sq_size >> 2);
-    mv_cost_params->mv_cost_type  = ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3 ? MV_COST_OPT : MV_COST_ENTROPY;
+    // With approx_inter_rate the MV cost tables are not built (svt_aom_estimate_mv_rate zeroes them), so the entropy
+    // cost would be 0; use the L1 approximation instead.
+    mv_cost_params->mv_cost_type  = ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3 || ctx->approx_inter_rate
+        ? MV_COST_OPT
+        : MV_COST_ENTROPY;
     mv_cost_params->error_per_bit = AOMMAX(rdmult >> RD_EPB_SHIFT, 1);
     mv_cost_params->sad_per_bit   = svt_aom_get_sad_per_bit(base_q_idx, hbd_md);
     mv_cost_params->mvjcost       = ctx->md_rate_est_ctx->nmv_vec_cost;

@@ -37,6 +37,7 @@ static void copy_mv_rate(PictureControlSet* pcs, MdRateEstimationContext* dst_ra
     FrameHeader* frm_hdr = &pcs->ppcs->frm_hdr;
 
     memcpy(dst_rate->nmv_vec_cost, pcs->md_rate_est_ctx->nmv_vec_cost, MV_JOINTS * sizeof(int32_t));
+    dst_rate->nmv_costs_zero = false;
 
     if (frm_hdr->allow_high_precision_mv) {
         memcpy(dst_rate->nmv_costs_hp, pcs->md_rate_est_ctx->nmv_costs_hp, 2 * MV_VALS * sizeof(int32_t));

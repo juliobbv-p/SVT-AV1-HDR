@@ -71,6 +71,7 @@ typedef struct MdRateEstimationContext {
     int32_t        nmv_costs[2][MV_VALS];
     int32_t        nmv_costs_hp[2][MV_VALS];
     const int32_t* nmvcoststack[2];
+    bool           nmv_costs_zero; // nmv_vec_cost and nmv_costs hold only zeros
     int32_t        dv_cost[2][MV_VALS];
     int32_t        dv_joint_cost[MV_JOINTS];
 
