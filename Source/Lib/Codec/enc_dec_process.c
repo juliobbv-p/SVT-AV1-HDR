@@ -2762,6 +2762,7 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
         if (enc_dec_tasks->input_type == ENCDEC_TASKS_SUPERRES_INPUT) {
             // do as dorecode do
             pcs->enc_dec_coded_sb_count = 0;
+            pcs->sb_final_blk_arr_used  = 0;
             // re-init mode decision configuration for qp update for re-encode frame
             mdc_init_qp_update(pcs);
             // init segment for re-encode frame
@@ -3095,6 +3096,12 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                         pcs->sb_max_sq_size[sb_index] = 0;
                     }
                     sb_ptr->final_blk_cnt = 0;
+                    // A single EncDec thread codes the SBs one at a time, so it packs their blocks back to back in
+                    // the pool (paging in only the blocks coded) instead of using each SB's worst-case slice
+                    const bool pack_blks = scs->enc_dec_process_init_count == 1;
+                    if (pack_blks) {
+                        sb_ptr->final_blk_arr = pcs->sb_final_blk_arr_pool + pcs->sb_final_blk_arr_used;
+                    }
                     svt_aom_encode_sb(scs,
                                       pcs,
                                       ed_ctx,
@@ -3102,6 +3109,9 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                                       sb_ptr->ptree,
                                       md_ctx->sb_origin_y >> 2,
                                       md_ctx->sb_origin_x >> 2);
+                    if (pack_blks) {
+                        pcs->sb_final_blk_arr_used += sb_ptr->final_blk_cnt;
+                    }
                     // free MD palette info buffer
                     if (pcs->ppcs->palette_level) {
                         const uint16_t max_block_cnt = scs->max_block_cnt;
@@ -3186,6 +3196,7 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                     }
                 }
                 pcs->enc_dec_coded_sb_count = 0;
+                pcs->sb_final_blk_arr_used  = 0;
                 // re-init mode decision configuration for qp update for re-encode frame
                 mdc_init_qp_update(pcs);
                 // init segment for re-encode frame

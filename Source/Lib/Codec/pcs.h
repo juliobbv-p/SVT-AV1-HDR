@@ -250,6 +250,8 @@ typedef struct PictureControlSet {
     uint8_t*               sb_64x64_mvp;
     uint8_t*               sb_min_sq_size;
     uint8_t*               sb_max_sq_size;
+    // Blocks of sb_final_blk_arr_pool already holding coded SBs, when a single EncDec thread packs them
+    uint32_t sb_final_blk_arr_used;
     // qindex per 64x64 using ME distortions (to be used for lambda modulation only; not at Q/Q-1)
     // Mode Decision Neighbor Arrays
     uint8_t*            b64_me_qindex;

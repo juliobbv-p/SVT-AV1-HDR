@@ -342,6 +342,7 @@ void superres_setup_child_pcs(SequenceControlSet* entry_scs_ptr, PictureParentCo
     }
 
     child_pcs->enc_dec_coded_sb_count = 0;
+    child_pcs->sb_final_blk_arr_used  = 0;
 }
 
 /* Picture Manager Kernel */
@@ -679,6 +680,7 @@ EbErrorType svt_aom_picture_manager_kernel_iter(void* context) {
         child_pcs->b64_total_count      = entry_ppcs->b64_total_count;
 
         child_pcs->enc_dec_coded_sb_count = 0;
+        child_pcs->sb_final_blk_arr_used  = 0;
         child_pcs->hbd_md                 = SVT_EFFECTIVE_HBD_MD(entry_ppcs->hbd_md);
         context_ptr->pmgr_dec_order       = child_pcs->ppcs->decode_order;
         // Update consecutive_dec_order using the min-heap of pending decode orders.

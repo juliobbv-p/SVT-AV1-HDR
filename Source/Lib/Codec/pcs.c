@@ -1000,6 +1000,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
            init_data_ptr->picture_height);
     // Segments
     object_ptr->enc_dec_coded_sb_count = 0;
+    object_ptr->sb_final_blk_arr_used  = 0;
 
     EB_MALLOC_ARRAY(object_ptr->enc_dec_segment_ctrl, total_tile_cnt);
 

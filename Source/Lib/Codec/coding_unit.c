@@ -112,6 +112,7 @@ EbErrorType svt_aom_largest_coding_unit_ctor(SuperBlock* larget_coding_unit_ptr,
         EB_FREE_ARRAY(pcs->sb_av1xd_pool);
         EB_FREE_ARRAY(pcs->sb_ptree_pool);
         EB_MALLOC_ARRAY(pcs->sb_final_blk_arr_pool, (size_t)all_sb * tot_blk_num);
+        pcs->sb_final_blk_arr_used = 0;
         EB_MALLOC_ARRAY(pcs->sb_av1xd_pool, all_sb);
         EB_CALLOC_ARRAY(pcs->sb_ptree_pool, (size_t)all_sb * blocks_to_alloc);
     }
