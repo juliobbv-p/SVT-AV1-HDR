@@ -1077,7 +1077,7 @@ typedef struct ModeDecisionContext {
     WarpSampleInfo wm_sample_info[REF_FRAMES];
     int16_t*       pred_buf_q3;
     // Track all MVs that are prepared for candidates prior to MDS0. Used to avoid MV duplication.
-    Mv** injected_mvs;
+    Mv (*injected_mvs)[2];
     // Track the reference types for each MV
     MvReferenceFrame* injected_ref_types;
     uint16_t          injected_mv_count;

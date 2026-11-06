@@ -81,7 +81,7 @@ static void mode_decision_context_dctor(EbPtr p) {
     EB_FREE_ALIGNED_ARRAY(obj->tmp_conv_buf);
     EB_FREE_ALIGNED_ARRAY(obj->seg_mask_buf);
     EB_FREE_ARRAY(obj->fast_cand_array);
-    EB_FREE_2D(obj->injected_mvs);
+    EB_FREE_ARRAY(obj->injected_mvs);
     EB_FREE_ARRAY(obj->injected_ref_types);
     EB_FREE_ARRAY(obj->fast_cost_array);
     EB_FREE_ARRAY(obj->full_cost_array);
@@ -400,7 +400,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
         ctx->fast_cand_array[cand_index].palette_info = NULL;
     }
     svt_aom_assert_err(max_can_count > ind_uv_cands, "Max. candidates is too low");
-    EB_MALLOC_2D(ctx->injected_mvs, (uint16_t)(max_can_count - ind_uv_cands), 2);
+    EB_MALLOC_ARRAY(ctx->injected_mvs, (uint16_t)(max_can_count - ind_uv_cands));
     EB_MALLOC_ARRAY(ctx->injected_ref_types, (max_can_count - ind_uv_cands));
 
     // Set buffers for MD palette search to NULL; will be init'd at runtime if needed
