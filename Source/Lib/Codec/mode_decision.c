@@ -3013,11 +3013,14 @@ static void intra_bc_search(PictureControlSet* pcs, ModeDecisionContext* ctx, co
     uint32_t        full_lambda = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? ctx->full_lambda_md[EB_10_BIT_MD]
                                                                     : ctx->full_lambda_md[EB_8_BIT_MD];
 
-    x->approx_inter_rate = ctx->approx_inter_rate;
-    x->xd                = blk_ptr->av1xd;
-    x->nmv_vec_cost      = ctx->md_rate_est_ctx->nmv_vec_cost;
-    x->mv_cost_stack     = ctx->md_rate_est_ctx->nmvcoststack;
-    BlockSize bsize      = ctx->blk_geom->bsize;
+    // DVs are coded with the intra-BC (dv) cost tables, so the search must use them too, not the inter MV tables
+    const int* dv_cost_stack[2] = {&ctx->md_rate_est_ctx->dv_cost[0][MV_MAX],
+                                   &ctx->md_rate_est_ctx->dv_cost[1][MV_MAX]};
+    x->approx_inter_rate        = ctx->approx_inter_rate;
+    x->xd                       = blk_ptr->av1xd;
+    x->nmv_vec_cost             = ctx->md_rate_est_ctx->dv_joint_cost;
+    x->mv_cost_stack            = dv_cost_stack;
+    BlockSize bsize             = ctx->blk_geom->bsize;
     assert(bsize < BLOCK_SIZES_ALL);
     FrameHeader*           frm_hdr    = &pcs->ppcs->frm_hdr;
     const Av1Common* const cm         = pcs->ppcs->av1_cm;
