@@ -6293,6 +6293,8 @@ void svt_output_buffer_header_destroyer(EbPtr p) {
     EbBufferHeaderType* obj = (EbBufferHeaderType*)p;
     // a hidden frame still waiting for its show_existing_frame holds that frame's metadata
     svt_metadata_array_free(&obj->metadata);
+    // a packet never released through svt_av1_enc_release_out_buffer still owns its bitstream
+    EB_FREE(obj->p_buffer);
     EB_FREE(obj);
 }
 
