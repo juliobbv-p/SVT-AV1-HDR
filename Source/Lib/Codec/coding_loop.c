@@ -1600,7 +1600,7 @@ void update_coeff_cdf(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk
 
 // Update encode-related data for the passed block
 // expects ctx->blk_geom, ctx->blk_ptr, ctx->blk_org_x, ctx->blk_org_y to be set
-static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr, EcBlkStruct** output_blk_ptr) {
+static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr) {
     ModeDecisionContext* md_ctx   = ctx->md_ctx;
     const BlockGeom*     blk_geom = ctx->blk_geom;
     SuperBlock*          sb_ptr   = md_ctx->sb_ptr;
@@ -1752,7 +1752,6 @@ static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
     }
     BlkStruct*   src_cu = blk_ptr;
     EcBlkStruct* dst_cu = &sb_ptr->final_blk_arr[sb_ptr->final_blk_cnt];
-    *output_blk_ptr     = &sb_ptr->final_blk_arr[sb_ptr->final_blk_cnt];
     svt_aom_move_blk_data(pcs, ctx, src_cu, dst_cu);
     sb_ptr->final_blk_arr[sb_ptr->final_blk_cnt++].av1xd = sb_ptr->av1xd;
     // MFMV Update
@@ -1788,8 +1787,8 @@ static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
 *   Coefficient Samples
 *
 *******************************************/
-static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr, EcBlkStruct** output_blk_ptr,
-                     const int mi_row, const int mi_col) {
+static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr, const int mi_row,
+                     const int mi_col) {
     ModeDecisionContext* md_ctx = ctx->md_ctx;
     ctx->blk_geom = md_ctx->blk_geom = get_blk_geom_mds(pcs->scs->blk_geom_mds, blk_ptr->mds_idx);
     ctx->blk_ptr = md_ctx->blk_ptr = blk_ptr;
@@ -1799,7 +1798,7 @@ static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
     // bypass_encdec is 1 in RTC and MOBILE builds (enc_mode >= M6 > M3; verify rejects segmentation and 10-bit at
     // M7) -> the ED encode path below is dead and gets DCE'd via the SVT_RTC_OR_MOBILE_BUILD compile constant.
     if (SVT_RTC_OR_MOBILE_BUILD || ctx->md_ctx->bypass_encdec) {
-        update_b(pcs, ctx, blk_ptr, output_blk_ptr);
+        update_b(pcs, ctx, blk_ptr);
         return;
     }
 
@@ -1832,13 +1831,14 @@ static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
     }
 
     // Update block info and neighbour arrays needed for future blocks/pictures
-    update_b(pcs, ctx, blk_ptr, output_blk_ptr);
+    update_b(pcs, ctx, blk_ptr);
 }
 
-void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecContext* ctx, SuperBlock* sb_ptr,
-                       PC_TREE* pc_tree, PARTITION_TREE* ptree, int mi_row, int mi_col) {
+// Stores the partition of each node coded in ptree onwards (coding order); returns the node after the last one stored
+PARTITION_TREE* svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecContext* ctx, PC_TREE* pc_tree,
+                                  PARTITION_TREE* ptree, int mi_row, int mi_col) {
     if (mi_row >= pcs->ppcs->av1_cm->mi_rows || mi_col >= pcs->ppcs->av1_cm->mi_cols) {
-        return;
+        return ptree;
     }
 
     const BlockSize bsize = pc_tree->bsize;
@@ -1847,9 +1847,10 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
     const PartitionType partition    = pc_tree->partition;
     const int           quarter_step = mi_size_wide[bsize] >> 2;
 
-    ptree->partition   = partition;
-    ptree->bsize       = bsize;
-    ctx->md_ctx->shape = from_part_to_shape[partition];
+    ptree->partition          = partition;
+    ptree->bsize              = bsize;
+    PARTITION_TREE* next_node = ptree + 1;
+    ctx->md_ctx->shape        = from_part_to_shape[partition];
     if (pcs->cdf_ctrl.update_se) {
         // Update the partition stats
         svt_aom_update_part_stats(pcs, partition, bsize, ctx->tile_index, ctx->sb_index, mi_row, mi_col);
@@ -1857,18 +1858,18 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
 
     switch (partition) {
     case PARTITION_NONE:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_N][0], &ptree->blk_data[0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_N][0], mi_row, mi_col);
         break;
     case PARTITION_HORZ:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_H][0], &ptree->blk_data[0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_H][0], mi_row, mi_col);
         if (mi_row + hbs < pcs->ppcs->av1_cm->mi_rows) {
-            encode_b(pcs, ctx, pc_tree->block_data[PART_H][1], &ptree->blk_data[1], mi_row + hbs, mi_col);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_H][1], mi_row + hbs, mi_col);
         }
         break;
     case PARTITION_VERT:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_V][0], &ptree->blk_data[0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_V][0], mi_row, mi_col);
         if (mi_col + hbs < pcs->ppcs->av1_cm->mi_cols) {
-            encode_b(pcs, ctx, pc_tree->block_data[PART_V][1], &ptree->blk_data[1], mi_row, mi_col + hbs);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_V][1], mi_row, mi_col + hbs);
         }
         break;
     case PARTITION_SPLIT:
@@ -1878,29 +1879,28 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
             if (mi_row + y_idx >= pcs->ppcs->av1_cm->mi_rows || mi_col + x_idx >= pcs->ppcs->av1_cm->mi_cols) {
                 continue;
             }
-            svt_aom_encode_sb(
-                scs, pcs, ctx, sb_ptr, pc_tree->split[i], ptree->sub_tree[i], mi_row + y_idx, mi_col + x_idx);
+            next_node = svt_aom_encode_sb(scs, pcs, ctx, pc_tree->split[i], next_node, mi_row + y_idx, mi_col + x_idx);
         }
         break;
     case PARTITION_HORZ_A:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][1], &ptree->blk_data[1], mi_row, mi_col + hbs);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][2], &ptree->blk_data[2], mi_row + hbs, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][1], mi_row, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][2], mi_row + hbs, mi_col);
         break;
     case PARTITION_HORZ_B:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][1], &ptree->blk_data[1], mi_row + hbs, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][2], &ptree->blk_data[2], mi_row + hbs, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][1], mi_row + hbs, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][2], mi_row + hbs, mi_col + hbs);
         break;
     case PARTITION_VERT_A:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][1], &ptree->blk_data[1], mi_row + hbs, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][2], &ptree->blk_data[2], mi_row, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][1], mi_row + hbs, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][2], mi_row, mi_col + hbs);
         break;
     case PARTITION_VERT_B:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][1], &ptree->blk_data[1], mi_row, mi_col + hbs);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][2], &ptree->blk_data[2], mi_row + hbs, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][1], mi_row, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][2], mi_row + hbs, mi_col + hbs);
         break;
     case PARTITION_HORZ_4:
         for (int i = 0; i < SUB_PARTITIONS_PART4; ++i) {
@@ -1911,7 +1911,7 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
                 assert(i == 3);
                 break;
             }
-            encode_b(pcs, ctx, pc_tree->block_data[PART_H4][i], &ptree->blk_data[i], this_mi_row, mi_col);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_H4][i], this_mi_row, mi_col);
         }
         break;
     case PARTITION_VERT_4:
@@ -1923,11 +1923,12 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
                 assert(i == 3);
                 break;
             }
-            encode_b(pcs, ctx, pc_tree->block_data[PART_V4][i], &ptree->blk_data[i], mi_row, this_mi_col);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_V4][i], mi_row, this_mi_col);
         }
         break;
     default:
         assert(0 && "Invalid partition type.");
         break;
     }
+    return next_node;
 }

@@ -214,7 +214,6 @@ EbErrorType svt_aom_entropy_coding_kernel_iter(void* context) {
                                        tile_idx,
                                        pcs->ec_info[tile_idx]->ec,
                                        coeff_picture_ptr,
-                                       sb_ptr->ptree,
                                        sb_origin_y >> MI_SIZE_LOG2,
                                        sb_origin_x >> MI_SIZE_LOG2);
             }

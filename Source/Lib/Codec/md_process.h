@@ -868,18 +868,13 @@ typedef struct MdScan {
     bool     is_child; // does is it belong to the child depth(s); relative to PRED (the output of PD0)
 } MdScan;
 
-/* Stores partition structure of the current block. */
+/* Stores partition structure of the current block. EncDec stores the nodes of an SB it codes in coding (depth-first)
+   order, and EC reads them back in the same order along with the blocks of the SB's final_blk_arr. */
 typedef struct PARTITION_TREE {
-    // Pointers to the children if the current block is further split.
-    struct PARTITION_TREE* sub_tree[4];
-    // Pointers to the EcBlkStruct holding the block's data for entropy coding
-    EcBlkStruct* blk_data[4];
     // The partition type used to split the current block.
     PartitionType partition;
     // Block size of the current depth.
-    BlockSize bsize; // should be written once when struct is initialized, then never overwritten
-    // The index of current node among its siblings
-    int index; // should be written once when struct is initialized, then never overwritten
+    BlockSize bsize;
 } PARTITION_TREE;
 
 typedef struct RD_STATS {

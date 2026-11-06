@@ -3098,7 +3098,6 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                     svt_aom_encode_sb(scs,
                                       pcs,
                                       ed_ctx,
-                                      sb_ptr,
                                       md_ctx->pc_tree,
                                       sb_ptr->ptree,
                                       md_ctx->sb_origin_y >> 2,
