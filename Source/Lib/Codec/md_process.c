@@ -344,6 +344,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     }
     if (use_update_cdf) {
         EB_CALLOC_ARRAY(ctx->rate_est_table, 1);
+        ctx->rate_est_table->nmv_costs_zero = true;
     } else {
         ctx->rate_est_table = NULL;
     }

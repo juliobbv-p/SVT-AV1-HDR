@@ -34,16 +34,20 @@
 #include "deblocking_filter.h"
 
 static void copy_mv_rate(PictureControlSet* pcs, MdRateEstimationContext* dst_rate) {
-    FrameHeader* frm_hdr = &pcs->ppcs->frm_hdr;
+    FrameHeader*                   frm_hdr  = &pcs->ppcs->frm_hdr;
+    const MdRateEstimationContext* src_rate = pcs->md_rate_est_ctx;
 
-    memcpy(dst_rate->nmv_vec_cost, pcs->md_rate_est_ctx->nmv_vec_cost, MV_JOINTS * sizeof(int32_t));
-    memcpy(dst_rate->mv_costs, pcs->md_rate_est_ctx->mv_costs, 2 * MV_VALS * sizeof(int32_t));
-    dst_rate->nmv_costs_zero  = false;
+    // zeros (approximated MV rate) need no copy onto zeros
+    if (!src_rate->nmv_costs_zero || !dst_rate->nmv_costs_zero) {
+        memcpy(dst_rate->nmv_vec_cost, src_rate->nmv_vec_cost, MV_JOINTS * sizeof(int32_t));
+        memcpy(dst_rate->mv_costs, src_rate->mv_costs, 2 * MV_VALS * sizeof(int32_t));
+        dst_rate->nmv_costs_zero = src_rate->nmv_costs_zero;
+    }
     dst_rate->nmvcoststack[0] = &dst_rate->mv_costs[0][MV_MAX];
     dst_rate->nmvcoststack[1] = &dst_rate->mv_costs[1][MV_MAX];
 
     if (frm_hdr->allow_intrabc) {
-        memcpy(dst_rate->dv_joint_cost, pcs->md_rate_est_ctx->dv_joint_cost, MV_JOINTS * sizeof(int32_t));
+        memcpy(dst_rate->dv_joint_cost, src_rate->dv_joint_cost, MV_JOINTS * sizeof(int32_t));
     }
 }
 
