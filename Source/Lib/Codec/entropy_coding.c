@@ -774,8 +774,12 @@ static EbErrorType av1_encode_coeff_1d(PictureControlSet* pcs, EntropyCodingCont
         const int      tx_width     = tx_size_wide[tx_size];
         const int      tx_height    = tx_size_high[tx_size];
         const TxSize   tx_size_uv   = av1_get_max_uv_txsize(luma_bsize, 1, 1);
-        const int      tx_width_uv  = tx_size_wide[tx_size_uv];
-        const int      tx_height_uv = tx_size_high[tx_size_uv];
+        if (tx_size_uv == TX_INVALID) {
+            assert(0 && "Invalid UV transform size");
+            return EB_ErrorBadParameter;
+        }
+        const int tx_width_uv  = tx_size_wide[tx_size_uv];
+        const int tx_height_uv = tx_size_high[tx_size_uv];
         // bsize_uv is only consumed under `has_uv`, but hoisting unconditionally is cheaper than branching twice.
         const BlockSize bsize_uv = has_uv ? get_plane_block_size(luma_bsize, 1, 1) : 0;
         for (uint8_t txb_itr = 0; txb_itr < txb_count; txb_itr++) {
