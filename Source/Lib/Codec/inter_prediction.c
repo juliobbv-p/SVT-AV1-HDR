@@ -1332,7 +1332,21 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
         DECLARE_ALIGNED(16, uint16_t, src16[PACKED_BUFFER_SIZE * 4]);
         int32_t src_stride16;
         // pack the reference into temp 16bit buffer
-        uint8_t  offset       = INTERPOLATION_OFFSET;
+        uint8_t offset_x = INTERPOLATION_OFFSET;
+        uint8_t offset_y = INTERPOLATION_OFFSET;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        // NEON handles the final horizontal rows without rounding up. Other
+        // dispatch targets can read beyond this four-pixel border.
+        const int use_compact = !is_scaled && bd == EB_TEN_BIT && w >= 8 && !(w & 7) && h >= 4 && !(h & 3) &&
+            filter_params_x.taps == SUBPEL_TAPS && filter_params_y.taps == SUBPEL_TAPS &&
+            (subpel_params->subpel_x >> SCALE_EXTRA_BITS) != 0 && (subpel_params->subpel_y >> SCALE_EXTRA_BITS) != 0 &&
+            svt_aom_convolveHbd[1][1][conv_params->is_compound] ==
+                (conv_params->is_compound ? svt_av1_highbd_jnt_convolve_2d_neon : svt_av1_highbd_convolve_2d_sr_neon);
+        if (use_compact) {
+            offset_y = 4;
+            offset_x = 4;
+        }
+#endif
         uint32_t width_scale  = 1;
         uint32_t height_scale = 1;
         if (is_scaled) {
@@ -1340,21 +1354,36 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
             height_scale = subpel_params->ys != SCALE_SUBPEL_SHIFTS ? 2 : 1;
         }
         // optimize stride from MAX_SB_SIZE to bwidth to minimum the block buffer size
-        src_stride16 = w * width_scale + (offset << 1);
+        src_stride16 = w * width_scale + (offset_x << 1);
         // 16-byte align of src16
         if (src_stride16 % 8) {
             src_stride16 = ALIGN_POWER_OF_TWO(src_stride16, 3);
         }
 
-        svt_aom_pack_block(src - offset - (offset * src_stride),
-                           src_stride,
-                           src_2b - offset - (offset * src_stride),
-                           src_stride,
-                           src16,
-                           src_stride16,
-                           w * width_scale + (offset << 1),
-                           h * height_scale + (offset << 1));
-        uint16_t* src_10b = src16 + offset + (offset * src_stride16);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        if (use_compact) {
+            svt_enc_msb_pack2d_neon(src - offset_x - offset_y * src_stride,
+                                    src_stride,
+                                    src_2b - offset_x - offset_y * src_stride,
+                                    src16,
+                                    src_stride,
+                                    src_stride16,
+                                    w + 2 * offset_x,
+                                    h + 2 * offset_y);
+        } else {
+#endif
+            svt_aom_pack_block(src - offset_x - (offset_y * src_stride),
+                               src_stride,
+                               src_2b - offset_x - (offset_y * src_stride),
+                               src_stride,
+                               src16,
+                               src_stride16,
+                               w * width_scale + (offset_x << 1),
+                               h * height_scale + (offset_y << 1));
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        }
+#endif
+        uint16_t* src_10b = src16 + offset_x + (offset_y * src_stride16);
         uint16_t* dst16   = (uint16_t*)dst;
 
         if (is_scaled) {

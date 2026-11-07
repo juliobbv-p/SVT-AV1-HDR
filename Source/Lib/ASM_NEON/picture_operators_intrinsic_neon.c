@@ -703,10 +703,11 @@ static INLINE void pack2d_padded_rows_neon(const uint8_t* msb, uint32_t msb_stri
         for (uint32_t x = 0; x + 16 <= width; x += 16) {
             pack2d_16_neon(msb + y * msb_stride + x, lsb + y * lsb_stride + x, out + y * out_stride + x);
         }
-        if (width == 24) {
-            const uint8x16_t m = vcombine_u8(vld1_u8(msb + y * msb_stride + 16), vdup_n_u8(0));
-            const uint8x16_t l = vcombine_u8(vld1_u8(lsb + y * lsb_stride + 16), vdup_n_u8(0));
-            vst1q_u16(out + y * out_stride + 16, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l, m)), 6));
+        if ((width & 15) == 8) {
+            const uint32_t   tail = width & ~15u;
+            const uint8x16_t m    = vcombine_u8(vld1_u8(msb + y * msb_stride + tail), vdup_n_u8(0));
+            const uint8x16_t l    = vcombine_u8(vld1_u8(lsb + y * lsb_stride + tail), vdup_n_u8(0));
+            vst1q_u16(out + y * out_stride + tail, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l, m)), 6));
         } else if (width == 20) {
             const uint8x8_t m = load_unaligned_u8_4x1(msb + y * msb_stride + 16);
             const uint8x8_t l = load_unaligned_u8_4x1(lsb + y * lsb_stride + 16);
@@ -715,8 +716,8 @@ static INLINE void pack2d_padded_rows_neon(const uint8_t* msb, uint32_t msb_stri
     }
 }
 
-// Prediction windows include an eight-pixel border on each side. Specialize
-// the resulting widths while retaining arbitrary strides and even heights.
+// Specialize padded prediction widths while retaining arbitrary strides
+// and even heights. Unscaled NEON 2D windows need only a four-pixel border.
 static INLINE void pack2d_padded_neon(uint8_t* msb, uint32_t msb_stride, uint8_t* lsb, uint16_t* out,
                                       uint32_t lsb_stride, uint32_t out_stride, uint32_t width, uint32_t height,
                                       uint32_t rows) {
@@ -753,6 +754,21 @@ static NOINLINE void pack2d_padded_widths_neon(uint8_t* in8_bit_buffer, uint32_t
     if (width == 80) {
         pack2d_padded_neon(
             in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 80, height, 4);
+        return;
+    }
+    if (width == 40) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 40, height, 4);
+        return;
+    }
+    if (width == 72) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 72, height, 4);
+        return;
+    }
+    if (width == 136) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 136, height, 4);
         return;
     }
     if (width == 20) {
@@ -809,7 +825,7 @@ void svt_enc_msb_pack2d_neon(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8
             inn_bit_buffer += (inn_stride << 1);
             out16_bit_buffer += (out_stride << 1);
         }
-    } else if (width == 24 || width == 48 || width == 80 || width == 20) {
+    } else if (width == 24 || width == 48 || width == 80 || width == 20 || width == 40 || width == 72 || width == 136) {
         pack2d_padded_widths_neon(
             in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, width, height);
     } else if (width == 4) {
