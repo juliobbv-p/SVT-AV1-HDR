@@ -4843,6 +4843,36 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     }
     const double cost_threshold_factor = derive_ssim_threshold_factor_for_tx_type_search(pcs->scs);
     int          tx_type_tot_group     = get_tx_type_group(ctx, cand_bf, only_dct_dct);
+    const bool   spatial_distortion    = ctx->mds_do_spatial_sse || (!is_inter && cand_bf->cand->block_mi.tx_depth);
+    // Prediction and its bias stay fixed while transform types are searched.
+    uint64_t prediction_spatial_dist = 0;
+    if (spatial_distortion) {
+        EbSpatialFullDistType spatial_full_dist_type_fun = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)
+            ? svt_full_distortion_kernel16_bits
+            : svt_spatial_full_distortion_kernel;
+
+        prediction_spatial_dist = spatial_full_dist_type_fun(input_pic->y_buffer,
+                                                             input_txb_origin_index,
+                                                             input_pic->y_stride,
+                                                             cand_bf->pred->y_buffer,
+                                                             (int32_t)txb_origin_index,
+                                                             cand_bf->pred->y_stride,
+                                                             cropped_tx_width,
+                                                             cropped_tx_height);
+    }
+    const uint64_t prediction_psy_dist = spatial_distortion && effective_ac_bias
+        ? get_svt_psy_full_dist(input_pic->y_buffer,
+                                input_txb_origin_index,
+                                input_pic->y_stride,
+                                cand_bf->pred->y_buffer,
+                                (int32_t)txb_origin_index,
+                                cand_bf->pred->y_stride,
+                                cropped_tx_width,
+                                cropped_tx_height,
+                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                effective_ac_bias)
+        : 0;
+    prediction_spatial_dist += prediction_psy_dist;
     for (int tx_type_group_idx = 0; tx_type_group_idx < tx_type_tot_group; ++tx_type_group_idx) {
         uint32_t best_tx_non_coeff = 64 * 64;
         for (int tx_type_idx = 0; tx_type_idx < TX_TYPES; ++tx_type_idx) {
@@ -4949,7 +4979,7 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
             }
 
             // Perform inverse TX if using spatial SSE or INTRA and tx_depth > 0
-            if (ctx->mds_do_spatial_sse || (!is_inter && cand_bf->cand->block_mi.tx_depth)) {
+            if (spatial_distortion) {
                 if (y_has_coeff) {
                     svt_aom_inv_transform_recon_wrapper(pcs,
                                                         ctx,
@@ -4977,41 +5007,15 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                 }
 
                 EbSpatialFullDistType spatial_full_dist_type_fun                 = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)
-                    ? svt_full_distortion_kernel16_bits
-                    : svt_spatial_full_distortion_kernel;
-                txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION] = spatial_full_dist_type_fun(
-                    input_pic->y_buffer,
-                    input_txb_origin_index,
-                    input_pic->y_stride,
-                    cand_bf->pred->y_buffer,
-                    (int32_t)txb_origin_index,
-                    cand_bf->pred->y_stride,
-                    cropped_tx_width,
-                    cropped_tx_height);
-                if (effective_ac_bias) {
-                    txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION] += get_svt_psy_full_dist(
-                        input_pic->y_buffer,
-                        input_txb_origin_index,
-                        input_pic->y_stride,
-                        cand_bf->pred->y_buffer,
-                        (int32_t)txb_origin_index,
-                        cand_bf->pred->y_stride,
-                        cropped_tx_width,
-                        cropped_tx_height,
-                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                        effective_ac_bias);
-                }
-                txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] = spatial_full_dist_type_fun(
-                    input_pic->y_buffer,
-                    input_txb_origin_index,
-                    input_pic->y_stride,
-                    recon_ptr->y_buffer,
-                    (int32_t)txb_origin_index,
-                    cand_bf->recon->y_stride,
-                    cropped_tx_width,
-                    cropped_tx_height);
-                if (effective_ac_bias) {
-                    txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
+                                    ? svt_full_distortion_kernel16_bits
+                                    : svt_spatial_full_distortion_kernel;
+                txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION] = prediction_spatial_dist;
+                // With no coefficients, reconstruction is the copied prediction.
+                if (!y_has_coeff) {
+                    txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] =
+                        txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION];
+                } else {
+                    txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] = spatial_full_dist_type_fun(
                         input_pic->y_buffer,
                         input_txb_origin_index,
                         input_pic->y_stride,
@@ -5019,9 +5023,20 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                         (int32_t)txb_origin_index,
                         cand_bf->recon->y_stride,
                         cropped_tx_width,
-                        cropped_tx_height,
-                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                        effective_ac_bias);
+                        cropped_tx_height);
+                    if (effective_ac_bias) {
+                        txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
+                            input_pic->y_buffer,
+                            input_txb_origin_index,
+                            input_pic->y_stride,
+                            recon_ptr->y_buffer,
+                            (int32_t)txb_origin_index,
+                            cand_bf->recon->y_stride,
+                            cropped_tx_width,
+                            cropped_tx_height,
+                            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                            effective_ac_bias);
+                    }
                 }
                 txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION] <<= 4;
                 txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] <<= 4;
@@ -6017,25 +6032,31 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
                 effective_ac_bias);
         }
 
-        y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] = spatial_full_dist_type_fun(input_pic->y_buffer,
-                                                                                     input_txb_origin_index,
-                                                                                     input_pic->y_stride,
-                                                                                     recon_ptr->y_buffer,
-                                                                                     (int32_t)txb_origin_index,
-                                                                                     cand_bf->recon->y_stride,
-                                                                                     cropped_tx_width,
-                                                                                     cropped_tx_height);
-        if (effective_ac_bias) {
-            y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(input_pic->y_buffer,
-                                                                                     input_txb_origin_index,
-                                                                                     input_pic->y_stride,
-                                                                                     recon_ptr->y_buffer,
-                                                                                     (int32_t)txb_origin_index,
-                                                                                     cand_bf->recon->y_stride,
-                                                                                     cropped_tx_width,
-                                                                                     cropped_tx_height,
-                                                                                     SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                                                                                     effective_ac_bias);
+        // With no coefficients, reconstruction is the copied prediction.
+        if (!cand_bf->eob.y[txb_itr]) {
+            y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] = y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION];
+        } else {
+            y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] = spatial_full_dist_type_fun(input_pic->y_buffer,
+                                                                                         input_txb_origin_index,
+                                                                                         input_pic->y_stride,
+                                                                                         recon_ptr->y_buffer,
+                                                                                         (int32_t)txb_origin_index,
+                                                                                         cand_bf->recon->y_stride,
+                                                                                         cropped_tx_width,
+                                                                                         cropped_tx_height);
+            if (effective_ac_bias) {
+                y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
+                    input_pic->y_buffer,
+                    input_txb_origin_index,
+                    input_pic->y_stride,
+                    recon_ptr->y_buffer,
+                    (int32_t)txb_origin_index,
+                    cand_bf->recon->y_stride,
+                    cropped_tx_width,
+                    cropped_tx_height,
+                    SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                    effective_ac_bias);
+            }
         }
         y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] <<= 4;
         y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] <<= 4;
