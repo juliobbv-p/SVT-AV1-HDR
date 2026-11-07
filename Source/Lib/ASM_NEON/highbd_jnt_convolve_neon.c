@@ -17,6 +17,7 @@
 #include "definitions.h"
 #include "highbd_jnt_convolve_neon.h"
 #include "mem_neon.h"
+#include "highbd_10_convolve_neon.h"
 
 static inline uint16x8_t highbd_convolve6_8(const int16x8_t s0, const int16x8_t s1, const int16x8_t s2,
                                             const int16x8_t s3, const int16x8_t s4, const int16x8_t s5,
@@ -1022,15 +1023,24 @@ void svt_av1_highbd_jnt_convolve_2d_neon(const uint16_t* src, int src_stride, ui
     const int16_t* x_filter_ptr = av1_get_interp_filter_subpel_kernel(*filter_params_x, subpel_x_qn & SUBPEL_MASK);
     const int16_t* y_filter_ptr = av1_get_interp_filter_subpel_kernel(*filter_params_y, subpel_y_qn & SUBPEL_MASK);
 
-    // horizontal filter
-    if (x_filter_taps <= 6 && w != 4) {
-        highbd_jnt_convolve_2d_horiz_6tap_neon(
-            src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, round_offset_conv_x);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (bd == 10 && w >= 8 && filter_params_x->taps == SUBPEL_TAPS && filter_params_x->interp_filter <= BILINEAR) {
+        highbd_10_convolve_2d_horiz_neon(
+            src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, x_filter_taps);
     } else {
-        highbd_jnt_convolve_2d_horiz_neon(
-            src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, round_offset_conv_x);
-    }
+#endif
+        // horizontal filter
+        if (x_filter_taps <= 6 && w != 4) {
+            highbd_jnt_convolve_2d_horiz_6tap_neon(
+                src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, round_offset_conv_x);
+        } else {
+            highbd_jnt_convolve_2d_horiz_neon(
+                src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, round_offset_conv_x);
+        }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    }
+#endif
     // vertical filter
     if (y_filter_taps <= 6) {
         if (conv_params->do_average) {
