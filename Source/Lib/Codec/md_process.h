@@ -20,6 +20,7 @@
 #include "neighbor_arrays.h"
 #include "object.h"
 #include "enc_inter_prediction.h"
+#include "psy_energy_cache.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -1394,11 +1395,26 @@ typedef struct ModeDecisionContext {
     SrcVarCtx src_var;
     bool      src_var_on;
     DECLARE_ALIGNED(16, int8_t, md_coeff_contexts[MAX_TX_SQUARE]);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // Storage belongs to this worker; entries are active only inside md_encode_block.
+    SvtPsyEnergyCache* psy_energy_cache;
+    DECLARE_ALIGNED(16, SvtPsyEnergyCache, psy_energy_storage[MAX_PLANES]);
+#endif
 
     // The larger stores of the block and superblock caches come last, so that they do not push the fields above
     // away from the start of the context.
     PredCmpCache pred_cmp_cache; // compound intermediates of the current block's single-reference MDS0 predictions
 } ModeDecisionContext;
+
+static INLINE SvtPsyEnergyCache* svt_aom_get_psy_energy_cache(ModeDecisionContext* ctx, int plane) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    return ctx->psy_energy_cache ? &ctx->psy_energy_cache[plane] : NULL;
+#else
+    (void)ctx;
+    (void)plane;
+    return NULL;
+#endif
+}
 
 // Returns the VLPD0 full-pel variance/SSE of the current block if VLPD0 evaluated the same reference and MV.
 static INLINE bool get_pd0_fullpel_var(const ModeDecisionContext* ctx, MvReferenceFrame ref_frame, Mv mv, uint32_t* var,

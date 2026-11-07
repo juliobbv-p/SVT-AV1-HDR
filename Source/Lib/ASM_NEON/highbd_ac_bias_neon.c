@@ -14,6 +14,7 @@
 
 #include "common_dsp_rtcd.h"
 #include "hadamard_path_neon.h"
+#include "psy_energy_cache.h"
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 // Energy-only transform of nonnegative 10-bit pixels. The horizontal stages
@@ -148,5 +149,91 @@ uint64_t svt_psy_distortion_hbd_neon(const uint16_t* input, const uint32_t input
     }
 
     return energy_gap << 2;
+}
+
+// The hit path reads only the changing prediction/reconstruction and compact
+// source energies. It performs no key checks or cache writes inside its loops.
+static uint64_t highbd_psy_cached_gap_neon(const uint16_t* recon, uint32_t stride, uint32_t width, uint32_t height,
+                                           const int32_t* energy) {
+    uint64_t gap = 0;
+    if (width % 16 == 0 && height % 16 == 0) {
+        int32x4_t sum = vdupq_n_s32(0);
+        for (uint32_t y = 0; y < height; y += 16) {
+            for (uint32_t x = 0; x < width; x += 16) {
+                const int32x4_t prediction = highbd_psy_energy_16x16_neon(recon + y * stride + x, stride);
+
+                sum = vabaq_s32(sum, vld1q_s32(energy), prediction);
+                energy += 4;
+            }
+        }
+        gap = (uint64_t)vaddlvq_s32(sum);
+    } else if (width >= 8 && height >= 8) {
+        for (uint32_t y = 0; y < height; y += 8) {
+            for (uint32_t x = 0; x < width; x += 8) {
+                gap += abs(*energy++ - highbd_psy_energy_8x8_neon(recon + y * stride + x, stride));
+            }
+        }
+    } else {
+        for (uint32_t y = 0; y < height; y += 4) {
+            for (uint32_t x = 0; x < width; x += 4) {
+                gap += abs(*energy++ - highbd_psy_energy_4x4_neon(recon + y * stride + x, stride));
+            }
+        }
+    }
+    return gap << 2;
+}
+
+uint64_t svt_psy_distortion_hbd_cached_neon(const uint16_t* input, uint32_t input_stride, const uint16_t* recon,
+                                            uint32_t recon_stride, uint32_t width, uint32_t height,
+                                            SvtPsyEnergyCache* cache) {
+    if (!cache || width > 128 || height > 128) {
+        if (cache) {
+            cache->input = NULL;
+        }
+        return svt_psy_distortion_hbd_neon(input, input_stride, recon, recon_stride, width, height);
+    }
+    if (!width || !height) {
+        return 0;
+    }
+    const uint64_t layout = ((uint64_t)input_stride << 32) | (width << 16) | height;
+    if (cache->input == input && cache->layout == layout) {
+        return highbd_psy_cached_gap_neon(recon, recon_stride, width, height, cache->energy);
+    }
+
+    // Fill while evaluating the first prediction; avoid a second image pass.
+    int32_t* energy = cache->energy;
+    uint64_t gap    = 0;
+    if (width % 16 == 0 && height % 16 == 0) {
+        int32x4_t sum = vdupq_n_s32(0);
+        for (uint32_t y = 0; y < height; y += 16) {
+            for (uint32_t x = 0; x < width; x += 16) {
+                const int32x4_t source     = highbd_psy_energy_16x16_neon(input + y * input_stride + x, input_stride);
+                const int32x4_t prediction = highbd_psy_energy_16x16_neon(recon + y * recon_stride + x, recon_stride);
+                vst1q_s32(energy, source);
+                energy += 4;
+                sum = vabaq_s32(sum, source, prediction);
+            }
+        }
+        gap = (uint64_t)vaddlvq_s32(sum);
+    } else if (width >= 8 && height >= 8) {
+        for (uint32_t y = 0; y < height; y += 8) {
+            for (uint32_t x = 0; x < width; x += 8) {
+                const int source = highbd_psy_energy_8x8_neon(input + y * input_stride + x, input_stride);
+                *energy++        = source;
+                gap += abs(source - highbd_psy_energy_8x8_neon(recon + y * recon_stride + x, recon_stride));
+            }
+        }
+    } else {
+        for (uint32_t y = 0; y < height; y += 4) {
+            for (uint32_t x = 0; x < width; x += 4) {
+                const int source = highbd_psy_energy_4x4_neon(input + y * input_stride + x, input_stride);
+                *energy++        = source;
+                gap += abs(source - highbd_psy_energy_4x4_neon(recon + y * recon_stride + x, recon_stride));
+            }
+        }
+    }
+    cache->input  = input;
+    cache->layout = layout;
+    return gap << 2;
 }
 #endif

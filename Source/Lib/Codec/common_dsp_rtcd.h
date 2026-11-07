@@ -1404,6 +1404,8 @@ int svt_av1_highbd_hadamard_satd_8x8_sve2(const uint16_t *src, ptrdiff_t src_str
 int svt_av1_highbd_hadamard_satd_16x16_sve2(const uint16_t *src, ptrdiff_t src_stride, const uint16_t *pred, ptrdiff_t pred_stride);
 int svt_av1_highbd_hadamard_satd_32x32_sve2(const uint16_t *src, ptrdiff_t src_stride, const uint16_t *pred, ptrdiff_t pred_stride);
 uint64_t svt_psy_distortion_hbd_neon(const uint16_t *input, uint32_t input_stride, const uint16_t *recon, uint32_t recon_stride, uint32_t width, uint32_t height);
+struct SvtPsyEnergyCache;
+uint64_t svt_psy_distortion_hbd_cached_neon(const uint16_t *input, uint32_t input_stride, const uint16_t *recon, uint32_t recon_stride, uint32_t width, uint32_t height, struct SvtPsyEnergyCache *cache);
 uint64_t svt_psy_distortion_hbd_sve2(const uint16_t *input, uint32_t input_stride, const uint16_t *recon, uint32_t recon_stride, uint32_t width, uint32_t height);
 #endif
 

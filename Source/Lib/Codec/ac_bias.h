@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 #include "common_dsp_rtcd.h"
+#include "psy_energy_cache.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +21,17 @@ extern "C" {
 
 uint64_t get_svt_psy_full_dist(const void* s, uint32_t so, uint32_t sp, const void* r, uint32_t ro, uint32_t rp,
                                const uint32_t w, const uint32_t h, const uint8_t is_hbd, const double ac_bias);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+uint64_t get_svt_psy_full_dist_cached(const void* s, uint32_t so, uint32_t sp, const void* r, uint32_t ro, uint32_t rp,
+                                      uint32_t w, uint32_t h, uint8_t is_hbd, double ac_bias, SvtPsyEnergyCache* cache);
+#else
+static INLINE uint64_t get_svt_psy_full_dist_cached(const void* s, uint32_t so, uint32_t sp, const void* r, uint32_t ro,
+                                                    uint32_t rp, uint32_t w, uint32_t h, uint8_t is_hbd, double ac_bias,
+                                                    SvtPsyEnergyCache* cache) {
+    (void)cache;
+    return get_svt_psy_full_dist(s, so, sp, r, ro, rp, w, h, is_hbd, ac_bias);
+}
+#endif
 uint64_t svt_psy_adjust_rate_light(const int32_t* coeff, uint64_t coeff_bits, const uint32_t bwidth,
                                    const uint32_t bheight, const double ac_bias);
 double   get_effective_ac_bias(const double ac_bias, const bool is_islice, const uint8_t temporal_layer_index);

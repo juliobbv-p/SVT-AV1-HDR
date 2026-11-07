@@ -141,6 +141,19 @@ uint64_t get_svt_psy_full_dist(const void* s, const uint32_t so, const uint32_t 
     }
 }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+uint64_t get_svt_psy_full_dist_cached(const void* s, uint32_t so, uint32_t sp, const void* r, uint32_t ro, uint32_t rp,
+                                      uint32_t w, uint32_t h, uint8_t is_hbd, double ac_bias,
+                                      SvtPsyEnergyCache* cache) {
+    if (cache && is_hbd && svt_psy_distortion_hbd == svt_psy_distortion_hbd_neon) {
+        return llrint(
+            svt_psy_distortion_hbd_cached_neon((const uint16_t*)s + so, sp, (const uint16_t*)r + ro, rp, w, h, cache) *
+            ac_bias);
+    }
+    return get_svt_psy_full_dist(s, so, sp, r, ro, rp, w, h, is_hbd, ac_bias);
+}
+#endif
+
 /*
  * Light version of "AC Bias", called by the Light-PD code paths
  *

@@ -4917,16 +4917,17 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                                                                             pcs->scs->static_config.tx_bias);
     }
     const uint64_t prediction_psy_dist = spatial_distortion && effective_ac_bias
-        ? get_svt_psy_full_dist(input_pic->y_buffer,
-                                input_txb_origin_index,
-                                input_pic->y_stride,
-                                cand_bf->pred->y_buffer,
-                                (int32_t)txb_origin_index,
-                                cand_bf->pred->y_stride,
-                                cropped_tx_width,
-                                cropped_tx_height,
-                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                                effective_ac_bias)
+        ? get_svt_psy_full_dist_cached(input_pic->y_buffer,
+                                       input_txb_origin_index,
+                                       input_pic->y_stride,
+                                       cand_bf->pred->y_buffer,
+                                       (int32_t)txb_origin_index,
+                                       cand_bf->pred->y_stride,
+                                       cropped_tx_width,
+                                       cropped_tx_height,
+                                       SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                       effective_ac_bias,
+                                       svt_aom_get_psy_energy_cache(ctx, PLANE_Y))
         : 0;
     prediction_spatial_dist += prediction_psy_dist;
     for (int tx_type_group_idx = 0; tx_type_group_idx < tx_type_tot_group; ++tx_type_group_idx) {
@@ -5088,7 +5089,7 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                                                                     pcs->scs->static_config.ac_bias,
                                                                     pcs->scs->static_config.tx_bias);
                     if (effective_ac_bias) {
-                        txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
+                        txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist_cached(
                             input_pic->y_buffer,
                             input_txb_origin_index,
                             input_pic->y_stride,
@@ -5098,7 +5099,8 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                             cropped_tx_width,
                             cropped_tx_height,
                             SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                            effective_ac_bias);
+                            effective_ac_bias,
+                            svt_aom_get_psy_energy_cache(ctx, PLANE_Y));
                     }
                 }
                 txb_full_distortion_txt[DIST_SSD][tx_type][DIST_CALC_PREDICTION] <<= 4;
@@ -6157,7 +6159,7 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                                         pcs->scs->static_config.ac_bias,
                                                         pcs->scs->static_config.tx_bias);
         if (effective_ac_bias) {
-            y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] += get_svt_psy_full_dist(
+            y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] += get_svt_psy_full_dist_cached(
                 input_pic->y_buffer,
                 input_txb_origin_index,
                 input_pic->y_stride,
@@ -6167,7 +6169,8 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
                 cropped_tx_width,
                 cropped_tx_height,
                 SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                effective_ac_bias);
+                effective_ac_bias,
+                svt_aom_get_psy_energy_cache(ctx, PLANE_Y));
         }
 
         // With no coefficients, reconstruction is the copied prediction.
@@ -6191,7 +6194,7 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                                             pcs->scs->static_config.ac_bias,
                                                             pcs->scs->static_config.tx_bias);
             if (effective_ac_bias) {
-                y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist(
+                y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] += get_svt_psy_full_dist_cached(
                     input_pic->y_buffer,
                     input_txb_origin_index,
                     input_pic->y_stride,
@@ -6201,7 +6204,8 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
                     cropped_tx_width,
                     cropped_tx_height,
                     SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                    effective_ac_bias);
+                    effective_ac_bias,
+                    svt_aom_get_psy_energy_cache(ctx, PLANE_Y));
             }
         }
         y_full_distortion[DIST_SSD][DIST_CALC_PREDICTION] <<= 4;
@@ -9788,8 +9792,8 @@ static bool get_enable_use_best_me(PictureControlSet* pcs, ModeDecisionContext* 
     return enable_best_me;
 }
 
-static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, const PC_TREE* const pc_tree,
-                            const MdScan* const mds, EbPictureBufferDesc* input_pic) {
+static void md_encode_block_internal(PictureControlSet* pcs, ModeDecisionContext* ctx, const PC_TREE* const pc_tree,
+                                     const MdScan* const mds, EbPictureBufferDesc* input_pic) {
     const int                     chroma_ss              = ctx->subsampling_x;
     ModeDecisionCandidateBuffer** cand_bf_ptr_array_base = ctx->cand_bf_ptr_array;
     ModeDecisionCandidateBuffer** cand_bf_ptr_array;
@@ -10207,6 +10211,24 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
         ctx->blk_geom->bsize >= BLOCK_8X8 && ctx->blk_geom->sq_size > ctx->nsq_geom_ctrls.min_nsq_block_size) {
         svt_aom_non_normative_txs(pcs, ctx, blk_ptr, cand_bf);
     }
+}
+
+static INLINE void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, const PC_TREE* const pc_tree,
+                                   const MdScan* const mds, EbPictureBufferDesc* input_pic) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    assert(ctx->psy_energy_cache == NULL);
+    if (ctx->encoder_bit_depth > EB_EIGHT_BIT) {
+        for (int plane = 0; plane < MAX_PLANES; ++plane) {
+            ctx->psy_energy_storage[plane].input = NULL;
+        }
+        ctx->psy_energy_cache = ctx->psy_energy_storage;
+    }
+#endif
+    md_encode_block_internal(pcs, ctx, pc_tree, mds, input_pic);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // Clear ownership even when the internal search exits early.
+    ctx->psy_energy_cache = NULL;
+#endif
 }
 
 static bool update_skip_nsq_based_on_split_rate(PictureControlSet* pcs, ModeDecisionContext* ctx,

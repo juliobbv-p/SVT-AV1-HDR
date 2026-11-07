@@ -2007,24 +2007,25 @@ static void model_rd_for_sb(PictureControlSet* pcs, EbPictureBufferDesc* predict
         int      input_offset = plane ? (ctx->blk_org_y >> ss_y) * input_pic->stride[plane] + (ctx->blk_org_x >> ss_x)
                                       : (ctx->blk_org_y) * input_pic->stride[plane] + (ctx->blk_org_x);
         uint64_t sse          = spatial_full_dist_type_fun(input_pic->buffer[plane],
-                                                           input_offset,
-                                                           input_pic->stride[plane],
-                                                           prediction_ptr->buffer[plane],
-                                                           0,
-                                                           prediction_ptr->stride[plane],
-                                                           plane ? ctx->blk_geom->bwidth_uv : ctx->blk_geom->bwidth,
-                                                           plane ? ctx->blk_geom->bheight_uv : ctx->blk_geom->bheight);
+                                                  input_offset,
+                                                  input_pic->stride[plane],
+                                                  prediction_ptr->buffer[plane],
+                                                  0,
+                                                  prediction_ptr->stride[plane],
+                                                  plane ? ctx->blk_geom->bwidth_uv : ctx->blk_geom->bwidth,
+                                                  plane ? ctx->blk_geom->bheight_uv : ctx->blk_geom->bheight);
         if (effective_ac_bias) {
-            sse += get_svt_psy_full_dist(input_pic->buffer[plane],
-                                         input_offset,
-                                         input_pic->stride[plane],
-                                         prediction_ptr->buffer[plane],
-                                         0,
-                                         prediction_ptr->stride[plane],
-                                         plane ? ctx->blk_geom->bwidth_uv : ctx->blk_geom->bwidth,
-                                         plane ? ctx->blk_geom->bheight_uv : ctx->blk_geom->bheight,
-                                         hbd,
-                                         effective_ac_bias);
+            sse += get_svt_psy_full_dist_cached(input_pic->buffer[plane],
+                                                input_offset,
+                                                input_pic->stride[plane],
+                                                prediction_ptr->buffer[plane],
+                                                0,
+                                                prediction_ptr->stride[plane],
+                                                plane ? ctx->blk_geom->bwidth_uv : ctx->blk_geom->bwidth,
+                                                plane ? ctx->blk_geom->bheight_uv : ctx->blk_geom->bheight,
+                                                hbd,
+                                                effective_ac_bias,
+                                                svt_aom_get_psy_energy_cache(ctx, plane));
         }
 
         uint32_t        rate;

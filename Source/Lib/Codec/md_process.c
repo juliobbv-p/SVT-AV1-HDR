@@ -236,6 +236,9 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
 
     ctx->dctor  = mode_decision_context_dctor;
     ctx->hbd_md = enable_hbd_mode_decision;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    ctx->psy_energy_cache = NULL;
+#endif
 
 #if CONFIG_ENABLE_FAST_DECODE_3
     ctx->dec_cost_ctrls = scs->dec_cost_ctrls;
