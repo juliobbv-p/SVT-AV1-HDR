@@ -1194,18 +1194,24 @@ void svt_sad_loop_16xh_sea_neon(const uint8_t* src, uint32_t src_stride, const u
                                 int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
                                 uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height) {
     assert(height == 8 || height == 16);
-    uint8x16_t prepared[16];
-    uint16x8_t sums[4] = {vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0)};
-    for (uint32_t y = 0; y < height; ++y) {
-        prepared[y]    = vld1q_u8(src + y * src_stride);
-        const int half = y >= height / 2 ? 2 : 0;
-        sums[half]     = vaddw_u8(sums[half], vget_low_u8(prepared[y]));
-        sums[half + 1] = vaddw_u8(sums[half + 1], vget_high_u8(prepared[y]));
+    uint8x16_t     prepared[16];
+    uint16x8_t     top_sum = vdupq_n_u16(0), bottom_sum = vdupq_n_u16(0);
+    const uint32_t half_height = height / 2;
+    // Accumulate pixel pairs in the top and bottom halves independently.
+    // Pair sums are at most 4080; each final 8x8 quadrant fits in uint16_t.
+    for (uint32_t y = 0; y < half_height; ++y) {
+        prepared[y]               = vld1q_u8(src + y * src_stride);
+        prepared[y + half_height] = vld1q_u8(src + (y + half_height) * src_stride);
+        top_sum                   = vpadalq_u8(top_sum, prepared[y]);
+        bottom_sum                = vpadalq_u8(bottom_sum, prepared[y + half_height]);
     }
-    for (int k = 0; k < 4; ++k) {
-        sums[k] = vdupq_n_u16(vaddvq_u16(sums[k]));
-    }
-    *best_sad = 0xffffff;
+    const uint16x8_t pairs     = vpaddq_u16(top_sum, bottom_sum);
+    const uint16x4_t quadrants = vpadd_u16(vget_low_u16(pairs), vget_high_u16(pairs));
+    const uint16x8_t sums[4]   = {vdupq_lane_u16(quadrants, 0),
+                                  vdupq_lane_u16(quadrants, 1),
+                                  vdupq_lane_u16(quadrants, 2),
+                                  vdupq_lane_u16(quadrants, 3)};
+    *best_sad                  = 0xffffff;
     for (int y = 0; y < search_area_height; ++y, ref += src_stride_raw, sea += src_stride_raw) {
         if (skip_search_line && !(y & 1)) {
             continue;
