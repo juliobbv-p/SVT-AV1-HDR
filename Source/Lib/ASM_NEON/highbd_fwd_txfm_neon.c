@@ -18,6 +18,22 @@
 #include "transpose_neon.h"
 #include "definitions.h"
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+// The exact 16x16 and 32x32 narrow kernels retain all residual bits. Their
+// stored intermediates and signed pre-adds fit int16_t when |residual| <= 255.
+// OR preserves any high bit, so a single final reduction checks the whole block.
+static AOM_FORCE_INLINE int residual_fits_255(const int16_t* input, uint32_t stride, unsigned size) {
+    uint16x8_t bits[4] = {vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0)};
+    for (unsigned y = 0; y < size; ++y) {
+        for (unsigned x = 0; x < size; x += 8) {
+            bits[x / 8] = vorrq_u16(bits[x / 8], vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(input + y * stride + x))));
+        }
+    }
+    const uint16x8_t all = vorrq_u16(vorrq_u16(bits[0], bits[1]), vorrq_u16(bits[2], bits[3]));
+    return vmaxvq_u16(all) <= 255;
+}
+#endif
+
 // Constants are stored in pairs, where symmetrical constants in the
 // cospi array are stored adjacent in memory, i.e.:
 //   f(i,j) = (int)round(cos(PI*j/128) * (1<<(cos_bit_min+i)))
@@ -1575,6 +1591,16 @@ static AOM_FORCE_INLINE void tenbd_fwd_txfm2d_16x16_type_neon(const int16_t* inp
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 void svt_av1_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    // An identity column pass also bounds the row intermediates for the full
+    // 10-bit range. Other types need the block check before using narrow rows.
+    if (bd == 10 &&
+        (tx_type == IDTX || tx_type == H_DCT || tx_type == H_ADST || tx_type == H_FLIPADST ||
+         residual_fits_255(input, stride, 16))) {
+        svt_lbd_fwd_txfm2d_16x16_neon(input, output, stride, tx_type);
+        return;
+    }
+#endif
     if (bd == 8) {
         svt_lbd_fwd_txfm2d_16x16_neon(input, output, stride, tx_type);
         return;
@@ -3223,9 +3249,30 @@ static AOM_FORCE_INLINE void tenbd_fdct64_prefix_neon(const int16x8_t* input, in
 }
 
 static AOM_FORCE_INLINE void tenbd_fdct64_col_neon(const int16_t* input, int16x8_t* output, uint32_t stride) {
-    int16x8_t samples[64], prefix[64];
-    for (int i = 0; i < 64; ++i) {
-        samples[i] = vld1q_s16(input + i * stride);
+    int16x8_t  samples[64], prefix[64];
+    uint16x8_t maximum0 = vdupq_n_u16(0), maximum1 = vdupq_n_u16(0);
+    uint16x8_t maximum2 = vdupq_n_u16(0), maximum3 = vdupq_n_u16(0);
+    for (int i = 0; i < 64; i += 4) {
+        samples[i + 0] = vld1q_s16(input + (i + 0) * stride);
+        samples[i + 1] = vld1q_s16(input + (i + 1) * stride);
+        samples[i + 2] = vld1q_s16(input + (i + 2) * stride);
+        samples[i + 3] = vld1q_s16(input + (i + 3) * stride);
+        maximum0       = vmaxq_u16(maximum0, vreinterpretq_u16_s16(vabsq_s16(samples[i + 0])));
+        maximum1       = vmaxq_u16(maximum1, vreinterpretq_u16_s16(vabsq_s16(samples[i + 1])));
+        maximum2       = vmaxq_u16(maximum2, vreinterpretq_u16_s16(vabsq_s16(samples[i + 2])));
+        maximum3       = vmaxq_u16(maximum3, vreinterpretq_u16_s16(vabsq_s16(samples[i + 3])));
+    }
+    const uint16x8_t range = vmaxq_u16(vmaxq_u16(maximum0, maximum1), vmaxq_u16(maximum2, maximum3));
+    // At magnitude 724, every stored stage of the Q13 DCT fits [-32767, 32767].
+    // Reuse the exact eight-lane kernel; larger slabs keep the wide completion.
+    const unsigned maximum = vmaxvq_u16(range);
+    if (maximum == 0) {
+        memset(output, 0, 64 * sizeof(*output));
+        return;
+    }
+    if (maximum <= 724) {
+        svt_fdct64_col_narrow_neon((const int16_t*)samples, (int16_t*)output);
+        return;
     }
     tenbd_fdct64_prefix_neon(samples, prefix);
     int32x4_t wide[64];
@@ -3426,6 +3473,14 @@ static AOM_FORCE_INLINE void tenbd_fwd_txfm2d_32x32_dct_neon(const int16_t* inpu
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
 void svt_av1_fwd_txfm2d_32x32_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 &&
+        (tx_type == IDTX || tx_type == H_DCT ||
+         ((tx_type == DCT_DCT || tx_type == V_DCT) && residual_fits_255(input, stride, 32)))) {
+        svt_lbd_fwd_txfm2d_32x32_neon(input, output, stride, tx_type);
+        return;
+    }
+#endif
     if (bd == 8) {
         svt_lbd_fwd_txfm2d_32x32_neon(input, output, stride, tx_type);
         return;
@@ -3658,7 +3713,137 @@ static void fdct64x64_unshifted_neon(int16_t* input, uint32_t stride, uint8_t bd
     highbd_fdct64_row_many_neon(rows, out, 10, 16, 64);
 }
 
+// Keep the middle buffer narrow and use eight exact row transforms when
+// every rounded input fits the independently proven precision-10 bound.
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+
+static void tenbd_fdct64x64_columns_s16_neon(int16_t* input, uint32_t stride, int16x8_t* rows) {
+    for (int x = 0; x < 64; x += 8) {
+        int16x8_t slab[64];
+        tenbd_fdct64_col_neon(input + x, slab, stride);
+        // All eight tiles are needed, including discarded-energy rows.
+        for (int g = 0; g < 8; ++g) {
+            transpose_arrays_s16_8x8(slab + 8 * g, rows + g * 64 + x);
+        }
+    }
+}
+
+static AOM_FORCE_INLINE unsigned tenbd_fdct64_rows_max_neon(const int16x8_t* rows) {
+    uint16x8_t maxima[4] = {vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0)};
+    for (int c = 0; c < 64; c += 4) {
+        maxima[0] = vmaxq_u16(maxima[0], vreinterpretq_u16_s16(vabsq_s16(rows[c + 0])));
+        maxima[1] = vmaxq_u16(maxima[1], vreinterpretq_u16_s16(vabsq_s16(rows[c + 1])));
+        maxima[2] = vmaxq_u16(maxima[2], vreinterpretq_u16_s16(vabsq_s16(rows[c + 2])));
+        maxima[3] = vmaxq_u16(maxima[3], vreinterpretq_u16_s16(vabsq_s16(rows[c + 3])));
+    }
+    return vmaxvq_u16(vmaxq_u16(vmaxq_u16(maxima[0], maxima[1]), vmaxq_u16(maxima[2], maxima[3])));
+}
+
+static AOM_FORCE_INLINE void tenbd_fdct64_store_wide_rows_neon(const int32x4_t* input, int32_t* output,
+                                                               unsigned first_row, bool fused, int64x2_t* energy) {
+    const unsigned width = fused ? 32 : 64;
+    const unsigned kept  = !fused ? 64 : first_row < 32 ? 32 : 0;
+    for (unsigned c = 0; c < kept; c += 4) {
+        int32x4_t a, b, d, e;
+        transpose_elems_s32_4x4(vrshrq_n_s32(input[c + 0], 2),
+                                vrshrq_n_s32(input[c + 1], 2),
+                                vrshrq_n_s32(input[c + 2], 2),
+                                vrshrq_n_s32(input[c + 3], 2),
+                                &a,
+                                &b,
+                                &d,
+                                &e);
+        vst1q_s32(output + (first_row + 0) * width + c, a);
+        vst1q_s32(output + (first_row + 1) * width + c, b);
+        vst1q_s32(output + (first_row + 2) * width + c, d);
+        vst1q_s32(output + (first_row + 3) * width + c, e);
+    }
+    if (fused) {
+        for (unsigned c = kept; c < 64; c += 2) {
+            const int32x4_t a = vrshrq_n_s32(input[c + 0], 2);
+            const int32x4_t b = vrshrq_n_s32(input[c + 1], 2);
+            energy[0]         = vmlal_s32(energy[0], vget_low_s32(a), vget_low_s32(a));
+            energy[1]         = vmlal_high_s32(energy[1], a, a);
+            energy[2]         = vmlal_s32(energy[2], vget_low_s32(b), vget_low_s32(b));
+            energy[3]         = vmlal_high_s32(energy[3], b, b);
+        }
+    }
+}
+
+static AOM_FORCE_INLINE void tenbd_fdct64_store_narrow_rows_neon(const int16x8_t* input, int32_t* output,
+                                                                 unsigned group, bool fused, int64x2_t* energy) {
+    const unsigned width = fused ? 32 : 64;
+    const unsigned kept  = !fused ? 64 : group < 4 ? 32 : 0;
+    // Narrow helper has already applied the final rounded shift by two.
+    for (unsigned c = 0; c < kept; c += 8) {
+        int16x8_t tile[8];
+        transpose_arrays_s16_8x8(input + c, tile);
+        for (unsigned r = 0; r < 8; ++r) {
+            vst1q_s32(output + (8 * group + r) * width + c, vmovl_s16(vget_low_s16(tile[r])));
+            vst1q_s32(output + (8 * group + r) * width + c + 4, vmovl_s16(vget_high_s16(tile[r])));
+        }
+    }
+    if (fused) {
+        for (unsigned c = kept; c < 64; c += 2) {
+            const int16x8_t a = input[c + 0], b = input[c + 1];
+            // Each square is signed32-safe; accumulate pairs directly into64 bits.
+            energy[0] = vpadalq_s32(energy[0], vmull_s16(vget_low_s16(a), vget_low_s16(a)));
+            energy[1] = vpadalq_s32(energy[1], vmull_high_s16(a, a));
+            energy[2] = vpadalq_s32(energy[2], vmull_s16(vget_low_s16(b), vget_low_s16(b)));
+            energy[3] = vpadalq_s32(energy[3], vmull_high_s16(b, b));
+        }
+    }
+}
+
+static AOM_FORCE_INLINE void tenbd_fdct64_row_group_neon(const int16x8_t* input, int32_t* output, unsigned group,
+                                                         bool fused, int64x2_t* energy) {
+    const unsigned maximum = tenbd_fdct64_rows_max_neon(input);
+    if (maximum == 0) {
+        // A discarded zero group contributes no energy and writes no coefficients.
+        // Retained rows are contiguous in both supported output layouts.
+        if (!fused || group < 4) {
+            const unsigned width = fused ? 32 : 64;
+            memset(output + 8 * group * width, 0, 8 * width * sizeof(*output));
+        }
+        return;
+    }
+    if (maximum <= 724) {
+        int16x8_t transformed[64];
+        svt_fdct64_row_narrow_neon((const int16_t*)input, (int16_t*)transformed);
+        tenbd_fdct64_store_narrow_rows_neon(transformed, output, group, fused, energy);
+    } else {
+        int32x4_t low[64], high[64];
+        for (int c = 0; c < 64; ++c) {
+            low[c]  = vmovl_s16(vget_low_s16(input[c]));
+            high[c] = vmovl_s16(vget_high_s16(input[c]));
+        }
+        highbd_fdct64_x4_neon(low, low, 10);
+        tenbd_fdct64_store_wide_rows_neon(low, output, 8 * group, fused, energy);
+        highbd_fdct64_x4_neon(high, high, 10);
+        tenbd_fdct64_store_wide_rows_neon(high, output, 8 * group + 4, fused, energy);
+    }
+}
+
+static AOM_FORCE_INLINE uint64_t tenbd_fdct64x64_neon(int16_t* input, int32_t* output, uint32_t stride, bool fused) {
+    int16x8_t rows[512];
+    tenbd_fdct64x64_columns_s16_neon(input, stride, rows);
+    int64x2_t energy[4] = {vdupq_n_s64(0), vdupq_n_s64(0), vdupq_n_s64(0), vdupq_n_s64(0)};
+    for (unsigned g = 0; g < 8; ++g) {
+        tenbd_fdct64_row_group_neon(rows + g * 64, output, g, fused, energy);
+    }
+    return (uint64_t)vaddvq_s64(vaddq_s64(vaddq_s64(energy[0], energy[1]), vaddq_s64(energy[2], energy[3])));
+}
+
+#endif
+
 void svt_av1_fwd_txfm2d_64x64_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (bd == 10 && tx_type == DCT_DCT) {
+        (void)tenbd_fdct64x64_neon(input, output, stride, false);
+        return;
+    }
+#endif
+
     switch (tx_type) {
     case DCT_DCT: {
         int32x4_t buf0[1024];
@@ -3692,6 +3877,12 @@ void svt_av1_fwd_txfm2d_64x64_neon(int16_t* input, int32_t* output, uint32_t str
 // transpose and energy are done in one pass over the row transform output, and only the kept quarter is transposed.
 uint64_t svt_av1_fwd_txfm2d_64x64_energy_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type,
                                               uint8_t bd) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (bd == 10 && tx_type == DCT_DCT) {
+        return tenbd_fdct64x64_neon(input, output, stride, true);
+    }
+#endif
+
     if (tx_type != DCT_DCT) {
         svt_av1_fwd_txfm2d_64x64_neon(input, output, stride, tx_type, bd);
         return svt_handle_transform64x64_neon(output);

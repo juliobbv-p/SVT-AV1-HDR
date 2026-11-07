@@ -2175,6 +2175,31 @@ static AOM_FORCE_INLINE void fdct8x64_neon(const int16x8_t* input, int16x8_t* ou
     output[62] = x9[31];
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Eight bounded columns, Q13 DCT followed by the 64x64 middle rounding shift.
+// The caller checks every residual magnitude is at most 724. The butterflies
+// widen products before rounding, including CONFIG_ENABLE_FAST_LBD_TXFM builds.
+void svt_fdct64_col_narrow_neon(const int16_t* input, int16_t* output) {
+    int16x8_t transformed[64];
+    fdct8x64_neon((const int16x8_t*)input, transformed, 13);
+    for (int r = 0; r < 64; ++r) {
+        vst1q_s16(output + 8 * r, vrshrq_n_s16(transformed[r], 2));
+    }
+}
+
+// Eight bounded rows, exact precision-10 DCT and final rounding by two.
+// The caller checks all middle input magnitudes are at most 724. The Q13
+// constants exactly scale the precision-10 scalar constants, including FAST_LBD.
+void svt_fdct64_row_narrow_neon(const int16_t* input, int16_t* output) {
+    int16x8_t transformed[64];
+    fdct8x64_neon((const int16x8_t*)input, transformed, 10);
+    for (int c = 0; c < 64; ++c) {
+        vst1q_s16(output + 8 * c, vrshrq_n_s16(transformed[c], 2));
+    }
+}
+
+#endif
+
 // Column pass (cos_bit 13, then round-shift by 2) of the 8-bit 64x64 DCT_DCT. Writes 4-column groups of 64 rows
 // (output[(g * 64 + r) * 4 + c]), the layout of the 32-bit kernel.
 void svt_lbd_fdct64x64_col_neon(const int16_t* input, uint32_t stride, int32_t* output) {
