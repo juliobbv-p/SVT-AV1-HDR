@@ -280,7 +280,7 @@ COST_COEFFS_MID(TX_CLASS_VERT)
 #if EN_AVX512_SUPPORT
 #include <immintrin.h>
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) || defined(__clang__)
 #define TARGET_AVX512 __attribute__((target("avx512f,avx512bw,avx512vl,popcnt")))
 #else
 #define TARGET_AVX512
