@@ -13,6 +13,7 @@
 #include "common_dsp_rtcd.h"
 
 #include "av1_inv_txfm_neon.h"
+#include "highbd_inv_txfm_neon.h"
 #include "inv_transforms.h"
 #include "itx_lbd_neon.h"
 #include "mem_neon.h"
@@ -4229,6 +4230,96 @@ static inline void idct64_low16_neon(int16x8_t* in, int16x8_t* out, int8_t cos_b
     out[62] = vqsubq_s16(step2[1], step2[62]);
     out[63] = vqsubq_s16(step2[0], step2[63]);
 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static void narrow_idct_rows(int16x8_t* in, int16x8_t* out, unsigned size, unsigned band) {
+    switch (size) {
+    case 16:
+        if (band <= 8) {
+            idct16_low8_neon(in, out, INV_COS_BIT);
+        } else {
+            idct16_neon(in, out, INV_COS_BIT);
+        }
+        break;
+    case 32:
+        if (band <= 8) {
+            idct32_low8_neon(in, out, INV_COS_BIT);
+        } else {
+            idct32_low16_neon(in, out, INV_COS_BIT);
+        }
+        break;
+    case 64:
+        if (band <= 8) {
+            idct64_low8_neon(in, out, INV_COS_BIT);
+        } else {
+            idct64_low16_neon(in, out, INV_COS_BIT);
+        }
+        break;
+    default:
+        assert(0);
+    }
+}
+
+// These limits cover every sign pattern in the full nonzero square, not
+// just the triangular default scan. Conservative Q12 stage bounds (including
+// rounding) are at most 30332 in pass one and 30082 in pass two. Products fit
+// int32_t, so both passes can use eight int16_t lanes without losing precision.
+// All three sizes use the same intermediate >>2 and final >>4 rounding.
+int svt_av1_highbd_inv_txfm_try_narrow_neon(const int32_t* input, const uint16_t* pred, int sp, uint16_t* dest, int dp,
+                                            TxSize tx_size, unsigned band) {
+    assert(tx_size >= TX_16X16 && tx_size <= TX_64X64);
+    assert(band == 4 || band == 8 || band == 16);
+    const unsigned size         = tx_size_wide[tx_size];
+    const unsigned coded_stride = AOMMIN(size, 32);
+    const unsigned limit        = band == 4 ? 8191 : band == 8 ? 2047 : size == 16 ? 1023 : 511;
+    int16x8_t      rows[16 * 64 / 8], in[16], out[64];
+    // The sparse kernels read only 8 or 16 inputs. Each transpose supplies
+    // eight initialized vectors, including zero padding for band == 4.
+    // Verify each loaded row group before any narrow arithmetic. A later
+    // rejection discards temporary rows; destination pixels are untouched.
+    for (unsigned y = 0; y < band; y += 8) {
+        uint32x4_t bits0 = vdupq_n_u32(0), bits1 = bits0;
+        for (unsigned x = 0; x < band; x += 8) {
+            int16x8_t tile[8];
+            for (unsigned r = 0; r < 8; ++r) {
+                int32x4_t lo = vdupq_n_s32(0), hi = lo;
+                if (y + r < band) {
+                    lo = vld1q_s32(input + (y + r) * coded_stride + x);
+                    if (x + 4 < band) {
+                        hi = vld1q_s32(input + (y + r) * coded_stride + x + 4);
+                    }
+                }
+                bits0   = vorrq_u32(bits0, vreinterpretq_u32_s32(vabsq_s32(lo)));
+                bits1   = vorrq_u32(bits1, vreinterpretq_u32_s32(vabsq_s32(hi)));
+                tile[r] = vcombine_s16(vmovn_s32(lo), vmovn_s32(hi));
+            }
+            transpose_arrays_s16_8x8(tile, in + x);
+        }
+        if (vmaxvq_u32(vorrq_u32(bits0, bits1)) > limit) {
+            return 0;
+        }
+        narrow_idct_rows(in, out, size, band);
+        for (unsigned x = 0; x < size; ++x) {
+            rows[y * size / 8 + x] = vrshrq_n_s16(out[x], 2);
+        }
+    }
+    for (unsigned x = 0; x < size; x += 8) {
+        for (unsigned y = 0; y < band; y += 8) {
+            transpose_arrays_s16_8x8(rows + y * size / 8 + x, in + y);
+        }
+        narrow_idct_rows(in, out, size, band);
+        for (unsigned y = 0; y < size; ++y) {
+            // Final shift bounds residuals to +/-2048, so adding 10-bit
+            // prediction cannot overflow int16_t before clipping.
+            int16x8_t sum = vaddq_s16(vreinterpretq_s16_u16(vld1q_u16(pred + y * sp + x)), vrshrq_n_s16(out[y], 4));
+            sum           = vmaxq_s16(sum, vdupq_n_s16(0));
+            sum           = vminq_s16(sum, vdupq_n_s16(1023));
+            vst1q_u16(dest + y * dp + x, vreinterpretq_u16_s16(sum));
+        }
+    }
+    return 1;
+}
+#endif
 
 // Functions for blocks with eob at DC and within
 // topleft 8x8, 16x16, 32x32 corner
