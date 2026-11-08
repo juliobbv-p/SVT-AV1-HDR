@@ -292,6 +292,7 @@ set(all_files
         kernel_dispatch.h
         temporal_filtering.c
         temporal_filtering.h
+        temporal_mv.h
         transforms.c
         transforms.h
         utility.c
