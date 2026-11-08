@@ -27,6 +27,7 @@ target_sources(
   PUBLIC cdef_block_neon.c
   PUBLIC cdef_filter_block_neon.c
   PUBLIC cdef_neon.c
+  PUBLIC cdef_search_neon.c
   PUBLIC cfl_neon.c
   PUBLIC compound_convolve_neon.c
   PUBLIC compute_sad_neon.c
