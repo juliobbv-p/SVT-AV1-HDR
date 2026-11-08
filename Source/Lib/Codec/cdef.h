@@ -49,6 +49,27 @@ extern const int8_t (*const svt_aom_eb_cdef_directions_rc)[2][2];
 
 #define TOTAL_STRENGTHS (CDEF_PRI_STRENGTHS * CDEF_SEC_STRENGTHS)
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Compact requested combinations, grouped by configured primary strength. Keep
+// the original search-slot order separately because selection and ties use it.
+typedef struct CdefSearchPlan {
+    uint8_t primary_count, strength_count, nonzero;
+    uint8_t secondary_mask, zero_secondary_mask;
+    uint8_t primary[CDEF_PRI_STRENGTHS];
+    uint8_t group_start[CDEF_PRI_STRENGTHS + 1];
+    uint8_t secondary[TOTAL_STRENGTHS];
+    uint8_t slot_map[TOTAL_STRENGTHS];
+} CdefSearchPlan;
+
+bool svt_cdef_search_plan(CdefSearchPlan* plan, const uint8_t* strengths, const int8_t* enabled, int count);
+
+void svt_cdef_search_fb_10bit(uint16_t* in, const uint16_t* target, int target_stride,
+                              uint8_t dir[CDEF_NBLOCKS][CDEF_NBLOCKS], int32_t* dirinit,
+                              int32_t var[CDEF_NBLOCKS][CDEF_NBLOCKS], CdefList* dlist, int count,
+                              const CdefSearchPlan* plan, int xdec, int ydec, int pli, int damping,
+                              int subsampling_factor, uint64_t ssd[TOTAL_STRENGTHS]);
+#endif
+
 void svt_cdef_filter_fb(uint8_t* dst8, uint16_t* dst16, int32_t dstride, uint16_t* in, int32_t xdec, int32_t ydec,
                         uint8_t dir[CDEF_NBLOCKS][CDEF_NBLOCKS], int32_t* dirinit,
                         int32_t var[CDEF_NBLOCKS][CDEF_NBLOCKS], int32_t pli, CdefList* dlist, int32_t cdef_count,

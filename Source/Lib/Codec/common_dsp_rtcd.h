@@ -1037,6 +1037,12 @@ void svt_aom_cdef_find_dir_dual_sse4_1(const uint16_t *img1, const uint16_t *img
 void svt_aom_cdef_find_dir_dual_avx2(const uint16_t *img1, const uint16_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
 RTCD_EXTERN void(*svt_aom_cdef_find_dir_dual)(const uint16_t *img1, const uint16_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Raw 10-bit SSE in compact plan order; configured primary zero uses direction zero.
+struct CdefSearchPlan;
+void svt_cdef_search_block_10bit_c(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
+RTCD_EXTERN void(*svt_cdef_search_block_10bit)(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
+#endif
 void svt_cdef_filter_block_c(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 RTCD_EXTERN void(*svt_cdef_filter_block)(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 RTCD_EXTERN void(*svt_cdef_filter_block_8xn_16)(const uint16_t *const in, const int32_t pri_strength, const int32_t sec_strength, const int32_t dir, int32_t pri_damping, int32_t sec_damping, const int32_t coeff_shift, uint16_t *const dst, const int32_t dstride, uint8_t height, uint8_t subsampling_factor);
@@ -1337,6 +1343,9 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow *dqcoeff, uint8_t *dst_r, int32_t
 void svt_residual_kernel8bit_neon(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 void svt_residual_kernel16bit_neon(uint16_t *input, uint32_t input_stride, uint16_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+void svt_cdef_search_block_10bit_neon(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
+#endif
 void svt_cdef_filter_block_neon(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 void svt_cdef_filter_block_8bit_neon(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 void svt_cdef_filter_block_8bit_bounded_neon(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor, int edge_top, int edge_left, int edge_bottom, int edge_right);
