@@ -1505,7 +1505,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 
     SET_NEON(svt_aom_copy_rect8_8bit_to_16bit, svt_aom_copy_rect8_8bit_to_16bit_c, svt_aom_copy_rect8_8bit_to_16bit_neon);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_NEON_SVE(svt_av1_highbd_warp_affine, svt_av1_highbd_warp_affine_c, svt_av1_highbd_warp_affine_neon, svt_av1_highbd_warp_affine_sve);
+    SET_NEON_NEON_I8MM_SVE(svt_av1_highbd_warp_affine, svt_av1_highbd_warp_affine_c, svt_av1_highbd_warp_affine_neon, svt_av1_highbd_warp_affine_neon_i8mm, svt_av1_highbd_warp_affine_sve);
 #endif
 #if CONFIG_ENABLE_WARP
     SET_NEON_NEON_I8MM_SVE(svt_av1_warp_affine, svt_av1_warp_affine_c, svt_av1_warp_affine_neon, svt_av1_warp_affine_neon_i8mm, svt_av1_warp_affine_sve);
