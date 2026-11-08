@@ -21,6 +21,7 @@ target_sources(
   PUBLIC aom_convolve8_neon_i8mm.c
   PUBLIC convolve_neon_i8mm.c
   PUBLIC convolve_scale_neon_i8mm.c
+  PUBLIC highbd_warp_plane_neon_i8mm.c
   PUBLIC intra_prediction_neon_i8mm.c
   PUBLIC jnt_convolve_neon_i8mm.c
   PUBLIC temporal_filtering_neon_i8mm.c

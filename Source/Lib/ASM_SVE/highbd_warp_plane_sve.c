@@ -249,5 +249,7 @@ void svt_av1_highbd_warp_affine_sve(const int32_t* mat, const uint8_t* ref8b, co
                               alpha,
                               beta,
                               gamma,
-                              delta);
+                              delta,
+                              warp_affine_horizontal,
+                              warp_affine_vertical);
 }
