@@ -37,6 +37,7 @@ typedef struct EbReferenceObject {
     uint16_t             pic_avg_variance;
     AomFilmGrain         film_grain_params; //Film grain parameters for a reference frame
     FRAME_CONTEXT        frame_context;
+    bool                 neighbor_init_pending;
     WarpedMotionParams   global_motion[TOTAL_REFS_PER_FRAME];
     MV_REF*              mvs;
     FrameType            frame_type;

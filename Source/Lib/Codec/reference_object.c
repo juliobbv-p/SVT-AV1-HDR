@@ -150,7 +150,7 @@ EbErrorType svt_reference_object_ctor(EbReferenceObject* ref_object, EbPtr objec
         picture_buffer_desc_init_data_ptr->split_mode = false;
         EB_NEW(ref_object->reference_picture, svt_picture_buffer_desc_ctor, (EbPtr)picture_buffer_desc_init_data_ptr);
 
-        initialize_samples_neighboring_reference_picture(ref_object->reference_picture);
+        ref_object->neighbor_init_pending = true;
     }
     uint32_t mi_rows = ref_object->reference_picture->height >> MI_SIZE_LOG2;
     uint32_t mi_cols = ref_object->reference_picture->width >> MI_SIZE_LOG2;
@@ -204,6 +204,11 @@ EbErrorType svt_reference_object_creator(EbPtr* object_dbl_ptr, EbPtr object_ini
 EbErrorType svt_reference_object_reset(EbReferenceObject* ref_object, SequenceControlSet* scs) {
     ref_object->mi_rows = scs->max_input_luma_height >> MI_SIZE_LOG2;
     ref_object->mi_cols = scs->max_input_luma_width >> MI_SIZE_LOG2;
+    // Deferred from the constructor so pool buffers that are never used are never touched.
+    if (ref_object->neighbor_init_pending) {
+        initialize_samples_neighboring_reference_picture(ref_object->reference_picture);
+        ref_object->neighbor_init_pending = false;
+    }
 
     return EB_ErrorNone;
 }
