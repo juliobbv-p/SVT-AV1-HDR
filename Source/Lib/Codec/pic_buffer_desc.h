@@ -81,9 +81,11 @@ typedef struct EbPictureBufferDesc {
     };
 
     // Buffer Parameters
-    // Save the pointer to the actual allocated memory, to use for copies and freeing
+    // Start of the plane layout, to use for copies. It may sit up to 63 bytes into buffer_alloc_raw, which keeps the
+    // origin of the first plane 64-byte aligned.
     uint8_t* buffer_alloc;
     size_t   buffer_alloc_sz;
+    uint8_t* buffer_alloc_raw; // the actual allocated memory, to use for freeing
     uint32_t luma_size; // Allocated size of the luma buffer
     uint32_t chroma_size; // Allocated size of the chroma buffers
     bool     packed_flag; // Indicates if sample buffers are packed or not

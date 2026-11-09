@@ -14,9 +14,26 @@
 
 #include "pic_buffer_desc.h"
 
+// Rows start on a cache line: strides are a multiple of 64 bytes and the plane layout is placed at an offset into the
+// allocation that makes the first plane's origin 64-byte aligned.
+static inline uint16_t pic_buf_stride(uint32_t width, uint32_t border) {
+    return (uint16_t)ALIGN_POWER_OF_TWO(width + 2 * border, 6);
+}
+
+static inline uint32_t pic_buf_layout_offset(const EbPictureBufferDesc* pic_buf, const EbPictureBufferDescInitData* d,
+                                             uint32_t bytes_per_pixel) {
+    const uint16_t ss_x   = (d->color_format == EB_YUV444 ? 0 : 1);
+    const uint16_t ss_y   = ((d->color_format == EB_YUV444 || d->color_format == EB_YUV422) ? 0 : 1);
+    const uint32_t origin = (d->buffer_enable_mask & PICTURE_BUFFER_DESC_Y_FLAG)
+        ? (pic_buf->border + pic_buf->y_stride * pic_buf->border) * bytes_per_pixel
+        : ((pic_buf->border >> ss_x) + pic_buf->u_stride * (pic_buf->border >> ss_y)) * bytes_per_pixel;
+    return ALIGN_POWER_OF_TWO(origin, 6) - origin;
+}
+
 static void svt_picture_buffer_desc_dctor(EbPtr p) {
     EbPictureBufferDesc* obj = (EbPictureBufferDesc*)p;
-    EB_FREE_ALIGNED_ARRAY(obj->buffer_alloc);
+    EB_FREE_ALIGNED_ARRAY(obj->buffer_alloc_raw);
+    obj->buffer_alloc = NULL;
     EB_FREE_ARRAY(obj->sea_alloc);
     obj->buffer_alloc_sz  = 0;
     obj->y_buffer         = NULL;
@@ -51,7 +68,7 @@ EbErrorType svt_picture_buffer_desc_ctor_noy8b(EbPictureBufferDesc* pic_buf, con
     pic_buf->max_height   = pic_buf_init_data->max_height;
     pic_buf->bit_depth    = pic_buf_init_data->bit_depth;
     pic_buf->color_format = pic_buf_init_data->color_format;
-    pic_buf->y_stride     = pic_buf_init_data->max_width + (2 * pic_buf_init_data->border) /*left + right border*/;
+    pic_buf->y_stride     = pic_buf_stride(pic_buf_init_data->max_width, pic_buf_init_data->border);
 
     svt_aom_assert_err(pic_buf->y_stride % 8 == 0, "Luma Stride should be n*8 to accommodate 2b-compression flow \n");
 
@@ -98,10 +115,11 @@ EbErrorType svt_picture_buffer_desc_ctor_noy8b(EbPictureBufferDesc* pic_buf, con
 
     // Allocate the Picture Buffers (luma & chroma)
     if (alloc_sz) {
-        EB_MALLOC_ALIGNED_ARRAY(pic_buf->buffer_alloc, alloc_sz);
+        EB_MALLOC_ALIGNED_ARRAY(pic_buf->buffer_alloc_raw, alloc_sz);
     } else {
-        pic_buf->buffer_alloc = NULL;
+        pic_buf->buffer_alloc_raw = NULL;
     }
+    pic_buf->buffer_alloc    = pic_buf->buffer_alloc_raw;
     pic_buf->buffer_alloc_sz = alloc_sz;
     uint32_t assigned_space  = 0;
     if (pic_buf_init_data->buffer_enable_mask & PICTURE_BUFFER_DESC_Y_FLAG) {
@@ -164,7 +182,7 @@ EbErrorType svt_picture_buffer_desc_noy8b_update(EbPictureBufferDesc* pic_buf, c
     pic_buf->max_height   = pic_buf_init_data->max_height;
     pic_buf->bit_depth    = pic_buf_init_data->bit_depth;
     pic_buf->color_format = pic_buf_init_data->color_format;
-    pic_buf->y_stride     = pic_buf_init_data->max_width + (2 * pic_buf_init_data->border) /*left + right border*/;
+    pic_buf->y_stride     = pic_buf_stride(pic_buf_init_data->max_width, pic_buf_init_data->border);
 
     svt_aom_assert_err(pic_buf->y_stride % 8 == 0, "Luma Stride should be n*8 to accommodate 2b-compression flow \n");
 
@@ -202,7 +220,7 @@ EbErrorType svt_picture_buffer_desc_update(EbPictureBufferDesc* pic_buf, const E
     pic_buf->height     = pic_buf_init_data->max_height;
     pic_buf->max_width  = pic_buf_init_data->max_width;
     pic_buf->max_height = pic_buf_init_data->max_height;
-    pic_buf->y_stride   = pic_buf_init_data->max_width + (2 * pic_buf_init_data->border) /*left + right border*/;
+    pic_buf->y_stride   = pic_buf_stride(pic_buf_init_data->max_width, pic_buf_init_data->border);
     pic_buf->u_stride = pic_buf->v_stride = (pic_buf->y_stride + ss_x) >> ss_x;
     pic_buf->border                       = pic_buf_init_data->border;
 
@@ -238,7 +256,7 @@ static uint32_t svt_pic_buf_desc_calc(EbPictureBufferDesc* pic_buf, const EbPict
     pic_buf->max_height   = d->max_height;
     pic_buf->bit_depth    = d->bit_depth;
     pic_buf->color_format = d->color_format;
-    pic_buf->y_stride     = d->max_width + 2 * d->border /*left + right border*/;
+    pic_buf->y_stride     = pic_buf_stride(d->max_width, d->border);
     pic_buf->u_stride = pic_buf->v_stride = (pic_buf->y_stride + ss_x) >> ss_x;
     pic_buf->border                       = d->border;
     pic_buf->luma_size                    = pic_buf->y_stride * (d->max_height + (2 * d->border));
@@ -333,10 +351,12 @@ EbErrorType svt_picture_buffer_desc_ctor(EbPictureBufferDesc* pic_buf, const EbP
         pic_buf, pic_buf_init_data, buffer_size, buffer_bit_inc_size, &bytes_per_pixel);
 
     // Allocate the Picture Buffers (luma & chroma)
+    pic_buf->buffer_alloc_raw = NULL;
+    pic_buf->buffer_alloc     = NULL;
     if (alloc_sz) {
-        EB_MALLOC_ALIGNED_ARRAY(pic_buf->buffer_alloc, alloc_sz);
-    } else {
-        pic_buf->buffer_alloc = NULL;
+        const uint32_t offset = pic_buf_layout_offset(pic_buf, pic_buf_init_data, bytes_per_pixel);
+        EB_MALLOC_ALIGNED_ARRAY(pic_buf->buffer_alloc_raw, alloc_sz + offset);
+        pic_buf->buffer_alloc = pic_buf->buffer_alloc_raw + offset;
     }
     pic_buf->buffer_alloc_sz = alloc_sz;
     svt_pic_buf_desc_assign(
@@ -365,6 +385,7 @@ static EbErrorType svt_pic_buf_desc_pool_build(SvtPicBufDescPool* pool, const Eb
                                                                                     (size_t)i * stride);
         uint32_t                           bs[3], bbi[3], bpp;
         uint32_t                           sz = svt_pic_buf_desc_calc(&pool->descs[i], d, bs, bbi, &bpp);
+        sz += pic_buf_layout_offset(&pool->descs[i], d, bpp);
         total += (uint64_t)((sz + (ALVALUE - 1)) & ~(uint32_t)(ALVALUE - 1));
     }
     EB_MALLOC_ALIGNED_ARRAY(pool->backing, total);
@@ -374,10 +395,11 @@ static EbErrorType svt_pic_buf_desc_pool_build(SvtPicBufDescPool* pool, const Eb
         const EbPictureBufferDescInitData* d = (const EbPictureBufferDescInitData*)((const char*)base_id +
                                                                                     (size_t)i * stride);
         uint32_t                           bs[3], bbi[3], bpp;
-        uint32_t                           sz = svt_pic_buf_desc_calc(&pool->descs[i], d, bs, bbi, &bpp);
-        svt_pic_buf_desc_assign(&pool->descs[i], d, pool->backing + offset, bs, bbi, bpp);
+        uint32_t                           sz            = svt_pic_buf_desc_calc(&pool->descs[i], d, bs, bbi, &bpp);
+        const uint32_t                     layout_offset = pic_buf_layout_offset(&pool->descs[i], d, bpp);
+        svt_pic_buf_desc_assign(&pool->descs[i], d, pool->backing + offset + layout_offset, bs, bbi, bpp);
         pool->descs[i].buffer_alloc_sz = sz;
-        offset += (uint64_t)((sz + (ALVALUE - 1)) & ~(uint32_t)(ALVALUE - 1));
+        offset += (uint64_t)((sz + layout_offset + (ALVALUE - 1)) & ~(uint32_t)(ALVALUE - 1));
     }
     assert(offset == total);
     return EB_ErrorNone;
@@ -404,7 +426,8 @@ void svt_aom_pic_buf_desc_pool_dctor(SvtPicBufDescPool* pool) {
 
 static void svt_recon_picture_buffer_desc_dctor(EbPtr p) {
     EbPictureBufferDesc* obj = (EbPictureBufferDesc*)p;
-    EB_FREE_ALIGNED_ARRAY(obj->buffer_alloc);
+    EB_FREE_ALIGNED_ARRAY(obj->buffer_alloc_raw);
+    obj->buffer_alloc    = NULL;
     obj->buffer_alloc_sz = 0;
     obj->y_buffer        = NULL;
     obj->u_buffer        = NULL;
@@ -428,7 +451,7 @@ EbErrorType svt_recon_picture_buffer_desc_update(EbPictureBufferDesc* pic_buf, E
     pic_buf->max_height   = pic_buf_init_data->max_height;
     pic_buf->bit_depth    = pic_buf_init_data->bit_depth;
     pic_buf->color_format = pic_buf_init_data->color_format;
-    pic_buf->y_stride     = pic_buf_init_data->max_width + (2 * pic_buf_init_data->border) /*left + right borders*/;
+    pic_buf->y_stride     = pic_buf_stride(pic_buf_init_data->max_width, pic_buf_init_data->border);
     pic_buf->u_stride = pic_buf->v_stride = (pic_buf->y_stride + ss_x) >> ss_x;
     pic_buf->border                       = pic_buf_init_data->border;
 
@@ -464,7 +487,7 @@ EbErrorType svt_recon_picture_buffer_desc_ctor(EbPictureBufferDesc* pic_buf, EbP
     pic_buf->max_height   = pic_buf_init_data->max_height;
     pic_buf->bit_depth    = pic_buf_init_data->bit_depth;
     pic_buf->color_format = pic_buf_init_data->color_format;
-    pic_buf->y_stride     = pic_buf_init_data->max_width + (2 * pic_buf_init_data->border) /*left + right border*/;
+    pic_buf->y_stride     = pic_buf_stride(pic_buf_init_data->max_width, pic_buf_init_data->border);
     pic_buf->u_stride = pic_buf->v_stride = (pic_buf->y_stride + ss_x) >> ss_x;
     pic_buf->border                       = pic_buf_init_data->border;
 
@@ -491,7 +514,9 @@ EbErrorType svt_recon_picture_buffer_desc_ctor(EbPictureBufferDesc* pic_buf, EbP
     }
 
     // Allocate the Picture Buffers (luma & chroma)
-    EB_CALLOC_ALIGNED_ARRAY(pic_buf->buffer_alloc, alloc_sz);
+    const uint32_t offset = pic_buf_layout_offset(pic_buf, pic_buf_init_data, bytes_per_pixel);
+    EB_CALLOC_ALIGNED_ARRAY(pic_buf->buffer_alloc_raw, alloc_sz + offset);
+    pic_buf->buffer_alloc    = pic_buf->buffer_alloc_raw + offset;
     pic_buf->buffer_alloc_sz = alloc_sz;
     uint32_t assigned_space  = 0;
     if (pic_buf_init_data->buffer_enable_mask & PICTURE_BUFFER_DESC_Y_FLAG) {

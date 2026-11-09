@@ -6233,7 +6233,8 @@ void svt_input_buffer_header_destroyer(EbPtr p) {
     EbBufferHeaderType*  obj = (EbBufferHeaderType*)p;
     EbPictureBufferDesc* buf = (EbPictureBufferDesc*)obj->p_buffer;
     if (buf) {
-        EB_FREE_ALIGNED_ARRAY(buf->buffer_alloc);
+        EB_FREE_ALIGNED_ARRAY(buf->buffer_alloc_raw);
+        buf->buffer_alloc     = NULL;
         buf->buffer_alloc_sz  = 0;
         buf->y_buffer         = NULL;
         buf->u_buffer         = NULL;
