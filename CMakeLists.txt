@@ -16,7 +16,7 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
                     "Please use the Build folder or create your own.")
 endif()
 
-project(svt-av1 VERSION 4.3.0
+project(svt-av1 VERSION 4.3.1
     LANGUAGES NONE)
 
 option(SVT_AV1_TEST_VECTORS_ONLY "Configure only the TestVectors download target" OFF)
