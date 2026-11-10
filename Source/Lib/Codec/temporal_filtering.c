@@ -2842,9 +2842,9 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
             int blk_y_src_offset  = (blk_col * TF_BW) + (blk_row * TF_BH) * stride[PLANE_Y];
             int blk_ch_src_offset = (blk_col * blk_width_ch) + (blk_row * blk_height_ch) * stride[PLANE_U];
 
-            // reset accumulator and count
-            memset(accumulator, 0, BLK_PELS * MAX_PLANES * sizeof(accumulator[0]));
-            memset(counter, 0, BLK_PELS * MAX_PLANES * sizeof(counter[0]));
+            // Central filtering assigns the whole padded 64x64 luma tile and
+            // active chroma rectangle before reference filtering reads them.
+            // Disabled chroma and the unused chroma tail are never consumed.
 
             EbByte    src_center_ptr[MAX_PLANES]           = {NULL};
             uint16_t* altref_buffer_highbd_ptr[MAX_PLANES] = {NULL};
@@ -3365,9 +3365,9 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
             int blk_y_src_offset  = (blk_col * TF_BW) + (blk_row * TF_BH) * stride[PLANE_Y];
             int blk_ch_src_offset = (blk_col * blk_width_ch) + (blk_row * blk_height_ch) * stride[PLANE_U];
 
-            // reset accumulator and count
-            memset(accumulator, 0, BLK_PELS * MAX_PLANES * sizeof(accumulator[0]));
-            memset(counter, 0, BLK_PELS * MAX_PLANES * sizeof(counter[0]));
+            // Central filtering assigns the whole padded 64x64 luma tile and
+            // active chroma rectangle before reference filtering reads them.
+            // Disabled chroma and the unused chroma tail are never consumed.
             EbByte    src_center_ptr[MAX_PLANES]           = {NULL};
             uint16_t* altref_buffer_highbd_ptr[MAX_PLANES] = {NULL};
             // Prep 8bit source if 8bit content or using 8bit for subpel
