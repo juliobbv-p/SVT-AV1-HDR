@@ -34,8 +34,6 @@ jobs:
   prep-test-vectors:
     name: Prepare test vectors
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:25.04
     outputs:
       test-vectors-cache-key: ${{ steps.cache.outputs.cache-primary-key }}
       test-vectors-cache-hit: ${{ steps.cache.outputs.cache-hit }}
@@ -43,8 +41,8 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -yq nodejs python3 zstd
+          sudo apt-get update
+          sudo apt-get install -yq nodejs python3 zstd
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
@@ -60,8 +58,8 @@ jobs:
       - name: Prepare test vectors cache
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          apt-get update
-          apt-get install -yq cmake ninja-build
+          sudo apt-get update
+          sudo apt-get install -yq cmake ninja-build
           mkdir -p "${SVT_AV1_TEST_VECTOR_PATH}"
           cp -f ./test/vectors/longtime_comformance_test.cfg "${SVT_AV1_TEST_VECTOR_PATH}"
           cmake -B vec -G Ninja -DSVT_AV1_TEST_VECTORS_ONLY=ON
@@ -105,8 +103,6 @@ jobs:
   linux-gcc-static-debug-unittests:
     name: Linux (GCC, Static, Debug, Unit Tests)
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:25.04
     env:
       CC: gcc
       CXX: g++
@@ -117,8 +113,8 @@ jobs:
     steps:
       - name: install dependencies
         run: |
-          apt-get update
-          apt-get install -yq ccache cmake gcc g++ git nasm ninja-build nodejs pkgconf
+          sudo apt-get update
+          sudo apt-get install -yq ccache cmake gcc g++ git nasm ninja-build nodejs pkgconf
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
@@ -202,8 +198,6 @@ jobs:
       - linux-gcc-static-debug-unittests
       - prep-test-vectors
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:25.04
     strategy: &unit-test-shard-strategy
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
@@ -214,8 +208,8 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -yq nodejs python3 zstd
+          sudo apt-get update
+          sudo apt-get install -yq nodejs python3 zstd
       - &gtest-parallel-checkout
         name: Checkout gtest-parallel
         uses: actions/checkout@v7.0.1
@@ -1046,8 +1040,6 @@ jobs:
   linux-aarch64-build:
     name: Linux (AArch64)
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -1097,8 +1089,6 @@ jobs:
   linux-rtc-minimal-build:
     name: Linux (RTC, Minimal)
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -1112,8 +1102,6 @@ jobs:
   linux-mobile-minimal-build:
     name: Linux (Mobile, Minimal)
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -1127,8 +1115,6 @@ jobs:
   linux-mobile-minimal-aarch64-build:
     name: Linux (Mobile, Minimal, AArch64)
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -1237,9 +1223,7 @@ jobs:
 
   linux-sanitizer-compile:
     name: Linux Sanitizer Compile (${{ matrix.artifact_suffix }})
-    runs-on: ubuntu-latest
-    container:
-      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -1257,26 +1241,33 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang ccache cmake nasm ninja-build pkgconf
       - name: Restore ccache
         id: cache
         uses: actions/cache/restore@v6.1.0
         with:
           path: .ccache
           key:
-            ${{ runner.os }}-svtav1-clang-19-${{ matrix.artifact_suffix }}-${{
+            ${{ runner.os }}-svtav1-clang-${{ matrix.artifact_suffix }}-${{
             hashFiles('**/CMakeLists.txt','**/*.cmake','Source/**','third_party/**','**/*.patch') }}
-          restore-keys: ${{ runner.os }}-svtav1-clang-19-${{ matrix.artifact_suffix }}-
+          restore-keys: ${{ runner.os }}-svtav1-clang-${{ matrix.artifact_suffix }}-
       - name: Build with ${{ matrix.artifact_suffix }} sanitizer
         env:
           SANITIZER: ${{ matrix.sanitizer }}
           OUTPUT_DIR: ${{ matrix.artifact_suffix }}
           CCACHE_DIR: ${{ github.workspace }}/.ccache
           CCACHE_COMPRESS: 1
+          CC: clang
+          CXX: clang++
         run: |
           cmake -B Build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=clang-19 \
-            -DCMAKE_CXX_COMPILER=clang++-19 \
+            -DCMAKE_C_COMPILER="$CC" \
+            -DCMAKE_CXX_COMPILER="$CXX" \
             -DCMAKE_C_FLAGS="-pipe" \
             -DCMAKE_CXX_FLAGS="-pipe" \
             -DCMAKE_OUTPUT_DIRECTORY="$OUTPUT_DIR" \
@@ -1378,14 +1369,17 @@ jobs:
 
   linux-valgrind-compile:
     name: Linux Valgrind Compile
-    runs-on: ubuntu-latest
-    container:
-      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ccache cmake nasm ninja-build pkgconf python3
       - name: Restore ccache
         id: cache
         uses: actions/cache/restore@v6.1.0

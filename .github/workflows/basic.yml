@@ -92,15 +92,13 @@ jobs:
   cppcheck:
     name: Static analysis (cppcheck)
     runs-on: ubuntu-latest
-    container:
-      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2004:20260303202728
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
       - name: Install dependencies
         run: |
-          apt-get update
-          apt-get install -yq cmake jq cppcheck gcc g++ git nasm ninja-build nodejs
+          sudo apt-get update
+          sudo apt-get install -yq cmake jq cppcheck gcc g++ git nasm ninja-build nodejs pkgconf python3
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
         with:
@@ -146,9 +144,7 @@ jobs:
 
   linux-gcc-release:
     name: Linux (GCC, Release)
-    runs-on: ubuntu-latest
-    container:
-      image: ubuntu:25.04
+    runs-on: ubuntu-24.04
     env:
       CC: gcc
       CXX: g++
@@ -159,8 +155,8 @@ jobs:
     steps:
       - name: install dependencies
         run: |
-          apt-get update
-          apt-get install -yq ccache cmake gcc g++ git nasm ninja-build nodejs pkgconf
+          sudo apt-get update
+          sudo apt-get install -yq ccache cmake gcc g++ git nasm ninja-build nodejs pkgconf
       - name: Checkout
         uses: actions/checkout@v7.0.1
         with:
@@ -241,6 +237,9 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec sed -i \
+              's|https\?://archive\.ubuntu\.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|g' {} +
           apt-get update
           apt-get install -y --no-install-recommends ffmpeg
       - name: Extract input vectors
@@ -355,9 +354,7 @@ jobs:
   # Skipped when pushing directly to the default branch (nothing to compare against).
   linux-gcc-default-release:
     name: Linux (GCC, Release, Default Branch)
-    runs-on: ubuntu-latest
-    container:
-      image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404:20260303202728
+    runs-on: ubuntu-24.04
     if:
       ${{ !(github.event_name == 'push' && github.ref == format('refs/heads/{0}',
       github.event.repository.default_branch)) }}
@@ -434,8 +431,6 @@ jobs:
   enc-default-diff-test:
     name: Enc Default Diff Test
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:25.04
     needs:
       - linux-enc-test
       - linux-default-enc-test
@@ -904,8 +899,6 @@ jobs:
   enc-os-diff-test:
     name: Enc OS Diff Test
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:25.04
     needs:
       - linux-enc-test
       - windows-msvc-enc-test
