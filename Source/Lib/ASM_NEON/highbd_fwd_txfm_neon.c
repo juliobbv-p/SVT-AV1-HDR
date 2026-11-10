@@ -1590,22 +1590,11 @@ static AOM_FORCE_INLINE void tenbd_fwd_txfm2d_16x16_type_neon(const int16_t* inp
 }
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
-void svt_av1_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
-#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
-    // An identity column pass also bounds the row intermediates for the full
-    // 10-bit range. Other types need the block check before using narrow rows.
-    if (bd == 10 &&
-        (tx_type == IDTX || tx_type == H_DCT || tx_type == H_ADST || tx_type == H_FLIPADST ||
-         residual_fits_255(input, stride, 16))) {
-        svt_lbd_fwd_txfm2d_16x16_neon(input, output, stride, tx_type);
-        return;
-    }
-#endif
-    if (bd == 8) {
-        svt_lbd_fwd_txfm2d_16x16_neon(input, output, stride, tx_type);
-        return;
-    }
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Keep the wide workspaces behind the bounded/8-bit dispatch. This also
+// lets those calls tail-branch without saving the wide path's registers.
+static NOINLINE void highbd_fwd_txfm2d_16x16_fallback_neon(int16_t* input, int32_t* output, uint32_t stride,
+                                                           TxType tx_type, uint8_t bd) {
     if (bd == 10) {
         switch (tx_type) {
         case DCT_DCT:
@@ -1801,6 +1790,26 @@ void svt_av1_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t str
     default:
         assert(0);
     }
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
+void svt_av1_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    // An identity column pass also bounds the row intermediates for the full
+    // 10-bit range. Other types need the block check before using narrow rows.
+    if (bd == 10 &&
+        (tx_type == IDTX || tx_type == H_DCT || tx_type == H_ADST || tx_type == H_FLIPADST ||
+         residual_fits_255(input, stride, 16))) {
+        svt_lbd_fwd_txfm2d_16x16_neon(input, output, stride, tx_type);
+        return;
+    }
+#endif
+    if (bd == 8) {
+        svt_lbd_fwd_txfm2d_16x16_neon(input, output, stride, tx_type);
+        return;
+    }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    highbd_fwd_txfm2d_16x16_fallback_neon(input, output, stride, tx_type, bd);
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 }
 
@@ -3472,20 +3481,11 @@ static AOM_FORCE_INLINE void tenbd_fwd_txfm2d_32x32_dct_neon(const int16_t* inpu
 }
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
-void svt_av1_fwd_txfm2d_32x32_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
-#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
-    if (bd == 10 &&
-        (tx_type == IDTX || tx_type == H_DCT ||
-         ((tx_type == DCT_DCT || tx_type == V_DCT) && residual_fits_255(input, stride, 32)))) {
-        svt_lbd_fwd_txfm2d_32x32_neon(input, output, stride, tx_type);
-        return;
-    }
-#endif
-    if (bd == 8) {
-        svt_lbd_fwd_txfm2d_32x32_neon(input, output, stride, tx_type);
-        return;
-    }
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Keep the wide workspaces behind the bounded/8-bit dispatch. This also
+// lets those calls tail-branch without saving the wide path's registers.
+static NOINLINE void highbd_fwd_txfm2d_32x32_fallback_neon(int16_t* input, int32_t* output, uint32_t stride,
+                                                           TxType tx_type, uint8_t bd) {
     if (bd == 10) {
         switch (tx_type) {
         case DCT_DCT:
@@ -3518,6 +3518,24 @@ void svt_av1_fwd_txfm2d_32x32_neon(int16_t* input, int32_t* output, uint32_t str
     // Row-wise transform.
     row_txfm(buf1, buf0, /*cos_bit=*/12, /*howmany=*/8, /*hm_stride=*/32);
     transpose_32xh(buf0, (int32x4_t*)output, 256);
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
+void svt_av1_fwd_txfm2d_32x32_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 &&
+        (tx_type == IDTX || tx_type == H_DCT ||
+         ((tx_type == DCT_DCT || tx_type == V_DCT) && residual_fits_255(input, stride, 32)))) {
+        svt_lbd_fwd_txfm2d_32x32_neon(input, output, stride, tx_type);
+        return;
+    }
+#endif
+    if (bd == 8) {
+        svt_lbd_fwd_txfm2d_32x32_neon(input, output, stride, tx_type);
+        return;
+    }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    highbd_fwd_txfm2d_32x32_fallback_neon(input, output, stride, tx_type, bd);
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 }
 
