@@ -1465,7 +1465,7 @@ jobs:
           if [[ "$RESIZE_MODE" == 4 ]]; then
             args+=(--frame-resz-events "1,3,6,8" --frame-resz-kf-denoms "8,9,10,11" --frame-resz-denoms "16,15,14,13")
           fi
-          command=(valgrind --error-exitcode=1 --track-origins=yes \
+          command=(valgrind --vex-guest-max-insns=25 --error-exitcode=1 --track-origins=yes \
             --suppressions=/usr/lib/valgrind/debian.supp -- "${args[@]}")
           printf 'Running Valgrind:'
           printf ' %q' "${command[@]}"
