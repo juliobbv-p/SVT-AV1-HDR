@@ -293,7 +293,7 @@ jobs:
             ./Bin/Release/SvtAv1EncApp --preset 8 --keyint "$keyint" -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 120 -b "test-pr-Linux-intra${keyint}-10bit-m8.ivf"
           done
           set +x
-          for output in test-pr-Linux-intra*-bit-m*.ivf; do
+          for output in test-pr-Linux-intra*-*bit-m*.ivf; do
             if ! test -s "$output"; then
               echo "File $output is empty"
               ret=false
@@ -301,6 +301,7 @@ jobs:
             fi
             ffmpeg -hide_banner -loglevel error -i "$output" -f null -
           done
+          $ret
 
   linux-rc-test:
     name: Linux RC Test

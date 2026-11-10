@@ -1345,7 +1345,7 @@ jobs:
         env:
           SANITIZER: ${{ matrix.sanitizer }}
           RC: ${{ matrix.rc }}
-          ASM: ${{ matrix.asm }}
+          # ASM: ${{ matrix.asm }}
         run: |
           chmod +x sanitizer-bin/SvtAv1EncApp
           args=("$PWD/sanitizer-bin/SvtAv1EncApp" -i Chimera-Aerial_480x264_2997fps_10bit_420_150frames.y4m -n 60 --preset 8)
@@ -1353,9 +1353,9 @@ jobs:
             read -r -a rc_args <<< "$RC"
             args+=("${rc_args[@]}")
           fi
-          if [[ -n "$ASM" ]]; then
-            args+=(--asm "$ASM")
-          fi
+          # if [[ -n "$ASM" ]]; then
+          #   args+=(--asm "$ASM")
+          # fi
           args+=(-b output.ivf --progress 0)
           printf 'Running %s sanitizer with arguments:' "$SANITIZER"
           printf ' %q' "${args[@]}"
