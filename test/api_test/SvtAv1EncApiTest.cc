@@ -108,24 +108,6 @@ TEST(EncApiTest, check_null_pointer) {
     SUCCEED();
 }
 
-TEST(EncApiTest, zero_roi_map_block_size_uses_legacy_default) {
-    SvtAv1Context context{};
-
-    ASSERT_EQ(
-        EB_ErrorNone,
-        svt_av1_enc_init_handle(&context.enc_handle, &context.enc_params));
-    context.enc_params.source_width = 128;
-    context.enc_params.source_height = 128;
-    context.enc_params.roi_map_block_size = 0;
-
-    ASSERT_EQ(
-        EB_ErrorNone,
-        svt_av1_enc_set_parameter(context.enc_handle, &context.enc_params));
-    ASSERT_EQ(EB_ErrorNone, svt_av1_enc_init(context.enc_handle));
-    ASSERT_EQ(EB_ErrorNone, svt_av1_enc_deinit(context.enc_handle));
-    ASSERT_EQ(EB_ErrorNone, svt_av1_enc_deinit_handle(context.enc_handle));
-}
-
 TEST(EncApiTest, release_null_output_buffer) {
     EbBufferHeaderType *packet = nullptr;
     svt_av1_enc_release_out_buffer(&packet);
