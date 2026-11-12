@@ -958,7 +958,7 @@ typedef struct IntraEdgeCache {
 // candidates were scanned by svt_aom_pred_cmp_cache_begin(), so an entry is identified by (reference frame, MV,
 // interpolation filter).
 #define PRED_CMP_CACHE_SLOTS 48
-#define PRED_CMP_CACHE_NEED 96
+#define PRED_CMP_CACHE_NEED 96 // at most this many pairs in the 256-slot set
 #define PRED_CMP_CACHE_PX (32 * 64 * 64)
 
 typedef struct PredCmpCache {
@@ -975,11 +975,10 @@ typedef struct PredCmpCache {
         int8_t   rf;
     } e[PRED_CMP_CACHE_SLOTS];
 
-    // (reference frame, MV) pairs used by the block's averaged compound candidates
-    struct {
-        uint32_t mv;
-        int8_t   rf;
-    } need[PRED_CMP_CACHE_NEED];
+    // (reference frame, MV) pairs used by the block's averaged compound candidates: open-addressing hash set.
+    // need_rf is 0 for an empty slot (inter reference frames are positive).
+    uint32_t need_mv[256];
+    int8_t   need_rf[256];
 } PredCmpCache;
 
 typedef struct ModeDecisionContext {

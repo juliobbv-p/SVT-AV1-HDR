@@ -287,15 +287,21 @@ static AOM_FORCE_INLINE int32x4_t dc_ac_s32(int32_t dc, int32_t ac) {
 
 // Largest weight of a quantization matrix (n is a multiple of 8, at least 16).
 static AOM_FORCE_INLINE int32_t qm_max_weight_neon(const QmVal* qm_ptr, intptr_t n) {
-    uint8x16_t m = vdupq_n_u8(0);
+    uint8x16_t m0 = vdupq_n_u8(0), m1 = m0, m2 = m0, m3 = m0;
     intptr_t   j = 0;
+    for (; j + 64 <= n; j += 64) {
+        m0 = vmaxq_u8(m0, vld1q_u8(qm_ptr + j));
+        m1 = vmaxq_u8(m1, vld1q_u8(qm_ptr + j + 16));
+        m2 = vmaxq_u8(m2, vld1q_u8(qm_ptr + j + 32));
+        m3 = vmaxq_u8(m3, vld1q_u8(qm_ptr + j + 48));
+    }
     for (; j + 16 <= n; j += 16) {
-        m = vmaxq_u8(m, vld1q_u8(qm_ptr + j));
+        m0 = vmaxq_u8(m0, vld1q_u8(qm_ptr + j));
     }
     if (j < n) {
-        m = vmaxq_u8(m, vcombine_u8(vld1_u8(qm_ptr + j), vdup_n_u8(0)));
+        m1 = vmaxq_u8(m1, vcombine_u8(vld1_u8(qm_ptr + j), vdup_n_u8(0)));
     }
-    return vmaxvq_u8(m);
+    return vmaxvq_u8(vmaxq_u8(vmaxq_u8(m0, m1), vmaxq_u8(m2, m3)));
 }
 
 // True when the 16 coefficients at coeff are all at most `bound` in magnitude; they are then below the

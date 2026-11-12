@@ -4644,14 +4644,17 @@ int svt_av1_highbd10_inv_txfm_add_bounded_xy_neon(const int32_t* input, const ui
         return 0;
     }
     // Reject before any narrow arithmetic. OR-ing magnitudes keeps every set bit of the largest one.
-    uint32x4_t bits = vdupq_n_u32(0);
+    // Four accumulators keep the OR chains short (the check is otherwise latency-bound).
+    uint32x4_t bits[4] = {vdupq_n_u32(0), vdupq_n_u32(0), vdupq_n_u32(0), vdupq_n_u32(0)};
     for (int32_t y = 0; y < buf_size_nonzero_h_div8 * 8; y++) {
         const int32_t* row = input + y * input_stride;
-        for (int32_t x = 0; x < buf_size_nonzero_w_div8 * 8; x += 4) {
-            bits = vorrq_u32(bits, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(row + x))));
+        for (int32_t x = 0; x < buf_size_nonzero_w_div8 * 8; x += 8) {
+            const int k = 2 * (y & 1);
+            bits[k]     = vorrq_u32(bits[k], vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(row + x))));
+            bits[k + 1] = vorrq_u32(bits[k + 1], vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(row + x + 4))));
         }
     }
-    if (vmaxvq_u32(bits) > (uint32_t)limit) {
+    if (vmaxvq_u32(vorrq_u32(vorrq_u32(bits[0], bits[1]), vorrq_u32(bits[2], bits[3]))) > (uint32_t)limit) {
         return 0;
     }
 

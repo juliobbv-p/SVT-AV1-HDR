@@ -38,14 +38,18 @@ static AOM_FORCE_INLINE int residual_fits_255(const int16_t* input, uint32_t str
 // the bit depth.
 static AOM_FORCE_INLINE int residual_rect_fits(const int16_t* input, uint32_t stride, unsigned w, unsigned h,
                                                unsigned limit) {
-    uint16x8_t bits = vdupq_n_u16(0);
+    // Four accumulators keep the OR chains short (the check is otherwise latency-bound).
+    uint16x8_t bits[4] = {vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0), vdupq_n_u16(0)};
     for (unsigned y = 0; y < h; ++y) {
         for (unsigned x = 0; x < w; x += 8) {
-            bits = vorrq_u16(bits, vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(input + y * stride + x))));
+            const unsigned k = ((x >> 3) + 2 * (y & 1)) & 3;
+
+            bits[k] = vorrq_u16(bits[k], vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(input + y * stride + x))));
         }
     }
+    const uint16x8_t all = vorrq_u16(vorrq_u16(bits[0], bits[1]), vorrq_u16(bits[2], bits[3]));
     // OR keeps every set bit, so compare against the largest all-ones mask not exceeding the limit.
-    return vmaxvq_u16(bits) <= limit;
+    return vmaxvq_u16(all) <= limit;
 }
 #endif
 

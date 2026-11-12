@@ -2935,6 +2935,10 @@ void svt_aom_highbd_10_fullpel_split_avg_neon(const uint8_t* msb0, const uint8_t
                                               const uint8_t* msb1, const uint8_t* lsb1, int stride1, uint16_t* dst,
                                               int dst_stride, int w, int h);
 
+static INLINE uint32_t pred_cmp_need_hash(int8_t rf, uint32_t mv) {
+    return ((mv * 2654435761u) >> 24) ^ (uint32_t)rf;
+}
+
 // Start the compound-intermediate cache for the block whose MDS0 is about to run: record which
 // (reference frame, MV) pairs its averaged compound candidates use, so that only those single-reference
 // predictions also emit their compound intermediate.
@@ -2946,9 +2950,9 @@ void svt_aom_pred_cmp_cache_begin(PictureControlSet* pcs, ModeDecisionContext* c
 
     c->n = 0;
 
-    c->need_n  = 0;
+    c->need_n = 0;
+    memset(c->need_rf, 0, sizeof(c->need_rf));
     c->used_px = 0;
-
     if (!cand_count || !c->arena || pcs->scs->static_config.encoder_bit_depth != EB_TEN_BIT ||
         !pcs->ppcs->is_not_scaled || !svt_aom_highbd_dual_pred_supported()) {
         return;
@@ -2962,13 +2966,13 @@ void svt_aom_pred_cmp_cache_begin(PictureControlSet* pcs, ModeDecisionContext* c
             const int8_t   rf = cand->block_mi.ref_frame[i];
             const uint32_t mv = cand->block_mi.mv[i].as_int;
 
-            int j = 0;
-            while (j < c->need_n && (c->need[j].rf != rf || c->need[j].mv != mv)) {
-                j++;
+            uint32_t j = pred_cmp_need_hash(rf, mv) & 255;
+            while (c->need_rf[j] && (c->need_rf[j] != rf || c->need_mv[j] != mv)) {
+                j = (j + 1) & 255;
             }
-            if (j == c->need_n && c->need_n < PRED_CMP_CACHE_NEED) {
-                c->need[j].rf = rf;
-                c->need[j].mv = mv;
+            if (!c->need_rf[j] && c->need_n < PRED_CMP_CACHE_NEED && rf > 0) {
+                c->need_rf[j] = rf;
+                c->need_mv[j] = mv;
                 c->need_n++;
             }
         }
@@ -2990,8 +2994,8 @@ static INLINE const uint16_t* pred_cmp_cache_find(const PredCmpCache* c, int8_t 
 }
 
 static INLINE bool pred_cmp_cache_needed(const PredCmpCache* c, int8_t rf, Mv mv) {
-    for (int i = 0; i < c->need_n; i++) {
-        if (c->need[i].mv == mv.as_int && c->need[i].rf == rf) {
+    for (uint32_t j = pred_cmp_need_hash(rf, mv.as_int) & 255; c->need_rf[j]; j = (j + 1) & 255) {
+        if (c->need_mv[j] == mv.as_int && c->need_rf[j] == rf) {
             return true;
         }
     }
