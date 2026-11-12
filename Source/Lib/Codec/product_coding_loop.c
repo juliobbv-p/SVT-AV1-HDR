@@ -2192,10 +2192,13 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
         }
     }
 #endif
+    // grid_x/grid_y: position within the grid of visited positions
+    int32_t grid_x = 0;
     for (int32_t refinement_pos_x = search_position_start_x; refinement_pos_x <= search_position_end_x;
-         refinement_pos_x         = refinement_pos_x + sparse_search_step) {
+         refinement_pos_x         = refinement_pos_x + sparse_search_step, grid_x++) {
+        int32_t grid_y = 0;
         for (int32_t refinement_pos_y = search_position_start_y; refinement_pos_y <= search_position_end_y;
-             refinement_pos_y         = refinement_pos_y + sparse_search_step) {
+             refinement_pos_y         = refinement_pos_y + sparse_search_step, grid_y++) {
             // If sparse search level_1, and if search level_0 previously performed
             if (sparse_search_step == 2 && is_sprs_lev0_performed) {
                 // If level_0 range
@@ -2215,8 +2218,7 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
             if (dist_type == VAR) {
 #if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
                 if (var_tab) {
-                    cost = var_tab[((refinement_pos_x - search_position_start_x) / sparse_search_step) * grid_ny +
-                                   (refinement_pos_y - search_position_start_y) / sparse_search_step];
+                    cost = var_tab[grid_x * grid_ny + grid_y];
                 } else
 #endif
                     if (!hbd_md) {
@@ -2267,6 +2269,10 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                               ctx->blk_geom->bwidth);
                 }
             }
+            // The MV cost is never negative, so a distortion that does not beat the best cost cannot win.
+            if (cost >= *best_cost) {
+                continue;
+            }
             Mv best_mv;
             best_mv.x = mvx + (refinement_pos_x * 8);
             best_mv.y = mvy + (refinement_pos_y * 8);
@@ -2278,6 +2284,7 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
             }
         }
     }
+    (void)grid_x;
 }
 
 // Derive me_sb_addr and me_block_offset used to access ME_MV
@@ -2345,31 +2352,44 @@ static void md_nsq_motion_search(PictureControlSet* pcs, ModeDecisionContext* ct
                                           : min_size == 32 ? 5u
                                           : min_size == 16 ? 21u
                                                            : 85u);
-        for (uint32_t block_index = pu_first; block_index < pu_end; block_index++) {
-            if ((min_size == partition_width[block_index] || min_size == partition_height[block_index]) &&
-                ((pu_search_index_map[block_index][0] >= (unsigned)blk_geom_offset.x) &&
-                 (pu_search_index_map[block_index][0] < (unsigned)blk_geom_offset.x + ctx->blk_geom->bwidth)) &&
-                ((pu_search_index_map[block_index][1] >= (unsigned)blk_geom_offset.y) &&
-                 (pu_search_index_map[block_index][1] < (unsigned)blk_geom_offset.y + ctx->blk_geom->bheight)) &&
-                svt_aom_is_me_data_present(
-                    block_index, block_index * pcs->ppcs->pa_me_data->max_cand, me_results, list_idx, ref_idx)) {
-                if (list_idx == 0) {
-                    mvc_x_array[mvc_count] = (me_results->me_mv_array[block_index * max_refs + ref_idx].x) * 8;
-                    mvc_y_array[mvc_count] = (me_results->me_mv_array[block_index * max_refs + ref_idx].y) * 8;
-                } else {
-                    mvc_x_array[mvc_count] = (me_results->me_mv_array[block_index * max_refs + max_l0 + ref_idx].x) * 8;
-                    mvc_y_array[mvc_count] = (me_results->me_mv_array[block_index * max_refs + max_l0 + ref_idx].y) * 8;
-                }
-                is_present = 0;
-                for (int16_t mvc_index = 0; mvc_index < mvc_count; mvc_index++) {
-                    if (mvc_x_array[mvc_count] == mvc_x_array[mvc_index] &&
-                        mvc_y_array[mvc_count] == mvc_y_array[mvc_index]) {
-                        is_present = 1;
-                        break;
+        // Within a size the blocks are in raster order at multiples of the size (pu_search_index_map), so the ones
+        // whose origin lies inside this block are visited directly, in the same increasing index order as a scan
+        // of the whole size class.
+        const int32_t ms_log2 = min_size >= 64 ? 6 : min_size == 32 ? 5 : min_size == 16 ? 4 : 3;
+        const int32_t ms      = 1 << ms_log2;
+        const int32_t per_row = 64 >> ms_log2;
+        const int32_t x_first = blk_geom_offset.x < 0 ? 64 : ((blk_geom_offset.x + ms - 1) >> ms_log2) << ms_log2;
+        const int32_t y_first = blk_geom_offset.y < 0 ? 64 : ((blk_geom_offset.y + ms - 1) >> ms_log2) << ms_log2;
+        const int32_t x_end   = MIN(blk_geom_offset.x + ctx->blk_geom->bwidth, 64);
+        const int32_t y_end   = MIN(blk_geom_offset.y + ctx->blk_geom->bheight, 64);
+        for (int32_t sub_y = y_first; sub_y < y_end; sub_y += ms) {
+            for (int32_t sub_x = x_first; sub_x < x_end; sub_x += ms) {
+                const uint32_t block_index = pu_first + (sub_y >> ms_log2) * per_row + (sub_x >> ms_log2);
+                assert(pu_search_index_map[block_index][0] == (uint32_t)sub_x &&
+                       pu_search_index_map[block_index][1] == (uint32_t)sub_y);
+                if (block_index < pu_end &&
+                    svt_aom_is_me_data_present(
+                        block_index, block_index * pcs->ppcs->pa_me_data->max_cand, me_results, list_idx, ref_idx)) {
+                    if (list_idx == 0) {
+                        mvc_x_array[mvc_count] = (me_results->me_mv_array[block_index * max_refs + ref_idx].x) * 8;
+                        mvc_y_array[mvc_count] = (me_results->me_mv_array[block_index * max_refs + ref_idx].y) * 8;
+                    } else {
+                        mvc_x_array[mvc_count] =
+                            (me_results->me_mv_array[block_index * max_refs + max_l0 + ref_idx].x) * 8;
+                        mvc_y_array[mvc_count] =
+                            (me_results->me_mv_array[block_index * max_refs + max_l0 + ref_idx].y) * 8;
                     }
-                }
-                if (!is_present) {
-                    mvc_count++;
+                    is_present = 0;
+                    for (int16_t mvc_index = 0; mvc_index < mvc_count; mvc_index++) {
+                        if (mvc_x_array[mvc_count] == mvc_x_array[mvc_index] &&
+                            mvc_y_array[mvc_count] == mvc_y_array[mvc_index]) {
+                            is_present = 1;
+                            break;
+                        }
+                    }
+                    if (!is_present) {
+                        mvc_count++;
+                    }
                 }
             }
         }
