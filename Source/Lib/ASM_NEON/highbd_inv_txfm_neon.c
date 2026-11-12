@@ -3148,6 +3148,39 @@ static void highbd_sparse_idct_add_neon(const int32_t* input, uint16_t* dst_r, i
     }
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+int svt_av1_highbd10_inv_txfm_add_bounded_neon(const int32_t* input, const uint16_t* pred, int sp, uint16_t* dest,
+                                               int dp, TxType tx_type, TxSize tx_size, int eob, const int16_t* limits);
+// Largest coefficient magnitude accepted by the bounded 16-bit inverse, indexed by transform size and by the
+// row/column nonzero-extent classes (1, 8, 16, 32 coefficients): [4 * class_y + class_x]. Each entry is a proven
+// bound, not a measured one: with every coefficient of the coded region within it, for any signs and magnitudes,
+// rounding included, no 16-bit lane of the row pass saturates or wraps, and in the column pass only the final
+// additions can saturate, which the following >> 4 and the clip to 10 bits make indistinguishable from the exact
+// sum. It is the minimum over the types AV1 has for the size (only DCT_DCT when a side is 32 or 64; the kernel rejects
+// the others).
+static const int16_t highbd10_inv_bounded_limits[TX_SIZES_ALL][16] = {
+    {0}, // 4-wide or 4-high: not covered
+    {32767, 6201, 0, 0, 12908, 2430, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // 8x8
+    {32767, 4547, 3155, 0, 18208, 2523, 1750, 0, 12869, 1782, 1236, 0, 0, 0, 0, 0}, // 16x16
+    {32767, 4345, 2298, 1591, 32767, 4345, 2298, 1591, 25721, 2411, 1275, 882, 17845, 1672, 884, 611}, // 32x32
+    {32767, 4274, 2136, 1142, 32767, 4274, 2136, 1142, 23770, 2192, 1095, 585, 12860, 1185, 592, 316}, // 64x64
+    {0}, // 4-wide or 4-high: not covered
+    {0}, // 4-wide or 4-high: not covered
+    {32767, 8770, 0, 0, 12923, 2432, 0, 0, 9133, 1717, 0, 0, 0, 0, 0, 0}, // 8x16
+    {32767, 6430, 4461, 0, 18189, 2519, 1745, 0, 0, 0, 0, 0, 0, 0, 0, 0}, // 16x8
+    {32767, 6572, 4461, 0, 32767, 3369, 2286, 0, 18188, 1822, 1236, 0, 12618, 1263, 856, 0}, // 16x32
+    {32767, 6145, 3249, 2249, 32767, 3406, 1800, 1246, 24808, 2324, 1228, 849, 0, 0, 0, 0}, // 32x16
+    {32767, 6145, 3249, 2249, 32767, 3091, 1634, 1130, 16808, 1574, 832, 574, 9093, 851, 449, 309}, // 32x64
+    {32767, 6044, 3020, 1615, 32767, 3099, 1548, 827, 18188, 1676, 837, 447, 12618, 1162, 579, 309}, // 64x32
+    {0}, // 4-wide or 4-high: not covered
+    {0}, // 4-wide or 4-high: not covered
+    {32767, 6201, 0, 0, 32767, 6201, 0, 0, 25721, 3441, 0, 0, 17845, 2387, 0, 0}, // 8x32
+    {32767, 4345, 2298, 1591, 32767, 4345, 2298, 1591, 0, 0, 0, 0, 0, 0, 0, 0}, // 32x8
+    {32767, 4647, 3155, 0, 32767, 4647, 3155, 0, 23770, 2383, 1617, 0, 12860, 1289, 874, 0}, // 16x64
+    {32767, 4274, 2136, 1142, 32767, 4274, 2136, 1142, 32767, 3235, 1616, 864, 0, 0, 0, 0}, // 64x16
+};
+#endif
+
 void svt_av1_highbd_inv_txfm_add_neon(const TranLow* input, uint8_t* dest_r, int32_t stride_r, uint8_t* dest_w,
                                       int32_t stride_w, const TxfmParam* txfm_param) {
     if (txfm_param->tx_type == DCT_DCT && !txfm_param->lossless) {
@@ -3175,5 +3208,21 @@ void svt_av1_highbd_inv_txfm_add_neon(const TranLow* input, uint8_t* dest_r, int
     }
     // The existing dispatcher retains optimized non-DCT and dense transforms,
     // and the distinct lossless WHT semantics.
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // Remaining two-dimensional transforms (rectangular sizes, 8x8, ADST/flipped types, dense blocks): 16-bit
+    // kernels are exact while the coefficients stay below a per-size bound.
+    if (txfm_param->bd == 10 && !txfm_param->lossless && txfm_param->eob > 0 && txfm_param->tx_type < IDTX &&
+        svt_av1_highbd10_inv_txfm_add_bounded_neon(input,
+                                                   CONVERT_TO_SHORTPTR(dest_r),
+                                                   stride_r,
+                                                   CONVERT_TO_SHORTPTR(dest_w),
+                                                   stride_w,
+                                                   txfm_param->tx_type,
+                                                   txfm_param->tx_size,
+                                                   txfm_param->eob,
+                                                   highbd10_inv_bounded_limits[txfm_param->tx_size])) {
+        return;
+    }
+#endif
     svt_av1_highbd_inv_txfm_add_c(input, dest_r, stride_r, dest_w, stride_w, txfm_param);
 }
