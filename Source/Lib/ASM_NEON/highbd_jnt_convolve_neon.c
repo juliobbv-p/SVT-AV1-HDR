@@ -1269,6 +1269,41 @@ static INLINE void fullpel_split_neon(const uint8_t* msb, int msb_stride, const 
     }
 }
 
+// Averaged compound prediction of two full-pel split 10-bit references: with both intermediates equal to
+// (pixel << 4) + offset, the rounded compound average reduces to the rounded mean of the two pixels.
+void svt_aom_highbd_10_fullpel_split_avg_neon(const uint8_t* msb0, const uint8_t* lsb0, int stride0,
+                                              const uint8_t* msb1, const uint8_t* lsb1, int stride1, uint16_t* dst,
+                                              int dst_stride, int w, int h) {
+    assert(w == 4 || (w > 0 && !(w & 7)));
+    do {
+        if (w == 4) {
+            const uint16x8_t p0 = pack_split8_neon(load_unaligned_u8_4x1(msb0), load_unaligned_u8_4x1(lsb0));
+            const uint16x8_t p1 = pack_split8_neon(load_unaligned_u8_4x1(msb1), load_unaligned_u8_4x1(lsb1));
+            vst1_u16(dst, vget_low_u16(vrhaddq_u16(p0, p1)));
+        } else if (w == 8) {
+            const uint16x8_t p0 = pack_split8_neon(vld1_u8(msb0), vld1_u8(lsb0));
+            const uint16x8_t p1 = pack_split8_neon(vld1_u8(msb1), vld1_u8(lsb1));
+            vst1q_u16(dst, vrhaddq_u16(p0, p1));
+        } else {
+            for (int x = 0; x < w; x += 16) {
+                const uint8x16_t m0 = vld1q_u8(msb0 + x), l0 = vld1q_u8(lsb0 + x);
+                const uint8x16_t m1 = vld1q_u8(msb1 + x), l1 = vld1q_u8(lsb1 + x);
+                const uint16x8_t a0 = vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l0, m0)), 6);
+                const uint16x8_t a1 = vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(l0, m0)), 6);
+                const uint16x8_t b0 = vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l1, m1)), 6);
+                const uint16x8_t b1 = vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(l1, m1)), 6);
+                vst1q_u16(dst + x, vrhaddq_u16(a0, b0));
+                vst1q_u16(dst + x + 8, vrhaddq_u16(a1, b1));
+            }
+        }
+        msb0 += stride0;
+        lsb0 += stride0;
+        msb1 += stride1;
+        lsb1 += stride1;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+
 void svt_aom_highbd_10_fullpel_split_neon(const uint8_t* msb, int msb_stride, const uint8_t* lsb, int lsb_stride,
                                           uint16_t* dst, int dst_stride, int w, int h, ConvolveParams* params) {
     assert(w == 2 || w == 4 || (w > 0 && !(w & 7)));

@@ -58,10 +58,16 @@ EbErrorType svt_aom_inter_pu_prediction_av1_pd0(uint8_t hbd_md, struct ModeDecis
                                                 ModeDecisionCandidateBuffer* cand_bf);
 EbErrorType svt_aom_inter_pu_prediction_av1_light_pd1(uint8_t hbd_md, struct ModeDecisionContext* ctx,
                                                       PictureControlSet* pcs, ModeDecisionCandidateBuffer* cand_bf);
+
 const uint8_t* svt_aom_light_pd1_fullpel_luma_ref(SequenceControlSet* scs, struct ModeDecisionContext* ctx,
                                                   const EbPictureBufferDesc* ref_pic, Mv mv);
-EbErrorType    svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, struct ModeDecisionContext* ctx, PictureControlSet* pcs,
-                                               ModeDecisionCandidateBuffer* cand_bf);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+void svt_aom_pred_cmp_cache_begin(PictureControlSet* pcs, struct ModeDecisionContext* ctx, const uint16_t* cand_list,
+                                  uint32_t cand_count);
+void svt_aom_pred_cmp_cache_end(struct ModeDecisionContext* ctx);
+#endif
+EbErrorType svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, struct ModeDecisionContext* ctx, PictureControlSet* pcs,
+                                            ModeDecisionCandidateBuffer* cand_bf);
 
 void    svt_aom_precompute_obmc_data(PictureControlSet* pcs, struct ModeDecisionContext* ctx, uint32_t component_mask);
 int64_t pick_wedge_fixed_sign(PictureControlSet* pcs, struct ModeDecisionContext* ctx, const BlockSize bsize,

@@ -2930,36 +2930,71 @@ static void av1_inter_prediction_pd0(SequenceControlSet* scs, ModeDecisionContex
 }
 
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
-// Point the compound-intermediate cache at the current block, dropping the entries of any other block.
-static INLINE void pred_cmp_cache_sync(PredCmpCache* c, const ModeDecisionContext* ctx, uint32_t filt) {
-    const PictureControlSet* pcs = ctx->sb_ptr->pcs;
-    if (c->pcs != pcs || c->pic_num != pcs->picture_number || c->x != ctx->blk_org_x || c->y != ctx->blk_org_y ||
-        c->w != ctx->blk_geom->bwidth || c->h != ctx->blk_geom->bheight || c->filt != filt) {
-        c->pcs     = pcs;
-        c->pic_num = pcs->picture_number;
+void svt_aom_highbd_10_fullpel_split_avg_neon(const uint8_t* msb0, const uint8_t* lsb0, int stride0,
+                                              const uint8_t* msb1, const uint8_t* lsb1, int stride1, uint16_t* dst,
+                                              int dst_stride, int w, int h);
 
-        c->x = ctx->blk_org_x;
+// Start the compound-intermediate cache for the block whose MDS0 is about to run: record which
+// (reference frame, MV) pairs its averaged compound candidates use, so that only those single-reference
+// predictions also emit their compound intermediate.
+void svt_aom_pred_cmp_cache_begin(PictureControlSet* pcs, ModeDecisionContext* ctx, const uint16_t* cand_list,
+                                  uint32_t cand_count) {
+    PredCmpCache* c = &ctx->pred_cmp_cache;
 
-        c->y = ctx->blk_org_y;
+    c->active = false;
 
-        c->w    = ctx->blk_geom->bwidth;
-        c->h    = ctx->blk_geom->bheight;
-        c->filt = filt;
-        c->n    = 0;
+    c->n = 0;
 
-        c->used_px = 0;
+    c->need_n  = 0;
+    c->used_px = 0;
 
-        c->supported = svt_aom_highbd_dual_pred_supported();
+    if (!cand_count || !c->arena || pcs->scs->static_config.encoder_bit_depth != EB_TEN_BIT ||
+        !pcs->ppcs->is_not_scaled || !svt_aom_highbd_dual_pred_supported()) {
+        return;
     }
+    for (uint32_t k = 0; k < cand_count; k++) {
+        const ModeDecisionCandidate* cand = &ctx->fast_cand_array[cand_list[k]];
+        if (!has_second_ref(&cand->block_mi) || !is_plain_luma_pred(pcs, ctx, cand)) {
+            continue;
+        }
+        for (int i = 0; i < 2; i++) {
+            const int8_t   rf = cand->block_mi.ref_frame[i];
+            const uint32_t mv = cand->block_mi.mv[i].as_int;
+
+            int j = 0;
+            while (j < c->need_n && (c->need[j].rf != rf || c->need[j].mv != mv)) {
+                j++;
+            }
+            if (j == c->need_n && c->need_n < PRED_CMP_CACHE_NEED) {
+                c->need[j].rf = rf;
+                c->need[j].mv = mv;
+                c->need_n++;
+            }
+        }
+    }
+    c->active = c->need_n > 0;
 }
 
-static INLINE const uint16_t* pred_cmp_cache_find(const PredCmpCache* c, const void* ref, Mv mv) {
+void svt_aom_pred_cmp_cache_end(ModeDecisionContext* ctx) {
+    ctx->pred_cmp_cache.active = false;
+}
+
+static INLINE const uint16_t* pred_cmp_cache_find(const PredCmpCache* c, int8_t rf, Mv mv, uint32_t filt) {
     for (int i = 0; i < c->n; i++) {
-        if (c->e[i].ref == ref && c->e[i].mv == mv.as_int) {
+        if (c->e[i].mv == mv.as_int && c->e[i].rf == rf && c->e[i].filt == filt) {
             return c->arena + c->e[i].off;
         }
     }
     return NULL;
+}
+
+static INLINE bool pred_cmp_cache_needed(const PredCmpCache* c, int8_t rf, Mv mv) {
+    for (int i = 0; i < c->need_n; i++) {
+        if (c->need[i].mv == mv.as_int && c->need[i].rf == rf) {
+            return true;
+        }
+    }
+    return false;
 }
 #endif
 
@@ -2993,21 +3028,62 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
         uint8_t* dst_ptr_y = pred_pic->y_buffer + ((dst_origin_x + (dst_origin_y)*pred_pic->y_stride) << is_16bit);
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
         // MDS0 evaluates most compound candidates after single-reference candidates that use the same
-        // (reference, MV) pairs. Keep the compound intermediate of each single-reference prediction and
-        // average two of them instead of filtering both references again.
+        // (reference, MV) pairs. Keep the compound intermediate of those single-reference predictions and
+        // average the cached intermediates instead of filtering both references again.
         PredCmpCache* const cmp_cache = &ctx->pred_cmp_cache;
+        const uint32_t      cmp_filt  = (uint32_t)block_mi->interp_filters;
+        const bool use_cmp_cache = cmp_cache->active && hbd_md && ctx->md_stage == MD_STAGE_0 && !av1_is_scaled(sf0) &&
+            (!is_compound || !av1_is_scaled(sf1));
+        int cmp_skip = -1; // compound reference whose intermediate is already in conv_params_y.dst
+        if (use_cmp_cache && is_compound) {
+            const uint16_t* cmp0 = pred_cmp_cache_find(cmp_cache, block_mi->ref_frame[0], block_mi->mv[0], cmp_filt);
+            const uint16_t* cmp1 = pred_cmp_cache_find(cmp_cache, block_mi->ref_frame[1], block_mi->mv[1], cmp_filt);
+            if (cmp0 && cmp1) {
+                svt_aom_highbd_10_comp_avg_cached_neon(
+                    cmp0, cmp1, bwidth, (uint16_t*)dst_ptr_y, pred_pic->y_stride, bwidth, bheight);
+                goto luma_done;
+            }
+            if (cmp0 || cmp1) {
+                // The non-weighted average is symmetric: average the other reference into the cached one.
+                cmp_skip = cmp0 ? 0 : 1;
 
-        const bool use_cmp_cache = hbd_md && ctx->md_stage == MD_STAGE_0 &&
-            scs->static_config.encoder_bit_depth == EB_TEN_BIT && ctx->md_stage_0_count[CAND_CLASS_2] > 0 &&
-            cmp_cache->arena && !av1_is_scaled(sf0) && (!is_compound || !av1_is_scaled(sf1));
-        if (use_cmp_cache) {
-            pred_cmp_cache_sync(cmp_cache, ctx, (uint32_t)block_mi->interp_filters);
-            if (is_compound && cmp_cache->supported) {
-                const uint16_t* cmp0 = pred_cmp_cache_find(cmp_cache, ref_pic_0, block_mi->mv[0]);
-                const uint16_t* cmp1 = cmp0 ? pred_cmp_cache_find(cmp_cache, ref_pic_1, block_mi->mv[1]) : NULL;
-                if (cmp1) {
-                    svt_aom_highbd_10_comp_avg_cached_neon(
-                        cmp0, cmp1, bwidth, (uint16_t*)dst_ptr_y, pred_pic->y_stride, bwidth, bheight);
+                conv_params_y.dst = (uint16_t*)(cmp0 ? cmp0 : cmp1);
+
+                conv_params_y.dst_stride = bwidth;
+            } else if (ref_pic_0->y_buffer_bit_inc && ref_pic_1->y_buffer_bit_inc) {
+                SubpelParams sp[2];
+                int32_t      py[2], px[2];
+                for (int i = 0; i < 2; i++) {
+                    const EbPictureBufferDesc* ref_pic = i ? ref_pic_1 : ref_pic_0;
+                    compute_subpel_params(scs,
+                                          ref_origin_y,
+                                          ref_origin_x,
+                                          block_mi->mv[i],
+                                          i ? sf1 : sf0,
+                                          ref_pic->width,
+                                          ref_pic->height,
+                                          bwidth,
+                                          bheight,
+                                          ctx->blk_ptr->av1xd,
+                                          0,
+                                          0,
+                                          &sp[i],
+                                          &py[i],
+                                          &px[i]);
+                }
+                if (!sp[0].subpel_x && !sp[0].subpel_y && !sp[1].subpel_x && !sp[1].subpel_y) {
+                    // Two full-pel references: the compound average is the rounded mean of the two pixels.
+                    svt_aom_highbd_10_fullpel_split_avg_neon(
+                        ref_pic_0->y_buffer + px[0] + py[0] * ref_pic_0->y_stride,
+                        ref_pic_0->y_buffer_bit_inc + px[0] + py[0] * ref_pic_0->y_stride_bit_inc,
+                        ref_pic_0->y_stride,
+                        ref_pic_1->y_buffer + px[1] + py[1] * ref_pic_1->y_stride,
+                        ref_pic_1->y_buffer_bit_inc + px[1] + py[1] * ref_pic_1->y_stride_bit_inc,
+                        ref_pic_1->y_stride,
+                        (uint16_t*)dst_ptr_y,
+                        pred_pic->y_stride,
+                        bwidth,
+                        bheight);
                     goto luma_done;
                 }
             }
@@ -3015,6 +3091,11 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
 #endif
 
         for (int i = 0; i < 1 + is_compound; i++) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+            if (i == cmp_skip) {
+                continue;
+            }
+#endif
             EbPictureBufferDesc* ref_pic = i ? ref_pic_1 : ref_pic_0;
             ScaleFactors*        sf      = i ? sf1 : sf0;
             assert(ref_pic != NULL);
@@ -3040,14 +3121,23 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
                 conv_params_y.do_average            = 1;
                 conv_params_y.use_dist_wtd_comp_avg = 0;
             }
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+            if (cmp_skip >= 0) {
+                conv_params_y.do_average = 1;
+
+                conv_params_y.use_dist_wtd_comp_avg = 0;
+            }
+#endif
 
             assert(IMPLIES(conv_params_y.do_average, is_compound));
             src_mod    = ref_pic->y_buffer + ((pos_x + (pos_y)*ref_pic->y_stride));
             src_mod_2b = ADD_OFFSET_OR_NULL(ref_pic->y_buffer_bit_inc, pos_x + (pos_y)*ref_pic->y_stride_bit_inc);
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
-            if (use_cmp_cache && !is_compound && cmp_cache->supported && cmp_cache->n < PRED_CMP_CACHE_SLOTS &&
+            if (use_cmp_cache && !is_compound && (subpel_params.subpel_x || subpel_params.subpel_y) &&
+                cmp_cache->n < PRED_CMP_CACHE_SLOTS &&
                 cmp_cache->used_px + (uint32_t)bwidth * bheight <= PRED_CMP_CACHE_PX &&
-                !pred_cmp_cache_find(cmp_cache, ref_pic, block_mi->mv[0]) &&
+                pred_cmp_cache_needed(cmp_cache, block_mi->ref_frame[0], block_mi->mv[0]) &&
+                !pred_cmp_cache_find(cmp_cache, block_mi->ref_frame[0], block_mi->mv[0], cmp_filt) &&
                 svt_aom_inter_predictor_light_pd1_dual(src_mod,
                                                        src_mod_2b,
                                                        ref_pic->y_stride,
@@ -3059,9 +3149,10 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
                                                        bheight,
                                                        block_mi->interp_filters,
                                                        &subpel_params)) {
-                cmp_cache->e[cmp_cache->n].ref = ref_pic;
-                cmp_cache->e[cmp_cache->n].mv  = block_mi->mv[0].as_int;
-                cmp_cache->e[cmp_cache->n].off = cmp_cache->used_px;
+                cmp_cache->e[cmp_cache->n].rf   = block_mi->ref_frame[0];
+                cmp_cache->e[cmp_cache->n].mv   = block_mi->mv[0].as_int;
+                cmp_cache->e[cmp_cache->n].filt = cmp_filt;
+                cmp_cache->e[cmp_cache->n].off  = cmp_cache->used_px;
                 cmp_cache->n++;
                 cmp_cache->used_px += (uint32_t)bwidth * bheight;
                 continue;

@@ -9937,6 +9937,10 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
             cand_order[fill[ctx->fast_cand_array[i].cand_class]++] = (uint16_t)i;
         }
     }
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    svt_aom_pred_cmp_cache_begin(
+        pcs, ctx, cand_order + class_start[CAND_CLASS_2], class_start[CAND_CLASS_2 + 1] - class_start[CAND_CLASS_2]);
+#endif
     uint64_t best_md_stage_cost = (uint64_t)~0;
     ctx->mds0_best_idx          = 0;
     ctx->mds0_best_class_it     = 0;
@@ -10012,6 +10016,9 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
             buffer_start_idx += buffer_count_for_curr_class; //for next iteration.
         }
     }
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    svt_aom_pred_cmp_cache_end(ctx);
+#endif
     post_mds0_nic_pruning(pcs, ctx, best_md_stage_cost);
     // Use detector for applying TX shortcuts at MDS3; if MDS1 is performed, use that info to apply
     // shortcuts instead of MDS0 info

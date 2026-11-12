@@ -327,8 +327,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     EB_MALLOC_ALIGNED_ARRAY(ctx->tmp_conv_buf, MAX_SB_SQUARE);
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
     EB_MALLOC_ALIGNED_ARRAY(ctx->pred_cmp_cache.arena, PRED_CMP_CACHE_PX);
-    ctx->pred_cmp_cache.pcs = NULL;
-    ctx->pred_cmp_cache.n   = 0;
+    ctx->pred_cmp_cache.active = false;
 #endif
     EB_MALLOC_ALIGNED_ARRAY(ctx->seg_mask_buf, 2 * MAX_SB_SQUARE);
     uint8_t use_update_cdf = 0;

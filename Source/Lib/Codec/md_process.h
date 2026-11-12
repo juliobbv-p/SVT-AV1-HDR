@@ -953,28 +953,32 @@ typedef struct IntraEdgeCache {
 } IntraEdgeCache;
 
 // Per-block cache of first-pass compound intermediates (CONV_BUF form) produced as a by-product of the
-// single-reference MDS0 luma predictions. Reference pictures are immutable while a picture is coded, so an entry
-// is identified by (picture, block origin and size, interpolation filter, reference picture, MV).
+// single-reference MDS0 luma predictions. It is only active while md_stage_0 runs for the block whose compound
+// candidates were scanned by svt_aom_pred_cmp_cache_begin(), so an entry is identified by (reference frame, MV,
+// interpolation filter).
 #define PRED_CMP_CACHE_SLOTS 48
+#define PRED_CMP_CACHE_NEED 96
 #define PRED_CMP_CACHE_PX (32 * 64 * 64)
 
 typedef struct PredCmpCache {
-    uint16_t*   arena; // PRED_CMP_CACHE_PX samples
-    const void* pcs;
-    uint64_t    pic_num;
-    uint32_t    filt;
-    uint32_t    used_px;
-    uint16_t    x, y;
-    uint8_t     w, h;
-    uint8_t     n;
-
-    bool supported;
+    uint16_t* arena; // PRED_CMP_CACHE_PX samples
+    uint32_t  used_px;
+    uint8_t   n;
+    uint8_t   need_n;
+    bool      active;
 
     struct {
-        const void* ref;
-        uint32_t    mv;
-        uint32_t    off;
+        uint32_t mv;
+        uint32_t filt;
+        uint32_t off;
+        int8_t   rf;
     } e[PRED_CMP_CACHE_SLOTS];
+
+    // (reference frame, MV) pairs used by the block's averaged compound candidates
+    struct {
+        uint32_t mv;
+        int8_t   rf;
+    } need[PRED_CMP_CACHE_NEED];
 } PredCmpCache;
 
 typedef struct ModeDecisionContext {
