@@ -262,6 +262,45 @@ static inline void highbd_convolve_y_sr_8tap_neon(const uint16_t* src_ptr, int s
     }
 }
 
+// Bilinear taps are nonnegative, even and sum to 128. With halved taps the two-tap sum of 10-bit samples fits 16
+// bits (at most 1023 * 64), and the result is a convex combination of two samples, so it needs no clipping.
+// src points at the first of the two samples (rows) each output uses.
+static inline void highbd_10_convolve_y_sr_2tap_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                                     int w, int h, const int16_t* y_filter_ptr) {
+    const uint16x4_t filter = vshr_n_u16(vreinterpret_u16_s16(vld1_s16(y_filter_ptr + 3)), 1);
+    do {
+        int x = 0;
+        do {
+            uint16x8_t sum = vmulq_lane_u16(vld1q_u16(src + x), filter, 0);
+
+            sum = vmlaq_lane_u16(sum, vld1q_u16(src + src_stride + x), filter, 1);
+            // round(S / 128) with S twice the halved-tap sum
+            vst1q_u16(dst + x, vrshrq_n_u16(sum, FILTER_BITS - 1));
+            x += 8;
+        } while (x < w);
+        src += src_stride;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+
+static inline void highbd_10_convolve_x_sr_2tap_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                                     int w, int h, const int16_t* x_filter_ptr) {
+    const uint16x4_t filter = vshr_n_u16(vreinterpret_u16_s16(vld1_s16(x_filter_ptr + 3)), 1);
+    do {
+        int x = 0;
+        do {
+            uint16x8_t sum = vmulq_lane_u16(vld1q_u16(src + x), filter, 0);
+
+            sum = vmlaq_lane_u16(sum, vld1q_u16(src + x + 1), filter, 1);
+            // The horizontal-only prediction rounds twice: round(round(S / 8) / 16).
+            vst1q_u16(dst + x, vrshrq_n_u16(vrshrq_n_u16(sum, ROUND0_BITS - 1), FILTER_BITS - ROUND0_BITS));
+            x += 8;
+        } while (x < w);
+        src += src_stride;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+
 void svt_av1_highbd_convolve_y_sr_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride, int w, int h,
                                        const InterpFilterParams* filter_params_x,
                                        const InterpFilterParams* filter_params_y, const int subpel_x_qn,
@@ -284,6 +323,11 @@ void svt_av1_highbd_convolve_y_sr_neon(const uint16_t* src, int src_stride, uint
     const int      y_filter_taps = get_filter_tap(filter_params_y, subpel_y_qn);
     const int      vert_offset   = filter_params_y->taps / 2 - 1;
     const int16_t* y_filter_ptr  = av1_get_interp_filter_subpel_kernel(*filter_params_y, subpel_y_qn & SUBPEL_MASK);
+
+    if (bd == 10 && w >= 8 && filter_params_y->interp_filter == BILINEAR && filter_params_y->taps == SUBPEL_TAPS) {
+        highbd_10_convolve_y_sr_2tap_neon(src, src_stride, dst, dst_stride, w, h, y_filter_ptr);
+        return;
+    }
 
     src -= vert_offset * src_stride;
 
@@ -488,6 +532,11 @@ void svt_av1_highbd_convolve_x_sr_neon(const uint16_t* src, int src_stride, uint
     const int      horiz_offset  = filter_params_x->taps / 2 - 1;
     const int16_t* x_filter_ptr  = av1_get_interp_filter_subpel_kernel(*filter_params_x, subpel_x_qn & SUBPEL_MASK);
 
+    if (bd == 10 && w >= 8 && filter_params_x->interp_filter == BILINEAR && filter_params_x->taps == SUBPEL_TAPS) {
+        highbd_10_convolve_x_sr_2tap_neon(src, src_stride, dst, dst_stride, w, h, x_filter_ptr);
+        return;
+    }
+
     src -= horiz_offset;
 
     if (x_filter_taps <= 6 && w != 4) {
@@ -546,9 +595,10 @@ static inline uint16x8_t highbd_convolve6_8_2d_v(const int16x8_t s0, const int16
     return vminq_u16(res, max);
 }
 
-static inline void highbd_convolve_2d_sr_vert_6tap_neon(const uint16_t* src_ptr, int src_stride, uint16_t* dst_ptr,
-                                                        int dst_stride, int w, int h, const int16_t* y_filter_ptr,
-                                                        int bd, const int offset) {
+static AOM_FORCE_INLINE void highbd_convolve_2d_sr_vert_6tap_neon(const uint16_t* src_ptr, int src_stride,
+                                                                  uint16_t* dst_ptr, int dst_stride, int w, int h,
+                                                                  const int16_t* y_filter_ptr, int bd,
+                                                                  const int offset) {
     const int16x8_t y_filter   = vld1q_s16(y_filter_ptr);
     const int32x4_t offset_s32 = vdupq_n_s32(offset);
 
@@ -670,9 +720,10 @@ static inline uint16x8_t highbd_convolve8_8_2d_v(const int16x8_t s0, const int16
     return vminq_u16(res, max);
 }
 
-static inline void highbd_convolve_2d_sr_vert_8tap_neon(const uint16_t* src_ptr, int src_stride, uint16_t* dst_ptr,
-                                                        int dst_stride, int w, int h, const int16_t* y_filter_ptr,
-                                                        int bd, const int offset) {
+static AOM_FORCE_INLINE void highbd_convolve_2d_sr_vert_8tap_neon(const uint16_t* src_ptr, int src_stride,
+                                                                  uint16_t* dst_ptr, int dst_stride, int w, int h,
+                                                                  const int16_t* y_filter_ptr, int bd,
+                                                                  const int offset) {
     const int16x8_t y_filter   = vld1q_s16(y_filter_ptr);
     const int32x4_t offset_s32 = vdupq_n_s32(offset);
 
@@ -1421,6 +1472,62 @@ void svt_aom_highbd_10_comp_avg_cached_neon(const uint16_t* cmp0, const uint16_t
         }
         cmp0 += cmp_stride;
         cmp1 += cmp_stride;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+
+// The three functions below split svt_av1_highbd_convolve_2d_sr_neon() and svt_av1_highbd_convolve_x_sr_neon() for
+// 10-bit blocks of width >= 8 with 8-tap-kernel filters, so that predictions which differ only in their vertical
+// position can share the horizontal pass.
+
+// Horizontal pass: `rows` rows of the 2D intermediate, the first one computed from the row at src.
+void svt_aom_highbd_10_sr_horiz_rows_neon(const uint16_t* src, int src_stride, uint16_t* im, int im_stride, int w,
+                                          int rows, const InterpFilterParams* filter_params_x, int subpel_x_qn) {
+    assert(w >= 8 && filter_params_x->taps == SUBPEL_TAPS && filter_params_x->interp_filter <= BILINEAR);
+    const int      x_filter_taps  = get_filter_tap(filter_params_x, subpel_x_qn);
+    const int      clamped_x_taps = x_filter_taps < 6 ? 6 : x_filter_taps;
+    const int      horiz_offset   = clamped_x_taps / 2 - 1;
+    const int16_t* x_filter_ptr   = av1_get_interp_filter_subpel_kernel(*filter_params_x, subpel_x_qn & SUBPEL_MASK);
+    highbd_10_convolve_2d_horiz_neon(
+        src - horiz_offset, src_stride, im, im_stride, w, rows, x_filter_ptr, x_filter_taps);
+}
+
+// Vertical pass of the 2D prediction. im is the intermediate row of the first output row; the filter reads up to
+// three rows above it and four rows below the last output row.
+void svt_aom_highbd_10_sr_vert_from_horiz_neon(const uint16_t* im, int im_stride, uint16_t* dst, int dst_stride, int w,
+                                               int h, const InterpFilterParams* filter_params_y, int subpel_y_qn) {
+    const int bd = 10;
+
+    const int y_filter_taps  = get_filter_tap(filter_params_y, subpel_y_qn);
+    const int clamped_y_taps = y_filter_taps < 6 ? 6 : y_filter_taps;
+    const int vert_offset    = clamped_y_taps / 2 - 1;
+    const int y_offset_bits  = bd + 2 * FILTER_BITS - ROUND0_BITS;
+
+    const int      y_offset     = (1 << (2 * FILTER_BITS - ROUND0_BITS - 1)) - (1 << (y_offset_bits - 1));
+    const int16_t* y_filter_ptr = av1_get_interp_filter_subpel_kernel(*filter_params_y, subpel_y_qn & SUBPEL_MASK);
+    im -= vert_offset * im_stride;
+    if (y_filter_taps <= 6) {
+        highbd_convolve_2d_sr_vert_6tap_neon(im, im_stride, dst, dst_stride, w, h, y_filter_ptr, bd, y_offset);
+    } else {
+        highbd_convolve_2d_sr_vert_8tap_neon(im, im_stride, dst, dst_stride, w, h, y_filter_ptr, bd, y_offset);
+    }
+}
+
+// Horizontal-only prediction from the intermediate. With S the horizontal filter sum, the intermediate is
+// 8192 + round(S / 8) and the horizontal-only prediction is clip(round(round(S / 8) / 16)).
+void svt_aom_highbd_10_sr_round_from_horiz_neon(const uint16_t* im, int im_stride, uint16_t* dst, int dst_stride, int w,
+                                                int h) {
+    const int16x8_t offset = vdupq_n_s16(1 << (10 + FILTER_BITS - 1 - ROUND0_BITS));
+    const int16x8_t max    = vdupq_n_s16(1023);
+    do {
+        int x = 0;
+        do {
+            const int16x8_t v = vsubq_s16(vreinterpretq_s16_u16(vld1q_u16(im + x)), offset);
+            const int16x8_t r = vrshrq_n_s16(v, FILTER_BITS - ROUND0_BITS);
+            vst1q_u16(dst + x, vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(r, vdupq_n_s16(0)), max)));
+            x += 8;
+        } while (x < w);
+        im += im_stride;
         dst += dst_stride;
     } while (--h != 0);
 }

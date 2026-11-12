@@ -2810,6 +2810,74 @@ void svt_aom_enc_make_inter_predictor(SequenceControlSet* scs, uint8_t* src_ptr,
     }
 }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Unscaled 10-bit luma prediction of a bsize x bsize block for the temporal-filter sub-pel search, bit-identical to
+// svt_aom_simple_luma_unipred(). The horizontal pass of each horizontal position is kept in hs and covers the rows
+// of every vertical position within `reach` (1/8 sample) of centre.y, which is how far the remaining refinement
+// rounds can move. Returns false when the position is not handled (no horizontal fraction, unsupported filter);
+// the caller then uses the regular predictor.
+bool svt_aom_tf_luma_pred_hshare(TfHShare* hs, uint32_t interp_filters, BlkStruct* blk_ptr, Mv mv, Mv centre,
+                                 int32_t reach, uint16_t pu_origin_x, uint16_t pu_origin_y, uint8_t bsize,
+                                 EbPictureBufferDesc* ref_pic, uint16_t* dst, int32_t dst_stride) {
+    const MacroBlockD* xd = blk_ptr->av1xd;
+
+    const Mv      mvq = clamp_mv_to_umv_border_sb(xd, mv, bsize, bsize, 0, 0);
+    const int32_t fx = mvq.x & SUBPEL_MASK, fy = mvq.y & SUBPEL_MASK;
+    if (!fx || bsize < 8 || bsize > 64) {
+        return false;
+    }
+    InterpFilterParams fpx, fpy;
+    av1_get_convolve_filter_params(interp_filters, &fpx, &fpy, bsize, bsize);
+    // Bilinear filters have a dedicated fused 2D kernel; splitting it through the general kernels would be slower.
+    if (fpx.taps != SUBPEL_TAPS || fpy.taps != SUBPEL_TAPS || fpx.interp_filter >= BILINEAR ||
+        fpy.interp_filter >= BILINEAR) {
+        return false;
+    }
+    const int32_t row = mvq.y >> SUBPEL_BITS; // integer row offset of this position
+
+    int c = -1;
+    for (int i = 0; i < TF_HSHARE_SLOTS; i++) {
+        if (hs->col[i].valid && hs->col[i].x == mvq.x && row - 3 >= hs->col[i].row0 &&
+            row + bsize + 4 <= hs->col[i].row0 + hs->col[i].rows) {
+            c = i;
+        }
+    }
+    if (c < 0) {
+        // Rows needed by every vertical position this search can still visit at this horizontal position. The
+        // extreme positions go through the same clamp as real ones, so no row is read that a regular prediction
+        // of some position could not read.
+        const Mv      lo = clamp_mv_to_umv_border_sb(xd, (Mv){{mv.x, (int16_t)(centre.y - reach)}}, bsize, bsize, 0, 0);
+        const Mv      hi = clamp_mv_to_umv_border_sb(xd, (Mv){{mv.x, (int16_t)(centre.y + reach)}}, bsize, bsize, 0, 0);
+        const int32_t row0 = (lo.y >> SUBPEL_BITS) - 3;
+        const int32_t rows = (hi.y >> SUBPEL_BITS) + bsize + 4 - row0;
+        if (rows > TF_HSHARE_MAX_ROWS || row - 3 < row0 || row + bsize + 4 > row0 + rows) {
+            return false;
+        }
+        c = 0;
+        for (int i = 1; i < TF_HSHARE_SLOTS; i++) {
+            if (!hs->col[i].valid || (hs->col[c].valid && hs->col[i].used < hs->col[c].used)) {
+                c = i;
+            }
+        }
+        const uint16_t* src = (const uint16_t*)ref_pic->y_buffer + (pu_origin_x + (mvq.x >> SUBPEL_BITS)) +
+            (pu_origin_y + row0) * ref_pic->y_stride;
+        svt_aom_highbd_10_sr_horiz_rows_neon(src, ref_pic->y_stride, hs->im[c], 64, bsize, rows, &fpx, fx);
+        hs->col[c].valid = true;
+        hs->col[c].x     = mvq.x;
+        hs->col[c].row0  = row0;
+        hs->col[c].rows  = rows;
+    }
+    hs->col[c].used    = ++hs->tick;
+    const uint16_t* im = hs->im[c] + (row - hs->col[c].row0) * 64;
+    if (fy) {
+        svt_aom_highbd_10_sr_vert_from_horiz_neon(im, 64, dst, dst_stride, bsize, bsize, &fpy, fy);
+    } else {
+        svt_aom_highbd_10_sr_round_from_horiz_neon(im, 64, dst, dst_stride, bsize, bsize);
+    }
+    return true;
+}
+#endif
+
 EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, const ScaleFactors* sf, uint32_t interp_filters,
                                         BlkStruct* blk_ptr, Mv mv, uint16_t pu_origin_x, uint16_t pu_origin_y,
                                         uint8_t bwidth, uint8_t bheight, EbPictureBufferDesc* ref_pic_list0,

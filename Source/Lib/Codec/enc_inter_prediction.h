@@ -32,6 +32,11 @@ struct calc_target_weighted_pred_ctxt {
     int            overlap;
 };
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+bool svt_aom_tf_luma_pred_hshare(TfHShare* hs, uint32_t interp_filters, BlkStruct* blk_ptr, Mv mv, Mv centre,
+                                 int32_t reach, uint16_t pu_origin_x, uint16_t pu_origin_y, uint8_t bsize,
+                                 EbPictureBufferDesc* ref_pic, uint16_t* dst, int32_t dst_stride);
+#endif
 EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, const ScaleFactors* sf, uint32_t interp_filters,
                                         BlkStruct* blk_ptr, Mv mv, uint16_t pu_origin_x, uint16_t pu_origin_y,
                                         uint8_t bwidth, uint8_t bheight, EbPictureBufferDesc* ref_pic_list0,

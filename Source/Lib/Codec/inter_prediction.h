@@ -184,6 +184,31 @@ void svt_aom_highbd_10_fullpel_avg_neon(const uint16_t* src0, int stride0, const
                                         uint16_t* dst, int dst_stride, int w, int h);
 void svt_aom_highbd_10_comp_avg_cached_neon(const uint16_t* cmp0, const uint16_t* cmp1, int cmp_stride, uint16_t* dst,
                                             int dst_stride, int w, int h);
+void svt_aom_highbd_10_sr_horiz_rows_neon(const uint16_t* src, int src_stride, uint16_t* im, int im_stride, int w,
+                                          int rows, const InterpFilterParams* filter_params_x, int subpel_x_qn);
+void svt_aom_highbd_10_sr_vert_from_horiz_neon(const uint16_t* im, int im_stride, uint16_t* dst, int dst_stride, int w,
+                                               int h, const InterpFilterParams* filter_params_y, int subpel_y_qn);
+void svt_aom_highbd_10_sr_round_from_horiz_neon(const uint16_t* im, int im_stride, uint16_t* dst, int dst_stride, int w,
+                                                int h);
+
+// Horizontal filter passes shared by the positions of one temporal-filter sub-pel search (one block, one
+// reference): positions at the same horizontal position differ only in their vertical pass.
+#define TF_HSHARE_SLOTS 4
+#define TF_HSHARE_MAX_ROWS (64 + 7 + 2)
+
+typedef struct TfHShare {
+    uint32_t tick;
+
+    struct {
+        bool     valid;
+        int32_t  x; // clamped horizontal position (1/16 sample)
+        int32_t  row0; // integer row (relative to the block origin) of the first intermediate row
+        int32_t  rows;
+        uint32_t used;
+    } col[TF_HSHARE_SLOTS];
+
+    DECLARE_ALIGNED(16, uint16_t, im[TF_HSHARE_SLOTS][TF_HSHARE_MAX_ROWS * 64]);
+} TfHShare;
 #endif
 
 #if (defined(ARCH_AARCH64) || defined(ARCH_X86_64)) && CONFIG_ENABLE_HIGH_BIT_DEPTH

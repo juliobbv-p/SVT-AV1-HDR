@@ -119,6 +119,10 @@ typedef struct {
     uint32_t     idx_y;
     // prepared source block for the luma distortion, or NULL
     const SrcVarCtx* sv;
+    // shared horizontal filter passes of the search in progress (NULL when not used), and how far (1/8 sample)
+    // the current and remaining refinement rounds can move from (mv_x, mv_y)
+    void*   hshare;
+    int32_t reach;
 } TF_SUBPEL_SEARCH_PARAMS;
 #ifdef __cplusplus
 }

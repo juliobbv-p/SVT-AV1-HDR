@@ -1469,21 +1469,41 @@ static void svt_check_position(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PicturePare
     mv.x = tf_sp_param->mv_x + tf_sp_param->xd;
     mv.y = tf_sp_param->mv_y + tf_sp_param->yd;
 
-    svt_aom_simple_luma_unipred(scs,
-                                &scs->sf_identity,
-                                tf_sp_param->interp_filters,
-                                blk_ptr,
-                                mv,
-                                tf_sp_param->pu_origin_x,
-                                tf_sp_param->pu_origin_y,
-                                tf_sp_param->bsize,
-                                tf_sp_param->bsize,
-                                pic_ptr_ref,
-                                prediction_ptr,
-                                tf_sp_param->local_origin_x,
-                                tf_sp_param->local_origin_y,
-                                (uint8_t)tf_sp_param->encoder_bit_depth,
-                                tf_sp_param->xd == 0 && tf_sp_param->yd == 0 ? tf_sp_param->subsampling_shift : 0);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // A horizontal pass is worth sharing when several positions of the round use the same horizontal position:
+    // always for the centre column, and for the side columns when the round also tests the diagonals.
+    if (tf_sp_param->hshare && (tf_sp_param->subpel_pel_mode < 2 || tf_sp_param->xd == 0) &&
+        svt_aom_tf_luma_pred_hshare((TfHShare*)tf_sp_param->hshare,
+                                    tf_sp_param->interp_filters,
+                                    blk_ptr,
+                                    mv,
+                                    (Mv){{tf_sp_param->mv_x, tf_sp_param->mv_y}},
+                                    tf_sp_param->reach,
+                                    tf_sp_param->pu_origin_x,
+                                    tf_sp_param->pu_origin_y,
+                                    (uint8_t)tf_sp_param->bsize,
+                                    pic_ptr_ref,
+                                    (uint16_t*)prediction_ptr->y_buffer + tf_sp_param->local_origin_x +
+                                        tf_sp_param->local_origin_y * prediction_ptr->y_stride,
+                                    prediction_ptr->y_stride)) {
+        // predicted through the shared horizontal pass
+    } else
+#endif
+        svt_aom_simple_luma_unipred(scs,
+                                    &scs->sf_identity,
+                                    tf_sp_param->interp_filters,
+                                    blk_ptr,
+                                    mv,
+                                    tf_sp_param->pu_origin_x,
+                                    tf_sp_param->pu_origin_y,
+                                    tf_sp_param->bsize,
+                                    tf_sp_param->bsize,
+                                    pic_ptr_ref,
+                                    prediction_ptr,
+                                    tf_sp_param->local_origin_x,
+                                    tf_sp_param->local_origin_y,
+                                    (uint8_t)tf_sp_param->encoder_bit_depth,
+                                    tf_sp_param->xd == 0 && tf_sp_param->yd == 0 ? tf_sp_param->subsampling_shift : 0);
 
     BlockSize block_size = BLOCK_64X64;
     switch (tf_sp_param->bsize) {
@@ -1570,6 +1590,22 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
         // cppcheck-suppress autoVariables ; reset to NULL before returning
         tf_sp_param->sv = &sv;
     }
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // 10-bit searches without row subsampling share horizontal filter passes between positions
+    TfHShare      hshare;
+    const int32_t reach_q = pcs->tf_ctrls.eight_pel_mode ? 1 : 0;
+    const int32_t reach_h = (pcs->tf_ctrls.quarter_pel_mode ? 2 : 0) + reach_q;
+    tf_sp_param->hshare   = NULL;
+    if (tf_sp_param->is_highbd && tf_sp_param->encoder_bit_depth == EB_TEN_BIT && !tf_sp_param->subsampling_shift &&
+        bs >= 8 && bs <= 64 && svt_aom_highbd_dual_pred_supported()) {
+        hshare.tick = 0;
+        for (int i = 0; i < TF_HSHARE_SLOTS; i++) {
+            hshare.col[i].valid = false;
+        }
+        tf_sp_param->hshare = &hshare;
+    }
+    tf_sp_param->reach = (pcs->tf_ctrls.half_pel_mode ? 4 : 0) + reach_h;
+#endif
     // Check centre position
     tf_sp_param->subpel_pel_mode = pcs->tf_ctrls.half_pel_mode;
     tf_sp_param->mv_x            = *best_mv_x;
@@ -1597,6 +1633,9 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
         tf_sp_param->subpel_pel_mode = pcs->tf_ctrls.half_pel_mode;
         tf_sp_param->mv_x            = *best_mv_x;
         tf_sp_param->mv_y            = *best_mv_y;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        tf_sp_param->reach = 4 + reach_h;
+#endif
         for (signed short i = -4; i <= 4; i = i + 4) {
             for (signed short j = -4; j <= 4; j = j + 4) {
                 if (i == 0 && j == 0) { // point already searched
@@ -1629,6 +1668,9 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
         tf_sp_param->subpel_pel_mode = pcs->tf_ctrls.quarter_pel_mode;
         tf_sp_param->mv_x            = *best_mv_x;
         tf_sp_param->mv_y            = *best_mv_y;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        tf_sp_param->reach = 2 + reach_q;
+#endif
         for (signed short i = -2; i <= 2; i = i + 2) {
             for (signed short j = -2; j <= 2; j = j + 2) {
                 if (i == 0 && j == 0) { // point already searched
@@ -1661,6 +1703,9 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
         tf_sp_param->subpel_pel_mode = pcs->tf_ctrls.eight_pel_mode;
         tf_sp_param->mv_x            = *best_mv_x;
         tf_sp_param->mv_y            = *best_mv_y;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        tf_sp_param->reach = 1;
+#endif
         for (signed short i = -1; i <= 1; i++) {
             for (signed short j = -1; j <= 1; j++) {
                 if (i == 0 && j == 0) { // point already searched
@@ -1688,6 +1733,9 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
         }
     }
     tf_sp_param->sv = NULL;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    tf_sp_param->hshare = NULL;
+#endif
 }
 
 static void tf_64x64_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_ctx, PictureParentControlSet* pcs_ref,
