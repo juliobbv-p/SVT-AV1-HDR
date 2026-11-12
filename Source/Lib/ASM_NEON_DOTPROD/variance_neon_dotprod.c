@@ -1062,3 +1062,75 @@ void svt_aom_variance_grid_neon_dotprod(const uint8_t* src, int src_stride, cons
         }
     }
 }
+
+// Variances of the w x h source block against the four half-pel bilinear predictions around the full-pel
+// position c: left (c - 1/2, .), right (c + 1/2, .), up (., c - 1/2), down (., c + 1/2), in that order. Each
+// equals svt_aom_sub_pixel_variance{w}x{h}() for that position (a half-pel bilinear sample is the rounded mean of
+// its two neighbours); the source row, its sum and the centre row are loaded once for the four of them.
+// w is 8, 16 or 32 (wider blocks are faster through the per-position kernels) and h at most 64.
+void svt_aom_sub_pixel_variance_cross_half_neon_dotprod(const uint8_t* c, int c_stride, const uint8_t* src,
+                                                        int src_stride, int w, int h, uint32_t var[4]) {
+    const uint8x16_t ones = vdupq_n_u8(1);
+
+    uint32x4_t sse[4], psum[4];
+
+    uint32x4_t ssum = vdupq_n_u32(0);
+    for (int k = 0; k < 4; k++) {
+        sse[k]  = vdupq_n_u32(0);
+        psum[k] = vdupq_n_u32(0);
+    }
+#define CROSS_HALF_ACCUM(k, a, b)                               \
+    do {                                                        \
+        const uint8x16_t pred = vrhaddq_u8(a, b);               \
+        const uint8x16_t d    = vabdq_u8(pred, s);              \
+        psum[k]               = vdotq_u32(psum[k], pred, ones); \
+        sse[k]                = vdotq_u32(sse[k], d, d);        \
+    } while (0)
+    if (w == 8) {
+        const uint8x8_t zero = vdup_n_u8(0);
+        for (int r = 0; r < h; r++) {
+            const uint8x16_t s  = vcombine_u8(vld1_u8(src), zero);
+            const uint8x16_t cc = vcombine_u8(vld1_u8(c), zero);
+            const uint8x16_t cl = vcombine_u8(vld1_u8(c - 1), zero);
+            const uint8x16_t cr = vcombine_u8(vld1_u8(c + 1), zero);
+            const uint8x16_t cu = vcombine_u8(vld1_u8(c - c_stride), zero);
+            const uint8x16_t cd = vcombine_u8(vld1_u8(c + c_stride), zero);
+
+            ssum = vdotq_u32(ssum, s, ones);
+            CROSS_HALF_ACCUM(0, cl, cc);
+            CROSS_HALF_ACCUM(1, cc, cr);
+            CROSS_HALF_ACCUM(2, cu, cc);
+            CROSS_HALF_ACCUM(3, cc, cd);
+            c += c_stride;
+            src += src_stride;
+        }
+    } else {
+        for (int r = 0; r < h; r++) {
+            for (int x = 0; x < w; x += 16) {
+                const uint8x16_t s  = vld1q_u8(src + x);
+                const uint8x16_t cc = vld1q_u8(c + x);
+                const uint8x16_t cl = vld1q_u8(c + x - 1);
+                const uint8x16_t cr = vld1q_u8(c + x + 1);
+                const uint8x16_t cu = vld1q_u8(c + x - c_stride);
+                const uint8x16_t cd = vld1q_u8(c + x + c_stride);
+
+                ssum = vdotq_u32(ssum, s, ones);
+                CROSS_HALF_ACCUM(0, cl, cc);
+                CROSS_HALF_ACCUM(1, cc, cr);
+                CROSS_HALF_ACCUM(2, cu, cc);
+                CROSS_HALF_ACCUM(3, cc, cd);
+            }
+            c += c_stride;
+            src += src_stride;
+        }
+    }
+#undef CROSS_HALF_ACCUM
+    const int     shift   = 31 - __builtin_clz((unsigned)(w * h));
+    const int32_t s_total = (int32_t)vaddvq_u32(ssum);
+    for (int k = 0; k < 4; k++) {
+        const uint32_t e   = vaddvq_u32(sse[k]);
+        const int64_t  sum = (int64_t)vaddvq_u32(psum[k]) - s_total;
+
+        var[k] = e - (uint32_t)((sum * sum) >> shift);
+    }
+}
