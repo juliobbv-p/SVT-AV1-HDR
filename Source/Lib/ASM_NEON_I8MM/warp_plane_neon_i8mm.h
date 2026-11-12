@@ -18,25 +18,30 @@
 
 DECLARE_ALIGNED(16, extern const uint8_t, svt_kTblIdx0_3[16]);
 
+// Sample windows of two neighbouring output pixels per vector: { p .. p + 7, p + 1 .. p + 8 } for p = 0, 2, 4, 6.
+DECLARE_ALIGNED(16, static const uint8_t, warp_pair_perm[4][16]) = {
+    {0, 1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7, 8},
+    {2, 3, 4, 5, 6, 7, 8, 9, 3, 4, 5, 6, 7, 8, 9, 10},
+    {4, 5, 6, 7, 8, 9, 10, 11, 5, 6, 7, 8, 9, 10, 11, 12},
+    {6, 7, 8, 9, 10, 11, 12, 13, 7, 8, 9, 10, 11, 12, 13, 14},
+};
+
+// The filters of output pixels n and n + 1, as bytes.
+static AOM_FORCE_INLINE int8x16_t warp_filter_pair(int offset, int stride, int n) {
+    return vcombine_s8(vld1_s8(svt_aom_warped_filter8[(offset + n * stride) >> WARPEDDIFF_PREC_BITS]),
+                       vld1_s8(svt_aom_warped_filter8[(offset + (n + 1) * stride) >> WARPEDDIFF_PREC_BITS]));
+}
+
 static AOM_FORCE_INLINE int16x8_t horizontal_filter_4x1_f4(const uint8x16_t in, int sx, int alpha) {
     // Only put the constant in every other lane to avoid double-counting when
     // performing the pairwise add later.
     const int32x4_t add_const = vreinterpretq_s32_u64(vdupq_n_u64(1 << (8 + FILTER_BITS - 1)));
 
-    // Loading the 4 filter taps
-    int16x8_t f[4];
-    load_filters_4(f, sx, alpha);
+    const int8x16_t f01_u8 = warp_filter_pair(sx, alpha, 0);
+    const int8x16_t f23_u8 = warp_filter_pair(sx, alpha, 2);
 
-    int8x16_t f01_u8 = vcombine_s8(vmovn_s16(f[0]), vmovn_s16(f[1]));
-    int8x16_t f23_u8 = vcombine_s8(vmovn_s16(f[2]), vmovn_s16(f[3]));
-
-    uint8x8_t in0 = vget_low_u8(in);
-    uint8x8_t in1 = vget_low_u8(vextq_u8(in, in, 1));
-    uint8x8_t in2 = vget_low_u8(vextq_u8(in, in, 2));
-    uint8x8_t in3 = vget_low_u8(vextq_u8(in, in, 3));
-
-    int32x4_t m01 = vusdotq_s32(add_const, vcombine_u8(in0, in1), f01_u8);
-    int32x4_t m23 = vusdotq_s32(add_const, vcombine_u8(in2, in3), f23_u8);
+    int32x4_t m01 = vusdotq_s32(add_const, vqtbl1q_u8(in, vld1q_u8(warp_pair_perm[0])), f01_u8);
+    int32x4_t m23 = vusdotq_s32(add_const, vqtbl1q_u8(in, vld1q_u8(warp_pair_perm[1])), f23_u8);
 
     int32x4_t m0123 = vpaddq_s32(m01, m23);
 
@@ -49,28 +54,15 @@ static AOM_FORCE_INLINE int16x8_t horizontal_filter_8x1_f8(const uint8x16_t in, 
     // performing the pairwise add later.
     const int32x4_t add_const = vreinterpretq_s32_u64(vdupq_n_u64(1 << (8 + FILTER_BITS - 1)));
 
-    // Loading the 8 filter taps
-    int16x8_t f[8];
-    load_filters_8(f, sx, alpha);
+    const int8x16_t f01_u8 = warp_filter_pair(sx, alpha, 0);
+    const int8x16_t f23_u8 = warp_filter_pair(sx, alpha, 2);
+    const int8x16_t f45_u8 = warp_filter_pair(sx, alpha, 4);
+    const int8x16_t f67_u8 = warp_filter_pair(sx, alpha, 6);
 
-    int8x16_t f01_u8 = vcombine_s8(vmovn_s16(f[0]), vmovn_s16(f[1]));
-    int8x16_t f23_u8 = vcombine_s8(vmovn_s16(f[2]), vmovn_s16(f[3]));
-    int8x16_t f45_u8 = vcombine_s8(vmovn_s16(f[4]), vmovn_s16(f[5]));
-    int8x16_t f67_u8 = vcombine_s8(vmovn_s16(f[6]), vmovn_s16(f[7]));
-
-    uint8x8_t in0 = vget_low_u8(in);
-    uint8x8_t in1 = vget_low_u8(vextq_u8(in, in, 1));
-    uint8x8_t in2 = vget_low_u8(vextq_u8(in, in, 2));
-    uint8x8_t in3 = vget_low_u8(vextq_u8(in, in, 3));
-    uint8x8_t in4 = vget_low_u8(vextq_u8(in, in, 4));
-    uint8x8_t in5 = vget_low_u8(vextq_u8(in, in, 5));
-    uint8x8_t in6 = vget_low_u8(vextq_u8(in, in, 6));
-    uint8x8_t in7 = vget_low_u8(vextq_u8(in, in, 7));
-
-    int32x4_t m01 = vusdotq_s32(add_const, vcombine_u8(in0, in1), f01_u8);
-    int32x4_t m23 = vusdotq_s32(add_const, vcombine_u8(in2, in3), f23_u8);
-    int32x4_t m45 = vusdotq_s32(add_const, vcombine_u8(in4, in5), f45_u8);
-    int32x4_t m67 = vusdotq_s32(add_const, vcombine_u8(in6, in7), f67_u8);
+    int32x4_t m01 = vusdotq_s32(add_const, vqtbl1q_u8(in, vld1q_u8(warp_pair_perm[0])), f01_u8);
+    int32x4_t m23 = vusdotq_s32(add_const, vqtbl1q_u8(in, vld1q_u8(warp_pair_perm[1])), f23_u8);
+    int32x4_t m45 = vusdotq_s32(add_const, vqtbl1q_u8(in, vld1q_u8(warp_pair_perm[2])), f45_u8);
+    int32x4_t m67 = vusdotq_s32(add_const, vqtbl1q_u8(in, vld1q_u8(warp_pair_perm[3])), f67_u8);
 
     int32x4_t m0123 = vpaddq_s32(m01, m23);
     int32x4_t m4567 = vpaddq_s32(m45, m67);

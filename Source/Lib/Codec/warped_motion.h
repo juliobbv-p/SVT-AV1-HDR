@@ -35,6 +35,7 @@ extern "C" {
 #define WARPEDDIFF_PREC_BITS (WARPEDMODEL_PREC_BITS - WARPEDPIXEL_PREC_BITS)
 
 extern const int16_t svt_aom_warped_filter[WARPEDPIXEL_PREC_SHIFTS * 3 + 1][8];
+extern const int8_t  svt_aom_warped_filter8[WARPEDPIXEL_PREC_SHIFTS * 3 + 1][8];
 
 EB_ALIGN(16)
 static const uint8_t warp_pad_left[14][16] = {
