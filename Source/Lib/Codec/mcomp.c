@@ -20,6 +20,8 @@
 #include "av1me.h"
 #include "aom_dsp_rtcd.h"
 #include "rd_cost.h"
+#include "filter.h"
+#include "inter_prediction.h"
 
 // =============================================================================
 //  Subpixel Motion Search: Translational
@@ -54,9 +56,136 @@ static INLINE const uint8_t* svt_get_buf_from_mv(const struct svt_buf_2d* buf, c
     return &buf->buf[offset];
 }
 
+#if defined(ARCH_AARCH64)
+// Horizontal passes of the upsampled prediction (svt_aom_upsampled_pred_neon) kept for the positions of one sub-pel
+// search. A position with a horizontal fraction filters rows of the reference horizontally into an 8-bit image and
+// then, when it also has a vertical fraction, filters that image vertically. The image only depends on the
+// horizontal position, so positions that share it (above/below each other) share the image; each column keeps the
+// rows computed so far and is extended when a position needs rows above or below them.
+#define SP_HSHARE_SLOTS 4
+#define SP_HSHARE_PAD 8 // rows a column can grow upwards from its first request
+#define SP_HSHARE_ROWS (64 + 8 + 2 * SP_HSHARE_PAD + 4)
+#define SP_HSHARE_STRIDE 64
+
+typedef struct SubpelHShare {
+    uint32_t tick;
+
+    struct {
+        bool     valid;
+        int      x; // horizontal position (1/8 sample)
+        int      row0; // integer row of the reference held by the first buffer row
+        int      lo, hi; // filled buffer rows [lo, hi)
+        uint32_t used;
+    } col[SP_HSHARE_SLOTS];
+
+    DECLARE_ALIGNED(16, uint8_t, buf[SP_HSHARE_SLOTS][SP_HSHARE_ROWS * SP_HSHARE_STRIDE]);
+} SubpelHShare;
+
+// The filter svt_aom_upsampled_pred_neon() uses for a sub-pel search type.
+static inline const InterpFilterParams* subpel_search_filter(int subpel_search) {
+    switch (subpel_search) {
+    case USE_2_TAPS:
+        return &av1_interp_filter_params_list[BILINEAR];
+    case USE_4_TAPS:
+        return &av1_interp_4tap[EIGHTTAP_REGULAR];
+    default:
+        assert(subpel_search == USE_8_TAPS);
+        return &av1_interp_filter_params_list[EIGHTTAP_REGULAR];
+    }
+}
+
+// Horizontally filtered rows [row - above, row + h + below) of the column at mv.x, row being the integer row of
+// mv; returns the buffer row of `row` (stride SP_HSHARE_STRIDE).
+static const uint8_t* subpel_hshare_rows(SubpelHShare* hs, const struct svt_buf_2d* ref, Mv mv, int w, int h,
+                                         const int16_t* kernel_x, int above, int below) {
+    const int row = mv.y >> 3;
+    const int s = row - above, e = row + h + below;
+
+    int c = -1;
+    for (int i = 0; i < SP_HSHARE_SLOTS; i++) {
+        if (hs->col[i].valid && hs->col[i].x == mv.x) {
+            c = i;
+        }
+    }
+    // The horizontal kernel works on groups of four rows, so up to three rows past a request are written.
+    if (c < 0 || s < hs->col[c].row0 || e > hs->col[c].row0 + SP_HSHARE_ROWS - 4) {
+        if (c < 0) {
+            c = 0;
+            for (int i = 1; i < SP_HSHARE_SLOTS; i++) {
+                if (!hs->col[i].valid || (hs->col[c].valid && hs->col[i].used < hs->col[c].used)) {
+                    c = i;
+                }
+            }
+        }
+        hs->col[c].valid = true;
+        hs->col[c].x     = mv.x;
+        hs->col[c].row0  = s - SP_HSHARE_PAD;
+        hs->col[c].lo = hs->col[c].hi = 0;
+    }
+    hs->col[c].used = ++hs->tick;
+
+    const int row0 = hs->col[c].row0;
+
+    uint8_t* const buf = hs->buf[c];
+
+    const uint8_t* const src = ref->buf + (mv.x >> 3);
+
+    const int stride = ref->stride;
+    if (hs->col[c].lo == hs->col[c].hi) {
+        svt_aom_convolve8_horiz(src + s * stride,
+                                stride,
+                                buf + (s - row0) * SP_HSHARE_STRIDE,
+                                SP_HSHARE_STRIDE,
+                                kernel_x,
+                                16,
+                                NULL,
+                                -1,
+                                w,
+                                e - s);
+        hs->col[c].lo = s - row0;
+        hs->col[c].hi = e - row0;
+    } else {
+        if (s - row0 < hs->col[c].lo) {
+            // rows written past the request are rows already held (recomputed to the same values)
+            svt_aom_convolve8_horiz(src + s * stride,
+                                    stride,
+                                    buf + (s - row0) * SP_HSHARE_STRIDE,
+                                    SP_HSHARE_STRIDE,
+                                    kernel_x,
+                                    16,
+                                    NULL,
+                                    -1,
+                                    w,
+                                    hs->col[c].lo - (s - row0));
+            hs->col[c].lo = s - row0;
+        }
+        if (e - row0 > hs->col[c].hi) {
+            // start on a group boundary that ends at the last requested row, so that no reference row below the
+            // request is read; the extra leading rows are rows already held
+            const int n     = (e - row0 - hs->col[c].hi + 3) & ~3;
+            const int first = AOMMAX(e - n, row0 + hs->col[c].lo);
+            svt_aom_convolve8_horiz(src + first * stride,
+                                    stride,
+                                    buf + (first - row0) * SP_HSHARE_STRIDE,
+                                    SP_HSHARE_STRIDE,
+                                    kernel_x,
+                                    16,
+                                    NULL,
+                                    -1,
+                                    w,
+                                    e - first);
+            hs->col[c].hi = e - row0;
+        }
+    }
+    return buf + (row - row0) * SP_HSHARE_STRIDE;
+}
+#endif
+
+#define SP_HSHARE_CHECK(v) (void)0
+
 // Calculates the variance of prediction residue.
-static int svt_upsampled_pref_error(MacroBlockD* xd, const struct AV1Common* const cm, Mv this_mv,
-                                    const SUBPEL_SEARCH_VAR_PARAMS* var_params) {
+static AOM_FORCE_INLINE int svt_upsampled_pref_error(MacroBlockD* xd, const struct AV1Common* const cm, Mv this_mv,
+                                                     const SUBPEL_SEARCH_VAR_PARAMS* var_params) {
     const AomVarianceFnPtr*  vfp                = var_params->vfp;
     const SUBPEL_SEARCH_TYPE subpel_search_type = var_params->subpel_search_type;
 
@@ -73,6 +202,39 @@ static int svt_upsampled_pref_error(MacroBlockD* xd, const struct AV1Common* con
     const int        subpel_y_q3 = svt_get_subpel_part(this_mv.y);
 
     unsigned int besterr;
+#if defined(ARCH_AARCH64)
+    if (var_params->hshare && subpel_x_q3) {
+        // Same arithmetic as svt_aom_upsampled_pred_neon(), with the horizontal pass taken from the shared columns.
+        const InterpFilterParams* filter   = subpel_search_filter(subpel_search_type);
+        const int16_t* const      kernel_x = av1_get_interp_filter_subpel_kernel(*filter, subpel_x_q3 << 1);
+
+        unsigned int sse;
+        if (!subpel_y_q3) {
+            const uint8_t* rows = subpel_hshare_rows(
+                (SubpelHShare*)var_params->hshare, ms_buffers->ref, this_mv, w, h, kernel_x, 0, 0);
+            besterr = vfp->vf(rows, SP_HSHARE_STRIDE, src, src_stride, &sse);
+            SP_HSHARE_CHECK(besterr);
+            return besterr;
+        }
+        DECLARE_ALIGNED(16, uint8_t, pred[64 * 64]);
+        const int16_t* const kernel_y = av1_get_interp_filter_subpel_kernel(*filter, subpel_y_q3 << 1);
+
+        const int above = (filter->taps >> 1) - 1;
+
+        const uint8_t* rows = subpel_hshare_rows((SubpelHShare*)var_params->hshare,
+                                                 ms_buffers->ref,
+                                                 this_mv,
+                                                 w,
+                                                 h,
+                                                 kernel_x,
+                                                 above,
+                                                 filter->taps - 1 - above);
+        svt_aom_convolve8_vert(rows, SP_HSHARE_STRIDE, pred, w, NULL, -1, kernel_y, 16, w, h);
+        besterr = vfp->vf(pred, w, src, src_stride, &sse);
+        SP_HSHARE_CHECK(besterr);
+        return besterr;
+    }
+#endif
     {
         DECLARE_ALIGNED(16, uint8_t, pred[MAX_SB_SQUARE]);
 
@@ -467,8 +629,33 @@ int svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, const s
     return besterr;
 }
 
+static int find_best_sub_pixel_tree(void* ictx, MacroBlockD* xd, const struct AV1Common* const cm,
+                                    SUBPEL_MOTION_SEARCH_PARAMS* ms_params, Mv start_mv, Mv* bestmv, BlockSize bsize);
+
 int svt_av1_find_best_sub_pixel_tree(void* ictx, MacroBlockD* xd, const struct AV1Common* const cm,
                                      SUBPEL_MOTION_SEARCH_PARAMS* ms_params, Mv start_mv, Mv* bestmv, BlockSize bsize) {
+    ms_params->var_params.hshare = NULL;
+#if defined(ARCH_AARCH64)
+    SubpelHShare hshare;
+
+    const SUBPEL_SEARCH_VAR_PARAMS* vp = &ms_params->var_params;
+    if (svt_aom_upsampled_pred == svt_aom_upsampled_pred_neon && vp->w >= 4 && vp->w <= 64 && vp->h >= 4 &&
+        vp->h <= 64) {
+        hshare.tick = 0;
+        for (int i = 0; i < SP_HSHARE_SLOTS; i++) {
+            hshare.col[i].valid = false;
+        }
+        ms_params->var_params.hshare = &hshare;
+    }
+#endif
+    const int ret = find_best_sub_pixel_tree(ictx, xd, cm, ms_params, start_mv, bestmv, bsize);
+
+    ms_params->var_params.hshare = NULL;
+    return ret;
+}
+
+static int find_best_sub_pixel_tree(void* ictx, MacroBlockD* xd, const struct AV1Common* const cm,
+                                    SUBPEL_MOTION_SEARCH_PARAMS* ms_params, Mv start_mv, Mv* bestmv, BlockSize bsize) {
     ModeDecisionContext* ctx            = (ModeDecisionContext*)ictx;
     const int            allow_hp       = ms_params->allow_hp;
     const int            forced_stop    = ms_params->forced_stop;

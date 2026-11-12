@@ -77,6 +77,9 @@ typedef struct {
     int w, h;
     int32_t
         bias_fp; // Bias towards fpel at the MD subpel-search: apply a penalty to the cost of fractional positions during the subpel-search each time we check against a full-pel MV
+    // Horizontal passes shared by the positions of the search in progress, or NULL. Only
+    // svt_av1_find_best_sub_pixel_tree() sets and reads it.
+    void* hshare;
 } SUBPEL_SEARCH_VAR_PARAMS;
 
 // This struct holds subpixel motion search parameters that should be constant
