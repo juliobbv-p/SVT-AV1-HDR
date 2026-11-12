@@ -1370,14 +1370,15 @@ static AOM_FORCE_INLINE uint16x4_t highbd_dr_z1_apply_shift_x4(uint16x4_t a0, ui
     // The C implementation of the z1 predictor uses (32 - shift) and a right
     // shift by 5, however we instead double shift to avoid an unnecessary right
     // shift by 1.
-    uint32x4_t res = vmull_n_u16(a1, shift);
-    res            = vmlal_n_u16(res, a0, 64 - shift);
-    return vrshrn_n_u32(res, 6);
+    // round((a0 * (64 - shift) + a1 * shift) / 64) = a0 + round((a1 - a0) * shift / 64), the last term being a
+    // rounding doubling multiply-high by shift << 9 (shift <= 62, |a1 - a0| < 2^15: no saturation).
+    const int16x4_t d = vreinterpret_s16_u16(vsub_u16(a1, a0));
+    return vreinterpret_u16_s16(vadd_s16(vreinterpret_s16_u16(a0), vqrdmulh_n_s16(d, (int16_t)(shift << 9))));
 }
 
 static AOM_FORCE_INLINE uint16x8_t highbd_dr_z1_apply_shift_x8(uint16x8_t a0, uint16x8_t a1, int shift) {
-    return vcombine_u16(highbd_dr_z1_apply_shift_x4(vget_low_u16(a0), vget_low_u16(a1), shift),
-                        highbd_dr_z1_apply_shift_x4(vget_high_u16(a0), vget_high_u16(a1), shift));
+    const int16x8_t d = vreinterpretq_s16_u16(vsubq_u16(a1, a0));
+    return vreinterpretq_u16_s16(vaddq_s16(vreinterpretq_s16_u16(a0), vqrdmulhq_n_s16(d, (int16_t)(shift << 9))));
 }
 
 // clang-format off
@@ -1438,7 +1439,15 @@ static inline void highbd_dr_prediction_z1_upsample0_neon(uint16_t* dst, ptrdiff
             vst1_u16(dst, res);
         } else {
             int c = 0;
-            do {
+            // Vectors that lie entirely before the last edge sample (base + c + 8 < max_base_x) need no edge
+            // handling; base < max_base_x here, so the count below is not negative.
+            const int plain_end = AOMMIN(bw, (max_base_x - base - 1) & ~7);
+            for (; c < plain_end; c += 8) {
+                const uint16x8_t a0 = vld1q_u16(above + base + c);
+                const uint16x8_t a1 = vld1q_u16(above + base + c + 1);
+                vst1q_u16(dst + c, highbd_dr_z1_apply_shift_x8(a0, a1, shift));
+            }
+            for (; c < bw; c += 8) {
                 uint16x8_t a0;
                 uint16x8_t a1;
                 if (base + c >= max_base_x) {
@@ -1459,8 +1468,7 @@ static inline void highbd_dr_prediction_z1_upsample0_neon(uint16_t* dst, ptrdiff
                 }
 
                 vst1q_u16(dst + c, highbd_dr_z1_apply_shift_x8(a0, a1, shift));
-                c += 8;
-            } while (c < bw);
+            }
         }
 
         dst += stride;
@@ -1787,16 +1795,15 @@ static AOM_FORCE_INLINE uint16x8_t highbd_dr_prediction_z2_merge_x8(uint16x8_t o
 
 static AOM_FORCE_INLINE uint16x4_t highbd_dr_prediction_z2_apply_shift_x4(uint16x4_t a0, uint16x4_t a1,
                                                                           int16x4_t shift) {
-    uint32x4_t res = vmull_u16(a1, vreinterpret_u16_s16(shift));
-    res            = vmlal_u16(res, a0, vsub_u16(vdup_n_u16(32), vreinterpret_u16_s16(shift)));
-    return vrshrn_n_u32(res, 5);
+    // round((a0 * (32 - shift) + a1 * shift) / 32) = a0 + round((a1 - a0) * shift / 32); see the zone-1 helper.
+    const int16x4_t d = vreinterpret_s16_u16(vsub_u16(a1, a0));
+    return vreinterpret_u16_s16(vadd_s16(vreinterpret_s16_u16(a0), vqrdmulh_s16(d, vshl_n_s16(shift, 10))));
 }
 
 static AOM_FORCE_INLINE uint16x8_t highbd_dr_prediction_z2_apply_shift_x8(uint16x8_t a0, uint16x8_t a1,
                                                                           int16x8_t shift) {
-    return vcombine_u16(
-        highbd_dr_prediction_z2_apply_shift_x4(vget_low_u16(a0), vget_low_u16(a1), vget_low_s16(shift)),
-        highbd_dr_prediction_z2_apply_shift_x4(vget_high_u16(a0), vget_high_u16(a1), vget_high_s16(shift)));
+    const int16x8_t d = vreinterpretq_s16_u16(vsubq_u16(a1, a0));
+    return vreinterpretq_u16_s16(vaddq_s16(vreinterpretq_s16_u16(a0), vqrdmulhq_s16(d, vshlq_n_s16(shift, 10))));
 }
 
 static AOM_FORCE_INLINE uint16x4_t highbd_dr_prediction_z2_step_x4(const uint16_t* above, const uint16x4_t above0,
@@ -2393,22 +2400,24 @@ void svt_av1_highbd_dr_prediction_z2_neon(uint16_t* dst, ptrdiff_t stride, int b
 // Z3
 
 // Both the lane to the use and the shift amount must be immediates.
-#define HIGHBD_DR_PREDICTOR_Z3_STEP_X4(out, iota, base, in0, in1, s0, s1, lane, shift)                     \
-    do {                                                                                                   \
-        uint32x4_t val       = vmull_lane_u16((in0), (s0), (lane));                                        \
-        val                  = vmlal_lane_u16(val, (in1), (s1), (lane));                                   \
-        const uint16x4_t cmp = vadd_u16((iota), vdup_n_u16(base));                                         \
-        const uint16x4_t res = vrshrn_n_u32(val, (shift));                                                 \
-        *(out)               = vbsl_u16(vclt_u16(cmp, vdup_n_u16(max_base_y)), res, vdup_n_u16(left_max)); \
+#define HIGHBD_DR_PREDICTOR_Z3_STEP_X4(out, iota, base, in0, in1, s0, s1, lane, shift)             \
+    do {                                                                                           \
+        /* s0 + s1 == 1 << shift: in0 + round((in1 - in0) * s1 >> shift), see the zone-1 helper */ \
+        (void)(s0);                                                                                \
+        const int16x4_t  dif = vreinterpret_s16_u16(vsub_u16((in1), (in0)));                       \
+        const int16x4_t  mul = vshl_n_s16(vreinterpret_s16_u16(s1), 15 - (shift));                 \
+        const uint16x4_t cmp = vadd_u16((iota), vdup_n_u16(base));                                 \
+        const uint16x4_t res = vreinterpret_u16_s16(                                               \
+            vadd_s16(vreinterpret_s16_u16(in0), vqrdmulh_lane_s16(dif, mul, (lane))));             \
+        *(out) = vbsl_u16(vclt_u16(cmp, vdup_n_u16(max_base_y)), res, vdup_n_u16(left_max));       \
     } while (0)
 
-#define HIGHBD_DR_PREDICTOR_Z3_STEP_X8(out, iota, base, in0, in1, s0, s1, lane, shift)                  \
-    do {                                                                                                \
-        uint32x4_t val_lo = vmull_lane_u16(vget_low_u16(in0), (s0), (lane));                            \
-        val_lo            = vmlal_lane_u16(val_lo, vget_low_u16(in1), (s1), (lane));                    \
-        uint32x4_t val_hi = vmull_lane_u16(vget_high_u16(in0), (s0), (lane));                           \
-        val_hi            = vmlal_lane_u16(val_hi, vget_high_u16(in1), (s1), (lane));                   \
-        *(out)            = vcombine_u16(vrshrn_n_u32(val_lo, (shift)), vrshrn_n_u32(val_hi, (shift))); \
+#define HIGHBD_DR_PREDICTOR_Z3_STEP_X8(out, iota, base, in0, in1, s0, s1, lane, shift)                               \
+    do {                                                                                                             \
+        (void)(s0);                                                                                                  \
+        const int16x8_t dif = vreinterpretq_s16_u16(vsubq_u16((in1), (in0)));                                        \
+        const int16x4_t mul = vshl_n_s16(vreinterpret_s16_u16(s1), 15 - (shift));                                    \
+        *(out) = vreinterpretq_u16_s16(vaddq_s16(vreinterpretq_s16_u16(in0), vqrdmulhq_lane_s16(dif, mul, (lane)))); \
     } while (0)
 
 static inline uint16x8x2_t z3_load_left_neon(const uint16_t* left0, int ofs, int max_ofs) {

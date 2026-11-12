@@ -67,46 +67,62 @@ static inline void highbd_variance_4xh_neon(const uint16_t* src_ptr, int src_str
     *sse = vaddvq_s32(sse_s32);
 }
 
+// One 8-sample vector: its differences go to one 16-bit sum and two squared-error chains.
+#define HBD_VAR_STEP8(sp, rp, sum, e0, e1)                                                   \
+    do {                                                                                     \
+        const int16x8_t d_ = vreinterpretq_s16_u16(vsubq_u16(vld1q_u16(sp), vld1q_u16(rp))); \
+        sum                = vaddq_s16(sum, d_);                                             \
+        e0                 = vmlal_s16(e0, vget_low_s16(d_), vget_low_s16(d_));              \
+        e1                 = vmlal_high_s16(e1, d_, d_);                                     \
+    } while (0)
+
+// Widths 8 and up (heights a multiple of 4 for width 8 and of 2 for width 16). Every step takes four 8-sample
+// vectors - 32 samples of a row, two rows of a 16-wide block or four rows of an 8-wide one - each with its own
+// sum and its own pair of squared-error chains, so that the multiply-accumulate latency of a chain is spread over
+// four vectors instead of two.
 static inline void highbd_variance_large_neon(const uint16_t* src_ptr, int src_stride, const uint16_t* ref_ptr,
                                               int ref_stride, int w, int h, uint64_t* sse, int64_t* sum) {
-    int32x4_t sum_s32    = vdupq_n_s32(0);
-    int32x4_t sse_s32[4] = {vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0)};
+    int32x4_t sum_s32 = vdupq_n_s32(0);
+    int32x4_t e0 = vdupq_n_s32(0), e1 = e0, e2 = e0, e3 = e0, e4 = e0, e5 = e0, e6 = e0, e7 = e0;
+    // offsets of the four vectors of a step and the rows a step covers
+    const int rows_per_step = w == 8 ? 4 : w == 16 ? 2 : 1;
+    const int so1 = w == 8 ? src_stride : 8, so2 = w == 8 ? 2 * src_stride : w == 16 ? src_stride : 16;
+    const int so3 = w == 8 ? 3 * src_stride : w == 16 ? src_stride + 8 : 24;
+    const int ro1 = w == 8 ? ref_stride : 8, ro2 = w == 8 ? 2 * ref_stride : w == 16 ? ref_stride : 16;
+    const int ro3   = w == 8 ? 3 * ref_stride : w == 16 ? ref_stride + 8 : 24;
+    const int row_w = w < 32 ? 32 : w; // samples of a row handled by the inner loop, in steps of 32
+    assert(h % rows_per_step == 0);
 
-    // Each signed 16-bit sum lane receives at most 32 differences:
-    // 32 * 1023 = 32736. Widen at that boundary, not once per vector.
-    const int rows_per_chunk = 512 / w;
+    // Each signed 16-bit sum lane receives at most 32 differences between widenings: 32 * 1023 = 32736.
+    const int steps_per_row  = row_w / 32;
+    const int rows_per_chunk = (32 / steps_per_row) * rows_per_step;
     for (int row = 0; row < h; row += rows_per_chunk) {
-        int16x8_t sum0 = vdupq_n_s16(0);
-        int16x8_t sum1 = vdupq_n_s16(0);
+        int16x8_t sum0 = vdupq_n_s16(0), sum1 = sum0, sum2 = sum0, sum3 = sum0;
         const int rows = AOMMIN(h - row, rows_per_chunk);
-        for (int i = 0; i < rows; i += w == 8 ? 2 : 1) {
-            for (int j = 0; j < w; j += 16) {
-                // For width eight, pair two rows without reading their padding.
-                const int       src_next = w == 8 ? src_stride : 8;
-                const int       ref_next = w == 8 ? ref_stride : 8;
-                const int16x8_t d0 = vreinterpretq_s16_u16(vsubq_u16(vld1q_u16(src_ptr + j), vld1q_u16(ref_ptr + j)));
-                const int16x8_t d1 = vreinterpretq_s16_u16(
-                    vsubq_u16(vld1q_u16(src_ptr + j + src_next), vld1q_u16(ref_ptr + j + ref_next)));
-                sum0 = vaddq_s16(sum0, d0);
-                sum1 = vaddq_s16(sum1, d1);
-                // Independent multiply-accumulate chains hide multiply latency.
-                sse_s32[0] = vmlal_s16(sse_s32[0], vget_low_s16(d0), vget_low_s16(d0));
-                sse_s32[1] = vmlal_high_s16(sse_s32[1], d0, d0);
-                sse_s32[2] = vmlal_s16(sse_s32[2], vget_low_s16(d1), vget_low_s16(d1));
-                sse_s32[3] = vmlal_high_s16(sse_s32[3], d1, d1);
+        for (int i = 0; i < rows; i += rows_per_step) {
+            for (int j = 0; j < row_w; j += 32) {
+                HBD_VAR_STEP8(src_ptr + j, ref_ptr + j, sum0, e0, e1);
+                HBD_VAR_STEP8(src_ptr + j + so1, ref_ptr + j + ro1, sum1, e2, e3);
+                HBD_VAR_STEP8(src_ptr + j + so2, ref_ptr + j + ro2, sum2, e4, e5);
+                HBD_VAR_STEP8(src_ptr + j + so3, ref_ptr + j + ro3, sum3, e6, e7);
             }
-            src_ptr += (w == 8 ? 2 : 1) * src_stride;
-            ref_ptr += (w == 8 ? 2 : 1) * ref_stride;
+            src_ptr += rows_per_step * src_stride;
+            ref_ptr += rows_per_step * ref_stride;
         }
         sum_s32 = vpadalq_s16(sum_s32, sum0);
         sum_s32 = vpadalq_s16(sum_s32, sum1);
+        sum_s32 = vpadalq_s16(sum_s32, sum2);
+        sum_s32 = vpadalq_s16(sum_s32, sum3);
     }
 
     *sum = vaddvq_s32(sum_s32);
-    // Even at 128x128 each unsigned lane holds at most 4096 * 1023^2,
-    // below UINT32_MAX. Widen before the horizontal reduction.
-    *sse = vaddlvq_u32(
-        vreinterpretq_u32_s32(vaddq_s32(vaddq_s32(sse_s32[0], sse_s32[1]), vaddq_s32(sse_s32[2], sse_s32[3]))));
+    // Even at 128x128 each unsigned lane holds at most 2048 * 1023^2, below UINT32_MAX; the eight chains are
+    // widened before they are added together.
+    const uint64x2_t t0 = vpaddlq_u32(vreinterpretq_u32_s32(vaddq_s32(e0, e1)));
+    const uint64x2_t t1 = vpaddlq_u32(vreinterpretq_u32_s32(vaddq_s32(e2, e3)));
+    const uint64x2_t t2 = vpaddlq_u32(vreinterpretq_u32_s32(vaddq_s32(e4, e5)));
+    const uint64x2_t t3 = vpaddlq_u32(vreinterpretq_u32_s32(vaddq_s32(e6, e7)));
+    *sse                = vaddvq_u64(vaddq_u64(vaddq_u64(t0, t1), vaddq_u64(t2, t3)));
 }
 
 static inline void highbd_variance_small_neon(const uint16_t* src_ptr, int src_stride, const uint16_t* ref_ptr,
