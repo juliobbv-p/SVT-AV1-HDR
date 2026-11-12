@@ -32,6 +32,21 @@ static AOM_FORCE_INLINE int residual_fits_255(const int16_t* input, uint32_t str
     const uint16x8_t all = vorrq_u16(vorrq_u16(bits[0], bits[1]), vorrq_u16(bits[2], bits[3]));
     return vmaxvq_u16(all) <= 255;
 }
+
+// Rectangular variant (width a multiple of 8). The 8-bit kernels are exact for every residual of an 8-bit
+// encode, i.e. |residual| <= 255, for the sizes that use this check; the transform itself does not depend on
+// the bit depth.
+static AOM_FORCE_INLINE int residual_rect_fits(const int16_t* input, uint32_t stride, unsigned w, unsigned h,
+                                               unsigned limit) {
+    uint16x8_t bits = vdupq_n_u16(0);
+    for (unsigned y = 0; y < h; ++y) {
+        for (unsigned x = 0; x < w; x += 8) {
+            bits = vorrq_u16(bits, vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(input + y * stride + x))));
+        }
+    }
+    // OR keeps every set bit, so compare against the largest all-ones mask not exceeding the limit.
+    return vmaxvq_u16(bits) <= limit;
+}
 #endif
 
 // Constants are stored in pairs, where symmetrical constants in the
@@ -913,6 +928,12 @@ void svt_av1_fwd_txfm2d_8x8_neon(int16_t* input, int32_t* output, uint32_t strid
         svt_lbd_fwd_txfm2d_8x8_neon(input, output, stride, tx_type);
         return;
     }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 && residual_rect_fits(input, stride, 8, 8, 255)) {
+        svt_lbd_fwd_txfm2d_8x8_neon(input, output, stride, tx_type);
+        return;
+    }
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 
     if (bd == 10 && tx_type != IDTX) {
@@ -2220,6 +2241,12 @@ void svt_av1_fwd_txfm2d_8x16_neon(int16_t* input, int32_t* coeff, uint32_t strid
         svt_lbd_fwd_txfm2d_8x16_neon(input, coeff, stride, tx_type);
         return;
     }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 && residual_rect_fits(input, stride, 8, 16, 255)) {
+        svt_lbd_fwd_txfm2d_8x16_neon(input, coeff, stride, tx_type);
+        return;
+    }
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     (void)bd;
     const fwd_transform_1d_col_many_neon col_txfm = col_highbd_txfm16_xn_arr[tx_type];
@@ -2541,6 +2568,14 @@ void svt_av1_fwd_txfm2d_8x32_neon(int16_t* input, int32_t* coeff, uint32_t strid
         svt_lbd_fwd_txfm2d_8x32_neon(input, coeff, stride, tx_type);
         return;
     }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    // The 8-bit 8x32 kernel saturates its 32-point column DC path from |residual| = 182 (flat blocks), so it
+    // gets a tighter bound than the other sizes.
+    if (bd == 10 && residual_rect_fits(input, stride, 8, 32, 127)) {
+        svt_lbd_fwd_txfm2d_8x32_neon(input, coeff, stride, tx_type);
+        return;
+    }
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     (void)bd;
     const fwd_transform_1d_col_many_neon col_txfm = col_highbd_txfm32_xn_arr[tx_type];
@@ -2693,6 +2728,12 @@ void svt_av1_fwd_txfm2d_16x8_neon(int16_t* input, int32_t* coeff, uint32_t strid
         svt_lbd_fwd_txfm2d_16x8_neon(input, coeff, stride, tx_type);
         return;
     }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 && residual_rect_fits(input, stride, 16, 8, 255)) {
+        svt_lbd_fwd_txfm2d_16x8_neon(input, coeff, stride, tx_type);
+        return;
+    }
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     (void)bd;
     const fwd_transform_1d_col_many_neon col_txfm = col_highbd_txfm8_xn_arr[tx_type];
@@ -2739,6 +2780,12 @@ void svt_av1_fwd_txfm2d_16x32_neon(int16_t* input, int32_t* coeff, uint32_t stri
         svt_lbd_fwd_txfm2d_16x32_neon(input, coeff, stride, tx_type);
         return;
     }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 && residual_rect_fits(input, stride, 16, 32, 255)) {
+        svt_lbd_fwd_txfm2d_16x32_neon(input, coeff, stride, tx_type);
+        return;
+    }
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     (void)bd;
     const fwd_transform_1d_col_many_neon col_txfm = col_highbd_txfm32_xn_arr[tx_type];
@@ -3373,6 +3420,12 @@ void svt_av1_fwd_txfm2d_32x8_neon(int16_t* input, int32_t* output, uint32_t stri
         svt_lbd_fwd_txfm2d_32x8_neon(input, output, stride, tx_type);
         return;
     }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 && residual_rect_fits(input, stride, 32, 8, 255)) {
+        svt_lbd_fwd_txfm2d_32x8_neon(input, output, stride, tx_type);
+        return;
+    }
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     (void)bd;
     const fwd_transform_1d_col_many_neon col_txfm = col_highbd_txfm8_xn_arr[tx_type];
@@ -3429,6 +3482,12 @@ void svt_av1_fwd_txfm2d_32x16_neon(int16_t* input, int32_t* output, uint32_t str
         svt_lbd_fwd_txfm2d_32x16_neon(input, output, stride, tx_type);
         return;
     }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    if (bd == 10 && residual_rect_fits(input, stride, 32, 16, 255)) {
+        svt_lbd_fwd_txfm2d_32x16_neon(input, output, stride, tx_type);
+        return;
+    }
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     (void)bd;
     const fwd_transform_1d_col_many_neon col_txfm = col_highbd_txfm16_xn_arr[tx_type];
