@@ -789,6 +789,224 @@ static void load_intra_edge(ModeDecisionContext* ctx, PictureControlSet* pcs, Tx
     ec->dr_count = 0;
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// 16-bit form of prepare_dr_edges(): the edge preparation of build_intra_predictors_high() for a directional mode.
+// Fills above_row/left_col (above_data + 16, left_data + 16), applies the edge filters and upsampling, returns the
+// upsample flags.
+static void prepare_dr_edges_high(const uint16_t* above_ref, const uint16_t* left_ref, uint16_t* above_data,
+                                  uint16_t* left_data, int32_t p_angle, int32_t txwpx, int32_t txhpx, int32_t filt_type,
+                                  int32_t disable_edge_filter, int32_t n_top_px, int32_t n_topright_px,
+                                  int32_t n_left_px, int32_t n_bottomleft_px, int32_t bd, int32_t* upsample_above,
+                                  int32_t* upsample_left) {
+    uint16_t* const above_row   = above_data + 16;
+    uint16_t* const left_col    = left_data + 16;
+    const int32_t   need_above  = p_angle < 180;
+    const int32_t   need_left   = p_angle > 90;
+    const int32_t   need_right  = p_angle < 90;
+    const int32_t   need_bottom = p_angle > 180;
+
+    const int32_t base = 128 << (bd - 8);
+    memset(left_data, 0x80, (MAX_TX_SIZE * 2 + 32) * sizeof(*left_data));
+    memset(above_data, 0x80, (MAX_TX_SIZE * 2 + 32) * sizeof(*above_data));
+    if (need_left) {
+        const int32_t num_left_pixels_needed = txhpx + (need_bottom ? txwpx : 0);
+        if (n_left_px > 0) {
+            int32_t i = 0;
+            for (; i < n_left_px; i++) {
+                left_col[i] = left_ref[i];
+            }
+            if (need_bottom && n_bottomleft_px > 0) {
+                for (; i < txhpx + n_bottomleft_px; i++) {
+                    left_col[i] = left_ref[i];
+                }
+            }
+            if (i < num_left_pixels_needed) {
+                svt_aom_memset16(&left_col[i], left_col[i - 1], num_left_pixels_needed - i);
+            }
+        } else {
+            svt_aom_memset16(left_col, n_top_px > 0 ? above_ref[0] : base + 1, num_left_pixels_needed);
+        }
+    }
+    if (need_above) {
+        const int32_t num_top_pixels_needed = txwpx + (need_right ? txhpx : 0);
+        if (n_top_px > 0) {
+            svt_memcpy(above_row, above_ref, n_top_px * sizeof(above_ref[0]));
+            int32_t i = n_top_px;
+            if (need_right && n_topright_px > 0) {
+                svt_memcpy(above_row + txwpx, above_ref + txwpx, n_topright_px * sizeof(above_ref[0]));
+                i += n_topright_px;
+            }
+            if (i < num_top_pixels_needed) {
+                svt_aom_memset16(&above_row[i], above_row[i - 1], num_top_pixels_needed - i);
+            }
+        } else {
+            svt_aom_memset16(above_row, n_left_px > 0 ? left_ref[0] : base - 1, num_top_pixels_needed);
+        }
+    }
+    if (n_top_px > 0 && n_left_px > 0) {
+        above_row[-1] = above_ref[-1];
+    } else if (n_top_px > 0) {
+        above_row[-1] = above_ref[0];
+    } else if (n_left_px > 0) {
+        above_row[-1] = left_ref[0];
+    } else {
+        above_row[-1] = (uint16_t)base;
+    }
+    left_col[-1]    = above_row[-1];
+    *upsample_above = 0;
+    *upsample_left  = 0;
+    if (!disable_edge_filter) {
+        if (p_angle != 90 && p_angle != 180) {
+            if (need_above && need_left && (txwpx + txhpx >= 24)) {
+                filter_intra_edge_corner_high(above_row, left_col);
+            }
+            if (need_above && n_top_px > 0) {
+                const int32_t strength = svt_aom_intra_edge_filter_strength(txwpx, txhpx, p_angle - 90, filt_type);
+                svt_av1_filter_intra_edge_high(above_row - 1, n_top_px + 1 + (need_right ? txhpx : 0), strength);
+            }
+            if (need_left && n_left_px > 0) {
+                const int32_t strength = svt_aom_intra_edge_filter_strength(txhpx, txwpx, p_angle - 180, filt_type);
+                svt_av1_filter_intra_edge_high(left_col - 1, n_left_px + 1 + (need_bottom ? txwpx : 0), strength);
+            }
+        }
+        *upsample_above = svt_aom_use_intra_edge_upsample(txwpx, txhpx, p_angle - 90, filt_type);
+        if (need_above && *upsample_above) {
+            svt_av1_upsample_intra_edge_high_c(above_row, txwpx + (need_right ? txhpx : 0), bd);
+        }
+        *upsample_left = svt_aom_use_intra_edge_upsample(txhpx, txwpx, p_angle - 180, filt_type);
+        if (need_left && *upsample_left) {
+            svt_av1_upsample_intra_edge_high_c(left_col, txhpx + (need_bottom ? txwpx : 0), bd);
+        }
+    }
+}
+
+// 16-bit form of build_dr_predictor_cached().
+static void build_dr_predictor_cached_high(const MacroBlockD* xd, IntraEdgeCache16* ec, uint16_t* dst,
+                                           int32_t dst_stride, PredictionMode mode, int32_t angle_delta,
+                                           int32_t disable_edge_filter, int32_t bd) {
+    const TxSize    tx_size    = ec->tx_size;
+    const int32_t   txwpx      = tx_size_wide[tx_size];
+    const int32_t   txhpx      = tx_size_high[tx_size];
+    const int32_t   p_angle    = mode_to_angle_map[mode] + angle_delta * ANGLE_STEP;
+    const int32_t   need_above = p_angle < 180;
+    const int32_t   need_left  = p_angle > 90;
+    const uint16_t* above_ref  = ec->top + 1;
+    const uint16_t* left_ref   = ec->left + 1;
+    if ((!need_above && ec->n_left_px == 0) || (!need_left && ec->n_top_px == 0)) {
+        const int32_t base = 128 << (bd - 8);
+        const int32_t val  = need_left ? (ec->n_top_px > 0 ? above_ref[0] : base + 1)
+                                       : (ec->n_left_px > 0 ? left_ref[0] : base - 1);
+        for (int32_t i = 0; i < txhpx; ++i) {
+            svt_aom_memset16(dst, val, txwpx);
+            dst += dst_stride;
+        }
+        return;
+    }
+    const int32_t filt_type = get_filt_type(xd, PLANE_Y);
+
+    int32_t key = need_above | (need_left << 1) | ((p_angle < 90) << 2) | ((p_angle > 180) << 3);
+    if (!disable_edge_filter) {
+        const bool filt = p_angle != 90 && p_angle != 180;
+        const int  sa   = filt && need_above && ec->n_top_px > 0
+               ? svt_aom_intra_edge_filter_strength(txwpx, txhpx, p_angle - 90, filt_type)
+               : 0;
+        const int  sl   = filt && need_left && ec->n_left_px > 0
+               ? svt_aom_intra_edge_filter_strength(txhpx, txwpx, p_angle - 180, filt_type)
+               : 0;
+        const int  ua   = need_above && svt_aom_use_intra_edge_upsample(txwpx, txhpx, p_angle - 90, filt_type);
+        const int  ul   = need_left && svt_aom_use_intra_edge_upsample(txhpx, txwpx, p_angle - 180, filt_type);
+        key |= (filt << 4) | (sa << 5) | (sl << 8) | (ua << 11) | (ul << 12);
+    }
+    DrEdgeSlot16* slot = NULL;
+    for (int i = 0; i < ec->dr_count; i++) {
+        if (ec->dr[i].key == key) {
+            slot = &ec->dr[i];
+            break;
+        }
+    }
+    int32_t upsample_above, upsample_left;
+    if (slot) {
+        upsample_above = (key >> 11) & 1;
+        upsample_left  = (key >> 12) & 1;
+    } else {
+        slot = &ec->dr[ec->dr_count < DR_EDGE_SLOTS ? ec->dr_count++ : DR_EDGE_SLOTS - 1];
+        prepare_dr_edges_high(above_ref,
+                              left_ref,
+                              slot->above_data,
+                              slot->left_data,
+                              p_angle,
+                              txwpx,
+                              txhpx,
+                              filt_type,
+                              disable_edge_filter,
+                              ec->n_top_px,
+                              ec->n_topright_px,
+                              ec->n_left_px,
+                              ec->n_bottomleft_px,
+                              bd,
+                              &upsample_above,
+                              &upsample_left);
+        slot->key = (uint16_t)key;
+    }
+    svt_aom_highbd_dr_predictor(dst,
+                                dst_stride,
+                                tx_size,
+                                slot->above_data + 16,
+                                slot->left_data + 16,
+                                upsample_above,
+                                upsample_left,
+                                p_angle,
+                                bd);
+}
+
+// 16-bit form of load_intra_edge().
+static void load_intra_edge_high(ModeDecisionContext* ctx, PictureControlSet* pcs, TxSize tx_size,
+                                 IntraEdgeCache16* ec) {
+    const NeighborArrayUnit* recon_neigh = ctx->luma_recon_na_16bit;
+
+    const int bwidth = ctx->blk_geom->bwidth;
+
+    const int bheight = ctx->blk_geom->bheight;
+
+    const int blk_org_x = ctx->blk_org_x;
+
+    const int blk_org_y = ctx->blk_org_y;
+
+    const int sb_size = pcs->ppcs->scs->sb_size;
+    if (blk_org_y != 0) {
+        svt_memcpy(ec->top + 1,
+                   (const uint16_t*)recon_neigh->top_array + blk_org_x,
+                   AOMMIN(bwidth * 2, 64 * 2) * sizeof(uint16_t));
+    }
+    if (blk_org_x != 0) {
+        const int multiplier = (blk_org_y % sb_size + bheight * 2) > sb_size ? 1 : 2;
+        svt_memcpy(ec->left + 1,
+                   (const uint16_t*)recon_neigh->left_array + blk_org_y,
+                   bheight * multiplier * sizeof(uint16_t));
+    }
+    if (blk_org_y != 0 && blk_org_x != 0) {
+        ec->top[0] = ec->left[0] = ((const uint16_t*)recon_neigh
+                                        ->top_left_array)[svt_aom_na_topleft_offset(recon_neigh, blk_org_x, blk_org_y)];
+    }
+    get_intra_edge_px(ctx->blk_ptr->av1xd,
+                      ctx->blk_geom->bsize,
+                      tx_size,
+                      0,
+                      0,
+                      PLANE_Y,
+                      ctx->subsampling_x,
+                      ctx->shape,
+                      &pcs->scs->seq_header,
+                      &ec->n_top_px,
+                      &ec->n_topright_px,
+                      &ec->n_left_px,
+                      &ec->n_bottomleft_px);
+    ec->tx_size  = tx_size;
+    ec->valid    = true;
+    ec->dr_count = 0;
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
 // Predict one full-resolution chroma transform. Interior references come from
 // this candidate's reconstructed transforms; boundary references come from MD.
 void svt_av1_intra_prediction_uv_txb(ModeDecisionContext* ctx, PictureControlSet* pcs,
@@ -927,6 +1145,47 @@ EbErrorType svt_av1_intra_prediction(uint8_t hbd_md, ModeDecisionContext* ctx, P
                                    PLANE_Y);
             continue;
         }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+        bool edge16_check = false;
+        if (CONFIG_ENABLE_INTRA_EDGE_CACHE && ec->on && !plane && is_16bit &&
+            !(cand_bf->cand->palette_info && cand_bf->cand->palette_size[0] > 0)) {
+            IntraEdgeCache16* ec16 = &ctx->intra_edge16;
+
+            uint16_t* dst = (uint16_t*)cand_bf->pred->y_buffer;
+            if (!ec16->valid || ec16->tx_size != tx_size) {
+                load_intra_edge_high(ctx, pcs, tx_size, ec16);
+            }
+            if (av1_is_directional_mode(mode) && cand_bf->cand->block_mi.filter_intra_mode == FILTER_INTRA_MODES) {
+                build_dr_predictor_cached_high(ctx->blk_ptr->av1xd,
+                                               ec16,
+                                               dst,
+                                               cand_bf->pred->y_stride,
+                                               mode,
+                                               ang,
+                                               !pcs->scs->seq_header.enable_intra_edge_filter,
+                                               EB_TEN_BIT);
+            } else {
+                build_intra_predictors_high(ctx->blk_ptr->av1xd,
+                                            ec16->top + 1,
+                                            ec16->left + 1,
+                                            dst,
+                                            cand_bf->pred->y_stride,
+                                            mode,
+                                            ang,
+                                            cand_bf->cand->block_mi.filter_intra_mode,
+                                            tx_size,
+                                            !pcs->scs->seq_header.enable_intra_edge_filter,
+                                            ec16->n_top_px,
+                                            ec16->n_topright_px,
+                                            ec16->n_left_px,
+                                            ec16->n_bottomleft_px,
+                                            PLANE_Y,
+                                            EB_TEN_BIT);
+            }
+            continue;
+        }
+        (void)edge16_check;
+#endif
         const IntraSize    intra_size  = ang == 0 ? svt_aom_intra_unit[mode] : (IntraSize){2, 2};
         const int          bwidth      = plane ? ctx->blk_geom->bwidth_uv : ctx->blk_geom->bwidth;
         const int          bheight     = plane ? ctx->blk_geom->bheight_uv : ctx->blk_geom->bheight;

@@ -953,6 +953,24 @@ typedef struct IntraEdgeCache {
     DrEdgeSlot dr[DR_EDGE_SLOTS];
 } IntraEdgeCache;
 
+// 16-bit forms of the two structures above, for mode decision on 10-bit samples
+typedef struct DrEdgeSlot16 {
+    DECLARE_ALIGNED(16, uint16_t, above_data[64 * 2 + 32]);
+    DECLARE_ALIGNED(16, uint16_t, left_data[64 * 2 + 32]);
+    uint16_t key;
+} DrEdgeSlot16;
+
+typedef struct IntraEdgeCache16 {
+    bool     valid;
+    TxSize   tx_size;
+    int32_t  n_top_px, n_topright_px, n_left_px, n_bottomleft_px;
+    uint16_t top[64 * 2 + 1];
+    uint16_t left[64 * 2 + 1];
+    uint8_t  dr_count;
+
+    DrEdgeSlot16 dr[DR_EDGE_SLOTS];
+} IntraEdgeCache16;
+
 // Per-block cache of first-pass compound intermediates (CONV_BUF form) produced as a by-product of the
 // single-reference MDS0 luma predictions. It is only active while md_stage_0 runs for the block whose compound
 // candidates were scanned by svt_aom_pred_cmp_cache_begin(), so an entry is identified by (reference frame, MV,
@@ -1402,7 +1420,8 @@ typedef struct ModeDecisionContext {
 
     // The larger stores of the block and superblock caches come last, so that they do not push the fields above
     // away from the start of the context.
-    PredCmpCache pred_cmp_cache; // compound intermediates of the current block's single-reference MDS0 predictions
+    IntraEdgeCache16 intra_edge16; // switched on and off with intra_edge.on
+    PredCmpCache     pred_cmp_cache; // compound intermediates of the current block's single-reference MDS0 predictions
 } ModeDecisionContext;
 
 static INLINE SvtPsyEnergyCache* svt_aom_get_psy_energy_cache(ModeDecisionContext* ctx, int plane) {

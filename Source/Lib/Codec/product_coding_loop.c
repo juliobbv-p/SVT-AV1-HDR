@@ -10035,6 +10035,8 @@ static void md_encode_block_internal(PictureControlSet* pcs, ModeDecisionContext
             ctx->target_class     = cand_class_it;
             ctx->intra_edge.on    = true;
             ctx->intra_edge.valid = false;
+
+            ctx->intra_edge16.valid = false;
             md_stage_0(pcs,
                        ctx,
                        cand_bf_ptr_array_base,
