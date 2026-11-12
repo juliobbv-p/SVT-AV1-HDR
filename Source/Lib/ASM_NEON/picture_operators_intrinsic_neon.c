@@ -315,47 +315,42 @@ void svt_full_distortion_kernel32_bits_neon(int32_t* coeff, int32_t* recon_coeff
 }
 #endif
 
+// Packs the 2-bit LSBs of 16 samples (one per byte) into 4 bytes, first sample in the top bits.
+static inline uint8x8_t compress_2b_16_neon(uint8x16_t lsb) {
+    // Pairs of bytes (a, b) -> a << 2 | b, then pairs of nibbles (c, d) -> c << 4 | d.
+    const uint16x8_t p   = vreinterpretq_u16_u8(lsb);
+    const uint8x8_t  nib = vmovn_u16(vsliq_n_u16(vshrq_n_u16(p, 8), p, 2));
+    const uint16x4_t q   = vreinterpret_u16_u8(nib);
+    return vreinterpret_u8_u16(vsli_n_u16(vshr_n_u16(q, 8), q, 4)); // even bytes hold the result
+}
+
+// width_rep groups of 16 samples.
 static inline void unpack_and_2bcompress_32_neon(uint16_t* in16b_buffer, uint8_t* out8b_buffer, uint8_t* out2b_buffer,
                                                  uint32_t width_rep) {
-    const uint16x8_t ymm_00ff = vdupq_n_u16(0x00FF);
-    const uint16x8_t msk_2b   = vdupq_n_u16(0x0003); //0000.0000.0000.0011
+    const uint8x16_t msk_2b = vdupq_n_u8(3);
 
-    const uint32x4_t msk0 = vdupq_n_u32(0x000000C0); //1100.0000
-    const uint32x4_t msk1 = vdupq_n_u32(0x00000030); //0011.0000
-    const uint32x4_t msk2 = vdupq_n_u32(0x0000000C); //0000.1100
-
-    for (uint32_t w = 0; w < width_rep; w++) {
-        const uint16x8_t in1 = vld1q_u16(in16b_buffer + w * 16);
-        const uint16x8_t in2 = vld1q_u16(in16b_buffer + w * 16 + 8);
-
-        const uint16x8_t tmp_2b1 = vandq_u16(in1, msk_2b); //0000.0011.1111.1111 -> 0000.0000.0000.0011
-        const uint16x8_t tmp_2b2 = vandq_u16(in2, msk_2b);
-        const uint32x4_t tmp_2b  = vreinterpretq_u32_u8(vcombine_u8(vqmovn_u16(tmp_2b1), vqmovn_u16(tmp_2b2)));
-
-        const uint32x4_t ext0 = vshrq_n_u32(
-            tmp_2b,
-            24); //0000.0011.0000.0000.0000.0000.0000.0000 -> 0000.0000.0000.0000.0000.0000.0000.0011
-        const uint32x4_t ext1 = vandq_u32(
-            vshrq_n_u32(tmp_2b, 14),
-            msk2); //0000.0000.0000.0011.0000.0000.0000.0000 -> 0000.0000.0000.0000.0000.0000.0000.1100
-        const uint32x4_t ext2 = vandq_u32(
-            vshrq_n_u32(tmp_2b, 4),
-            msk1); //0000.0000.0000.0000.0000.0011.0000.0000 -> 0000.0000.0000.0000.0000.0000.0011.0000
-        const uint32x4_t ext3 = vandq_u32(
-            vshlq_n_u32(tmp_2b, 6),
-            msk0); //0000.0000.0000.0000.0000.0000.0000.0011 -> 0000.0000.0000.0000.0000.0000.1100.0000
-
-        const uint32x4_t ext0123 = vorrq_u32(vorrq_u32(ext0, ext1),
-                                             vorrq_u32(ext2, ext3)); //0000.0000.0000.0000.0000.0000.1111.1111
-
-        const uint32_t ext0123_packed32 = vget_lane_u32(
-            vreinterpret_u32_u8(vqmovn_u16(vcombine_u16(vqmovn_u32(ext0123), vdup_n_u16(0)))), 0);
-        memcpy(out2b_buffer + w * 4, &ext0123_packed32, sizeof(ext0123_packed32));
-
-        const uint8x16_t out8_u8 = vcombine_u8(vqmovn_u16(vandq_u16(vshrq_n_u16(in1, 2), ymm_00ff)),
-                                               vqmovn_u16(vandq_u16(vshrq_n_u16(in2, 2), ymm_00ff)));
-
-        vst1q_u8(out8b_buffer + w * 16, out8_u8);
+    uint32_t w = 0;
+    for (; w + 2 <= width_rep; w += 2) {
+        const uint16x8_t in0 = vld1q_u16(in16b_buffer + w * 16);
+        const uint16x8_t in1 = vld1q_u16(in16b_buffer + w * 16 + 8);
+        const uint16x8_t in2 = vld1q_u16(in16b_buffer + w * 16 + 16);
+        const uint16x8_t in3 = vld1q_u16(in16b_buffer + w * 16 + 24);
+        vst1q_u8(out8b_buffer + w * 16, vcombine_u8(vshrn_n_u16(in0, 2), vshrn_n_u16(in1, 2)));
+        vst1q_u8(out8b_buffer + w * 16 + 16, vcombine_u8(vshrn_n_u16(in2, 2), vshrn_n_u16(in3, 2)));
+        const uint8x16_t lsb0 = vandq_u8(vuzp1q_u8(vreinterpretq_u8_u16(in0), vreinterpretq_u8_u16(in1)), msk_2b);
+        const uint8x16_t lsb1 = vandq_u8(vuzp1q_u8(vreinterpretq_u8_u16(in2), vreinterpretq_u8_u16(in3)), msk_2b);
+        const uint8x8_t  c0   = compress_2b_16_neon(lsb0);
+        const uint8x8_t  c1   = compress_2b_16_neon(lsb1);
+        vst1_u8(out2b_buffer + w * 4, vuzp1_u8(c0, c1));
+    }
+    if (w < width_rep) {
+        const uint16x8_t in0 = vld1q_u16(in16b_buffer + w * 16);
+        const uint16x8_t in1 = vld1q_u16(in16b_buffer + w * 16 + 8);
+        vst1q_u8(out8b_buffer + w * 16, vcombine_u8(vshrn_n_u16(in0, 2), vshrn_n_u16(in1, 2)));
+        const uint8x16_t lsb0 = vandq_u8(vuzp1q_u8(vreinterpretq_u8_u16(in0), vreinterpretq_u8_u16(in1)), msk_2b);
+        const uint8x8_t  c0   = compress_2b_16_neon(lsb0);
+        const uint32_t   out  = vget_lane_u32(vreinterpret_u32_u8(vuzp1_u8(c0, c0)), 0);
+        memcpy(out2b_buffer + w * 4, &out, sizeof(out));
     }
 }
 
