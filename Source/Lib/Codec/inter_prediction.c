@@ -1328,6 +1328,122 @@ bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b,
 }
 #endif
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+bool svt_aom_highbd_10_convolve_2d_sr_dual_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                                uint16_t* cmp, int cmp_stride, int w, int h,
+                                                const InterpFilterParams* filter_params_x,
+                                                const InterpFilterParams* filter_params_y, const int subpel_x_qn,
+                                                const int subpel_y_qn);
+bool svt_aom_highbd_10_convolve_y_sr_dual_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                               uint16_t* cmp, int cmp_stride, int w, int h,
+                                               const InterpFilterParams* filter_params_y, const int subpel_y_qn);
+void svt_aom_highbd_10_cmp_from_pixels_neon(const uint16_t* src, int src_stride, uint16_t* cmp, int cmp_stride, int w,
+                                            int h);
+void svt_aom_highbd_10_pixels_from_cmp_neon(const uint16_t* cmp, int cmp_stride, uint16_t* dst, int dst_stride, int w,
+                                            int h);
+
+// True when the dual-output kernels may stand in for the dispatched ones.
+bool svt_aom_highbd_dual_pred_supported(void) {
+    return svt_av1_highbd_jnt_convolve_2d_copy == svt_av1_highbd_jnt_convolve_2d_copy_neon &&
+        svt_aom_convolveHbd[1][1][0] == svt_av1_highbd_convolve_2d_sr_neon &&
+        svt_aom_convolveHbd[0][1][0] == svt_av1_highbd_convolve_y_sr_neon &&
+        svt_aom_convolveHbd[1][0][0] == svt_av1_highbd_convolve_x_sr_neon &&
+        svt_aom_convolveHbd[1][0][1] == svt_av1_highbd_jnt_convolve_x_neon;
+}
+
+// Unscaled 10-bit single-reference luma prediction that also writes the first-pass compound intermediate
+// (CONV_BUF form) of the same block to cmp. Both outputs are bit-exact with the regular kernels.
+// Returns false, leaving dst and cmp undefined, when the case is not covered.
+bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, int32_t src_stride, uint16_t* dst,
+                                            int32_t dst_stride, uint16_t* cmp, int32_t cmp_stride, int32_t w, int32_t h,
+                                            InterpFilters interp_filters, SubpelParams* subpel_params) {
+    if (!src_2b || has_scale(subpel_params->xs, subpel_params->ys) || w < 4 || h < 4 || (h & 3) ||
+        (w != 4 && (w & 7))) {
+        return false;
+    }
+    if (!subpel_params->subpel_x && !subpel_params->subpel_y) {
+        ConvolveParams params = get_conv_params_no_round(0, NULL, 0, 0, EB_TEN_BIT);
+        svt_aom_highbd_10_fullpel_split_neon(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, &params);
+        svt_aom_highbd_10_cmp_from_pixels_neon(dst, dst_stride, cmp, cmp_stride, w, h);
+        return true;
+    }
+    InterpFilterParams filter_params_x, filter_params_y;
+    av1_get_convolve_filter_params(interp_filters, &filter_params_x, &filter_params_y, w, h);
+    if (filter_params_x.taps != SUBPEL_TAPS || filter_params_y.taps != SUBPEL_TAPS) {
+        return false;
+    }
+    SubpelParams sp = *subpel_params;
+    revert_scale_extra_bits(&sp);
+    DECLARE_ALIGNED(16, uint16_t, src16[PACKED_BUFFER_SIZE]);
+    uint8_t   offset_x    = INTERPOLATION_OFFSET;
+    uint8_t   offset_y    = INTERPOLATION_OFFSET;
+    const int use_compact = w >= 8 && (subpel_params->subpel_x >> SCALE_EXTRA_BITS) != 0 &&
+        (subpel_params->subpel_y >> SCALE_EXTRA_BITS) != 0;
+    if (use_compact) {
+        offset_y = 4;
+        offset_x = 4;
+    }
+    int32_t src_stride16 = w + (offset_x << 1);
+    if (src_stride16 % 8) {
+        src_stride16 = ALIGN_POWER_OF_TWO(src_stride16, 3);
+    }
+    if (use_compact) {
+        svt_enc_msb_pack2d_neon(src - offset_x - offset_y * src_stride,
+                                src_stride,
+                                src_2b - offset_x - offset_y * src_stride,
+                                src16,
+                                src_stride,
+                                src_stride16,
+                                w + 2 * offset_x,
+                                h + 2 * offset_y);
+    } else {
+        svt_aom_pack_block(src - offset_x - (offset_y * src_stride),
+                           src_stride,
+                           src_2b - offset_x - (offset_y * src_stride),
+                           src_stride,
+                           src16,
+                           src_stride16,
+                           w + (offset_x << 1),
+                           h + (offset_y << 1));
+    }
+    uint16_t* src_10b = src16 + offset_x + (offset_y * src_stride16);
+    if (sp.subpel_x && sp.subpel_y) {
+        return svt_aom_highbd_10_convolve_2d_sr_dual_neon(src_10b,
+                                                          src_stride16,
+                                                          dst,
+                                                          dst_stride,
+                                                          cmp,
+                                                          cmp_stride,
+                                                          w,
+                                                          h,
+                                                          &filter_params_x,
+                                                          &filter_params_y,
+                                                          sp.subpel_x,
+                                                          sp.subpel_y);
+    }
+    if (sp.subpel_y) {
+        return svt_aom_highbd_10_convolve_y_sr_dual_neon(
+            src_10b, src_stride16, dst, dst_stride, cmp, cmp_stride, w, h, &filter_params_y, sp.subpel_y);
+    }
+    // x-only: the compound first pass keeps three more fractional bits than the single-reference result.
+    ConvolveParams params = get_conv_params_no_round(0, cmp, cmp_stride, 1, EB_TEN_BIT);
+    svt_av1_highbd_jnt_convolve_x_neon(src_10b,
+                                       src_stride16,
+                                       dst,
+                                       dst_stride,
+                                       w,
+                                       h,
+                                       &filter_params_x,
+                                       &filter_params_y,
+                                       sp.subpel_x,
+                                       sp.subpel_y,
+                                       &params,
+                                       EB_TEN_BIT);
+    svt_aom_highbd_10_pixels_from_cmp_neon(cmp, cmp_stride, dst, dst_stride, w, h);
+    return true;
+}
+#endif
+
 void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
                                    int32_t w, int32_t h, InterpFilters interp_filters, SubpelParams* subpel_params,
                                    ConvolveParams* conv_params, int32_t bd) {

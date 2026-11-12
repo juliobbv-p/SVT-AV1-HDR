@@ -171,6 +171,15 @@ static INLINE int valid_ref_frame_size(int ref_width, int ref_height, int this_w
         this_height <= 16 * ref_height;
 }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+bool svt_aom_highbd_dual_pred_supported(void);
+bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, int32_t src_stride, uint16_t* dst,
+                                            int32_t dst_stride, uint16_t* cmp, int32_t cmp_stride, int32_t w, int32_t h,
+                                            InterpFilters interp_filters, SubpelParams* subpel_params);
+void svt_aom_highbd_10_comp_avg_cached_neon(const uint16_t* cmp0, const uint16_t* cmp1, int cmp_stride, uint16_t* dst,
+                                            int dst_stride, int w, int h);
+#endif
+
 #if (defined(ARCH_AARCH64) || defined(ARCH_X86_64)) && CONFIG_ENABLE_HIGH_BIT_DEPTH
 bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b, int src_stride, uint16_t* dst,
                                       int dst_stride, int w, int h, const SubpelParams* subpel, ConvolveParams* params,

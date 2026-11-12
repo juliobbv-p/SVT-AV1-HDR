@@ -774,9 +774,9 @@ static inline uint16x8_t highbd_convolve6_8_2d_h(const int16x8_t s[6], const int
     return vcombine_u16(res0, res1);
 }
 
-static inline void highbd_convolve_2d_sr_horiz_6tap_neon(const uint16_t* src_ptr, int src_stride, uint16_t* dst_ptr,
-                                                         int dst_stride, int w, int h, const int16_t* x_filter_ptr,
-                                                         const int offset) {
+static AOM_FORCE_INLINE void highbd_convolve_2d_sr_horiz_6tap_neon(const uint16_t* src_ptr, int src_stride,
+                                                                   uint16_t* dst_ptr, int dst_stride, int w, int h,
+                                                                   const int16_t* x_filter_ptr, const int offset) {
     // The smallest block height processed by the SIMD functions is 4, and the
     // horizontal convolution needs to process an extra (filter_taps/2 - 1) lines
     // for the vertical convolution.
@@ -873,9 +873,9 @@ static inline uint16x8_t highbd_convolve8_8_2d_h(const int16x8_t s[8], const int
     return vcombine_u16(res0, res1);
 }
 
-static inline void highbd_convolve_2d_sr_horiz_neon(const uint16_t* src_ptr, int src_stride, uint16_t* dst_ptr,
-                                                    int dst_stride, int w, int h, const int16_t* x_filter_ptr,
-                                                    const int offset) {
+static AOM_FORCE_INLINE void highbd_convolve_2d_sr_horiz_neon(const uint16_t* src_ptr, int src_stride,
+                                                              uint16_t* dst_ptr, int dst_stride, int w, int h,
+                                                              const int16_t* x_filter_ptr, const int offset) {
     // The smallest block height processed by the SIMD functions is 4, and the
     // horizontal convolution needs to process an extra (filter_taps/2 - 1) lines
     // for the vertical convolution.
@@ -1141,3 +1141,287 @@ void svt_av1_highbd_convolve_2d_copy_sr_neon(const uint16_t* src, int32_t src_st
         } while (--h != 0);
     }
 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// ---------------------------------------------------------------------------
+// Dual-output 10-bit single-reference kernels.
+//
+// A single-reference prediction P and the first-pass compound intermediate I
+// (CONV_BUF form, what svt_av1_highbd_jnt_convolve_* writes when do_average is
+// zero) share the same filter sum and differ only in the final shift/offset:
+//   2D     : P = sat((S + y_offset) >> 11),  I = (S + 2^21 + 2^6) >> 7
+//   y-only : P = sat((S + 2^6) >> 7),        I = ((S + 2^2) >> 3) + 24576
+//   x-only : I = ((S + 2^2) >> 3) + 24576,   P = sat((I - 24576 + 2^3) >> 4)
+//   copy   : I = (P << 4) + 24576
+// Producing both lets mode decision average two cached intermediates instead
+// of re-filtering both references for every compound candidate.
+// ---------------------------------------------------------------------------
+#define HBD10_CMP_OFFSET 24576
+
+static AOM_FORCE_INLINE int32x4_t hbd10_dual_mac(const int16x4_t* s, const int16x4_t f_lo, const int16x4_t f_hi,
+                                                 int32x4_t acc, const int taps) {
+    if (taps == 6) {
+        // Values at indices 0 and 7 of the filter are zero; s[0] is the row of tap 1.
+        acc = vmlal_lane_s16(acc, s[0], f_lo, 1);
+        acc = vmlal_lane_s16(acc, s[1], f_lo, 2);
+        acc = vmlal_lane_s16(acc, s[2], f_lo, 3);
+        acc = vmlal_lane_s16(acc, s[3], f_hi, 0);
+        acc = vmlal_lane_s16(acc, s[4], f_hi, 1);
+        acc = vmlal_lane_s16(acc, s[5], f_hi, 2);
+    } else {
+        acc = vmlal_lane_s16(acc, s[0], f_lo, 0);
+        acc = vmlal_lane_s16(acc, s[1], f_lo, 1);
+        acc = vmlal_lane_s16(acc, s[2], f_lo, 2);
+        acc = vmlal_lane_s16(acc, s[3], f_lo, 3);
+        acc = vmlal_lane_s16(acc, s[4], f_hi, 0);
+        acc = vmlal_lane_s16(acc, s[5], f_hi, 1);
+        acc = vmlal_lane_s16(acc, s[6], f_hi, 2);
+        acc = vmlal_lane_s16(acc, s[7], f_hi, 3);
+    }
+    return acc;
+}
+
+// two_d: sum already carries the single-reference 2D offset in `acc`.
+static AOM_FORCE_INLINE void hbd10_dual_finish4(int32x4_t sum, const int two_d, const int32x4_t cmp_k, uint16x4_t* p,
+                                                uint16x4_t* c) {
+    const uint16x4_t max = vdup_n_u16(1023);
+    if (two_d) {
+        *p = vmin_u16(vqshrun_n_s32(sum, 2 * FILTER_BITS - ROUND0_BITS), max);
+        *c = vreinterpret_u16_s16(vshrn_n_s32(vaddq_s32(sum, cmp_k), COMPOUND_ROUND1_BITS));
+    } else {
+        *p = vmin_u16(vqrshrun_n_s32(sum, FILTER_BITS), max);
+        *c = vreinterpret_u16_s16(vadd_s16(vrshrn_n_s32(sum, ROUND0_BITS), vdup_n_s16(HBD10_CMP_OFFSET)));
+    }
+}
+
+// src points at the row of the first used tap. Height is a multiple of 4.
+static AOM_FORCE_INLINE void hbd10_dual_vert_neon(const uint16_t* src_ptr, int src_stride, uint16_t* dst_ptr,
+                                                  int dst_stride, uint16_t* cmp_ptr, int cmp_stride, int w, int h,
+                                                  const int16_t* y_filter_ptr, const int taps, const int two_d,
+                                                  const int offset) {
+    const int16x8_t y_filter = vld1q_s16(y_filter_ptr);
+    const int16x4_t f_lo     = vget_low_s16(y_filter);
+    const int16x4_t f_hi     = vget_high_s16(y_filter);
+    const int32x4_t acc0     = vdupq_n_s32(two_d ? offset : 0);
+    // (S + offset) + cmp_k == S + 2^21 + 2^6
+    const int32x4_t cmp_k = vdupq_n_s32((1 << 21) + (1 << (COMPOUND_ROUND1_BITS - 1)) - offset);
+
+    if (w == 4) {
+        const int16_t* s = (const int16_t*)src_ptr;
+        int16x4_t      r[11];
+        for (int i = 0; i < taps - 1; i++) {
+            r[i] = vld1_s16(s + i * src_stride);
+        }
+        s += (taps - 1) * src_stride;
+        do {
+            for (int i = 0; i < 4; i++) {
+                r[taps - 1 + i] = vld1_s16(s + i * src_stride);
+            }
+            for (int i = 0; i < 4; i++) {
+                uint16x4_t p, c;
+                hbd10_dual_finish4(hbd10_dual_mac(r + i, f_lo, f_hi, acc0, taps), two_d, cmp_k, &p, &c);
+                vst1_u16(dst_ptr + i * dst_stride, p);
+                vst1_u16(cmp_ptr + i * cmp_stride, c);
+            }
+            for (int i = 0; i < taps - 1; i++) {
+                r[i] = r[i + 4];
+            }
+            s += 4 * src_stride;
+            dst_ptr += 4 * dst_stride;
+            cmp_ptr += 4 * cmp_stride;
+            h -= 4;
+        } while (h != 0);
+        return;
+    }
+    do {
+        int height = h;
+
+        const int16_t* s = (const int16_t*)src_ptr;
+        uint16_t*      d = dst_ptr;
+        uint16_t*      c = cmp_ptr;
+        int16x4_t      lo[11], hi[11];
+        for (int i = 0; i < taps - 1; i++) {
+            const int16x8_t v = vld1q_s16(s + i * src_stride);
+
+            lo[i] = vget_low_s16(v);
+
+            hi[i] = vget_high_s16(v);
+        }
+        s += (taps - 1) * src_stride;
+        do {
+            for (int i = 0; i < 4; i++) {
+                const int16x8_t v = vld1q_s16(s + i * src_stride);
+                lo[taps - 1 + i]  = vget_low_s16(v);
+                hi[taps - 1 + i]  = vget_high_s16(v);
+            }
+            for (int i = 0; i < 4; i++) {
+                uint16x4_t p0, p1, c0, c1;
+                hbd10_dual_finish4(hbd10_dual_mac(lo + i, f_lo, f_hi, acc0, taps), two_d, cmp_k, &p0, &c0);
+                hbd10_dual_finish4(hbd10_dual_mac(hi + i, f_lo, f_hi, acc0, taps), two_d, cmp_k, &p1, &c1);
+                vst1q_u16(d + i * dst_stride, vcombine_u16(p0, p1));
+                vst1q_u16(c + i * cmp_stride, vcombine_u16(c0, c1));
+            }
+            for (int i = 0; i < taps - 1; i++) {
+                lo[i] = lo[i + 4];
+                hi[i] = hi[i + 4];
+            }
+            s += 4 * src_stride;
+            d += 4 * dst_stride;
+            c += 4 * cmp_stride;
+            height -= 4;
+        } while (height != 0);
+        src_ptr += 8;
+        dst_ptr += 8;
+        cmp_ptr += 8;
+        w -= 8;
+    } while (w != 0);
+}
+
+static NOINLINE void hbd10_dual_vert_2d_6tap(const uint16_t* s, int ss, uint16_t* d, int ds, uint16_t* c, int cs, int w,
+                                             int h, const int16_t* f, int offset) {
+    hbd10_dual_vert_neon(s, ss, d, ds, c, cs, w, h, f, 6, 1, offset);
+}
+
+static NOINLINE void hbd10_dual_vert_2d_8tap(const uint16_t* s, int ss, uint16_t* d, int ds, uint16_t* c, int cs, int w,
+                                             int h, const int16_t* f, int offset) {
+    hbd10_dual_vert_neon(s, ss, d, ds, c, cs, w, h, f, 8, 1, offset);
+}
+
+static NOINLINE void hbd10_dual_vert_y_6tap(const uint16_t* s, int ss, uint16_t* d, int ds, uint16_t* c, int cs, int w,
+                                            int h, const int16_t* f) {
+    hbd10_dual_vert_neon(s, ss, d, ds, c, cs, w, h, f, 6, 0, 0);
+}
+
+static NOINLINE void hbd10_dual_vert_y_8tap(const uint16_t* s, int ss, uint16_t* d, int ds, uint16_t* c, int cs, int w,
+                                            int h, const int16_t* f) {
+    hbd10_dual_vert_neon(s, ss, d, ds, c, cs, w, h, f, 8, 0, 0);
+}
+
+// Mirrors svt_av1_highbd_convolve_2d_sr_neon for bd == 10. Returns false when the geometry/filter is not covered.
+bool svt_aom_highbd_10_convolve_2d_sr_dual_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                                uint16_t* cmp, int cmp_stride, int w, int h,
+                                                const InterpFilterParams* filter_params_x,
+                                                const InterpFilterParams* filter_params_y, const int subpel_x_qn,
+                                                const int subpel_y_qn) {
+    const int bd = 10;
+
+    const int x_filter_taps = get_filter_tap(filter_params_x, subpel_x_qn);
+    const int y_filter_taps = get_filter_tap(filter_params_y, subpel_y_qn);
+    if (w < 4 || h < 4 || (h & 3) || (w != 4 && (w & 7)) || (x_filter_taps == 2 && y_filter_taps == 2)) {
+        return false;
+    }
+    DECLARE_ALIGNED(16, uint16_t, im_block[(MAX_SB_SIZE + MAX_FILTER_TAP) * MAX_SB_SIZE]);
+    const int clamped_x_taps = x_filter_taps < 6 ? 6 : x_filter_taps;
+    const int clamped_y_taps = y_filter_taps < 6 ? 6 : y_filter_taps;
+
+    const int im_h = h + clamped_y_taps - 1;
+
+    const int im_stride    = MAX_SB_SIZE;
+    const int vert_offset  = clamped_y_taps / 2 - 1;
+    const int horiz_offset = clamped_x_taps / 2 - 1;
+
+    const int x_offset_initial = (1 << (bd + FILTER_BITS - 1));
+    const int y_offset_bits    = bd + 2 * FILTER_BITS - ROUND0_BITS;
+
+    const int y_offset = (1 << (2 * FILTER_BITS - ROUND0_BITS - 1)) - (1 << (y_offset_bits - 1));
+
+    const uint16_t* src_ptr      = src - vert_offset * src_stride - horiz_offset;
+    const int16_t*  x_filter_ptr = av1_get_interp_filter_subpel_kernel(*filter_params_x, subpel_x_qn & SUBPEL_MASK);
+    const int16_t*  y_filter_ptr = av1_get_interp_filter_subpel_kernel(*filter_params_y, subpel_y_qn & SUBPEL_MASK);
+
+    if (w >= 8 && filter_params_x->taps == SUBPEL_TAPS && filter_params_x->interp_filter <= BILINEAR) {
+        highbd_10_convolve_2d_horiz_neon(
+            src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, x_filter_taps);
+    } else if (x_filter_taps <= 6 && w != 4) {
+        highbd_convolve_2d_sr_horiz_6tap_neon(
+            src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, x_offset_initial);
+    } else {
+        highbd_convolve_2d_sr_horiz_neon(
+            src_ptr, src_stride, im_block, im_stride, w, im_h, x_filter_ptr, x_offset_initial);
+    }
+    if (y_filter_taps <= 6) {
+        hbd10_dual_vert_2d_6tap(im_block, im_stride, dst, dst_stride, cmp, cmp_stride, w, h, y_filter_ptr, y_offset);
+    } else {
+        hbd10_dual_vert_2d_8tap(im_block, im_stride, dst, dst_stride, cmp, cmp_stride, w, h, y_filter_ptr, y_offset);
+    }
+    return true;
+}
+
+// Mirrors svt_av1_highbd_convolve_y_sr_neon for bd == 10.
+bool svt_aom_highbd_10_convolve_y_sr_dual_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                               uint16_t* cmp, int cmp_stride, int w, int h,
+                                               const InterpFilterParams* filter_params_y, const int subpel_y_qn) {
+    if (w < 4 || h < 4 || (h & 3) || (w != 4 && (w & 7))) {
+        return false;
+    }
+    const int      y_filter_taps = get_filter_tap(filter_params_y, subpel_y_qn);
+    const int      vert_offset   = filter_params_y->taps / 2 - 1;
+    const int16_t* y_filter_ptr  = av1_get_interp_filter_subpel_kernel(*filter_params_y, subpel_y_qn & SUBPEL_MASK);
+    if (filter_params_y->taps != SUBPEL_TAPS) {
+        return false;
+    }
+    src -= vert_offset * src_stride;
+    if (y_filter_taps < 8) {
+        hbd10_dual_vert_y_6tap(src + src_stride, src_stride, dst, dst_stride, cmp, cmp_stride, w, h, y_filter_ptr);
+    } else {
+        hbd10_dual_vert_y_8tap(src, src_stride, dst, dst_stride, cmp, cmp_stride, w, h, y_filter_ptr);
+    }
+    return true;
+}
+
+// I = (P << 4) + 24576
+void svt_aom_highbd_10_cmp_from_pixels_neon(const uint16_t* src, int src_stride, uint16_t* cmp, int cmp_stride, int w,
+                                            int h) {
+    const uint16x8_t off = vdupq_n_u16(HBD10_CMP_OFFSET);
+    do {
+        if (w == 4) {
+            vst1_u16(cmp, vadd_u16(vshl_n_u16(vld1_u16(src), 4), vget_low_u16(off)));
+        } else {
+            for (int x = 0; x < w; x += 8) {
+                vst1q_u16(cmp + x, vaddq_u16(vshlq_n_u16(vld1q_u16(src + x), 4), off));
+            }
+        }
+        src += src_stride;
+        cmp += cmp_stride;
+    } while (--h != 0);
+}
+
+// P = sat((I - 24576 + 8) >> 4), the x-only single-reference result.
+void svt_aom_highbd_10_pixels_from_cmp_neon(const uint16_t* cmp, int cmp_stride, uint16_t* dst, int dst_stride, int w,
+                                            int h) {
+    const uint16x8_t off = vdupq_n_u16(HBD10_CMP_OFFSET - 8);
+    const uint16x8_t max = vdupq_n_u16(1023);
+    do {
+        if (w == 4) {
+            vst1_u16(dst, vmin_u16(vshr_n_u16(vqsub_u16(vld1_u16(cmp), vget_low_u16(off)), 4), vget_low_u16(max)));
+        } else {
+            for (int x = 0; x < w; x += 8) {
+                vst1q_u16(dst + x, vminq_u16(vshrq_n_u16(vqsubq_u16(vld1q_u16(cmp + x), off), 4), max));
+            }
+        }
+        cmp += cmp_stride;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+
+// P = sat((((I0 + I1) >> 1) - 24576 + 8) >> 4): the non-weighted compound average of two cached intermediates.
+void svt_aom_highbd_10_comp_avg_cached_neon(const uint16_t* cmp0, const uint16_t* cmp1, int cmp_stride, uint16_t* dst,
+                                            int dst_stride, int w, int h) {
+    const uint16x8_t off = vdupq_n_u16(HBD10_CMP_OFFSET - 8);
+    const uint16x8_t max = vdupq_n_u16(1023);
+    do {
+        if (w == 4) {
+            const uint16x4_t avg = vhadd_u16(vld1_u16(cmp0), vld1_u16(cmp1));
+            vst1_u16(dst, vmin_u16(vshr_n_u16(vqsub_u16(avg, vget_low_u16(off)), 4), vget_low_u16(max)));
+        } else {
+            for (int x = 0; x < w; x += 8) {
+                const uint16x8_t avg = vhaddq_u16(vld1q_u16(cmp0 + x), vld1q_u16(cmp1 + x));
+                vst1q_u16(dst + x, vminq_u16(vshrq_n_u16(vqsubq_u16(avg, off), 4), max));
+            }
+        }
+        cmp0 += cmp_stride;
+        cmp1 += cmp_stride;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH

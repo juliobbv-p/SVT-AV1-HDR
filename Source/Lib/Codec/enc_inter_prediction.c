@@ -2929,6 +2929,40 @@ static void av1_inter_prediction_pd0(SequenceControlSet* scs, ModeDecisionContex
     }
 }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Point the compound-intermediate cache at the current block, dropping the entries of any other block.
+static INLINE void pred_cmp_cache_sync(PredCmpCache* c, const ModeDecisionContext* ctx, uint32_t filt) {
+    const PictureControlSet* pcs = ctx->sb_ptr->pcs;
+    if (c->pcs != pcs || c->pic_num != pcs->picture_number || c->x != ctx->blk_org_x || c->y != ctx->blk_org_y ||
+        c->w != ctx->blk_geom->bwidth || c->h != ctx->blk_geom->bheight || c->filt != filt) {
+        c->pcs     = pcs;
+        c->pic_num = pcs->picture_number;
+
+        c->x = ctx->blk_org_x;
+
+        c->y = ctx->blk_org_y;
+
+        c->w    = ctx->blk_geom->bwidth;
+        c->h    = ctx->blk_geom->bheight;
+        c->filt = filt;
+        c->n    = 0;
+
+        c->used_px = 0;
+
+        c->supported = svt_aom_highbd_dual_pred_supported();
+    }
+}
+
+static INLINE const uint16_t* pred_cmp_cache_find(const PredCmpCache* c, const void* ref, Mv mv) {
+    for (int i = 0; i < c->n; i++) {
+        if (c->e[i].ref == ref && c->e[i].mv == mv.as_int) {
+            return c->arena + c->e[i].off;
+        }
+    }
+    return NULL;
+}
+#endif
+
 /*
   inter prediction for light PD1
 */
@@ -2957,6 +2991,28 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
     if (component_mask & PICTURE_BUFFER_DESC_LUMA_MASK) {
         ConvolveParams conv_params_y = get_conv_params_no_round(0, tmp_dst_y, 64, is_compound, bit_depth);
         uint8_t* dst_ptr_y = pred_pic->y_buffer + ((dst_origin_x + (dst_origin_y)*pred_pic->y_stride) << is_16bit);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        // MDS0 evaluates most compound candidates after single-reference candidates that use the same
+        // (reference, MV) pairs. Keep the compound intermediate of each single-reference prediction and
+        // average two of them instead of filtering both references again.
+        PredCmpCache* const cmp_cache = &ctx->pred_cmp_cache;
+
+        const bool use_cmp_cache = hbd_md && ctx->md_stage == MD_STAGE_0 &&
+            scs->static_config.encoder_bit_depth == EB_TEN_BIT && ctx->md_stage_0_count[CAND_CLASS_2] > 0 &&
+            cmp_cache->arena && !av1_is_scaled(sf0) && (!is_compound || !av1_is_scaled(sf1));
+        if (use_cmp_cache) {
+            pred_cmp_cache_sync(cmp_cache, ctx, (uint32_t)block_mi->interp_filters);
+            if (is_compound && cmp_cache->supported) {
+                const uint16_t* cmp0 = pred_cmp_cache_find(cmp_cache, ref_pic_0, block_mi->mv[0]);
+                const uint16_t* cmp1 = cmp0 ? pred_cmp_cache_find(cmp_cache, ref_pic_1, block_mi->mv[1]) : NULL;
+                if (cmp1) {
+                    svt_aom_highbd_10_comp_avg_cached_neon(
+                        cmp0, cmp1, bwidth, (uint16_t*)dst_ptr_y, pred_pic->y_stride, bwidth, bheight);
+                    goto luma_done;
+                }
+            }
+        }
+#endif
 
         for (int i = 0; i < 1 + is_compound; i++) {
             EbPictureBufferDesc* ref_pic = i ? ref_pic_1 : ref_pic_0;
@@ -2988,6 +3044,29 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
             assert(IMPLIES(conv_params_y.do_average, is_compound));
             src_mod    = ref_pic->y_buffer + ((pos_x + (pos_y)*ref_pic->y_stride));
             src_mod_2b = ADD_OFFSET_OR_NULL(ref_pic->y_buffer_bit_inc, pos_x + (pos_y)*ref_pic->y_stride_bit_inc);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+            if (use_cmp_cache && !is_compound && cmp_cache->supported && cmp_cache->n < PRED_CMP_CACHE_SLOTS &&
+                cmp_cache->used_px + (uint32_t)bwidth * bheight <= PRED_CMP_CACHE_PX &&
+                !pred_cmp_cache_find(cmp_cache, ref_pic, block_mi->mv[0]) &&
+                svt_aom_inter_predictor_light_pd1_dual(src_mod,
+                                                       src_mod_2b,
+                                                       ref_pic->y_stride,
+                                                       (uint16_t*)dst_ptr_y,
+                                                       pred_pic->y_stride,
+                                                       cmp_cache->arena + cmp_cache->used_px,
+                                                       bwidth,
+                                                       bwidth,
+                                                       bheight,
+                                                       block_mi->interp_filters,
+                                                       &subpel_params)) {
+                cmp_cache->e[cmp_cache->n].ref = ref_pic;
+                cmp_cache->e[cmp_cache->n].mv  = block_mi->mv[0].as_int;
+                cmp_cache->e[cmp_cache->n].off = cmp_cache->used_px;
+                cmp_cache->n++;
+                cmp_cache->used_px += (uint32_t)bwidth * bheight;
+                continue;
+            }
+#endif
             svt_inter_predictor_light_pd1(src_mod,
                                           src_mod_2b,
                                           ref_pic->y_stride,
@@ -3001,6 +3080,9 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
                                           bit_depth);
         }
     }
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+luma_done:;
+#endif
 
     // Chroma prediction
     if (component_mask & PICTURE_BUFFER_DESC_CHROMA_MASK) {

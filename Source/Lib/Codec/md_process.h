@@ -952,6 +952,31 @@ typedef struct IntraEdgeCache {
     DrEdgeSlot dr[DR_EDGE_SLOTS];
 } IntraEdgeCache;
 
+// Per-block cache of first-pass compound intermediates (CONV_BUF form) produced as a by-product of the
+// single-reference MDS0 luma predictions. Reference pictures are immutable while a picture is coded, so an entry
+// is identified by (picture, block origin and size, interpolation filter, reference picture, MV).
+#define PRED_CMP_CACHE_SLOTS 48
+#define PRED_CMP_CACHE_PX (32 * 64 * 64)
+
+typedef struct PredCmpCache {
+    uint16_t*   arena; // PRED_CMP_CACHE_PX samples
+    const void* pcs;
+    uint64_t    pic_num;
+    uint32_t    filt;
+    uint32_t    used_px;
+    uint16_t    x, y;
+    uint8_t     w, h;
+    uint8_t     n;
+
+    bool supported;
+
+    struct {
+        const void* ref;
+        uint32_t    mv;
+        uint32_t    off;
+    } e[PRED_CMP_CACHE_SLOTS];
+} PredCmpCache;
+
 typedef struct ModeDecisionContext {
     EbDctor dctor;
     uint8_t subsampling_x;
@@ -1365,6 +1390,10 @@ typedef struct ModeDecisionContext {
     SrcVarCtx src_var;
     bool      src_var_on;
     DECLARE_ALIGNED(16, int8_t, md_coeff_contexts[MAX_TX_SQUARE]);
+
+    // The larger stores of the block and superblock caches come last, so that they do not push the fields above
+    // away from the start of the context.
+    PredCmpCache pred_cmp_cache; // compound intermediates of the current block's single-reference MDS0 predictions
 } ModeDecisionContext;
 
 // Returns the VLPD0 full-pel variance/SSE of the current block if VLPD0 evaluated the same reference and MV.

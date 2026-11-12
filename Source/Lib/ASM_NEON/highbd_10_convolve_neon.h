@@ -176,8 +176,9 @@ static inline void highbd_10_convolve_2d_horiz_8tap_neon(const uint16_t* src_ptr
     } while (--height != 0);
 }
 
-static inline void highbd_10_convolve_2d_horiz_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
-                                                    int w, int h, const int16_t* filter, int taps) {
+static AOM_FORCE_INLINE void highbd_10_convolve_2d_horiz_neon(const uint16_t* src, int src_stride, uint16_t* dst,
+                                                              int dst_stride, int w, int h, const int16_t* filter,
+                                                              int taps) {
     assert(w >= 8 && !(w & 7) && h >= 5);
     const int       mode       = filter[3] >= 110 ? 0 : filter[4] >= 110 ? 2 : 1;
     const int16x8_t correction = mode == 0 ? (int16x8_t){0, 0, 0, 64, 0, 0, 0, 0}
