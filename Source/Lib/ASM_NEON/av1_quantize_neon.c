@@ -285,6 +285,42 @@ static AOM_FORCE_INLINE int32x4_t dc_ac_s32(int32_t dc, int32_t ac) {
     return vsetq_lane_s32(dc, vdupq_n_s32(ac), 0);
 }
 
+// Largest weight of a quantization matrix (n is a multiple of 8, at least 16).
+static AOM_FORCE_INLINE int32_t qm_max_weight_neon(const QmVal* qm_ptr, intptr_t n) {
+    uint8x16_t m = vdupq_n_u8(0);
+    intptr_t   j = 0;
+    for (; j + 16 <= n; j += 16) {
+        m = vmaxq_u8(m, vld1q_u8(qm_ptr + j));
+    }
+    if (j < n) {
+        m = vmaxq_u8(m, vcombine_u8(vld1_u8(qm_ptr + j), vdup_n_u8(0)));
+    }
+    return vmaxvq_u8(m);
+}
+
+// True when the 16 coefficients at coeff are all at most `bound` in magnitude; they are then below the
+// quantization threshold for every weight of the matrix, and their outputs are zeroed here.
+static AOM_FORCE_INLINE int qm_skip16_neon(const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff, int32x4_t bound) {
+    const int32x4_t a0 = vabsq_s32(vld1q_s32(coeff));
+    const int32x4_t a1 = vabsq_s32(vld1q_s32(coeff + 4));
+    const int32x4_t a2 = vabsq_s32(vld1q_s32(coeff + 8));
+    const int32x4_t a3 = vabsq_s32(vld1q_s32(coeff + 12));
+    const int32x4_t m  = vmaxq_s32(vmaxq_s32(a0, a1), vmaxq_s32(a2, a3));
+    if (vmaxvq_u32(vcgtq_s32(m, bound))) {
+        return 0;
+    }
+    const int32x4_t zero = vdupq_n_s32(0);
+    vst1q_s32(qcoeff, zero);
+    vst1q_s32(qcoeff + 4, zero);
+    vst1q_s32(qcoeff + 8, zero);
+    vst1q_s32(qcoeff + 12, zero);
+    vst1q_s32(dqcoeff, zero);
+    vst1q_s32(dqcoeff + 4, zero);
+    vst1q_s32(dqcoeff + 8, zero);
+    vst1q_s32(dqcoeff + 12, zero);
+    return 1;
+}
+
 static AOM_FORCE_INLINE void quantize_fp_qm_neon_impl(const TranLow* coeff_ptr, intptr_t n_coeffs,
                                                       const int16_t* round_ptr, const int16_t* quant_ptr,
                                                       TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
@@ -315,8 +351,20 @@ static AOM_FORCE_INLINE void quantize_fp_qm_neon_impl(const TranLow* coeff_ptr, 
     int32x4_t v_thr_lo     = vshlq_s32(v_dequant_lo, vdupq_n_s32(thr_sh));
     int32x4_t v_qscale_lo  = vshlq_s32(v_quant_lo, vdupq_n_s32(qsh));
 
+    // abs * wt < thr holds for every weight when abs <= (thr - 1) / max(wt).
+    const int32_t   thr_ac_s   = (int32_t)dequant_ptr[1] << thr_sh;
+    const int32x4_t v_skip_max = vdupq_n_s32((thr_ac_s - 1) / AOMMAX(qm_max_weight_neon(qm_ptr, n_coeffs), 1));
+
     intptr_t i = 0;
     for (;;) {
+        // AC-only groups: most high-frequency coefficients are tiny, so test sixteen at a time first.
+        while (i >= 8 && i + 16 <= n_coeffs &&
+               qm_skip16_neon(coeff_ptr + i, qcoeff_ptr + i, dqcoeff_ptr + i, v_skip_max)) {
+            i += 16;
+        }
+        if (i >= n_coeffs) {
+            break;
+        }
         const int32x4_t  coeff_lo = vld1q_s32(coeff_ptr + i);
         const int32x4_t  coeff_hi = vld1q_s32(coeff_ptr + i + 4);
         const int32x4_t  abs_lo = vabsq_s32(coeff_lo), abs_hi = vabsq_s32(coeff_hi);
@@ -508,8 +556,20 @@ static AOM_FORCE_INLINE void quantize_b_qm_neon_impl(const TranLow* coeff_ptr, i
     int32x4_t v_quant_scl_lo  = vshlq_s32(v_quant_lo, vdupq_n_s32(15));
     int32x4_t v_qshift_scl_lo = vshlq_s32(v_qshift_lo, vdupq_n_s32(qsh));
 
+    // abs * wt < zbin holds for every weight when abs <= (zbin - 1) / max(wt).
+    const int32x4_t v_skip_max = vdupq_n_s32(zbn_ac > 0 ? (zbn_ac - 1) / AOMMAX(qm_max_weight_neon(qm_ptr, n_coeffs), 1)
+                                                        : -1);
+
     int16x8_t v_eobmax = vdupq_n_s16(-1);
     for (intptr_t i = 0;;) {
+        // AC-only groups: most high-frequency coefficients are tiny, so test sixteen at a time first.
+        while (i >= 8 && i + 16 <= n_coeffs &&
+               qm_skip16_neon(coeff_ptr + i, qcoeff_ptr + i, dqcoeff_ptr + i, v_skip_max)) {
+            i += 16;
+        }
+        if (i >= n_coeffs) {
+            break;
+        }
         const int32x4_t  coeff_lo = vld1q_s32(coeff_ptr + i);
         const int32x4_t  coeff_hi = vld1q_s32(coeff_ptr + i + 4);
         const int32x4_t  abs_lo = vabsq_s32(coeff_lo), abs_hi = vabsq_s32(coeff_hi);
