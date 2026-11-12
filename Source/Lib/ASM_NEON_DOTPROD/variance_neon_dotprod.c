@@ -927,37 +927,37 @@ unsigned int svt_aom_mse16x16_neon_dotprod(const uint8_t* src, int src_stride, c
 
 // Variances of one bw x bh source block against K horizontally adjacent reference blocks (ref + k * step),
 // in the manner of the SAD x4 kernels: each source vector is loaded once and every reference position keeps its
-// own accumulators, so the positions' dependency chains stay independent.
+// own accumulators, so the positions' dependency chains stay independent. src_total is the sum of the source
+// block. 8-wide blocks (even heights) take two rows per vector.
 static AOM_FORCE_INLINE void variance_xk_neon_dotprod(const uint8_t* src, int src_stride, const uint8_t* ref,
                                                       int ref_stride, const int bw, int bh, const int K, int step,
-                                                      int shift, uint32_t* var, int var_stride) {
+                                                      int shift, int32_t src_total, uint32_t* var, int var_stride) {
     const uint8x16_t ones = vdupq_n_u8(1);
-
-    uint32x4_t src_sum = vdupq_n_u32(0);
 
     uint32x4_t ref_sum[5], sse[5];
     for (int k = 0; k < K; k++) {
         ref_sum[k] = vdupq_n_u32(0);
         sse[k]     = vdupq_n_u32(0);
     }
-    for (int r = 0; r < bh; r++) {
-        if (bw == 8) {
-            const uint8x16_t s = vcombine_u8(vld1_u8(src), vdup_n_u8(0));
-
-            src_sum = vdotq_u32(src_sum, s, ones);
+    if (bw == 8) {
+        assert(!(bh & 1));
+        for (int r = 0; r < bh; r += 2) {
+            const uint8x16_t s = vcombine_u8(vld1_u8(src), vld1_u8(src + src_stride));
             for (int k = 0; k < K; k++) {
-                const uint8x16_t p = vcombine_u8(vld1_u8(ref + k * step), vdup_n_u8(0));
+                const uint8x16_t p = vcombine_u8(vld1_u8(ref + k * step), vld1_u8(ref + ref_stride + k * step));
                 const uint8x16_t d = vabdq_u8(s, p);
 
                 ref_sum[k] = vdotq_u32(ref_sum[k], p, ones);
 
                 sse[k] = vdotq_u32(sse[k], d, d);
             }
-        } else {
+            src += 2 * src_stride;
+            ref += 2 * ref_stride;
+        }
+    } else {
+        for (int r = 0; r < bh; r++) {
             for (int c = 0; c < bw; c += 16) {
                 const uint8x16_t s = vld1q_u8(src + c);
-
-                src_sum = vdotq_u32(src_sum, s, ones);
                 for (int k = 0; k < K; k++) {
                     const uint8x16_t p = vld1q_u8(ref + k * step + c);
                     const uint8x16_t d = vabdq_u8(s, p);
@@ -967,31 +967,29 @@ static AOM_FORCE_INLINE void variance_xk_neon_dotprod(const uint8_t* src, int sr
                     sse[k] = vdotq_u32(sse[k], d, d);
                 }
             }
+            src += src_stride;
+            ref += ref_stride;
         }
-        src += src_stride;
-        ref += ref_stride;
     }
     for (int k = 0; k < K; k++) {
-        // [sse, src_sum - ref_sum] reduced together
-        const uint32x4_t t   = vpaddq_u32(sse[k], vsubq_u32(src_sum, ref_sum[k]));
-        const uint32x4_t u   = vpaddq_u32(t, t);
-        const uint32_t   e   = vgetq_lane_u32(u, 0);
-        const int64_t    sum = (int32_t)vgetq_lane_u32(u, 1);
-        var[k * var_stride]  = e - (uint32_t)((sum * sum) >> shift);
+        const uint32_t e    = vaddvq_u32(sse[k]);
+        const int64_t  sum  = (int64_t)src_total - (int64_t)vaddvq_u32(ref_sum[k]);
+        var[k * var_stride] = e - (uint32_t)((sum * sum) >> shift);
     }
 }
 
-#define VARIANCE_XK(w, k)                                                                                   \
-    static NOINLINE void variance_##w##_x##k##_neon_dotprod(const uint8_t* src,                             \
-                                                            int            src_stride,                      \
-                                                            const uint8_t* ref,                             \
-                                                            int            ref_stride,                      \
-                                                            int            bh,                              \
-                                                            int            step,                            \
-                                                            int            shift,                           \
-                                                            uint32_t*      var,                             \
-                                                            int            var_stride) {                               \
-        variance_xk_neon_dotprod(src, src_stride, ref, ref_stride, w, bh, k, step, shift, var, var_stride); \
+#define VARIANCE_XK(w, k)                                                                                              \
+    static NOINLINE void variance_##w##_x##k##_neon_dotprod(const uint8_t* src,                                        \
+                                                            int            src_stride,                                 \
+                                                            const uint8_t* ref,                                        \
+                                                            int            ref_stride,                                 \
+                                                            int            bh,                                         \
+                                                            int            step,                                       \
+                                                            int            shift,                                      \
+                                                            int32_t        src_total,                                  \
+                                                            uint32_t*      var,                                        \
+                                                            int            var_stride) {                                          \
+        variance_xk_neon_dotprod(src, src_stride, ref, ref_stride, w, bh, k, step, shift, src_total, var, var_stride); \
     }
 VARIANCE_XK(8, 3)
 VARIANCE_XK(8, 5)
@@ -1002,44 +1000,63 @@ VARIANCE_XK(32, 5)
 VARIANCE_XK(64, 3)
 VARIANCE_XK(64, 5)
 
+// Sum of a bw x bh block (bw 8 or a multiple of 16).
+static inline int32_t block_sum_neon_dotprod(const uint8_t* src, int src_stride, int bw, int bh) {
+    const uint8x16_t ones = vdupq_n_u8(1);
+
+    uint32x4_t sum = vdupq_n_u32(0);
+    for (int r = 0; r < bh; r++) {
+        if (bw == 8) {
+            sum = vdotq_u32(sum, vcombine_u8(vld1_u8(src), vdup_n_u8(0)), ones);
+        } else {
+            for (int c = 0; c < bw; c += 16) {
+                sum = vdotq_u32(sum, vld1q_u8(src + c), ones);
+            }
+        }
+        src += src_stride;
+    }
+    return (int32_t)vaddvq_u32(sum);
+}
+
 // Variances of the bw x bh source block against the reference blocks of an nx x ny grid of full-pel positions
 // (nx is 3 or 5, bw is 8, 16, 32 or 64): var[i * ny + j] belongs to ref + (j * step) * ref_stride + i * step
 // and equals svt_aom_varianceWxH(that block, src).
 void svt_aom_variance_grid_neon_dotprod(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride, int bw,
                                         int bh, int nx, int ny, int step, uint32_t* var) {
     assert((nx == 3 || nx == 5) && (bw == 8 || bw == 16 || bw == 32 || bw == 64));
-    const int shift = 31 - __builtin_clz((unsigned)(bw * bh));
+    const int     shift = 31 - __builtin_clz((unsigned)(bw * bh));
+    const int32_t st    = block_sum_neon_dotprod(src, src_stride, bw, bh);
     for (int j = 0; j < ny; j++) {
         const uint8_t* p = ref + j * step * ref_stride;
         uint32_t*      v = var + j;
         if (nx == 3) {
             switch (bw) {
             case 8:
-                variance_8_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_8_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             case 16:
-                variance_16_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_16_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             case 32:
-                variance_32_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_32_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             default:
-                variance_64_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_64_x3_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             }
         } else {
             switch (bw) {
             case 8:
-                variance_8_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_8_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             case 16:
-                variance_16_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_16_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             case 32:
-                variance_32_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_32_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             default:
-                variance_64_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, v, ny);
+                variance_64_x5_neon_dotprod(src, src_stride, p, ref_stride, bh, step, shift, st, v, ny);
                 break;
             }
         }
