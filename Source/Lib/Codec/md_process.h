@@ -932,7 +932,7 @@ typedef struct TxbCtxCache {
     int16_t     skip_ctx, dc_sign_ctx;
 } TxbCtxCache;
 
-#define DR_EDGE_SLOTS 8
+#define DR_EDGE_SLOTS 16
 
 // Filtered/upsampled directional-intra edges, keyed by everything their preparation depends on within a block
 typedef struct DrEdgeSlot {
@@ -946,6 +946,7 @@ typedef struct IntraEdgeCache {
     bool       on;
     bool       valid;
     TxSize     tx_size;
+    int32_t    filt_type; // get_filt_type() of the block
     int32_t    n_top_px, n_topright_px, n_left_px, n_bottomleft_px;
     uint8_t    top[64 * 2 + 1];
     uint8_t    left[64 * 2 + 1];
@@ -963,6 +964,7 @@ typedef struct DrEdgeSlot16 {
 typedef struct IntraEdgeCache16 {
     bool     valid;
     TxSize   tx_size;
+    int32_t  filt_type; // get_filt_type() of the block
     int32_t  n_top_px, n_topright_px, n_left_px, n_bottomleft_px;
     uint16_t top[64 * 2 + 1];
     uint16_t left[64 * 2 + 1];
@@ -1106,7 +1108,6 @@ typedef struct ModeDecisionContext {
     uint64_t         three_quad_energy;
     uint32_t         txb_1d_offset;
     bool             uv_intra_comp_only;
-    IntraEdgeCache   intra_edge;
     TxbCtxCache      txb_ctx_cache[MAX_PLANES];
     uint32_t         txb_ctx_gen;
     bool             ind_uv_avail; // True if independent chroma search data is available
@@ -1420,6 +1421,7 @@ typedef struct ModeDecisionContext {
 
     // The larger stores of the block and superblock caches come last, so that they do not push the fields above
     // away from the start of the context.
+    IntraEdgeCache   intra_edge;
     IntraEdgeCache16 intra_edge16; // switched on and off with intra_edge.on
     PredCmpCache     pred_cmp_cache; // compound intermediates of the current block's single-reference MDS0 predictions
 } ModeDecisionContext;

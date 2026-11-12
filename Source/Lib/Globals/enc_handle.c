@@ -1362,6 +1362,7 @@ static int create_ref_buf_descs(EbEncHandle* enc_handle_ptr) {
 void init_fn_ptr(void);
 void svt_av1_init_wedge_masks(void);
 void init_ii_masks(void);
+void svt_aom_init_dr_edge_params(void);
 void svt_aom_init_iscan(void);
 void svt_aom_build_tx_org(void);
 
@@ -1384,6 +1385,7 @@ static ONCE_ROUTINE(init_global_tables) {
     init_ii_masks();
 #endif
     svt_av1_crc32c_table_init();
+    svt_aom_init_dr_edge_params();
     ONCE_ROUTINE_EPILOG;
 }
 

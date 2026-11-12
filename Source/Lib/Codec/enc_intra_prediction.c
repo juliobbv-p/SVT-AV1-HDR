@@ -682,10 +682,66 @@ static void prepare_dr_edges(const uint8_t* above_ref, const uint8_t* left_ref, 
     }
 }
 
+// Edge preparation parameters of every directional prediction angle, per transform size and filter type: above and
+// left edge filter strengths (bits 0-2 and 3-5, before the availability of the edges is taken into account) and
+// above and left upsampling (bits 6 and 7), as svt_aom_intra_edge_filter_strength() and
+// svt_aom_use_intra_edge_upsample() give them. Built once by svt_aom_init_dr_edge_params().
+static uint8_t dr_edge_params[TX_SIZES_ALL][2][DIRECTIONAL_MODES][2 * MAX_ANGLE_DELTA + 1];
+
+void svt_aom_init_dr_edge_params(void) {
+    for (int tx = 0; tx < TX_SIZES_ALL; tx++) {
+        const int32_t txwpx = tx_size_wide[tx], txhpx = tx_size_high[tx];
+        for (int type = 0; type < 2; type++) {
+            for (int m = 0; m < DIRECTIONAL_MODES; m++) {
+                for (int d = -MAX_ANGLE_DELTA; d <= MAX_ANGLE_DELTA; d++) {
+                    const int32_t p_angle    = mode_to_angle_map[V_PRED + m] + d * ANGLE_STEP;
+                    const int32_t need_above = p_angle < 180;
+                    const int32_t need_left  = p_angle > 90;
+
+                    const bool filt = p_angle != 90 && p_angle != 180;
+
+                    const int sa = filt && need_above
+                        ? svt_aom_intra_edge_filter_strength(txwpx, txhpx, p_angle - 90, type)
+                        : 0;
+
+                    const int sl = filt && need_left
+                        ? svt_aom_intra_edge_filter_strength(txhpx, txwpx, p_angle - 180, type)
+                        : 0;
+                    const int ua = need_above && svt_aom_use_intra_edge_upsample(txwpx, txhpx, p_angle - 90, type);
+                    const int ul = need_left && svt_aom_use_intra_edge_upsample(txhpx, txwpx, p_angle - 180, type);
+                    assert(sa < 8 && sl < 8);
+                    dr_edge_params[tx][type][m][d + MAX_ANGLE_DELTA] = (uint8_t)(sa | (sl << 3) | (ua << 6) |
+                                                                                 (ul << 7));
+                }
+            }
+        }
+    }
+}
+
+// Key of the prepared edges of a directional mode: everything their preparation depends on within a block.
+static inline int32_t dr_edge_key(TxSize tx_size, int32_t filt_type, PredictionMode mode, int32_t angle_delta,
+                                  int32_t p_angle, int32_t disable_edge_filter, int32_t n_top_px, int32_t n_left_px) {
+    const int32_t need_above = p_angle < 180;
+    const int32_t need_left  = p_angle > 90;
+
+    int32_t key = need_above | (need_left << 1) | ((p_angle < 90) << 2) | ((p_angle > 180) << 3);
+    if (!disable_edge_filter) {
+        const int  prm  = dr_edge_params[tx_size][filt_type][mode - V_PRED][angle_delta + MAX_ANGLE_DELTA];
+        const bool filt = p_angle != 90 && p_angle != 180;
+        const int  sa   = n_top_px > 0 ? prm & 7 : 0;
+        const int  sl   = n_left_px > 0 ? (prm >> 3) & 7 : 0;
+        const int  ua   = (prm >> 6) & 1;
+        const int  ul   = prm >> 7;
+        key |= (filt << 4) | (sa << 5) | (sl << 8) | (ua << 11) | (ul << 12);
+    }
+    return key;
+}
+
 // Directional prediction from the block's edge cache; the prepared edges are shared by the angles that need the same
 // filtering and upsampling.
 static void build_dr_predictor_cached(const MacroBlockD* xd, IntraEdgeCache* ec, uint8_t* dst, int32_t dst_stride,
                                       PredictionMode mode, int32_t angle_delta, int32_t disable_edge_filter) {
+    (void)xd;
     const TxSize   tx_size    = ec->tx_size;
     const int32_t  txwpx      = tx_size_wide[tx_size];
     const int32_t  txhpx      = tx_size_high[tx_size];
@@ -703,20 +759,10 @@ static void build_dr_predictor_cached(const MacroBlockD* xd, IntraEdgeCache* ec,
         }
         return;
     }
-    const int32_t filt_type = get_filt_type(xd, PLANE_Y);
-    int32_t       key       = need_above | (need_left << 1) | ((p_angle < 90) << 2) | ((p_angle > 180) << 3);
-    if (!disable_edge_filter) {
-        const bool filt = p_angle != 90 && p_angle != 180;
-        const int  sa   = filt && need_above && ec->n_top_px > 0
-            ? svt_aom_intra_edge_filter_strength(txwpx, txhpx, p_angle - 90, filt_type)
-            : 0;
-        const int  sl   = filt && need_left && ec->n_left_px > 0
-            ? svt_aom_intra_edge_filter_strength(txhpx, txwpx, p_angle - 180, filt_type)
-            : 0;
-        const int  ua   = need_above && svt_aom_use_intra_edge_upsample(txwpx, txhpx, p_angle - 90, filt_type);
-        const int  ul   = need_left && svt_aom_use_intra_edge_upsample(txhpx, txwpx, p_angle - 180, filt_type);
-        key |= (filt << 4) | (sa << 5) | (sl << 8) | (ua << 11) | (ul << 12);
-    }
+    const int32_t filt_type = ec->filt_type;
+
+    const int32_t key = dr_edge_key(
+        tx_size, filt_type, mode, angle_delta, p_angle, disable_edge_filter, ec->n_top_px, ec->n_left_px);
     DrEdgeSlot* slot = NULL;
     for (int i = 0; i < ec->dr_count; i++) {
         if (ec->dr[i].key == key) {
@@ -784,9 +830,10 @@ static void load_intra_edge(ModeDecisionContext* ctx, PictureControlSet* pcs, Tx
                       &ec->n_topright_px,
                       &ec->n_left_px,
                       &ec->n_bottomleft_px);
-    ec->tx_size  = tx_size;
-    ec->valid    = true;
-    ec->dr_count = 0;
+    ec->tx_size   = tx_size;
+    ec->filt_type = get_filt_type(ctx->blk_ptr->av1xd, PLANE_Y);
+    ec->valid     = true;
+    ec->dr_count  = 0;
 }
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
@@ -884,6 +931,7 @@ static void prepare_dr_edges_high(const uint16_t* above_ref, const uint16_t* lef
 static void build_dr_predictor_cached_high(const MacroBlockD* xd, IntraEdgeCache16* ec, uint16_t* dst,
                                            int32_t dst_stride, PredictionMode mode, int32_t angle_delta,
                                            int32_t disable_edge_filter, int32_t bd) {
+    (void)xd;
     const TxSize    tx_size    = ec->tx_size;
     const int32_t   txwpx      = tx_size_wide[tx_size];
     const int32_t   txhpx      = tx_size_high[tx_size];
@@ -902,21 +950,10 @@ static void build_dr_predictor_cached_high(const MacroBlockD* xd, IntraEdgeCache
         }
         return;
     }
-    const int32_t filt_type = get_filt_type(xd, PLANE_Y);
+    const int32_t filt_type = ec->filt_type;
 
-    int32_t key = need_above | (need_left << 1) | ((p_angle < 90) << 2) | ((p_angle > 180) << 3);
-    if (!disable_edge_filter) {
-        const bool filt = p_angle != 90 && p_angle != 180;
-        const int  sa   = filt && need_above && ec->n_top_px > 0
-               ? svt_aom_intra_edge_filter_strength(txwpx, txhpx, p_angle - 90, filt_type)
-               : 0;
-        const int  sl   = filt && need_left && ec->n_left_px > 0
-               ? svt_aom_intra_edge_filter_strength(txhpx, txwpx, p_angle - 180, filt_type)
-               : 0;
-        const int  ua   = need_above && svt_aom_use_intra_edge_upsample(txwpx, txhpx, p_angle - 90, filt_type);
-        const int  ul   = need_left && svt_aom_use_intra_edge_upsample(txhpx, txwpx, p_angle - 180, filt_type);
-        key |= (filt << 4) | (sa << 5) | (sl << 8) | (ua << 11) | (ul << 12);
-    }
+    const int32_t key = dr_edge_key(
+        tx_size, filt_type, mode, angle_delta, p_angle, disable_edge_filter, ec->n_top_px, ec->n_left_px);
     DrEdgeSlot16* slot = NULL;
     for (int i = 0; i < ec->dr_count; i++) {
         if (ec->dr[i].key == key) {
@@ -1001,9 +1038,10 @@ static void load_intra_edge_high(ModeDecisionContext* ctx, PictureControlSet* pc
                       &ec->n_topright_px,
                       &ec->n_left_px,
                       &ec->n_bottomleft_px);
-    ec->tx_size  = tx_size;
-    ec->valid    = true;
-    ec->dr_count = 0;
+    ec->tx_size   = tx_size;
+    ec->filt_type = get_filt_type(ctx->blk_ptr->av1xd, PLANE_Y);
+    ec->valid     = true;
+    ec->dr_count  = 0;
 }
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
