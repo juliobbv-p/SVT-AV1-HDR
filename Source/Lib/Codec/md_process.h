@@ -427,6 +427,29 @@ typedef struct NsqPsqTxsCtrls {
     // and min(H0-nz,H1-nz)/min(V0-nz,V1-nz) is higher than h_to_v_th * sq-nz
 } NsqPsqTxsCtrls;
 
+struct ModeDecisionCandidateBuffer;
+
+// One chroma mode evaluated by search_best_mds3_uv_mode(): its prediction and coefficients stay in the search's own
+// candidate buffer (bf); the scalar results of the chroma transform loop are kept here.
+typedef struct UvSearchEntry {
+    UvPredictionMode uv_mode;
+
+    int8_t angle_delta;
+    TxType tx_type;
+
+    struct ModeDecisionCandidateBuffer* bf;
+
+    uint64_t cb_dist[DIST_TOTAL][DIST_CALC_TOTAL];
+
+    uint64_t cr_dist[DIST_TOTAL][DIST_CALC_TOTAL];
+
+    uint64_t cb_bits;
+
+    uint64_t cr_bits;
+} UvSearchEntry;
+
+#define UV_SEARCH_STORE_SIZE ((UV_PAETH_PRED + 1) * ((MAX_ANGLE_DELTA << 1) + 1))
+
 typedef struct RdoqCtrls {
     uint8_t enabled;
     // 0: do not apply cutoff; >=1: apply RDOQ only to the percentage of coefficients near EOB defined by cut_off_num / cut_off_denum, skipping the rest (low frequencies)
@@ -440,6 +463,22 @@ typedef struct RdoqCtrls {
     uint8_t eob_th;
     uint8_t eob_fast_th;
 } RdoqCtrls;
+
+// Results of the chroma mode search that precedes the last MD stage, with the settings they were computed under.
+typedef struct UvSearchStore {
+    uint32_t count; // 0: nothing stored for the current block
+    uint8_t  hbd_md;
+    uint8_t  pf_shape;
+    uint8_t  mds_fast_coeff_est_level;
+    bool     mds_do_rdoq;
+    bool     mds_do_spatial_sse;
+    uint32_t full_lambda;
+    uint32_t qp_index;
+
+    RdoqCtrls rdoq_ctrls;
+
+    UvSearchEntry entry[UV_SEARCH_STORE_SIZE];
+} UvSearchStore;
 
 typedef struct CoeffShavingCtrls {
     uint8_t enabled;
@@ -1423,6 +1462,7 @@ typedef struct ModeDecisionContext {
     // away from the start of the context.
     IntraEdgeCache   intra_edge;
     IntraEdgeCache16 intra_edge16; // switched on and off with intra_edge.on
+    UvSearchStore    uv_store; // per-mode results of search_best_mds3_uv_mode() for the current block
     PredCmpCache     pred_cmp_cache; // compound intermediates of the current block's single-reference MDS0 predictions
 } ModeDecisionContext;
 

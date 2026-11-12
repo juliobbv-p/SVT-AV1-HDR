@@ -3999,6 +3999,109 @@ static void compute_cfl_ac_components(PictureControlSet* pcs, ModeDecisionContex
                          svt_log2f(chroma_width) + svt_log2f(chroma_height));
 }
 
+// The chroma mode search's entry for (uv_mode, angle_delta), if the candidate can take that search's chroma
+// prediction: a regular intra candidate of the block the search ran on, predicted at the same bit depth.
+static const UvSearchEntry* uv_store_find(const ModeDecisionContext* ctx, const ModeDecisionCandidate* cand,
+                                          UvPredictionMode uv_mode, int8_t angle_delta) {
+    const UvSearchStore* const st = &ctx->uv_store;
+    if (!ctx->ind_uv_avail || st->count == 0) {
+        return NULL;
+    }
+    if (is_inter_mode(cand->block_mi.mode) || cand->block_mi.use_intrabc ||
+        (cand->palette_info && (cand->palette_size[0] > 0 || cand->palette_size[1] > 0))) {
+        return NULL;
+    }
+    if (ctx->need_hbd_comp_mds3 || st->hbd_md != (uint8_t)SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < st->count; i++) {
+        if (st->entry[i].uv_mode == uv_mode && st->entry[i].angle_delta == angle_delta) {
+            return &st->entry[i];
+        }
+    }
+    return NULL;
+}
+
+// True when svt_aom_full_loop_uv() on cand_bf (whose chroma prediction is the entry's) would repeat what the search
+// computed for the entry: one chroma transform per plane, the same transform type, and none of the settings the
+// transform loop reads changed since the search.
+static bool uv_store_result_ok(const ModeDecisionContext* ctx, const ModeDecisionCandidateBuffer* cand_bf,
+                               const UvSearchEntry* e) {
+    const UvSearchStore* const st = &ctx->uv_store;
+
+    const int chroma_ss = ctx->subsampling_x;
+
+    const BlockSize bsize = ctx->blk_geom->bsize;
+
+    const Position org = tx_org[bsize][0][cand_bf->cand->block_mi.tx_depth][0];
+    if (svt_aom_multi_uv_tx(bsize, chroma_ss) || svt_aom_uv_tx_count(bsize, chroma_ss) != 1 || org.x || org.y) {
+        return false;
+    }
+    if (cand_bf->cand->transform_type_uv != e->tx_type || ctx->tune_ssim_level > SSIM_LVL_0) {
+        return false;
+    }
+    // The last stage can switch the chroma transform to a reduced coefficient shape; the search never does.
+    if (ctx->md_stage == MD_STAGE_3 && ctx->chroma_complexity == COMPONENT_LUMA &&
+        (ctx->use_tx_shortcuts_mds3 || ctx->tx_shortcut_ctrls.apply_pf_on_coeffs)) {
+        return false;
+    }
+    const uint32_t full_lambda = ctx->full_lambda_md[SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_10_BIT_MD : EB_8_BIT_MD];
+    return st->pf_shape == (uint8_t)ctx->pf_ctrls.pf_shape &&
+        st->mds_fast_coeff_est_level == ctx->mds_fast_coeff_est_level && st->mds_do_rdoq == ctx->mds_do_rdoq &&
+        st->mds_do_spatial_sse == ctx->mds_do_spatial_sse && st->full_lambda == full_lambda &&
+        st->qp_index == ctx->qp_index && !memcmp(&st->rdoq_ctrls, &ctx->rdoq_ctrls, sizeof(st->rdoq_ctrls));
+}
+
+// Copies the entry's chroma prediction into cand_bf.
+static void uv_store_copy_pred(const ModeDecisionContext* ctx, const UvSearchEntry* e,
+                               ModeDecisionCandidateBuffer* cand_bf) {
+    const int    sh = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? 1 : 0;
+    const size_t w  = (size_t)ctx->blk_geom->bwidth_uv << sh;
+
+    const uint32_t h = ctx->blk_geom->bheight_uv;
+
+    const EbPictureBufferDesc* src = e->bf->pred;
+
+    EbPictureBufferDesc* dst = cand_bf->pred;
+    for (uint32_t r = 0; r < h; r++) {
+        memcpy(dst->u_buffer + (((size_t)r * dst->u_stride) << sh),
+               src->u_buffer + (((size_t)r * src->u_stride) << sh),
+               w);
+        memcpy(dst->v_buffer + (((size_t)r * dst->v_stride) << sh),
+               src->v_buffer + (((size_t)r * src->v_stride) << sh),
+               w);
+    }
+}
+
+// Copies what svt_aom_full_loop_uv() left for the entry: coefficients, end-of-block data, distortions and rates.
+static void uv_store_copy_result(ModeDecisionContext* ctx, const UvSearchEntry* e, ModeDecisionCandidateBuffer* cand_bf,
+                                 uint64_t cb_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
+                                 uint64_t cr_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* cb_coeff_bits,
+                                 uint64_t* cr_coeff_bits) {
+    const int    chroma_ss  = ctx->subsampling_x;
+    const TxSize tx_size_uv = av1_get_max_uv_txsize(ctx->blk_geom->bsize, chroma_ss, chroma_ss);
+
+    const size_t n = (size_t)tx_size_wide[tx_size_uv] * tx_size_high[tx_size_uv] * sizeof(int32_t);
+    const ModeDecisionCandidateBuffer* const src = e->bf;
+    memcpy(cand_bf->quant->u_buffer, src->quant->u_buffer, n);
+    memcpy(cand_bf->quant->v_buffer, src->quant->v_buffer, n);
+    memcpy(cand_bf->rec_coeff->u_buffer, src->rec_coeff->u_buffer, n);
+    memcpy(cand_bf->rec_coeff->v_buffer, src->rec_coeff->v_buffer, n);
+    memcpy(cand_bf->eob.u, src->eob.u, sizeof(cand_bf->eob.u));
+    memcpy(cand_bf->eob.v, src->eob.v, sizeof(cand_bf->eob.v));
+    memcpy(cand_bf->quant_dc.u, src->quant_dc.u, sizeof(cand_bf->quant_dc.u));
+    memcpy(cand_bf->quant_dc.v, src->quant_dc.v, sizeof(cand_bf->quant_dc.v));
+    cand_bf->u_has_coeff = src->u_has_coeff;
+    cand_bf->v_has_coeff = src->v_has_coeff;
+    // Only the SSD entries are produced (and read) when SSIM tuning is off, which uv_store_result_ok() requires.
+    memcpy(cb_full_distortion[DIST_SSD], e->cb_dist[DIST_SSD], sizeof(e->cb_dist[DIST_SSD]));
+    memcpy(cr_full_distortion[DIST_SSD], e->cr_dist[DIST_SSD], sizeof(e->cr_dist[DIST_SSD]));
+    *cb_coeff_bits = e->cb_bits;
+    *cr_coeff_bits = e->cr_bits;
+    // No quantisation ran here, so there is no RDOQ rate to hand to a later rate estimate.
+    ctx->rdoq_rate_qcoeff = NULL;
+}
+
 /************************************************************************************************
 Test CFL:
 1: Recon the Luma and form the pred_buf_q3
@@ -4083,8 +4186,13 @@ static void cfl_prediction(PictureControlSet* pcs, ModeDecisionCandidateBuffer* 
     if (non_cfl_uv_mode != UV_DC_PRED) {
         ctx->uv_intra_comp_only = true;
         assert(ctx->mds_do_chroma);
-        product_prediction_fun_table[is_inter_mode(cand_bf->cand->block_mi.mode)](
-            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+        const UvSearchEntry* const dc_entry = uv_store_find(ctx, cand_bf->cand, UV_DC_PRED, 0);
+        if (dc_entry) {
+            uv_store_copy_pred(ctx, dc_entry, cand_bf);
+        } else {
+            product_prediction_fun_table[is_inter_mode(cand_bf->cand->block_mi.mode)](
+                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+        }
     }
 
     // Compute AC component of CFL prediction
@@ -4246,46 +4354,58 @@ static void check_best_indepedant_cfl(PictureControlSet* pcs, EbPictureBufferDes
         *cr_coeff_bits = 0;
 
         assert(ctx->mds_do_chroma);
-        product_prediction_fun_table[is_inter_mode(cand_bf->cand->block_mi.mode)](
-            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
-        // Cb Residual
-        svt_aom_residual_kernel(input_pic->u_buffer,
-                                input_cb_origin_in_index,
-                                input_pic->u_stride,
-                                cand_bf->pred->u_buffer,
-                                blk_chroma_origin_index,
-                                cand_bf->pred->u_stride,
-                                (int16_t*)cand_bf->residual->u_buffer,
-                                blk_chroma_origin_index,
-                                cand_bf->residual->u_stride,
-                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                                ctx->blk_geom->bwidth_uv,
-                                ctx->blk_geom->bheight_uv);
+        const UvSearchEntry* uv_entry = uv_store_find(
+            ctx, cand_bf->cand, cand_bf->cand->block_mi.uv_mode, cand_bf->cand->block_mi.angle_delta[PLANE_TYPE_UV]);
+        if (uv_entry && !uv_store_result_ok(ctx, cand_bf, uv_entry)) {
+            uv_entry = NULL;
+        }
+        if (uv_entry) {
+            // The chroma mode search already holds this mode's prediction and transform results.
+            uv_store_copy_pred(ctx, uv_entry, cand_bf);
+            uv_store_copy_result(
+                ctx, uv_entry, cand_bf, cb_full_distortion, cr_full_distortion, cb_coeff_bits, cr_coeff_bits);
+        } else {
+            product_prediction_fun_table[is_inter_mode(cand_bf->cand->block_mi.mode)](
+                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+            // Cb Residual
+            svt_aom_residual_kernel(input_pic->u_buffer,
+                                    input_cb_origin_in_index,
+                                    input_pic->u_stride,
+                                    cand_bf->pred->u_buffer,
+                                    blk_chroma_origin_index,
+                                    cand_bf->pred->u_stride,
+                                    (int16_t*)cand_bf->residual->u_buffer,
+                                    blk_chroma_origin_index,
+                                    cand_bf->residual->u_stride,
+                                    SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                    ctx->blk_geom->bwidth_uv,
+                                    ctx->blk_geom->bheight_uv);
 
-        // Cr Residual
-        svt_aom_residual_kernel(input_pic->v_buffer,
-                                input_cb_origin_in_index,
-                                input_pic->v_stride,
-                                cand_bf->pred->v_buffer,
-                                blk_chroma_origin_index,
-                                cand_bf->pred->v_stride,
-                                (int16_t*)cand_bf->residual->v_buffer,
-                                blk_chroma_origin_index,
-                                cand_bf->residual->v_stride,
-                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                                ctx->blk_geom->bwidth_uv,
-                                ctx->blk_geom->bheight_uv);
-        svt_aom_full_loop_uv(pcs,
-                             ctx,
-                             cand_bf,
-                             input_pic,
-                             COMPONENT_CHROMA,
-                             cb_qindex,
-                             cb_full_distortion,
-                             cr_full_distortion,
-                             cb_coeff_bits,
-                             cr_coeff_bits,
-                             1);
+            // Cr Residual
+            svt_aom_residual_kernel(input_pic->v_buffer,
+                                    input_cb_origin_in_index,
+                                    input_pic->v_stride,
+                                    cand_bf->pred->v_buffer,
+                                    blk_chroma_origin_index,
+                                    cand_bf->pred->v_stride,
+                                    (int16_t*)cand_bf->residual->v_buffer,
+                                    blk_chroma_origin_index,
+                                    cand_bf->residual->v_stride,
+                                    SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                    ctx->blk_geom->bwidth_uv,
+                                    ctx->blk_geom->bheight_uv);
+            svt_aom_full_loop_uv(pcs,
+                                 ctx,
+                                 cand_bf,
+                                 input_pic,
+                                 COMPONENT_CHROMA,
+                                 cb_qindex,
+                                 cb_full_distortion,
+                                 cr_full_distortion,
+                                 cb_coeff_bits,
+                                 cr_coeff_bits,
+                                 1);
+        }
     } else {
         cand_bf->fast_chroma_rate = chroma_rate;
     }
@@ -7350,9 +7470,17 @@ static void full_loop_core(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
          * check above to ensure the prediction is always valid before the transform.*/
         assert(cand_bf->valid_luma_pred);
         ctx->uv_intra_comp_only = ctx->need_hbd_comp_mds3 ? false : true;
-        // Here, the mode is INTRA, but if intra_bc is used, must use inter prediction function
-        product_prediction_fun_table[cand_bf->cand->block_mi.use_intrabc](
-            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+        // The chroma mode search that precedes the last stage has already predicted this chroma mode.
+        const UvSearchEntry* const uv_entry = ctx->md_stage == MD_STAGE_3 && ctx->mds_do_chroma
+            ? uv_store_find(ctx, cand, cand->block_mi.uv_mode, cand->block_mi.angle_delta[PLANE_TYPE_UV])
+            : NULL;
+        if (uv_entry) {
+            uv_store_copy_pred(ctx, uv_entry, cand_bf);
+        } else {
+            // Here, the mode is INTRA, but if intra_bc is used, must use inter prediction function
+            product_prediction_fun_table[cand_bf->cand->block_mi.use_intrabc](
+                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+        }
     }
     // Initialize luma CBF
     cand_bf->y_has_coeff   = 0;
@@ -7433,44 +7561,57 @@ static void full_loop_core(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                 cfl_performed = true;
             }
         }
-        //Cb Residual
-        svt_aom_residual_kernel(input_pic->u_buffer,
-                                input_cb_origin_in_index,
-                                input_pic->u_stride,
-                                cand_bf->pred->u_buffer,
-                                0,
-                                cand_bf->pred->u_stride,
-                                (int16_t*)cand_bf->residual->u_buffer,
-                                0,
-                                cand_bf->residual->u_stride,
-                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                                ctx->blk_geom->bwidth_uv,
-                                ctx->blk_geom->bheight_uv);
+        // An intra candidate that keeps its searched chroma mode repeats the chroma mode search's transform loop.
+        const UvSearchEntry* uv_entry = NULL;
+        if (!is_inter && !cfl_performed && ctx->md_stage == MD_STAGE_3) {
+            uv_entry = uv_store_find(ctx, cand, cand->block_mi.uv_mode, cand->block_mi.angle_delta[PLANE_TYPE_UV]);
+            if (uv_entry && !uv_store_result_ok(ctx, cand_bf, uv_entry)) {
+                uv_entry = NULL;
+            }
+        }
+        if (uv_entry) {
+            uv_store_copy_result(
+                ctx, uv_entry, cand_bf, cb_full_distortion, cr_full_distortion, &cb_coeff_bits, &cr_coeff_bits);
+        } else {
+            //Cb Residual
+            svt_aom_residual_kernel(input_pic->u_buffer,
+                                    input_cb_origin_in_index,
+                                    input_pic->u_stride,
+                                    cand_bf->pred->u_buffer,
+                                    0,
+                                    cand_bf->pred->u_stride,
+                                    (int16_t*)cand_bf->residual->u_buffer,
+                                    0,
+                                    cand_bf->residual->u_stride,
+                                    SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                    ctx->blk_geom->bwidth_uv,
+                                    ctx->blk_geom->bheight_uv);
 
-        //Cr Residual
-        svt_aom_residual_kernel(input_pic->v_buffer,
-                                input_cb_origin_in_index,
-                                input_pic->v_stride,
-                                cand_bf->pred->v_buffer,
-                                0,
-                                cand_bf->pred->v_stride,
-                                (int16_t*)cand_bf->residual->v_buffer,
-                                0,
-                                cand_bf->residual->v_stride,
-                                SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
-                                ctx->blk_geom->bwidth_uv,
-                                ctx->blk_geom->bheight_uv);
-        svt_aom_full_loop_uv(pcs,
-                             ctx,
-                             cand_bf,
-                             input_pic,
-                             COMPONENT_CHROMA,
-                             cb_qindex,
-                             cb_full_distortion,
-                             cr_full_distortion,
-                             &cb_coeff_bits,
-                             &cr_coeff_bits,
-                             1);
+            //Cr Residual
+            svt_aom_residual_kernel(input_pic->v_buffer,
+                                    input_cb_origin_in_index,
+                                    input_pic->v_stride,
+                                    cand_bf->pred->v_buffer,
+                                    0,
+                                    cand_bf->pred->v_stride,
+                                    (int16_t*)cand_bf->residual->v_buffer,
+                                    0,
+                                    cand_bf->residual->v_stride,
+                                    SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
+                                    ctx->blk_geom->bwidth_uv,
+                                    ctx->blk_geom->bheight_uv);
+            svt_aom_full_loop_uv(pcs,
+                                 ctx,
+                                 cand_bf,
+                                 input_pic,
+                                 COMPONENT_CHROMA,
+                                 cb_qindex,
+                                 cb_full_distortion,
+                                 cr_full_distortion,
+                                 &cb_coeff_bits,
+                                 &cr_coeff_bits,
+                                 1);
+        }
         // If CFL is performed, check independent chroma vs. cfl.
         // If independent chroma data is unavailable, update the chroma fast rate, since the rate computed
         // at MDS0 assumes UV_DC_PRED is used.
@@ -7885,6 +8026,27 @@ static void search_best_mds3_uv_mode(PictureControlSet* pcs, EbPictureBufferDesc
     assert(ctx->has_uv && ctx->uv_ctrls.uv_mode <= CHROMA_MODE_1);
     ctx->mds_do_chroma = true;
 
+    // Keep each mode's results for the last MD stage, with the settings the transform loop reads.
+    UvSearchStore* const uv_store = &ctx->uv_store;
+
+    uv_store->count = 0;
+
+    uv_store->hbd_md   = (uint8_t)SVT_EFFECTIVE_HBD_MD(ctx->hbd_md);
+    uv_store->pf_shape = (uint8_t)ctx->pf_ctrls.pf_shape;
+
+    uv_store->mds_fast_coeff_est_level = ctx->mds_fast_coeff_est_level;
+
+    uv_store->mds_do_rdoq = ctx->mds_do_rdoq;
+
+    uv_store->mds_do_spatial_sse = ctx->mds_do_spatial_sse;
+
+    uv_store->full_lambda = full_lambda;
+
+    uv_store->qp_index = ctx->qp_index;
+    memcpy(&uv_store->rdoq_ctrls, &ctx->rdoq_ctrls, sizeof(uv_store->rdoq_ctrls));
+    // The search must not have run the transform under a last-stage-only shortcut.
+    const bool uv_store_ok = ctx->md_stage != MD_STAGE_3 && uv_mode_total_count <= UV_SEARCH_STORE_SIZE;
+
     // Perform full-loop search for all UV modes
     for (unsigned int uv_mode_count = 0; uv_mode_count < uv_mode_total_count; uv_mode_count++) {
         ModeDecisionCandidateBuffer* cand_bf = ctx->cand_bf_ptr_array[uv_mode_count + start_full_buffer_index];
@@ -7944,6 +8106,21 @@ static void search_best_mds3_uv_mode(PictureControlSet* pcs, EbPictureBufferDesc
         distortion[cand->block_mi.uv_mode][MAX_ANGLE_DELTA + cand->block_mi.angle_delta[PLANE_TYPE_UV]] =
             cb_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] + cr_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL];
 
+        if (uv_store_ok) {
+            UvSearchEntry* const e = &uv_store->entry[uv_store->count++];
+
+            e->uv_mode = cand->block_mi.uv_mode;
+
+            e->angle_delta = cand->block_mi.angle_delta[PLANE_TYPE_UV];
+
+            e->tx_type = cand->transform_type_uv;
+
+            e->bf = cand_bf;
+            memcpy(e->cb_dist, cb_full_distortion, sizeof(e->cb_dist));
+            memcpy(e->cr_dist, cr_full_distortion, sizeof(e->cr_dist));
+            e->cb_bits = cb_coeff_bits;
+            e->cr_bits = cr_coeff_bits;
+        }
     } // End full loop
 
     // Loop over all available luma intra modes, then loop over all uv_modes to derive the best uv_mode for a given intra mode
@@ -9927,7 +10104,8 @@ static void md_encode_block_internal(PictureControlSet* pcs, ModeDecisionContext
     }
     product_coding_loop_init_fast_loop(pcs, ctx);
 
-    ctx->ind_uv_avail = 0;
+    ctx->ind_uv_avail   = 0;
+    ctx->uv_store.count = 0;
     // Search for the best independent intra chroma mode if search is enabled to be done before MDS0
     if (ctx->uv_ctrls.uv_mode == CHROMA_MODE_0 && !ctx->uv_ctrls.ind_uv_last_mds && ctx->blk_geom->sq_size < 128 &&
         ctx->has_uv) {
@@ -11368,6 +11546,7 @@ void svt_aom_init_sb_data(SequenceControlSet* scs, PictureControlSet* pcs, ModeD
         ctx->cr_txb_skip_context   = 0;
         ctx->cr_dc_sign_context    = 0;
         ctx->ind_uv_avail          = 0;
+        ctx->uv_store.count        = 0;
     } else if (ctx->pd_pass == PD_PASS_0) {
         // Set SB-level variables here
         ctx->tx_depth                 = 0;
@@ -11379,6 +11558,7 @@ void svt_aom_init_sb_data(SequenceControlSet* scs, PictureControlSet* pcs, ModeD
         ctx->mds_do_spatial_sse       = false;
         ctx->mds_fast_coeff_est_level = ctx->rate_est_ctrls.pd0_fast_coeff_est_level; //ON  !!!
         ctx->ind_uv_avail             = 0;
+        ctx->uv_store.count           = 0;
     }
 }
 
