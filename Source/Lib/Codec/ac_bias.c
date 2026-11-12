@@ -10,10 +10,15 @@
 */
 
 #include <math.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include "ac_bias.h"
 #include "aom_dsp_rtcd.h"
 #include "common_dsp_rtcd.h"
+
+#if defined(ARCH_AARCH64)
+uint64_t svt_aom_sum_abs_s32_neon(const int32_t* buf, uint32_t n);
+#endif
 
 static int psy_energy_4x4_c(const uint8_t* src, ptrdiff_t src_stride) {
     int16_t src16[16];
@@ -169,12 +174,20 @@ uint64_t svt_psy_adjust_rate_light(const int32_t* coeff, uint64_t coeff_bits, co
     uint64_t       energy = 0;
     const int32_t* buf    = coeff;
 
-    for (uint32_t j = 0; j < height; j++) {
-        // Skip the DC coefficient from the calculation
-        for (uint32_t i = j ? 0 : 1; i < width; i++) {
-            energy += (uint64_t)llabs((int64_t)buf[i]);
+#if defined(ARCH_AARCH64)
+    if (svt_aom_satd == svt_aom_satd_neon && width * height > 0) {
+        // The rows are contiguous: sum everything in one pass and take the DC coefficient back out.
+        energy = svt_aom_sum_abs_s32_neon(coeff, width * height) - (uint64_t)llabs((int64_t)coeff[0]);
+    } else
+#endif
+    {
+        for (uint32_t j = 0; j < height; j++) {
+            // Skip the DC coefficient from the calculation
+            for (uint32_t i = j ? 0 : 1; i < width; i++) {
+                energy += (uint64_t)llabs((int64_t)buf[i]);
+            }
+            buf += width;
         }
-        buf += width;
     }
 
     if (energy > 0) {

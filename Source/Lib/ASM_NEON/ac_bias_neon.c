@@ -91,3 +91,23 @@ uint64_t svt_psy_distortion_neon(const uint8_t* input, const uint32_t input_stri
 
     return energy_gap;
 }
+
+// Sum of |buf[i]| over n coefficients, each magnitude taken as a 64-bit value (so INT32_MIN counts as 2^31).
+uint64_t svt_aom_sum_abs_s32_neon(const int32_t* buf, uint32_t n) {
+    uint64x2_t s0 = vdupq_n_u64(0), s1 = s0, s2 = s0, s3 = s0;
+    uint32_t   i = 0;
+    for (; i + 16 <= n; i += 16) {
+        s0 = vpadalq_u32(s0, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(buf + i))));
+        s1 = vpadalq_u32(s1, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(buf + i + 4))));
+        s2 = vpadalq_u32(s2, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(buf + i + 8))));
+        s3 = vpadalq_u32(s3, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(buf + i + 12))));
+    }
+    for (; i + 4 <= n; i += 4) {
+        s0 = vpadalq_u32(s0, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(buf + i))));
+    }
+    uint64_t sum = vaddvq_u64(vaddq_u64(vaddq_u64(s0, s1), vaddq_u64(s2, s3)));
+    for (; i < n; i++) {
+        sum += (uint64_t)llabs((int64_t)buf[i]);
+    }
+    return sum;
+}
