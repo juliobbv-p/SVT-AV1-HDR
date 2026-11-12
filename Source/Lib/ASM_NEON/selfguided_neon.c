@@ -22,6 +22,31 @@
 #define NB_EVEN 5
 #define NB_ODD 4
 
+// 256 - svt_aom_eb_x_by_xplus1[z] for z < 48. For larger z the value is 5 minus the number of the thresholds
+// 55, 72, 101, 169 and 254 that z exceeds (checked against the full table for all 256 indices).
+static const uint8_t sgr_256_minus_x_by_xplus1_lo[48] = {
+    255, 128, 85, 64, 51, 43, 37, 32, 28, 26, 23, 21, 20, 18, 17, 16, 15, 14, 13, 13, 12, 12, 11, 11,
+    10,  10,  9,  9,  9,  9,  8,  8,  8,  8,  7,  7,  7,  7,  7,  6,  6,  6,  6,  6,  6,  6,  5,  5,
+};
+
+static inline uint8x16_t sgr_256_minus_x_by_xplus1(uint8x16_t z) {
+    const uint8x16x3_t tbl = {{vld1q_u8(sgr_256_minus_x_by_xplus1_lo),
+                               vld1q_u8(sgr_256_minus_x_by_xplus1_lo + 16),
+                               vld1q_u8(sgr_256_minus_x_by_xplus1_lo + 32)}};
+    const uint8x16_t   lo  = vqtbl3q_u8(tbl, z); // 0 for z >= 48
+    // Each compare yields 0xff (-1) where z exceeds the threshold.
+    uint8x16_t hi = vaddq_u8(vdupq_n_u8(5), vcgtq_u8(z, vdupq_n_u8(55)));
+
+    hi = vaddq_u8(hi, vcgtq_u8(z, vdupq_n_u8(72)));
+
+    hi = vaddq_u8(hi, vcgtq_u8(z, vdupq_n_u8(101)));
+
+    hi = vaddq_u8(hi, vcgtq_u8(z, vdupq_n_u8(169)));
+
+    hi = vaddq_u8(hi, vcgtq_u8(z, vdupq_n_u8(254)));
+    return vbslq_u8(vcgtq_u8(z, vdupq_n_u8(47)), hi, lo);
+}
+
 static inline void calc_ab_fast_internal_common(uint32x4_t s0, uint32x4_t s1, uint32x4_t s2, uint32x4_t s3,
                                                 uint32x4_t s4, uint32x4_t s5, uint32x4_t s6, uint32x4_t s7,
                                                 int32x4_t sr4, int32x4_t sr5, int32x4_t sr6, int32x4_t sr7,
@@ -30,8 +55,6 @@ static inline void calc_ab_fast_internal_common(uint32x4_t s0, uint32x4_t s1, ui
                                                 uint16_t* dst_A16, int32_t* src2, const int buf_stride) {
     uint32x4_t q0, q1, q2, q3;
     uint32x4_t p0, p1, p2, p3;
-    uint16x4_t d0, d1, d2, d3;
-    int        x, y;
 
     s0 = vmulq_u32(s0, const_n_val);
     s1 = vmulq_u32(s1, const_n_val);
@@ -74,19 +97,27 @@ static inline void calc_ab_fast_internal_common(uint32x4_t s0, uint32x4_t s1, ui
     p3 = vminq_u32(p3, const_val);
 
     {
+        // p holds z = min(.., 255) per sample; the a plane stores x_by_xplus1[z] and the b computation needs
+        // SGRPROJ_SGR - x_by_xplus1[z].
+        assert(SGRPROJ_SGR == 256);
+        (void)sgrproj_sgr;
         store_u32_4x4((uint32_t*)src1, buf_stride, p0, p1, p2, p3);
-
-        for (x = 0; x < 4; x++) {
-            for (y = 0; y < 4; y++) {
-                dst_A16[x * buf_stride + y] = svt_aom_eb_x_by_xplus1[src1[x * buf_stride + y]];
-            }
-        }
-        load_u16_4x4(dst_A16, buf_stride, &d0, &d1, &d2, &d3);
+        const uint8x16_t z   = vcombine_u8(vmovn_u16(vcombine_u16(vmovn_u32(p0), vmovn_u32(p1))),
+                                         vmovn_u16(vcombine_u16(vmovn_u32(p2), vmovn_u32(p3))));
+        const uint8x16_t r   = sgr_256_minus_x_by_xplus1(z);
+        const uint16x8_t r01 = vmovl_u8(vget_low_u8(r));
+        const uint16x8_t r23 = vmovl_u8(vget_high_u8(r));
+        const uint16x8_t a01 = vsubq_u16(vdupq_n_u16(256), r01);
+        const uint16x8_t a23 = vsubq_u16(vdupq_n_u16(256), r23);
+        vst1_u16(dst_A16 + 0 * buf_stride, vget_low_u16(a01));
+        vst1_u16(dst_A16 + 1 * buf_stride, vget_high_u16(a01));
+        vst1_u16(dst_A16 + 2 * buf_stride, vget_low_u16(a23));
+        vst1_u16(dst_A16 + 3 * buf_stride, vget_high_u16(a23));
+        p0 = vmovl_u16(vget_low_u16(r01));
+        p1 = vmovl_u16(vget_high_u16(r01));
+        p2 = vmovl_u16(vget_low_u16(r23));
+        p3 = vmovl_u16(vget_high_u16(r23));
     }
-    p0 = vsubl_u16(sgrproj_sgr, d0);
-    p1 = vsubl_u16(sgrproj_sgr, d1);
-    p2 = vsubl_u16(sgrproj_sgr, d2);
-    p3 = vsubl_u16(sgrproj_sgr, d3);
 
     s4 = vmulq_u32(vreinterpretq_u32_s32(sr4), one_by_n_minus_1_vec);
     s5 = vmulq_u32(vreinterpretq_u32_s32(sr5), one_by_n_minus_1_vec);
@@ -121,7 +152,6 @@ static inline void calc_ab_internal_common(uint32x4_t s0, uint32x4_t s1, uint32x
     uint16x4_t d0, d1, d2, d3, d4, d5, d6, d7;
     uint32x4_t q0, q1, q2, q3, q4, q5, q6, q7;
     uint32x4_t p0, p1, p2, p3, p4, p5, p6, p7;
-    int        x, y;
 
     s0 = vmulq_u32(s0, const_n_val);
     s1 = vmulq_u32(s1, const_n_val);
@@ -205,21 +235,30 @@ static inline void calc_ab_internal_common(uint32x4_t s0, uint32x4_t s1, uint32x
     p7 = vminq_u32(p7, const_val);
 
     {
+        // Row x of the group is (p[x], p[x + 4]); see calc_ab_fast_internal_common for the lookup.
+        assert(SGRPROJ_SGR == 256);
+        (void)sgrproj_sgr;
         store_u32_4x4((uint32_t*)src1, buf_stride, p0, p1, p2, p3);
         store_u32_4x4((uint32_t*)src1 + 4, buf_stride, p4, p5, p6, p7);
+        const uint8x16_t z01 = vcombine_u8(vmovn_u16(vcombine_u16(vmovn_u32(p0), vmovn_u32(p4))),
+                                           vmovn_u16(vcombine_u16(vmovn_u32(p1), vmovn_u32(p5))));
+        const uint8x16_t z23 = vcombine_u8(vmovn_u16(vcombine_u16(vmovn_u32(p2), vmovn_u32(p6))),
+                                           vmovn_u16(vcombine_u16(vmovn_u32(p3), vmovn_u32(p7))));
+        const uint8x16_t r01 = sgr_256_minus_x_by_xplus1(z01);
+        const uint8x16_t r23 = sgr_256_minus_x_by_xplus1(z23);
 
-        for (x = 0; x < 4; x++) {
-            for (y = 0; y < 8; y++) {
-                dst_A16[x * buf_stride + y] = svt_aom_eb_x_by_xplus1[src1[x * buf_stride + y]];
-            }
-        }
-        load_u16_8x4(dst_A16, buf_stride, &s16_4, &s16_5, &s16_6, &s16_7);
+        s16_4 = vmovl_u8(vget_low_u8(r01));
+
+        s16_5 = vmovl_u8(vget_high_u8(r01));
+
+        s16_6 = vmovl_u8(vget_low_u8(r23));
+
+        s16_7 = vmovl_u8(vget_high_u8(r23));
+        vst1q_u16(dst_A16 + 0 * buf_stride, vsubq_u16(vdupq_n_u16(256), s16_4));
+        vst1q_u16(dst_A16 + 1 * buf_stride, vsubq_u16(vdupq_n_u16(256), s16_5));
+        vst1q_u16(dst_A16 + 2 * buf_stride, vsubq_u16(vdupq_n_u16(256), s16_6));
+        vst1q_u16(dst_A16 + 3 * buf_stride, vsubq_u16(vdupq_n_u16(256), s16_7));
     }
-
-    s16_4 = vsubq_u16(sgrproj_sgr, s16_4);
-    s16_5 = vsubq_u16(sgrproj_sgr, s16_5);
-    s16_6 = vsubq_u16(sgrproj_sgr, s16_6);
-    s16_7 = vsubq_u16(sgrproj_sgr, s16_7);
 
     s0 = vmull_u16(vget_low_u16(s16_0), one_by_n_minus_1_vec);
     s1 = vmull_u16(vget_low_u16(s16_1), one_by_n_minus_1_vec);
