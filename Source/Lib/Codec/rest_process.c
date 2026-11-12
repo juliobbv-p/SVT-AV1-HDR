@@ -127,7 +127,9 @@ EbErrorType svt_aom_rest_context_ctor(EbThreadContext* thread_ctx, const EbEncHa
         context_ptr->rst_tmpbuf = NULL;
 
         if (enable_sg) {
-            EB_MALLOC_ALIGNED(context_ptr->rst_tmpbuf, RESTORATION_TMPBUF_SIZE);
+            // Twice the application size: the self-guided search keeps the best parameter set's filter outputs
+            // in the second half.
+            EB_MALLOC_ALIGNED(context_ptr->rst_tmpbuf, 2 * RESTORATION_TMPBUF_SIZE);
         }
     }
 

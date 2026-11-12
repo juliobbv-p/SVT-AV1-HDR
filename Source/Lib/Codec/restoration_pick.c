@@ -9,6 +9,7 @@
  * PATENTS file, you can obtain it at https://www.aomedia.org/license/patent-license.
  */
 
+#include <stdio.h>
 #include <math.h>
 
 #include "svt_psnr.h"
@@ -551,12 +552,57 @@ static INLINE void apply_sgr(int32_t sgr_params_idx, const uint8_t* dat8, int32_
     }
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// SSE against the source of the unit filtered with the given projection, computed from the self-guided filter
+// outputs: the same per-pixel arithmetic as svt_apply_selfguided_restoration_c() followed by the squared error.
+static int64_t sgrproj_filtered_sse_highbd(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                           const uint8_t* dat8, int32_t dat_stride, const int32_t* flt0,
+                                           const int32_t* flt1, int32_t flt_stride, const int32_t* xqd,
+                                           const SgrParamsType* params, int32_t bit_depth) {
+    const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
+    const uint16_t* dat = CONVERT_TO_SHORTPTR(dat8);
+
+    int32_t xq[2];
+    svt_decode_xq(xqd, xq, params);
+    if (params->r[0] <= 0) {
+        xq[0] = 0;
+    }
+    if (params->r[1] <= 0) {
+        xq[1] = 0;
+    }
+    int64_t err = 0;
+    for (int32_t i = 0; i < height; ++i) {
+        for (int32_t j = 0; j < width; ++j) {
+            const int32_t u = (int32_t)dat[j] << SGRPROJ_RST_BITS;
+
+            int32_t v = u << SGRPROJ_PRJ_BITS;
+            v += xq[0] * (flt0[j] - u);
+            v += xq[1] * (flt1[j] - u);
+            const int16_t w = (int16_t)ROUND_POWER_OF_TWO(v, SGRPROJ_PRJ_BITS + SGRPROJ_RST_BITS);
+            const int32_t e = (int32_t)clip_pixel_highbd(w, bit_depth) - src[j];
+            err += e * e;
+        }
+        dat += dat_stride;
+        src += src_stride;
+        flt0 += flt_stride;
+        flt1 += flt_stride;
+    }
+    return err;
+}
+#endif
+
+// When unit_sse is not NULL it receives the SSE of the unit filtered with the returned parameters, or -1 when
+// the caller has to obtain it by filtering the unit.
 static SgrprojInfo search_selfguided_restoration(const uint8_t* dat8, int32_t width, int32_t height, int32_t dat_stride,
                                                  const uint8_t* src8, int32_t src_stride, int32_t use_highbitdepth,
                                                  int32_t bit_depth, int32_t pu_width, int32_t pu_height,
-                                                 int32_t* rstbuf, SgFilterCtrls* ctrls, int32_t plane) {
+                                                 int32_t* rstbuf, SgFilterCtrls* ctrls, int32_t plane,
+                                                 int64_t* unit_sse) {
     int32_t* flt0 = rstbuf;
     int32_t* flt1 = flt0 + RESTORATION_UNITPELS_MAX;
+    // Filter outputs of the best parameter set so far; the two pairs swap roles when a set becomes the best.
+    int32_t* best_flt0 = rstbuf + 2 * RESTORATION_UNITPELS_MAX;
+    int32_t* best_flt1 = best_flt0 + RESTORATION_UNITPELS_MAX;
     int32_t  ep, bestep = 0;
     int64_t  besterr = -1;
     int32_t  exqd[2], bestxqd[2] = {0, 0};
@@ -619,7 +665,34 @@ static SgrprojInfo search_selfguided_restoration(const uint8_t* dat8, int32_t wi
             besterr    = err;
             bestxqd[0] = exqd[0];
             bestxqd[1] = exqd[1];
+            int32_t* t = best_flt0;
+            best_flt0  = flt0;
+
+            flt0      = t;
+            t         = best_flt1;
+            best_flt1 = flt1;
+
+            flt1 = t;
         }
+    }
+    if (unit_sse) {
+        *unit_sse = -1;
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+        if (use_highbitdepth && besterr != -1) {
+            *unit_sse = sgrproj_filtered_sse_highbd(src8,
+                                                    width,
+                                                    height,
+                                                    src_stride,
+                                                    dat8,
+                                                    dat_stride,
+                                                    best_flt0,
+                                                    best_flt1,
+                                                    flt_stride,
+                                                    bestxqd,
+                                                    &svt_aom_eb_sgr_params[bestep],
+                                                    bit_depth);
+        }
+#endif
     }
 
     SgrprojInfo ret;
@@ -1251,6 +1324,8 @@ static void search_sgrproj_seg(const RestorationTileLimits* limits, const Av1Pix
     const int32_t ss_y            = is_uv && cm->subsampling_y;
     const int32_t procunit_width  = RESTORATION_PROC_UNIT_SIZE >> ss_x;
     const int32_t procunit_height = RESTORATION_PROC_UNIT_SIZE >> ss_y;
+    const bool    use_search_sse  = highbd && !cm->use_boundaries_in_rest_search;
+    int64_t       unit_sse        = -1;
 
     rusi->sgrproj = search_selfguided_restoration(dgd_start,
                                                   limits->h_end - limits->h_start,
@@ -1264,12 +1339,20 @@ static void search_sgrproj_seg(const RestorationTileLimits* limits, const Av1Pix
                                                   procunit_height,
                                                   rsc->tmpbuf,
                                                   &cm->sg_filter_ctrls,
-                                                  rsc->plane);
+                                                  rsc->plane,
+                                                  use_search_sse ? &unit_sse : NULL);
     RestorationUnitInfo rui;
     rui.restoration_type = RESTORE_SGRPROJ;
     rui.sgrproj_info     = rusi->sgrproj;
 
-    rusi->sse[RESTORE_SGRPROJ] = try_restoration_unit_seg(rsc, limits, tile, &rui);
+    // Without stripe boundaries in the search, filtering the unit through the application path reads the same
+    // unmodified reconstruction as the search did and produces the same filter outputs, so its SSE is the one
+    // computed from the search's own buffers.
+    if (unit_sse >= 0) {
+        rusi->sse[RESTORE_SGRPROJ] = unit_sse;
+    } else {
+        rusi->sse[RESTORE_SGRPROJ] = try_restoration_unit_seg(rsc, limits, tile, &rui);
+    }
 }
 
 /* Get the cost/SSE/rate of using self-guided filtering for a given restoration unit. */

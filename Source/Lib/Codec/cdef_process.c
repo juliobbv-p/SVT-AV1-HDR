@@ -33,7 +33,14 @@ static void set_unscaled_input_16bit(PictureControlSet* pcs) {
     EbPictureBufferDesc* output_pic = pcs->input_frame16bit;
     uint16_t             ss_x       = pcs->ppcs->scs->subsampling_x;
     uint16_t             ss_y       = pcs->ppcs->scs->subsampling_y;
-    svt_aom_copy_buffer_info(input_pic, pcs->input_frame16bit);
+    // Compare strides before copying them. Restoration must read the rows at the spacing mode decision wrote.
+    const bool reuse_packed = input_pic->bit_depth != EB_EIGHT_BIT && input_pic == pcs->ppcs->enhanced_pic &&
+        pcs->hbd_md == EB_10_BIT_MD && output_pic->y_stride == input_pic->y_stride &&
+        output_pic->u_stride == input_pic->u_stride && output_pic->v_stride == input_pic->v_stride;
+    svt_aom_copy_buffer_info(input_pic, output_pic);
+    if (reuse_packed) {
+        return;
+    }
     if (input_pic->bit_depth == EB_EIGHT_BIT) {
         svt_aom_convert_pic_8bit_to_16bit(input_pic, output_pic, ss_x, ss_y);
     } else {
