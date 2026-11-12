@@ -10,6 +10,7 @@
  */
 
 #include <arm_neon.h>
+#include <stdbool.h>
 #include <math.h>
 #include "aom_dsp_rtcd.h"
 #include "cdef.h"
@@ -219,6 +220,107 @@ static inline uint64x2_t add_select_best(uint64x2_t a, uint64x2_t b, uint64x2_t 
     return best;
 }
 
+// svt_search_one_dual_neon() once a pair has been selected (nb_strengths > 0, so every filter block has a finite
+// best_mse among the selected pairs). For unsigned values
+//     min(m0 + m1, best) = best - sat(sat(best - m0) - m1),
+// where sat() is subtraction saturating at zero. The total of a candidate pair (j, k) over the frame is therefore
+// (sum of best) minus the sum of sat(sat(best - m0[j]) - m1[k]): the inner loop is one saturating subtraction and
+// one add per element, and the totals are formed once at the end. The gain of an element never exceeds the sum of
+// best, so nothing overflows.
+static uint64_t search_one_dual_gain_neon(int* lev0, int* lev1, int nb_strengths, uint64_t** mse[2], int sb_count,
+                                          int start_gi, int end_gi) {
+    const size_t stride    = ((end_gi + 3) & ~3);
+    const size_t start_idx = start_gi;
+    const size_t end_idx   = end_gi;
+    uint64_t     gain[end_gi * stride];
+    uint64_t     best_sum = 0;
+
+    // The first filter block initialises the gains.
+    {
+        const uint64_t* mse_0_ptr = mse[0][0];
+        const uint64_t* mse_1_ptr = mse[1][0];
+        const uint64_t  best      = find_best_mse(mse_0_ptr, mse_1_ptr, lev0, lev1, nb_strengths);
+
+        best_sum = best;
+
+        size_t j = start_idx;
+        do {
+            uint64_t* gain_ptr = gain + j * stride;
+
+            const uint64_t m0 = mse_0_ptr[j];
+
+            const uint64x2_t c = vdupq_n_u64(best > m0 ? best - m0 : 0);
+
+            size_t k = start_idx;
+            do {
+                vst1q_u64(gain_ptr + k + 0, vqsubq_u64(c, vld1q_u64(mse_1_ptr + k + 0)));
+                vst1q_u64(gain_ptr + k + 2, vqsubq_u64(c, vld1q_u64(mse_1_ptr + k + 2)));
+                k += 4;
+            } while (k < end_idx);
+        } while (++j < end_idx);
+    }
+
+    // The remaining filter blocks, two per pass (an odd one out is paired with itself at zero weight below).
+    for (size_t i = 1; i < (size_t)sb_count; i += 2) {
+        const bool two = i + 1 < (size_t)sb_count;
+
+        const uint64_t* mse_0_0_ptr = mse[0][i];
+        const uint64_t* mse_1_0_ptr = mse[1][i];
+        const uint64_t* mse_0_1_ptr = mse[0][two ? i + 1 : i];
+        const uint64_t* mse_1_1_ptr = mse[1][two ? i + 1 : i];
+
+        const uint64_t best0 = find_best_mse(mse_0_0_ptr, mse_1_0_ptr, lev0, lev1, nb_strengths);
+        // A missing second block gets best = 0, which makes all of its gains zero.
+        const uint64_t best1 = two ? find_best_mse(mse_0_1_ptr, mse_1_1_ptr, lev0, lev1, nb_strengths) : 0;
+        best_sum += best0 + best1;
+
+        size_t j = start_idx;
+        do {
+            uint64_t* gain_ptr = gain + j * stride;
+
+            const uint64_t m0_0 = mse_0_0_ptr[j];
+            const uint64_t m0_1 = mse_0_1_ptr[j];
+
+            const uint64x2_t c0 = vdupq_n_u64(best0 > m0_0 ? best0 - m0_0 : 0);
+
+            const uint64x2_t c1 = vdupq_n_u64(best1 > m0_1 ? best1 - m0_1 : 0);
+
+            size_t k = start_idx;
+            do {
+                const uint64x2_t g0_0 = vqsubq_u64(c0, vld1q_u64(mse_1_0_ptr + k + 0));
+                const uint64x2_t g0_1 = vqsubq_u64(c0, vld1q_u64(mse_1_0_ptr + k + 2));
+                const uint64x2_t g1_0 = vqsubq_u64(c1, vld1q_u64(mse_1_1_ptr + k + 0));
+                const uint64x2_t g1_1 = vqsubq_u64(c1, vld1q_u64(mse_1_1_ptr + k + 2));
+                vst1q_u64(gain_ptr + k + 0, vaddq_u64(vld1q_u64(gain_ptr + k + 0), vaddq_u64(g0_0, g1_0)));
+                vst1q_u64(gain_ptr + k + 2, vaddq_u64(vld1q_u64(gain_ptr + k + 2), vaddq_u64(g0_1, g1_1)));
+                k += 4;
+            } while (k < end_idx);
+        } while (++j < end_idx);
+    }
+
+    // Same scan as the general kernel, on total = (sum of best) - gain.
+    uint64_t best_tot_mse = (uint64_t)1 << 63;
+    int32_t  best_id0     = 0;
+    int32_t  best_id1     = 0;
+
+    size_t j = start_gi;
+    do {
+        size_t k = start_gi;
+        do {
+            const uint64_t tot = best_sum - gain[j * stride + k];
+            if (tot < best_tot_mse) {
+                best_tot_mse = tot;
+                best_id0     = (int32_t)j;
+                best_id1     = (int32_t)k;
+            }
+        } while (++k < end_idx);
+    } while (++j < end_idx);
+
+    lev0[nb_strengths] = best_id0;
+    lev1[nb_strengths] = best_id1;
+    return best_tot_mse;
+}
+
 uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64_t** mse[2], int sb_count, int start_gi,
                                   int end_gi) {
     if (start_gi >= end_gi) {
@@ -231,6 +333,10 @@ uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64
         lev0[nb_strengths] = 0;
         lev1[nb_strengths] = 0;
         return 0;
+    }
+
+    if (nb_strengths > 0) {
+        return search_one_dual_gain_neon(lev0, lev1, nb_strengths, mse, sb_count, start_gi, end_gi);
     }
 
     size_t   stride = ((end_gi + 3) & ~3);

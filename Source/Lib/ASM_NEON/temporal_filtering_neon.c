@@ -841,7 +841,6 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_neon(
     }
 
     uint16x8_t adjusted_weight_int16[4];
-    uint32x4_t adjusted_weight_int32[4];
 
     for (subblock_idx = 0; subblock_idx < 4; subblock_idx++) {
         const uint32_t combined_error_fp8 = (window_error_quad_fp8[subblock_idx] * TF_WINDOW_BLOCK_BALANCE_WEIGHT +
@@ -854,7 +853,6 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_neon(
         const int adjusted_weight = (expf_tab_fp16[scaled_diff16] * TF_WEIGHT_SCALE) >> 16;
 
         adjusted_weight_int16[subblock_idx] = vdupq_n_u16(adjusted_weight);
-        adjusted_weight_int32[subblock_idx] = vdupq_n_u32(adjusted_weight);
     }
 
     for (i = 0; i < block_height; i++) {
@@ -867,19 +865,14 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_neon(
             count_array = vaddq_u16(count_array, adjusted_weight_int16[subblock_idx_h + (j >= block_width / 2)]);
             vst1q_u16(y_count + k, count_array);
 
-            //y_accum[k] += adjusted_weight * pixel_value;
+            //y_accum[k] += adjusted_weight * pixel_value; (the weight fits 16 bits: it is also added to y_count)
+            const uint16x8_t weight = adjusted_weight_int16[subblock_idx_h + (j >= block_width / 2)];
+
+            const uint16x8_t frame2_array       = vld1q_u16(y_pre + k);
             uint32x4_t       accumulator_array1 = vld1q_u32(y_accum + k);
             uint32x4_t       accumulator_array2 = vld1q_u32(y_accum + k + 4);
-            const uint16x8_t frame2_array       = vld1q_u16(y_pre + k);
-            uint32x4_t       frame2_array_u32_1 = vmovl_u16(vget_low_u16(frame2_array));
-            uint32x4_t       frame2_array_u32_2 = vmovl_u16(vget_high_u16(frame2_array));
-            frame2_array_u32_1 = vmulq_u32(frame2_array_u32_1,
-                                           adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
-            frame2_array_u32_2 = vmulq_u32(frame2_array_u32_2,
-                                           adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
-
-            accumulator_array1 = vaddq_u32(accumulator_array1, frame2_array_u32_1);
-            accumulator_array2 = vaddq_u32(accumulator_array2, frame2_array_u32_2);
+            accumulator_array1 = vmlal_u16(accumulator_array1, vget_low_u16(frame2_array), vget_low_u16(weight));
+            accumulator_array2 = vmlal_high_u16(accumulator_array2, frame2_array, weight);
             vst1q_u32(y_accum + k, accumulator_array1);
             vst1q_u32(y_accum + k + 4, accumulator_array2);
         }
