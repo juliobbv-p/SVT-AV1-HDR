@@ -4639,6 +4639,10 @@ int svt_av1_highbd10_inv_txfm_add_bounded_xy_neon(const int32_t* input, const ui
 
     const int32_t rect_type = get_rect_tx_log_ratio(txfm_size_col, txfm_size_row);
 
+    // The DC coefficient is usually the largest: reject on it alone before scanning the block.
+    if ((uint32_t)abs(input[0]) > (uint32_t)limit) {
+        return 0;
+    }
     // Reject before any narrow arithmetic. OR-ing magnitudes keeps every set bit of the largest one.
     uint32x4_t bits = vdupq_n_u32(0);
     for (int32_t y = 0; y < buf_size_nonzero_h_div8 * 8; y++) {
