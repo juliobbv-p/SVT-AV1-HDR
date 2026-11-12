@@ -1474,8 +1474,9 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
         uint16x4_t xq_sum_v = vreinterpret_u16_s32(vshl_n_s32(vpadd_s32(xq_v, xq_v), 4));
 
         do {
-            int       j       = 0;
-            int32x4_t sse_s32 = vdupq_n_s32(0);
+            int j = 0;
+            // two accumulators: one multiply-accumulate chain per half instead of two chained on one register
+            int32x4_t sse_s32 = vdupq_n_s32(0), sse_s32_b = vdupq_n_s32(0);
 
             while (j <= width - 8) {
                 const uint16x8_t d      = vld1q_u16(&dat[j]);
@@ -1501,8 +1502,8 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
 
                 int16x8_t e = vaddq_s16(vcombine_s16(vr0, vr1), vreinterpretq_s16_u16(vsubq_u16(d, s)));
 
-                sse_s32 = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
-                sse_s32 = vmlal_s16(sse_s32, vget_high_s16(e), vget_high_s16(e));
+                sse_s32   = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
+                sse_s32_b = vmlal_high_s16(sse_s32_b, e, e);
 
                 j += 8;
             }
@@ -1534,11 +1535,12 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
                 int16x8_t e = vaddq_s16(vcombine_s16(vr0, vr1), vreinterpretq_s16_u16(vsubq_u16(d, s)));
                 e           = vandq_s16(e, mask);
 
-                sse_s32 = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
-                sse_s32 = vmlal_s16(sse_s32, vget_high_s16(e), vget_high_s16(e));
+                sse_s32   = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
+                sse_s32_b = vmlal_high_s16(sse_s32_b, e, e);
             }
 
             sse_s64 = vpadalq_s32(sse_s64, sse_s32);
+            sse_s64 = vpadalq_s32(sse_s64, sse_s32_b);
 
             dat += dat_stride;
             src += src_stride;
@@ -1552,8 +1554,9 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
         int32x4_t xq_v       = vdupq_n_s32(xq_active);
 
         do {
-            int       j       = 0;
-            int32x4_t sse_s32 = vdupq_n_s32(0);
+            int j = 0;
+            // two accumulators: one multiply-accumulate chain per half instead of two chained on one register
+            int32x4_t sse_s32 = vdupq_n_s32(0), sse_s32_b = vdupq_n_s32(0);
 
             while (j <= width - 8) {
                 const uint16x8_t d0     = vld1q_u16(&dat[j]);
@@ -1573,8 +1576,8 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
 
                 int16x8_t e = vaddq_s16(vcombine_s16(vr0, vr1), vreinterpretq_s16_u16(vsubq_u16(d0, s0)));
 
-                sse_s32 = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
-                sse_s32 = vmlal_s16(sse_s32, vget_high_s16(e), vget_high_s16(e));
+                sse_s32   = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
+                sse_s32_b = vmlal_high_s16(sse_s32_b, e, e);
 
                 j += 8;
             }
@@ -1600,11 +1603,12 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
                 int16x8_t e = vaddq_s16(vcombine_s16(vr0, vr1), vreinterpretq_s16_u16(vsubq_u16(d0, s0)));
                 e           = vandq_s16(e, mask);
 
-                sse_s32 = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
-                sse_s32 = vmlal_s16(sse_s32, vget_high_s16(e), vget_high_s16(e));
+                sse_s32   = vmlal_s16(sse_s32, vget_low_s16(e), vget_low_s16(e));
+                sse_s32_b = vmlal_high_s16(sse_s32_b, e, e);
             }
 
             sse_s64 = vpadalq_s32(sse_s64, sse_s32);
+            sse_s64 = vpadalq_s32(sse_s64, sse_s32_b);
 
             dat += dat_stride;
             flt += flt_stride;
