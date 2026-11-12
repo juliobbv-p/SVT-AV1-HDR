@@ -16,23 +16,20 @@
 #include "sum_neon.h"
 
 int svt_aom_satd_neon(const TranLow* coeff, int length) {
-    const int32x4_t zero  = vdupq_n_s32(0);
-    int32x4_t       accum = zero;
+    const int32x4_t zero = vdupq_n_s32(0);
+    // Four accumulators: one chain per vector of the iteration instead of four serial updates of one.
+    int32x4_t accum0 = zero, accum1 = zero, accum2 = zero, accum3 = zero;
     do {
-        const int32x4_t src0  = vld1q_s32(&coeff[0]);
-        const int32x4_t src8  = vld1q_s32(&coeff[4]);
-        const int32x4_t src16 = vld1q_s32(&coeff[8]);
-        const int32x4_t src24 = vld1q_s32(&coeff[12]);
-        accum                 = vabaq_s32(accum, src0, zero);
-        accum                 = vabaq_s32(accum, src8, zero);
-        accum                 = vabaq_s32(accum, src16, zero);
-        accum                 = vabaq_s32(accum, src24, zero);
+        accum0 = vabaq_s32(accum0, vld1q_s32(&coeff[0]), zero);
+        accum1 = vabaq_s32(accum1, vld1q_s32(&coeff[4]), zero);
+        accum2 = vabaq_s32(accum2, vld1q_s32(&coeff[8]), zero);
+        accum3 = vabaq_s32(accum3, vld1q_s32(&coeff[12]), zero);
         length -= 16;
         coeff += 16;
     } while (length != 0);
 
     // satd: 26 bits, dynamic range [-32640 * 1024, 32640 * 1024]
-    return vaddvq_s32(accum);
+    return vaddvq_s32(vaddq_s32(vaddq_s32(accum0, accum1), vaddq_s32(accum2, accum3)));
 }
 
 static AOM_FORCE_INLINE uint32x4_t compute8xh_sad_kernel_dual_neon(uint8_t* restrict src_ptr, uint32_t src_stride,

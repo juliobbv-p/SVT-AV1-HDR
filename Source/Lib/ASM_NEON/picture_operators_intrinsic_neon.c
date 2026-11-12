@@ -175,14 +175,24 @@ static inline void full_distortion_hbd_neon(const int32_t* coeff, const int32_t*
                                             uint32_t width, uint32_t height, uint64_t* distortion) {
     int64x2_t p0 = vdupq_n_s64(0), p1 = vdupq_n_s64(0);
     int64x2_t r0 = vdupq_n_s64(0), r1 = vdupq_n_s64(0);
+    // a second set of chains for every other vector
+    int64x2_t p2 = vdupq_n_s64(0), p3 = vdupq_n_s64(0);
+    int64x2_t r2 = vdupq_n_s64(0), r3 = vdupq_n_s64(0);
     for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; x += 4) {
+        uint32_t x = 0;
+        for (; x + 8 <= width; x += 8) {
+            full_dist_sqacc_hbd_neon(coeff + x, recon_coeff + x, &p0, &p1, &r0, &r1);
+            full_dist_sqacc_hbd_neon(coeff + x + 4, recon_coeff + x + 4, &p2, &p3, &r2, &r3);
+        }
+        if (x < width) {
             full_dist_sqacc_hbd_neon(coeff + x, recon_coeff + x, &p0, &p1, &r0, &r1);
         }
         coeff += stride;
         recon_coeff += stride;
     }
-    vst1q_s64((int64_t*)distortion, vpaddq_s64(vaddq_s64(r0, r1), vaddq_s64(p0, p1)));
+    p0 = vaddq_s64(vaddq_s64(p0, p1), vaddq_s64(p2, p3));
+    r0 = vaddq_s64(vaddq_s64(r0, r1), vaddq_s64(r2, r3));
+    vst1q_s64((int64_t*)distortion, vpaddq_s64(r0, p0));
 }
 
 void svt_full_distortion_kernel32_bits_neon(int32_t* coeff, int32_t* recon_coeff, uint32_t stride, uint32_t area_width,
@@ -997,30 +1007,39 @@ void svt_enc_msb_pack2d_neon(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8
 void svt_full_distortion_kernel_cbf_zero32_bits_neon(int32_t* coeff, uint32_t coeff_stride,
                                                      uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width,
                                                      uint32_t area_height) {
-    uint64x2_t sum = vdupq_n_u64(0);
+    // Widening multiply-accumulates into four chains (two per vector, alternating between vectors) instead of two
+    // serial adds into one sum per vector.
+    int64x2_t s0 = vdupq_n_s64(0), s1 = s0, s2 = s0, s3 = s0;
 
     uint32_t row_count = area_height;
     do {
-        int32_t* coeff_temp = coeff;
+        const int32_t* c = coeff;
 
-        uint32_t col_count = area_width / 4;
-        do {
-            const int32x2_t x_lo = vld1_s32(coeff_temp + 0);
-            const int32x2_t x_hi = vld1_s32(coeff_temp + 2);
-            coeff_temp += 4;
+        uint32_t n = area_width;
+        for (; n >= 8; n -= 8, c += 8) {
+            const int32x4_t x0 = vld1q_s32(c);
+            const int32x4_t x1 = vld1q_s32(c + 4);
 
-            const uint64x2_t y_lo = vreinterpretq_u64_s64(vmull_s32(x_lo, x_lo));
-            const uint64x2_t y_hi = vreinterpretq_u64_s64(vmull_s32(x_hi, x_hi));
+            s0 = vmlal_s32(s0, vget_low_s32(x0), vget_low_s32(x0));
 
-            sum = vaddq_u64(sum, y_lo);
-            sum = vaddq_u64(sum, y_hi);
+            s1 = vmlal_high_s32(s1, x0, x0);
 
-        } while (--col_count);
+            s2 = vmlal_s32(s2, vget_low_s32(x1), vget_low_s32(x1));
 
+            s3 = vmlal_high_s32(s3, x1, x1);
+        }
+        if (n) {
+            const int32x4_t x0 = vld1q_s32(c);
+
+            s0 = vmlal_s32(s0, vget_low_s32(x0), vget_low_s32(x0));
+
+            s1 = vmlal_high_s32(s1, x0, x0);
+        }
         coeff += coeff_stride;
         row_count -= 1;
     } while (row_count > 0);
 
+    const uint64x2_t sum   = vreinterpretq_u64_s64(vaddq_s64(vaddq_s64(s0, s1), vaddq_s64(s2, s3)));
     const uint64x2_t temp2 = vextq_u64(sum, sum, 1);
     const uint64x2_t temp1 = vaddq_u64(sum, temp2);
     vst1q_u64(distortion_result, temp1);

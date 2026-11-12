@@ -930,11 +930,20 @@ int32_t svt_av1_compute_cul_level_neon(const int16_t* const scan, const int32_t*
         return sum + vaddvq_s32(vaddq_s32(sum_s32[0], sum_s32[1]));
     }
 
-    // Dense: gather-free linear over the whole block. n_coeffs is always a multiple of 16.
-    assert(n_coeffs % 8 == 0);
-    for (int32_t i = 0; i < n_coeffs; i += 8) {
+    // Dense: gather-free linear over the whole block. n_coeffs is always a multiple of 16. The caller clamps the
+    // result to COEFF_CONTEXT_MASK (as the C version does by stopping there), so the scan stops once the sum of
+    // the chunks seen so far reaches it; a dense block usually gets there within the first chunk.
+    assert(n_coeffs % 16 == 0);
+    for (int32_t i = 0; i < n_coeffs; i += 16) {
         sum_s32[0] = vaddq_s32(sum_s32[0], vabsq_s32(vld1q_s32(quant_coeff + i)));
         sum_s32[1] = vaddq_s32(sum_s32[1], vabsq_s32(vld1q_s32(quant_coeff + i + 4)));
+        sum_s32[0] = vaddq_s32(sum_s32[0], vabsq_s32(vld1q_s32(quant_coeff + i + 8)));
+        sum_s32[1] = vaddq_s32(sum_s32[1], vabsq_s32(vld1q_s32(quant_coeff + i + 12)));
+
+        const int32_t sum = vaddvq_s32(vaddq_s32(sum_s32[0], sum_s32[1]));
+        if (sum >= COEFF_CONTEXT_MASK) {
+            return sum;
+        }
     }
     return vaddvq_s32(vaddq_s32(sum_s32[0], sum_s32[1]));
 }
