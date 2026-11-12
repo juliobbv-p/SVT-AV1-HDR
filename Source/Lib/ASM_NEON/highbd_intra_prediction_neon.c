@@ -1730,6 +1730,41 @@ static AOM_FORCE_INLINE uint16x8x2_t highbd_dr_prediction_z2_gather_left_x8(cons
     return vuzpq_u16(vreinterpretq_u16_u32(ret0_u32), vreinterpretq_u16_u32(ret1_u32));
 }
 
+// Left-edge sample pairs (left[index], left[index + 1]) for the first n lanes, as the gather above returns them.
+// The indices of the lanes decrease from lane 0 (y0 >> 6) by dy / 64 per lane, so the n of them usually fall inside
+// a window of 16 or 32 edge samples starting at the last one; the window is then loaded once and indexed with table
+// lookups. Lanes from n on hold unspecified values (the caller replaces them), and the edge buffer must be readable
+// for 32 samples past any valid index.
+static AOM_FORCE_INLINE uint16x8x2_t highbd_dr_prediction_z2_left_x8(const uint16_t* left, const int16x8_t indices,
+                                                                     int y0, int dy, int n) {
+    const int last = (y0 - (n - 1) * dy) >> 6;
+    const int span = (y0 >> 6) - last;
+    if (span > 30) {
+        return highbd_dr_prediction_z2_gather_left_x8(left, indices, n);
+    }
+    // Byte indices of sample e: (2e, 2e + 1); the pair's second sample is one further.
+    const uint16x8_t e  = vreinterpretq_u16_s16(vsubq_s16(indices, vdupq_n_s16((int16_t)last)));
+    const uint8x16_t i0 = vreinterpretq_u8_u16(vmlaq_n_u16(vdupq_n_u16(0x0100U), e, 0x0202U));
+    const uint8x16_t i1 = vaddq_u8(i0, vdupq_n_u8(2));
+    uint16x8x2_t     ret;
+    if (span <= 14) {
+        const uint8x16x2_t tbl = {
+            {vreinterpretq_u8_u16(vld1q_u16(left + last)), vreinterpretq_u8_u16(vld1q_u16(left + last + 8))}};
+        ret.val[0] = vreinterpretq_u16_u8(vqtbl2q_u8(tbl, i0));
+        ret.val[1] = vreinterpretq_u16_u8(vqtbl2q_u8(tbl, i1));
+    } else {
+        const uint8x16x4_t tbl = {{vreinterpretq_u8_u16(vld1q_u16(left + last)),
+                                   vreinterpretq_u8_u16(vld1q_u16(left + last + 8)),
+                                   vreinterpretq_u8_u16(vld1q_u16(left + last + 16)),
+                                   vreinterpretq_u8_u16(vld1q_u16(left + last + 24))}};
+
+        ret.val[0] = vreinterpretq_u16_u8(vqtbl4q_u8(tbl, i0));
+
+        ret.val[1] = vreinterpretq_u16_u8(vqtbl4q_u8(tbl, i1));
+    }
+    return ret;
+}
+
 static AOM_FORCE_INLINE uint16x4_t highbd_dr_prediction_z2_merge_x4(uint16x4_t out_x, uint16x4_t out_y,
                                                                     int base_shift) {
     assert(base_shift >= 0);
@@ -1841,7 +1876,7 @@ static AOM_FORCE_INLINE uint16x8_t highbd_dr_prediction_z2_step_x8(const uint16_
         const uint16x8_t a1     = vld1q_u16(above + base_x + 1);
         return highbd_dr_prediction_z2_apply_shift_x8(a0, a1, shift_x01234567);
     } else if (base_shift < 8) {
-        const uint16x8x2_t l01     = highbd_dr_prediction_z2_gather_left_x8(left + 1, base_y01234567, base_shift);
+        const uint16x8x2_t l01     = highbd_dr_prediction_z2_left_x8(left + 1, base_y01234567, y0, dy, base_shift);
         const uint16x8_t   out16_y = highbd_dr_prediction_z2_apply_shift_x8(l01.val[0], l01.val[1], shift_y01234567);
 
         // No need to reload from above in the loop, just use pre-loaded constants.
@@ -1849,7 +1884,7 @@ static AOM_FORCE_INLINE uint16x8_t highbd_dr_prediction_z2_step_x8(const uint16_
 
         return highbd_dr_prediction_z2_merge_x8(out16_x, out16_y, base_shift);
     } else {
-        const uint16x8x2_t l01 = highbd_dr_prediction_z2_gather_left_x8(left + 1, base_y01234567, 8);
+        const uint16x8x2_t l01 = highbd_dr_prediction_z2_left_x8(left + 1, base_y01234567, y0, dy, 8);
         return highbd_dr_prediction_z2_apply_shift_x8(l01.val[0], l01.val[1], shift_y01234567);
     }
 }
@@ -1865,7 +1900,7 @@ static AOM_FORCE_INLINE uint16x8_t highbd_dr_prediction_z2_step_x8(const uint16_
                                                                   int             upsample_left,                 \
                                                                   int             dx,                            \
                                                                   int             dy,                            \
-                                                                  int             bd) {                          \
+                                                                  int             bd) {                                      \
         (void)bd;                                                                                                \
         (void)upsample_above;                                                                                    \
         (void)upsample_left;                                                                                     \
@@ -1876,8 +1911,10 @@ static AOM_FORCE_INLINE uint16x8_t highbd_dr_prediction_z2_step_x8(const uint16_
         assert(dx > 0);                                                                                          \
         assert(dy > 0);                                                                                          \
                                                                                                                  \
-        uint16_t left_data[bh + 1];                                                                              \
+        /* 32 readable (zero) samples past the edge for the table-lookup windows */                              \
+        uint16_t left_data[bh + 1 + 32];                                                                         \
         memcpy(left_data, left - 1, (bh + 1) * sizeof(uint16_t));                                                \
+        memset(left_data + bh + 1, 0, 32 * sizeof(uint16_t));                                                    \
                                                                                                                  \
         uint16x8_t a0, a1;                                                                                       \
         if (bw == 4) {                                                                                           \
