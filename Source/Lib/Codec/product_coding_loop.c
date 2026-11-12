@@ -2069,6 +2069,53 @@ void svt_aom_variance_grid_neon_dotprod(const uint8_t* src, int src_stride, cons
                                         int bh, int nx, int ny, int step, uint32_t* var);
 #endif
 
+// Distortion of the block against the reference at one full-pel position (no MV cost).
+static AOM_FORCE_INLINE uint32_t md_full_pel_dist(const ModeDecisionContext* ctx, EbPictureBufferDesc* input_pic,
+                                                  EbPictureBufferDesc* ref_pic, uint32_t input_origin_index,
+                                                  int32_t ref_origin_index, DistortionType dist_type, uint8_t hbd_md) {
+    if (dist_type == VAR) {
+        const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
+
+        unsigned int sse;
+        if (!hbd_md) {
+            uint8_t* pred_y = ref_pic->y_buffer + ref_origin_index;
+            uint8_t* src_y  = input_pic->y_buffer + input_origin_index;
+            return fn_ptr->vf(pred_y, ref_pic->y_stride, src_y, input_pic->y_stride, &sse);
+        }
+        uint16_t* pred_y = ((uint16_t*)ref_pic->y_buffer) + ref_origin_index;
+        uint16_t* src_y  = ((uint16_t*)input_pic->y_buffer) + input_origin_index;
+        return fn_ptr->vf_hbd_10(
+            CONVERT_TO_BYTEPTR(pred_y), ref_pic->y_stride, CONVERT_TO_BYTEPTR(src_y), input_pic->y_stride, &sse);
+    }
+    if (dist_type == SSD) {
+        EbSpatialFullDistType spatial_full_dist_type_fun = hbd_md ? svt_full_distortion_kernel16_bits
+                                                                  : svt_spatial_full_distortion_kernel;
+        return (uint32_t)spatial_full_dist_type_fun(input_pic->y_buffer,
+                                                    input_origin_index,
+                                                    input_pic->y_stride,
+                                                    ref_pic->y_buffer,
+                                                    ref_origin_index,
+                                                    ref_pic->y_stride,
+                                                    ctx->blk_geom->bwidth,
+                                                    ctx->blk_geom->bheight);
+    }
+    assert((ctx->blk_geom->bwidth >> 3) < 17);
+    if (hbd_md) {
+        return sad_16b_kernel(((uint16_t*)input_pic->y_buffer) + input_origin_index,
+                              input_pic->y_stride,
+                              ((uint16_t*)ref_pic->y_buffer) + ref_origin_index,
+                              ref_pic->y_stride,
+                              ctx->blk_geom->bheight,
+                              ctx->blk_geom->bwidth);
+    }
+    return svt_nxm_sad_kernel(input_pic->y_buffer + input_origin_index,
+                              input_pic->y_stride,
+                              ref_pic->y_buffer + ref_origin_index,
+                              ref_pic->y_stride,
+                              ctx->blk_geom->bheight,
+                              ctx->blk_geom->bwidth);
+}
+
 static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictureBufferDesc* input_pic,
                                EbPictureBufferDesc* ref_pic, uint32_t input_origin_index, DistortionType dist_type,
                                int16_t mvx, int16_t mvy, int16_t search_position_start_x, int16_t search_position_end_x,
@@ -2192,6 +2239,88 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
         }
     }
 #endif
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+    // Searches the batched kernel does not cover: compute the distortion of every visited position first (the
+    // same kernel calls as the loop at the end), so that the winner can be picked the same branch-free way.
+    uint32_t dist_tab[1024];
+    if (!var_tab && nx > 0 && ny > 0 && sparse_search_step > 0) {
+        const int32_t cnt_x = (nx - 1) / sparse_search_step + 1;
+        const int32_t cnt_y = (ny - 1) / sparse_search_step + 1;
+        if (cnt_x * cnt_y <= 1024) {
+            int32_t gx = 0;
+            for (int32_t pos_x = search_position_start_x; pos_x <= search_position_end_x;
+                 pos_x += sparse_search_step, gx++) {
+                int32_t gy = 0;
+                for (int32_t pos_y = search_position_start_y; pos_y <= search_position_end_y;
+                     pos_y += sparse_search_step, gy++) {
+                    if (sparse_search_step == 2 && is_sprs_lev0_performed) {
+                        if ((pos_x + (mvx >> 3)) >= ctx->sprs_lev0_start_x &&
+                            (pos_x + (mvx >> 3)) <= ctx->sprs_lev0_end_x &&
+                            (pos_y + (mvy >> 3)) >= ctx->sprs_lev0_start_y &&
+                            (pos_y + (mvy >> 3)) <= ctx->sprs_lev0_end_y) {
+                            if (pos_x % 4 == 0 && pos_y % 4 == 0) {
+                                continue;
+                            }
+                        }
+                    }
+                    const int32_t ref_origin_index = (ctx->blk_org_x + (mvx >> 3) + pos_x) +
+                        (ctx->blk_org_y + (mvy >> 3) + pos_y) * ref_pic->y_stride;
+                    dist_tab[gx * cnt_y + gy] = md_full_pel_dist(
+                        ctx, input_pic, ref_pic, input_origin_index, ref_origin_index, dist_type, hbd_md);
+                }
+            }
+            var_tab = dist_tab;
+            grid_ny = cnt_y;
+        }
+    }
+    if (var_tab) {
+        // Every distortion of the grid is known: pick the winner without branching on the costs (which position
+        // improves on the best is not predictable). Same visiting order and strict comparison as the loop below,
+        // so the first position with the lowest cost wins; the MV cost is never negative, so adding it before
+        // the comparison changes nothing.
+        uint32_t best   = *best_cost;
+        int32_t  best_x = 0, best_y = 0;
+        bool     found = false;
+        int32_t  gx    = 0;
+        for (int32_t pos_x = search_position_start_x; pos_x <= search_position_end_x;
+             pos_x += sparse_search_step, gx++) {
+            int32_t gy = 0;
+            for (int32_t pos_y = search_position_start_y; pos_y <= search_position_end_y;
+                 pos_y += sparse_search_step, gy++) {
+                if (sparse_search_step == 2 && is_sprs_lev0_performed) {
+                    if ((pos_x + (mvx >> 3)) >= ctx->sprs_lev0_start_x &&
+                        (pos_x + (mvx >> 3)) <= ctx->sprs_lev0_end_x &&
+                        (pos_y + (mvy >> 3)) >= ctx->sprs_lev0_start_y &&
+                        (pos_y + (mvy >> 3)) <= ctx->sprs_lev0_end_y) {
+                        if (pos_x % 4 == 0 && pos_y % 4 == 0) {
+                            continue;
+                        }
+                    }
+                }
+                Mv mv;
+                mv.x = mvx + (pos_x * 8);
+                mv.y = mvy + (pos_y * 8);
+
+                uint32_t c = var_tab[gx * grid_ny + gy];
+                c += svt_aom_fp_mv_err_cost(mv, &mv_cost_params);
+                const bool take = c < best;
+
+                best = take ? c : best;
+
+                best_x = take ? pos_x : best_x;
+
+                best_y = take ? pos_y : best_y;
+                found |= take;
+            }
+        }
+        if (found) {
+            *best_mvx  = mvx + (best_x * 8);
+            *best_mvy  = mvy + (best_y * 8);
+            *best_cost = best;
+        }
+        return;
+    }
+#endif
     // grid_x/grid_y: position within the grid of visited positions
     int32_t grid_x = 0;
     for (int32_t refinement_pos_x = search_position_start_x; refinement_pos_x <= search_position_end_x;
@@ -2215,59 +2344,14 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
             int32_t ref_origin_index = (ctx->blk_org_x + (mvx >> 3) + refinement_pos_x) +
                 (ctx->blk_org_y + (mvy >> 3) + refinement_pos_y) * ref_pic->y_stride;
 
-            if (dist_type == VAR) {
 #if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
-                if (var_tab) {
-                    cost = var_tab[grid_x * grid_ny + grid_y];
-                } else
+            if (var_tab) {
+                cost = var_tab[grid_x * grid_ny + grid_y];
+            } else
 #endif
-                    if (!hbd_md) {
-                    const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-                    unsigned int            sse;
-                    uint8_t*                pred_y = ref_pic->y_buffer + ref_origin_index;
-                    uint8_t*                src_y  = input_pic->y_buffer + input_origin_index;
-                    cost = fn_ptr->vf(pred_y, ref_pic->y_stride, src_y, input_pic->y_stride, &sse);
-                } else {
-                    const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
-                    unsigned int            sse;
-                    uint16_t*               pred_y = ((uint16_t*)ref_pic->y_buffer) + ref_origin_index;
-                    uint16_t*               src_y  = ((uint16_t*)input_pic->y_buffer) + input_origin_index;
-                    cost                           = fn_ptr->vf_hbd_10(CONVERT_TO_BYTEPTR(pred_y),
-                                                                       ref_pic->y_stride,
-                                                                       CONVERT_TO_BYTEPTR(src_y),
-                                                                       input_pic->y_stride,
-                                                                       &sse);
-                }
-            } else if (dist_type == SSD) {
-                EbSpatialFullDistType spatial_full_dist_type_fun = hbd_md ? svt_full_distortion_kernel16_bits
-                                                                          : svt_spatial_full_distortion_kernel;
-
-                cost = (uint32_t)spatial_full_dist_type_fun(input_pic->y_buffer,
-                                                            input_origin_index,
-                                                            input_pic->y_stride,
-                                                            ref_pic->y_buffer,
-                                                            ref_origin_index,
-                                                            ref_pic->y_stride,
-                                                            ctx->blk_geom->bwidth,
-                                                            ctx->blk_geom->bheight);
-            } else {
-                assert((ctx->blk_geom->bwidth >> 3) < 17);
-
-                if (hbd_md) {
-                    cost = sad_16b_kernel(((uint16_t*)input_pic->y_buffer) + input_origin_index,
-                                          input_pic->y_stride,
-                                          ((uint16_t*)ref_pic->y_buffer) + ref_origin_index,
-                                          ref_pic->y_stride,
-                                          ctx->blk_geom->bheight,
-                                          ctx->blk_geom->bwidth);
-                } else {
-                    cost = svt_nxm_sad_kernel(input_pic->y_buffer + input_origin_index,
-                                              input_pic->y_stride,
-                                              ref_pic->y_buffer + ref_origin_index,
-                                              ref_pic->y_stride,
-                                              ctx->blk_geom->bheight,
-                                              ctx->blk_geom->bwidth);
-                }
+            {
+                cost = md_full_pel_dist(
+                    ctx, input_pic, ref_pic, input_origin_index, ref_origin_index, dist_type, hbd_md);
             }
             // The MV cost is never negative, so a distortion that does not beat the best cost cannot win.
             if (cost >= *best_cost) {
