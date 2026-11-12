@@ -673,7 +673,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ARM_CRC32(svt_av1_get_crc32c_value, svt_av1_get_crc32c_value_c, svt_av1_get_crc32c_value_arm_crc32);
 #if CONFIG_ENABLE_INTER_COMPOUND && CONFIG_ENABLE_COMPOUND_TYPES
     SET_NEON(svt_av1_wedge_compute_delta_squares, svt_av1_wedge_compute_delta_squares_c, svt_av1_wedge_compute_delta_squares_neon);
-    SET_NEON_SVE(svt_av1_wedge_sign_from_residuals, svt_av1_wedge_sign_from_residuals_c, svt_av1_wedge_sign_from_residuals_neon, svt_av1_wedge_sign_from_residuals_sve);
+    SET_NEON_NEON_DOTPROD_SVE(svt_av1_wedge_sign_from_residuals, svt_av1_wedge_sign_from_residuals_c, svt_av1_wedge_sign_from_residuals_neon, svt_av1_wedge_sign_from_residuals_neon_dotprod, svt_av1_wedge_sign_from_residuals_sve);
 #endif
     SET_NEON_SVE(svt_compute_cdef_dist_16bit, svt_aom_compute_cdef_dist_16bit_c, svt_aom_compute_cdef_dist_16bit_neon, svt_aom_compute_cdef_dist_16bit_sve);
     SET_NEON_NEON_DOTPROD(svt_compute_cdef_dist_8bit, svt_aom_compute_cdef_dist_8bit_c, svt_aom_compute_cdef_dist_8bit_neon, svt_aom_compute_cdef_dist_8bit_neon_dotprod);

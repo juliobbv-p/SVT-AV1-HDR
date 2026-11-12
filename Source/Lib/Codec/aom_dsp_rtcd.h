@@ -1544,6 +1544,9 @@ int64_t svt_aom_highbd_sse_sve(const uint8_t *a8, int a_stride, const uint8_t *b
 int64_t svt_av1_block_error_neon(const TranLow *coeff, const TranLow *dqcoeff, intptr_t block_size, int64_t *ssz);
 int64_t svt_av1_block_error_sve(const TranLow *coeff, const TranLow *dqcoeff, intptr_t block_size, int64_t *ssz);
 int8_t svt_av1_wedge_sign_from_residuals_neon(const int16_t *ds, const uint8_t *m, int N, int64_t limit);
+int8_t svt_av1_wedge_sign_from_residuals_neon_dotprod(const int16_t *ds, const uint8_t *m, int N, int64_t limit);
+bool svt_av1_wedge_residuals_small_neon(const int16_t *r1, const int16_t *d, int N);
+uint64_t svt_av1_wedge_sse_from_residuals_small_neon(const int16_t *r1, const int16_t *d, const uint8_t *m, int N);
 int8_t svt_av1_wedge_sign_from_residuals_sve(const int16_t *ds, const uint8_t *m, int N, int64_t limit);
 void svt_av1_wedge_compute_delta_squares_neon(int16_t *d, const int16_t *a, const int16_t *b, int N);
 void svt_aom_get_final_filtered_pixels_neon(struct MeContext *me_ctx, EbByte *src_center_ptr_start, uint16_t **altref_buffer_highbd_start, uint32_t **accum, uint16_t **count, const uint32_t *stride, int blk_y_src_offset, int blk_ch_src_offset, uint16_t blk_width_ch, uint16_t blk_height_ch, bool is_highbd);

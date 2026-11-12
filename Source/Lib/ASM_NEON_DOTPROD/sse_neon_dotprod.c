@@ -229,3 +229,33 @@ uint64_t svt_spatial_full_distortion_kernel_neon_dotprod(uint8_t* src, uint32_t 
         return sse_wxh_neon_dotprod(src, src_stride, ref, ref_stride, width, height);
     }
 }
+
+// Sum of m[i] * ds[i] compared with limit (m in 0..64, ds any int16). Each ds is split into its low byte
+// (unsigned) and high byte (signed): the sum is 256 * sum(m * high) + sum(m * low), two byte dot products instead
+// of 16-bit widening multiply-accumulates. A 32-bit lane gains at most 4 * 255 * 64 per step and N is at most
+// 16384, so nothing overflows.
+int8_t svt_av1_wedge_sign_from_residuals_neon_dotprod(const int16_t* ds, const uint8_t* m, int N, int64_t limit) {
+    uint32x4_t lo0 = vdupq_n_u32(0), lo1 = lo0;
+    int32x4_t  hi0 = vdupq_n_s32(0), hi1 = hi0;
+    do {
+        const uint8x16_t a0 = vld1q_u8((const uint8_t*)ds);
+        const uint8x16_t b0 = vld1q_u8((const uint8_t*)(ds + 8));
+        const uint8x16_t a1 = vld1q_u8((const uint8_t*)(ds + 16));
+        const uint8x16_t b1 = vld1q_u8((const uint8_t*)(ds + 24));
+        const uint8x16_t m0 = vld1q_u8(m);
+        const uint8x16_t m1 = vld1q_u8(m + 16);
+
+        lo0 = vdotq_u32(lo0, vuzp1q_u8(a0, b0), m0);
+
+        hi0 = vdotq_s32(hi0, vreinterpretq_s8_u8(vuzp2q_u8(a0, b0)), vreinterpretq_s8_u8(m0));
+
+        lo1 = vdotq_u32(lo1, vuzp1q_u8(a1, b1), m1);
+
+        hi1 = vdotq_s32(hi1, vreinterpretq_s8_u8(vuzp2q_u8(a1, b1)), vreinterpretq_s8_u8(m1));
+        ds += 32;
+        m += 32;
+        N -= 32;
+    } while (N != 0);
+    const int64_t sum = (int64_t)vaddlvq_u32(vaddq_u32(lo0, lo1)) + 256 * (int64_t)vaddlvq_s32(vaddq_s32(hi0, hi1));
+    return sum > limit;
+}

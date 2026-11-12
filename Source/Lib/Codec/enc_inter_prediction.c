@@ -422,6 +422,24 @@ int8_t svt_av1_wedge_sign_from_residuals_c(const int16_t* ds, const uint8_t* m, 
     return acc > limit;
 }
 
+typedef uint64_t (*WedgeSseFn)(const int16_t* r1, const int16_t* d, const uint8_t* m, int N);
+
+// The SSE kernel for a (residual, difference) pair that is about to be tried with several masks: pairs whose
+// values fit 8 bits plus sign (the usual case, also for 10-bit content) take the 16-bit kernel.
+static INLINE WedgeSseFn wedge_sse_fn(const int16_t* residual1, const int16_t* diff10, int N) {
+#if defined(ARCH_AARCH64)
+    if (svt_av1_wedge_sse_from_residuals == svt_av1_wedge_sse_from_residuals_neon &&
+        svt_av1_wedge_residuals_small_neon(residual1, diff10, N)) {
+        return svt_av1_wedge_sse_from_residuals_small_neon;
+    }
+#else
+    (void)residual1;
+    (void)diff10;
+    (void)N;
+#endif
+    return svt_av1_wedge_sse_from_residuals;
+}
+
 static void pick_wedge(PictureControlSet* pcs, ModeDecisionContext* ctx, const BlockSize bsize, const uint8_t* const p0,
                        const int16_t* const residual1, const int16_t* const diff10, int8_t* const best_wedge_sign,
                        int8_t* const best_wedge_index) {
@@ -464,13 +482,14 @@ static void pick_wedge(PictureControlSet* pcs, ModeDecisionContext* ctx, const B
 
     svt_av1_wedge_compute_delta_squares(ds, residual0, residual1, N);
 
+    const WedgeSseFn wedge_sse = wedge_sse_fn(residual1, diff10, N);
     for (int8_t wedge_index = 0; wedge_index < wedge_types; ++wedge_index) {
         const uint8_t* mask = svt_aom_get_contiguous_soft_mask(wedge_index, 0, bsize);
 
         int8_t wedge_sign = svt_av1_wedge_sign_from_residuals(ds, mask, N, sign_limit);
 
         mask         = svt_aom_get_contiguous_soft_mask(wedge_index, wedge_sign, bsize);
-        uint64_t sse = svt_av1_wedge_sse_from_residuals(residual1, diff10, mask, N);
+        uint64_t sse = wedge_sse(residual1, diff10, mask, N);
         sse          = ROUND_POWER_OF_TWO(sse, bd_round);
 
         int64_t rd = sse;
@@ -505,9 +524,11 @@ int64_t pick_wedge_fixed_sign(PictureControlSet* pcs, ModeDecisionContext* ctx, 
     int8_t  wedge_types = (1 << svt_aom_get_wedge_bits_lookup(bsize));
     //const int hbd = 0;// is_cur_buf_hbd(xd);
     const int bd_round = 0;
+
+    const WedgeSseFn wedge_sse = wedge_sse_fn(residual1, diff10, N);
     for (int8_t wedge_index = 0; wedge_index < wedge_types; ++wedge_index) {
         const uint8_t* mask = svt_aom_get_contiguous_soft_mask(wedge_index, wedge_sign, bsize);
-        uint64_t       sse  = svt_av1_wedge_sse_from_residuals(residual1, diff10, mask, N);
+        uint64_t       sse  = wedge_sse(residual1, diff10, mask, N);
         sse                 = ROUND_POWER_OF_TWO(sse, bd_round);
         int64_t rd          = sse;
         if (ctx->inter_intra_comp_ctrls.use_rd_model) {

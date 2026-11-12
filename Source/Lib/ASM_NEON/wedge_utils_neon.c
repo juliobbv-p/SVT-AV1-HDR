@@ -16,6 +16,7 @@
 
 #include <arm_neon.h>
 #include <assert.h>
+#include <stdbool.h>
 
 #include "aom_dsp_rtcd.h"
 #include "definitions.h"
@@ -67,6 +68,59 @@ uint64_t svt_av1_wedge_sse_from_residuals_neon(const int16_t* r1, const int16_t*
 
         v_csse[0] = vpadalq_u32(v_csse[0], vreinterpretq_u32_s32(sse[0]));
         v_csse[1] = vpadalq_u32(v_csse[1], vreinterpretq_u32_s32(sse[1]));
+
+        i += 16;
+    } while (i < N);
+
+    uint64_t csse = vaddvq_u64(vaddq_u64(v_csse[0], v_csse[1]));
+    return ROUND_POWER_OF_TWO(csse, 2 * WEDGE_WEIGHT_BITS);
+}
+
+// True when every r1[i] and d[i] is at most 255 in magnitude: then |64 * r1 + m * d| <= 32640 for masks up to 64,
+// which is what svt_av1_wedge_sse_from_residuals_small_neon() needs.
+bool svt_av1_wedge_residuals_small_neon(const int16_t* r1, const int16_t* d, int N) {
+    assert(N % 16 == 0);
+    uint16x8_t m0 = vdupq_n_u16(0), m1 = m0, m2 = m0, m3 = m0;
+    for (int i = 0; i < N; i += 16) {
+        m0 = vmaxq_u16(m0, vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(r1 + i))));
+        m1 = vmaxq_u16(m1, vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(r1 + i + 8))));
+        m2 = vmaxq_u16(m2, vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(d + i))));
+        m3 = vmaxq_u16(m3, vreinterpretq_u16_s16(vabsq_s16(vld1q_s16(d + i + 8))));
+    }
+    return vmaxvq_u16(vmaxq_u16(vmaxq_u16(m0, m1), vmaxq_u16(m2, m3))) <= 255;
+}
+
+// svt_av1_wedge_sse_from_residuals_neon() for residuals accepted by svt_av1_wedge_residuals_small_neon(): the
+// weighted residual 64 * r1 + m * d then fits 16 bits, so it is formed in 16-bit arithmetic and the saturating
+// narrowing of the general kernel (a no-op in that range) is not needed.
+uint64_t svt_av1_wedge_sse_from_residuals_small_neon(const int16_t* r1, const int16_t* d, const uint8_t* m, int N) {
+    assert(N % 64 == 0);
+
+    uint64x2_t v_csse[2] = {vdupq_n_u64(0), vdupq_n_u64(0)};
+
+    int i = 0;
+    do {
+        const int16x8_t    r1_l  = vld1q_s16(r1 + i);
+        const int16x8_t    r1_h  = vld1q_s16(r1 + i + 8);
+        const int16x8_t    d_l   = vld1q_s16(d + i);
+        const int16x8_t    d_h   = vld1q_s16(d + i + 8);
+        const uint8x16x2_t m_u16 = vzipq_u8(vld1q_u8(m + i), vdupq_n_u8(0));
+        const int16x8_t    m_l   = vreinterpretq_s16_u8(m_u16.val[0]);
+        const int16x8_t    m_h   = vreinterpretq_s16_u8(m_u16.val[1]);
+
+        const int16x8_t t_l = vmlaq_s16(vshlq_n_s16(r1_l, WEDGE_WEIGHT_BITS), m_l, d_l);
+        const int16x8_t t_h = vmlaq_s16(vshlq_n_s16(r1_h, WEDGE_WEIGHT_BITS), m_h, d_h);
+
+        // two squares of at most 32640^2 per lane: below 2^32
+        int32x4_t sse0 = vmull_s16(vget_low_s16(t_l), vget_low_s16(t_l));
+        int32x4_t sse1 = vmull_s16(vget_low_s16(t_h), vget_low_s16(t_h));
+
+        sse0 = vmlal_high_s16(sse0, t_l, t_l);
+
+        sse1 = vmlal_high_s16(sse1, t_h, t_h);
+
+        v_csse[0] = vpadalq_u32(v_csse[0], vreinterpretq_u32_s32(sse0));
+        v_csse[1] = vpadalq_u32(v_csse[1], vreinterpretq_u32_s32(sse1));
 
         i += 16;
     } while (i < N);
