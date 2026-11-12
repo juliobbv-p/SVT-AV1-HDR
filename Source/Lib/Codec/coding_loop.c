@@ -314,14 +314,20 @@ static void av1_encode_loop(PictureControlSet* pcs, EncDecContext* ed_ctx, uint3
                             EbPictureBufferDesc* inverse_quant_buffer, uint32_t component_mask, uint16_t* eob)
 
 {
-    const int            chroma_ss     = pcs->scs->subsampling_x;
-    ModeDecisionContext* md_ctx        = ed_ctx->md_ctx;
-    const BlockGeom*     blk_geom      = ed_ctx->blk_geom;
-    BlkStruct*           blk_ptr       = ed_ctx->blk_ptr;
-    const uint32_t       qindex        = blk_ptr->qindex;
-    const bool           is_16bit      = ed_ctx->is_16bit;
-    const uint32_t       bit_depth     = ed_ctx->bit_depth;
-    EbPictureBufferDesc* input_samples = is_16bit ? ed_ctx->input_sample16bit_buffer : ed_ctx->input_samples;
+    const int            chroma_ss = pcs->scs->subsampling_x;
+    ModeDecisionContext* md_ctx    = ed_ctx->md_ctx;
+    const BlockGeom*     blk_geom  = ed_ctx->blk_geom;
+    BlkStruct*           blk_ptr   = ed_ctx->blk_ptr;
+    const uint32_t       qindex    = blk_ptr->qindex;
+    const bool           is_16bit  = ed_ctx->is_16bit;
+    const uint32_t       bit_depth = ed_ctx->bit_depth;
+    // When mode decision packed this superblock's source, it lives in the frame-sized packed source picture;
+    // otherwise prepare_input_picture() packed it into the superblock-local buffer.
+    const bool src_in_frame = is_16bit && md_ctx->hbd_pack_done;
+
+    EbPictureBufferDesc* input_samples = src_in_frame ? pcs->input_frame16bit
+        : is_16bit                                    ? ed_ctx->input_sample16bit_buffer
+                                                      : ed_ctx->input_samples;
 
     const bool     is_inter       = is_inter_block(&blk_ptr->block_mi);
     const uint32_t round_origin_x = ROUND_UV_TO(org_x, chroma_ss); // for Chroma blocks with size of 4
@@ -343,6 +349,12 @@ static void av1_encode_loop(PictureControlSet* pcs, EncDecContext* ed_ctx, uint3
             ROUND_UV_TO(tx_org_y, chroma_ss) / (1 << chroma_ss) * input_samples->u_stride;
         input_cr_offset = ROUND_UV_TO(tx_org_x, chroma_ss) / (1 << chroma_ss) +
             ROUND_UV_TO(tx_org_y, chroma_ss) / (1 << chroma_ss) * input_samples->v_stride;
+        if (src_in_frame) {
+            // Frame coordinates; superblock origins are even, so the chroma rounding matches the local form.
+            input_luma_offset = (org_y * input_samples->y_stride) + org_x;
+            input_cb_offset = ((round_origin_y >> chroma_ss) * input_samples->u_stride) + (round_origin_x >> chroma_ss);
+            input_cr_offset = ((round_origin_y >> chroma_ss) * input_samples->v_stride) + (round_origin_x >> chroma_ss);
+        }
         pred_luma_offset = (org_y * pred_samples->y_stride) + org_x;
         pred_cb_offset   = (round_origin_x >> chroma_ss) + ((round_origin_y >> chroma_ss) * pred_samples->u_stride);
         pred_cr_offset   = (round_origin_x >> chroma_ss) + ((round_origin_y >> chroma_ss) * pred_samples->v_stride);

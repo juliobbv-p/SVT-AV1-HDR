@@ -10694,6 +10694,20 @@ static EbPictureBufferDesc* pad_hbd_pictures(SequenceControlSet* scs, PictureCon
         uint32_t sb_width  = MIN(scs->sb_size, pcs->ppcs->aligned_width - sb_org_x);
         uint32_t sb_height = MIN(scs->sb_size, pcs->ppcs->aligned_height - sb_org_y);
 
+        // Pack and pad in place in the frame-sized packed source: the superblock (padding included) occupies the
+        // same samples a copy from a superblock-local buffer would write, and only this thread touches them.
+        EbPictureBufferDesc* const frm = pcs->input_frame16bit;
+
+        const uint32_t sb_uv_x = sb_org_x >> scs->subsampling_x;
+
+        const uint32_t sb_uv_y = sb_org_y >> scs->subsampling_y;
+
+        uint16_t* const frm_y = (uint16_t*)frm->y_buffer + sb_org_x + sb_org_y * frm->y_stride;
+
+        uint16_t* const frm_u = (uint16_t*)frm->u_buffer + sb_uv_x + sb_uv_y * frm->u_stride;
+
+        uint16_t* const frm_v = (uint16_t*)frm->v_buffer + sb_uv_x + sb_uv_y * frm->v_stride;
+
         //sb_width is n*8 so the 2bit-decompression kernel works properly
         uint32_t comp_stride_y           = in_pic->y_stride / 4;
         uint32_t comp_luma_buffer_offset = sb_org_x / 4 + sb_org_y * comp_stride_y;
@@ -10701,8 +10715,8 @@ static EbPictureBufferDesc* pad_hbd_pictures(SequenceControlSet* scs, PictureCon
                                    in_pic->y_stride,
                                    in_pic->y_buffer_bit_inc + comp_luma_buffer_offset,
                                    comp_stride_y,
-                                   (uint16_t*)ctx->input_sample16bit_buffer->y_buffer,
-                                   ctx->input_sample16bit_buffer->y_stride,
+                                   frm_y,
+                                   frm->y_stride,
                                    sb_width,
                                    sb_height);
 
@@ -10714,8 +10728,8 @@ static EbPictureBufferDesc* pad_hbd_pictures(SequenceControlSet* scs, PictureCon
                                    in_pic->u_stride,
                                    in_pic->u_buffer_bit_inc + comp_chroma_buffer_offset,
                                    comp_stride_uv,
-                                   (uint16_t*)ctx->input_sample16bit_buffer->u_buffer,
-                                   ctx->input_sample16bit_buffer->u_stride,
+                                   frm_u,
+                                   frm->u_stride,
                                    sb_width / (1 << scs->subsampling_x),
                                    sb_height / (1 << scs->subsampling_x));
 
@@ -10723,38 +10737,31 @@ static EbPictureBufferDesc* pad_hbd_pictures(SequenceControlSet* scs, PictureCon
                                    in_pic->v_stride,
                                    in_pic->v_buffer_bit_inc + comp_chroma_buffer_offset,
                                    comp_stride_uv,
-                                   (uint16_t*)ctx->input_sample16bit_buffer->v_buffer,
-                                   ctx->input_sample16bit_buffer->v_stride,
+                                   frm_v,
+                                   frm->v_stride,
                                    sb_width / (1 << scs->subsampling_x),
                                    sb_height / (1 << scs->subsampling_x));
 
         // PAD the packed source in incomplete sb up to max SB size
-        svt_aom_pad_input_picture_16bit((uint16_t*)ctx->input_sample16bit_buffer->y_buffer,
-                                        ctx->input_sample16bit_buffer->y_stride,
-                                        sb_width,
-                                        sb_height,
-                                        scs->sb_size - sb_width,
-                                        scs->sb_size - sb_height);
+        svt_aom_pad_input_picture_16bit(
+            frm_y, frm->y_stride, sb_width, sb_height, scs->sb_size - sb_width, scs->sb_size - sb_height);
 
         uint32_t chroma_pad_width  = (scs->sb_size - sb_width) >> scs->subsampling_x;
         uint32_t chroma_pad_height = (scs->sb_size - sb_height) >> scs->subsampling_x;
 
-        svt_aom_pad_input_picture_16bit((uint16_t*)ctx->input_sample16bit_buffer->u_buffer,
-                                        ctx->input_sample16bit_buffer->u_stride,
+        svt_aom_pad_input_picture_16bit(frm_u,
+                                        frm->u_stride,
                                         sb_width >> scs->subsampling_x,
                                         sb_height >> scs->subsampling_x,
                                         chroma_pad_width,
                                         chroma_pad_height);
 
-        svt_aom_pad_input_picture_16bit((uint16_t*)ctx->input_sample16bit_buffer->v_buffer,
-                                        ctx->input_sample16bit_buffer->v_stride,
+        svt_aom_pad_input_picture_16bit(frm_v,
+                                        frm->v_stride,
                                         sb_width >> scs->subsampling_x,
                                         sb_height >> scs->subsampling_x,
                                         chroma_pad_width,
                                         chroma_pad_height);
-        svt_aom_store16bit_input_src(
-            ctx->input_sample16bit_buffer, pcs, sb_org_x, sb_org_y, scs->sb_size, scs->sb_size);
-
         ctx->hbd_pack_done = 1;
     }
     return pcs->input_frame16bit;
