@@ -173,9 +173,15 @@ static INLINE int valid_ref_frame_size(int ref_width, int ref_height, int this_w
 
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
 bool svt_aom_highbd_dual_pred_supported(void);
-bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, int32_t src_stride, uint16_t* dst,
-                                            int32_t dst_stride, uint16_t* cmp, int32_t cmp_stride, int32_t w, int32_t h,
-                                            InterpFilters interp_filters, SubpelParams* subpel_params);
+bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, const uint16_t* src_packed,
+                                            int32_t src_stride, uint16_t* dst, int32_t dst_stride, uint16_t* cmp,
+                                            int32_t cmp_stride, int32_t w, int32_t h, InterpFilters interp_filters,
+                                            SubpelParams* subpel_params);
+void svt_aom_inter_predictor_light_pd1_packed(const uint16_t* src16, int32_t src_stride, uint16_t* dst,
+                                              int32_t dst_stride, int32_t w, int32_t h, InterpFilters interp_filters,
+                                              SubpelParams* subpel_params, ConvolveParams* conv_params);
+void svt_aom_highbd_10_fullpel_avg_neon(const uint16_t* src0, int stride0, const uint16_t* src1, int stride1,
+                                        uint16_t* dst, int dst_stride, int w, int h);
 void svt_aom_highbd_10_comp_avg_cached_neon(const uint16_t* cmp0, const uint16_t* cmp1, int cmp_stride, uint16_t* dst,
                                             int dst_stride, int w, int h);
 #endif

@@ -89,6 +89,10 @@ typedef struct EbPictureBufferDesc {
     uint32_t luma_size; // Allocated size of the luma buffer
     uint32_t chroma_size; // Allocated size of the chroma buffers
     bool     packed_flag; // Indicates if sample buffers are packed or not
+    // Optional packed 16-bit copy of a finalized split 10-bit reference luma plane, borders included. It points at
+    // the picture origin and uses y_stride, so plane offsets apply unchanged. NULL when not available.
+    uint16_t* y_buffer_packed;
+    uint16_t* y_packed_alloc;
 
     // Picture Parameters
     uint16_t      border; // Padding applied to top/left/right/bottom of picture (luma dimensions)

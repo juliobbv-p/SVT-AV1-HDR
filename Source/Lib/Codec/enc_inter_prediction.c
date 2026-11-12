@@ -3072,6 +3072,18 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
                                           &py[i],
                                           &px[i]);
                 }
+                if (!sp[0].subpel_x && !sp[0].subpel_y && !sp[1].subpel_x && !sp[1].subpel_y &&
+                    ref_pic_0->y_buffer_packed && ref_pic_1->y_buffer_packed) {
+                    svt_aom_highbd_10_fullpel_avg_neon(ref_pic_0->y_buffer_packed + px[0] + py[0] * ref_pic_0->y_stride,
+                                                       ref_pic_0->y_stride,
+                                                       ref_pic_1->y_buffer_packed + px[1] + py[1] * ref_pic_1->y_stride,
+                                                       ref_pic_1->y_stride,
+                                                       (uint16_t*)dst_ptr_y,
+                                                       pred_pic->y_stride,
+                                                       bwidth,
+                                                       bheight);
+                    goto luma_done;
+                }
                 if (!sp[0].subpel_x && !sp[0].subpel_y && !sp[1].subpel_x && !sp[1].subpel_y) {
                     // Two full-pel references: the compound average is the rounded mean of the two pixels.
                     svt_aom_highbd_10_fullpel_split_avg_neon(
@@ -3134,6 +3146,13 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
             src_mod    = ref_pic->y_buffer + ((pos_x + (pos_y)*ref_pic->y_stride));
             src_mod_2b = ADD_OFFSET_OR_NULL(ref_pic->y_buffer_bit_inc, pos_x + (pos_y)*ref_pic->y_stride_bit_inc);
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+            // Finalized references keep a packed copy of their luma plane; the picture being coded (intra block
+            // copy) and scaled references do not.
+            const uint16_t* src_packed = hbd_md && bit_depth == EB_TEN_BIT && !block_mi->use_intrabc &&
+                    block_mi->ref_frame[i] > INTRA_FRAME && ref_pic->y_buffer_packed && !av1_is_scaled(sf) &&
+                    svt_aom_highbd_dual_pred_supported()
+                ? ref_pic->y_buffer_packed + pos_x + pos_y * ref_pic->y_stride
+                : NULL;
             if (use_cmp_cache && !is_compound && (subpel_params.subpel_x || subpel_params.subpel_y) &&
                 cmp_cache->n < PRED_CMP_CACHE_SLOTS &&
                 cmp_cache->used_px + (uint32_t)bwidth * bheight <= PRED_CMP_CACHE_PX &&
@@ -3141,6 +3160,7 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
                 !pred_cmp_cache_find(cmp_cache, block_mi->ref_frame[0], block_mi->mv[0], cmp_filt) &&
                 svt_aom_inter_predictor_light_pd1_dual(src_mod,
                                                        src_mod_2b,
+                                                       src_packed,
                                                        ref_pic->y_stride,
                                                        (uint16_t*)dst_ptr_y,
                                                        pred_pic->y_stride,
@@ -3156,6 +3176,18 @@ static void av1_inter_prediction_light_pd1(SequenceControlSet* scs, ModeDecision
                 cmp_cache->e[cmp_cache->n].off  = cmp_cache->used_px;
                 cmp_cache->n++;
                 cmp_cache->used_px += (uint32_t)bwidth * bheight;
+                continue;
+            }
+            if (src_packed) {
+                svt_aom_inter_predictor_light_pd1_packed(src_packed,
+                                                         ref_pic->y_stride,
+                                                         (uint16_t*)dst_ptr_y,
+                                                         pred_pic->y_stride,
+                                                         bwidth,
+                                                         bheight,
+                                                         block_mi->interp_filters,
+                                                         &subpel_params,
+                                                         &conv_params_y);
                 continue;
             }
 #endif

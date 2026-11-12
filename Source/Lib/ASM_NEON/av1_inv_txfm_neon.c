@@ -4597,6 +4597,125 @@ static inline void lowbd_inv_txfm2d_add_no_identity_neon(const int32_t* input, u
     }
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// 10-bit inverse transform through the 16-bit 1-D kernels, for the two-dimensional (non-identity) transform types
+// and sizes of at least 8x8. eobx/eoby are the last nonzero column/row. When no coefficient of the coded region
+// exceeds `limit` in magnitude, the result equals the 32-bit kernels'; otherwise nothing is written and 0 is
+// returned. The caller's limits are worst-case bounds over all sign patterns: within them no 16-bit lane of the row
+// pass saturates or wraps, and of the column pass only the final additions may saturate, which the >> 4 and the
+// clip to 10 bits make indistinguishable from the unclamped sum.
+int svt_av1_highbd10_inv_txfm_add_bounded_xy_neon(const int32_t* input, const uint16_t* pred, int sp, uint16_t* dest,
+                                                  int dp, TxType tx_type, TxSize tx_size, int eobx, int eoby,
+                                                  int limit) {
+    const int32_t txfm_size_col = tx_size_wide[tx_size];
+    const int32_t txfm_size_row = tx_size_high[tx_size];
+    if (txfm_size_col < 8 || txfm_size_row < 8 || hitx_1d_tab[tx_type] == IIDENTITY_1D ||
+        vitx_1d_tab[tx_type] == IIDENTITY_1D) {
+        return 0;
+    }
+    // AV1 has only DCT_DCT among these types when a side is 32 or 64; the limits are derived for the types that
+    // exist, so a 16-point ADST next to a 32- or 64-point DCT is left to the caller's fallback.
+    if (tx_type != DCT_DCT && (txfm_size_col > 16 || txfm_size_row > 16)) {
+        return 0;
+    }
+    const int32_t txw_idx   = get_txw_idx(tx_size);
+    const int32_t txh_idx   = get_txh_idx(tx_size);
+    const int32_t fun_idx_x = lowbd_txfm_all_1d_zeros_idx[eobx];
+    const int32_t fun_idx_y = lowbd_txfm_all_1d_zeros_idx[eoby];
+
+    const transform_neon row_txfm = lowbd_txfm_all_1d_zeros_w_arr[txw_idx][hitx_1d_tab[tx_type]][fun_idx_x];
+    const transform_neon col_txfm = lowbd_txfm_all_1d_zeros_w_arr[txh_idx][vitx_1d_tab[tx_type]][fun_idx_y];
+    if (!row_txfm || !col_txfm) {
+        return 0;
+    }
+    const int8_t* shift = svt_aom_inv_txfm_shift_ls[tx_size];
+
+    const int32_t buf_size_w_div8 = txfm_size_col >> 3;
+
+    const int32_t buf_size_nonzero_h_div8 = (eoby + 8) >> 3;
+    const int32_t buf_size_nonzero_w_div8 = (eobx + 8) >> 3;
+
+    const int32_t input_stride = AOMMIN(32, txfm_size_col);
+
+    const int32_t rect_type = get_rect_tx_log_ratio(txfm_size_col, txfm_size_row);
+
+    // Reject before any narrow arithmetic. OR-ing magnitudes keeps every set bit of the largest one.
+    uint32x4_t bits = vdupq_n_u32(0);
+    for (int32_t y = 0; y < buf_size_nonzero_h_div8 * 8; y++) {
+        const int32_t* row = input + y * input_stride;
+        for (int32_t x = 0; x < buf_size_nonzero_w_div8 * 8; x += 4) {
+            bits = vorrq_u32(bits, vreinterpretq_u32_s32(vabsq_s32(vld1q_s32(row + x))));
+        }
+    }
+    if (vmaxvq_u32(bits) > (uint32_t)limit) {
+        return 0;
+    }
+
+    int16x8_t a[64 * 8];
+    int16x8_t b[64 * 8];
+    int32_t   ud_flip, lr_flip;
+    int32_t   temp_b = 0;
+    get_flip_cfg(tx_type, &ud_flip, &lr_flip);
+
+    for (int32_t i = 0; i < buf_size_nonzero_h_div8; i++) {
+        int16x8_t*     cur_a     = &a[i * txfm_size_col];
+        const int32_t* input_row = input + i * input_stride * 8;
+        for (int32_t j = 0; j < buf_size_nonzero_w_div8; ++j) {
+            int16x8_t* buf0_cur = cur_a + j * 8;
+            load_buffer_32bit_to_16bit_neon(input_row + j * 8, input_stride, buf0_cur, 8);
+            transpose_arrays_s16_8x8(buf0_cur, buf0_cur);
+        }
+        if (abs(rect_type) == 1) {
+            round_shift_for_rect(cur_a, cur_a, input_stride);
+        }
+        row_txfm(cur_a, cur_a, INV_COS_BIT);
+        av1_round_shift_array_16_neon(cur_a, txfm_size_col, -shift[0]);
+        if (lr_flip == 1) {
+            for (int32_t j = 0; j < buf_size_w_div8; ++j) {
+                flip_buf_ud_neon(&cur_a[j * 8], 8);
+                transpose_arrays_s16_8x8(&cur_a[j * 8], &b[temp_b + txfm_size_row * (buf_size_w_div8 - 1 - j)]);
+            }
+        } else {
+            for (int32_t j = 0; j < buf_size_w_div8; ++j) {
+                transpose_arrays_s16_8x8(&cur_a[j * 8], &b[temp_b + txfm_size_row * j]);
+            }
+        }
+        temp_b += 8;
+    }
+    for (int32_t j = 0; j < buf_size_w_div8; ++j) {
+        col_txfm(&b[j * txfm_size_row], &b[j * txfm_size_row], INV_COS_BIT);
+        av1_round_shift_array_16_neon(&b[j * txfm_size_row], txfm_size_row, -shift[1]);
+    }
+    const int16x8_t zero = vdupq_n_s16(0);
+    const int16x8_t max  = vdupq_n_s16(1023);
+    for (int32_t i = 0; i < txfm_size_row; ++i) {
+        const int32_t r = ud_flip ? txfm_size_row - 1 - i : i;
+        for (int32_t j = 0; j < buf_size_w_div8; ++j) {
+            const int16x8_t p   = vreinterpretq_s16_u16(vld1q_u16(pred + i * sp + j * 8));
+            const int16x8_t sum = vminq_s16(vmaxq_s16(vqaddq_s16(p, b[j * txfm_size_row + r]), zero), max);
+            vst1q_u16(dest + i * dp + j * 8, vreinterpretq_u16_s16(sum));
+        }
+    }
+    return 1;
+}
+
+int svt_av1_highbd10_inv_txfm_add_bounded_neon(const int32_t* input, const uint16_t* pred, int sp, uint16_t* dest,
+                                               int dp, TxType tx_type, TxSize tx_size, int eob, const int16_t* limits) {
+    if (tx_size_wide[tx_size] < 8 || tx_size_high[tx_size] < 8 || hitx_1d_tab[tx_type] == IIDENTITY_1D ||
+        vitx_1d_tab[tx_type] == IIDENTITY_1D) {
+        return 0;
+    }
+    int eobx, eoby;
+    get_eobx_eoby_scan_default(&eobx, &eoby, tx_size, eob);
+    const int limit = limits[lowbd_txfm_all_1d_zeros_idx[eoby] * 4 + lowbd_txfm_all_1d_zeros_idx[eobx]];
+    if (limit <= 0) {
+        return 0;
+    }
+    return svt_av1_highbd10_inv_txfm_add_bounded_xy_neon(
+        input, pred, sp, dest, dp, tx_type, tx_size, eobx, eoby, limit);
+}
+#endif
+
 void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t stride_r, uint8_t* dst_w,
                                  int32_t stride_w, const TxfmParam* txfm_param) {
 #if CONFIG_ENABLE_LOSSLESS

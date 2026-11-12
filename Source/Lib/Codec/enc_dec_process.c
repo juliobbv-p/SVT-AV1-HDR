@@ -31,6 +31,7 @@
 #include "rc_process.h"
 
 #include "pack_unpack_c.h"
+#include "inter_prediction.h"
 #include "deblocking_filter.h"
 
 void svt_aom_update_intrabc_reference(PictureControlSet* pcs, uint32_t sb_origin_x, uint32_t sb_origin_y) {
@@ -1096,6 +1097,14 @@ EbErrorType psnr_calculations(PictureControlSet* pcs, SequenceControlSet* scs, b
     return EB_ErrorNone;
 }
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+// On failure y_packed_alloc stays NULL and the split planes keep being packed per block.
+static EbErrorType alloc_packed_luma(EbPictureBufferDesc* pic, size_t count) {
+    EB_MALLOC_ALIGNED_ARRAY(pic->y_packed_alloc, count);
+    return EB_ErrorNone;
+}
+#endif
+
 void pad_ref_and_set_flags(PictureControlSet* pcs, SequenceControlSet* scs) {
     EbReferenceObject* ref_object = (EbReferenceObject*)pcs->ppcs->ref_pic_wrapper->object_ptr;
 
@@ -1178,6 +1187,32 @@ void pad_ref_and_set_flags(PictureControlSet* pcs, SequenceControlSet* scs) {
             ref_pic_ptr->y_stride_bit_inc,
             ref_pic_16bit_ptr->width + (ref_pic_ptr->border << 1),
             ref_pic_16bit_ptr->height + (ref_pic_ptr->border << 1));
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        // Keep a packed copy of the split luma plane: 10-bit mode decision predicts from it directly instead of
+        // packing the 8-bit and 2-bit planes again for every block. Packing the split planes (rather than
+        // copying the 16-bit reconstruction) keeps it identical to what the per-block packing produces.
+        ref_pic_ptr->y_buffer_packed = NULL;
+        if (scs->static_config.encoder_bit_depth == EB_TEN_BIT &&
+            ref_pic_ptr->y_stride_bit_inc == ref_pic_ptr->y_stride && ref_pic_ptr->y_buffer_bit_inc) {
+            const uint32_t rows = ref_pic_ptr->max_height + (ref_pic_ptr->border << 1);
+            if (!ref_pic_ptr->y_packed_alloc) {
+                alloc_packed_luma(ref_pic_ptr, (size_t)ref_pic_ptr->y_stride * rows + 64);
+            }
+            if (ref_pic_ptr->y_packed_alloc && ref_pic_16bit_ptr->height <= ref_pic_ptr->max_height &&
+                ref_pic_16bit_ptr->width + (ref_pic_ptr->border << 1) <= ref_pic_ptr->y_stride) {
+                const uint32_t org = ref_pic_ptr->border + ref_pic_ptr->border * ref_pic_ptr->y_stride;
+                svt_aom_pack_block(ref_pic_ptr->y_buffer - org,
+                                   ref_pic_ptr->y_stride,
+                                   ref_pic_ptr->y_buffer_bit_inc - org,
+                                   ref_pic_ptr->y_stride_bit_inc,
+                                   ref_pic_ptr->y_packed_alloc,
+                                   ref_pic_ptr->y_stride,
+                                   ref_pic_16bit_ptr->width + (ref_pic_ptr->border << 1),
+                                   ref_pic_16bit_ptr->height + (ref_pic_ptr->border << 1));
+                ref_pic_ptr->y_buffer_packed = ref_pic_ptr->y_packed_alloc + org;
+            }
+        }
+#endif
         svt_aom_un_pack2d(
             ((uint16_t*)ref_pic_16bit_ptr->u_buffer) -
                 ((ref_pic_16bit_ptr->border >> ss_x) +

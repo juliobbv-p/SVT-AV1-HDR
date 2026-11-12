@@ -1354,14 +1354,41 @@ bool svt_aom_highbd_dual_pred_supported(void) {
 // Unscaled 10-bit single-reference luma prediction that also writes the first-pass compound intermediate
 // (CONV_BUF form) of the same block to cmp. Both outputs are bit-exact with the regular kernels.
 // Returns false, leaving dst and cmp undefined, when the case is not covered.
-bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, int32_t src_stride, uint16_t* dst,
-                                            int32_t dst_stride, uint16_t* cmp, int32_t cmp_stride, int32_t w, int32_t h,
-                                            InterpFilters interp_filters, SubpelParams* subpel_params) {
-    if (!src_2b || has_scale(subpel_params->xs, subpel_params->ys) || w < 4 || h < 4 || (h & 3) ||
+// Unscaled 10-bit luma prediction from a packed 16-bit reference plane: the regular convolve dispatch without
+// the per-block packing of the split planes. Mirrors svt_inter_predictor_light_pd1().
+void svt_aom_inter_predictor_light_pd1_packed(const uint16_t* src16, int32_t src_stride, uint16_t* dst,
+                                              int32_t dst_stride, int32_t w, int32_t h, InterpFilters interp_filters,
+                                              SubpelParams* subpel_params, ConvolveParams* conv_params) {
+    InterpFilterParams filter_params_x, filter_params_y;
+    av1_get_convolve_filter_params(interp_filters, &filter_params_x, &filter_params_y, w, h);
+    SubpelParams sp = *subpel_params;
+    revert_scale_extra_bits(&sp);
+    svt_aom_convolveHbd[sp.subpel_x != 0][sp.subpel_y != 0][conv_params->is_compound]((uint16_t*)src16,
+                                                                                      src_stride,
+                                                                                      dst,
+                                                                                      dst_stride,
+                                                                                      w,
+                                                                                      h,
+                                                                                      &filter_params_x,
+                                                                                      &filter_params_y,
+                                                                                      sp.subpel_x,
+                                                                                      sp.subpel_y,
+                                                                                      conv_params,
+                                                                                      EB_TEN_BIT);
+}
+
+bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, const uint16_t* src_packed,
+                                            int32_t src_stride, uint16_t* dst, int32_t dst_stride, uint16_t* cmp,
+                                            int32_t cmp_stride, int32_t w, int32_t h, InterpFilters interp_filters,
+                                            SubpelParams* subpel_params) {
+    if ((!src_2b && !src_packed) || has_scale(subpel_params->xs, subpel_params->ys) || w < 4 || h < 4 || (h & 3) ||
         (w != 4 && (w & 7))) {
         return false;
     }
     if (!subpel_params->subpel_x && !subpel_params->subpel_y) {
+        if (!src_2b) {
+            return false;
+        }
         ConvolveParams params = get_conv_params_no_round(0, NULL, 0, 0, EB_TEN_BIT);
         svt_aom_highbd_10_fullpel_split_neon(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, &params);
         svt_aom_highbd_10_cmp_from_pixels_neon(dst, dst_stride, cmp, cmp_stride, w, h);
@@ -1387,7 +1414,12 @@ bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, int32
     if (src_stride16 % 8) {
         src_stride16 = ALIGN_POWER_OF_TWO(src_stride16, 3);
     }
-    if (use_compact) {
+    if (src_packed) {
+        // The packed reference plane needs no per-block copy.
+        offset_x     = 0;
+        offset_y     = 0;
+        src_stride16 = src_stride;
+    } else if (use_compact) {
         svt_enc_msb_pack2d_neon(src - offset_x - offset_y * src_stride,
                                 src_stride,
                                 src_2b - offset_x - offset_y * src_stride,
@@ -1406,7 +1438,7 @@ bool svt_aom_inter_predictor_light_pd1_dual(uint8_t* src, uint8_t* src_2b, int32
                            w + (offset_x << 1),
                            h + (offset_y << 1));
     }
-    uint16_t* src_10b = src16 + offset_x + (offset_y * src_stride16);
+    uint16_t* src_10b = src_packed ? (uint16_t*)src_packed : src16 + offset_x + (offset_y * src_stride16);
     if (sp.subpel_x && sp.subpel_y) {
         return svt_aom_highbd_10_convolve_2d_sr_dual_neon(src_10b,
                                                           src_stride16,

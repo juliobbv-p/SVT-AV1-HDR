@@ -2295,7 +2295,15 @@ static void md_nsq_motion_search(PictureControlSet* pcs, ModeDecisionContext* ct
         const Position blk_geom_offset = {.x = ctx->blk_org_x - ctx->sb_origin_x - ctx->geom_offset_x,
                                           .y = ctx->blk_org_y - ctx->sb_origin_y - ctx->geom_offset_y};
         // Derive the sub-block(s) MVs (additional MVC for NSQ)
-        for (uint32_t block_index = 0; block_index < number_of_pus; block_index++) {
+        // The ME blocks are square and ordered by size (1 64x64, 4 32x32, 16 16x16, 64 8x8), so only the index
+        // range of the matching size needs to be scanned.
+        const uint32_t pu_first = min_size >= 64 ? 0 : min_size == 32 ? 1 : min_size == 16 ? 5 : 21;
+        const uint32_t pu_end   = MIN(number_of_pus,
+                                    min_size >= 64       ? 1u
+                                          : min_size == 32 ? 5u
+                                          : min_size == 16 ? 21u
+                                                           : 85u);
+        for (uint32_t block_index = pu_first; block_index < pu_end; block_index++) {
             if ((min_size == partition_width[block_index] || min_size == partition_height[block_index]) &&
                 ((pu_search_index_map[block_index][0] >= (unsigned)blk_geom_offset.x) &&
                  (pu_search_index_map[block_index][0] < (unsigned)blk_geom_offset.x + ctx->blk_geom->bwidth)) &&

@@ -1269,6 +1269,24 @@ static INLINE void fullpel_split_neon(const uint8_t* msb, int msb_stride, const 
     }
 }
 
+// Averaged compound prediction of two full-pel packed 10-bit references (see the split variant below).
+void svt_aom_highbd_10_fullpel_avg_neon(const uint16_t* src0, int stride0, const uint16_t* src1, int stride1,
+                                        uint16_t* dst, int dst_stride, int w, int h) {
+    assert(w == 4 || (w > 0 && !(w & 7)));
+    do {
+        if (w == 4) {
+            vst1_u16(dst, vrhadd_u16(vld1_u16(src0), vld1_u16(src1)));
+        } else {
+            for (int x = 0; x < w; x += 8) {
+                vst1q_u16(dst + x, vrhaddq_u16(vld1q_u16(src0 + x), vld1q_u16(src1 + x)));
+            }
+        }
+        src0 += stride0;
+        src1 += stride1;
+        dst += dst_stride;
+    } while (--h != 0);
+}
+
 // Averaged compound prediction of two full-pel split 10-bit references: with both intermediates equal to
 // (pixel << 4) + offset, the rounded compound average reduces to the rounded mean of the two pixels.
 void svt_aom_highbd_10_fullpel_split_avg_neon(const uint8_t* msb0, const uint8_t* lsb0, int stride0,
