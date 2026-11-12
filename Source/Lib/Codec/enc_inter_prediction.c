@@ -2146,6 +2146,16 @@ static INLINE bool is_plain_prediction(const PictureControlSet* pcs, const ModeD
 // For fullpel candidates, interp filter doesn't impact the prediction, but the filter with the
 // best rate will still be selected.  If a new interp filter is selected for a non-fullpel candidate
 // the luma pred will be marked invalid.
+// Copies a block's luma prediction between a picture buffer (block at its origin) and a packed side buffer.
+static void ifs_copy_luma(const ModeDecisionContext* ctx, uint8_t* dst, uint32_t dst_stride, const uint8_t* src,
+                          uint32_t src_stride, uint8_t hbd_md) {
+    const int    sh = hbd_md ? 1 : 0;
+    const size_t w  = (size_t)ctx->blk_geom->bwidth << sh;
+    for (uint32_t r = 0; r < ctx->blk_geom->bheight; r++) {
+        memcpy(dst + (((size_t)r * dst_stride) << sh), src + (((size_t)r * src_stride) << sh), w);
+    }
+}
+
 static void interpolation_filter_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                         ModeDecisionCandidateBuffer* cand_bf, EbPictureBufferDesc* ref_pic_list0,
                                         EbPictureBufferDesc* ref_pic_list1, uint8_t hbd_md, uint8_t bit_depth) {
@@ -2196,8 +2206,29 @@ static void interpolation_filter_search(PictureControlSet* pcs, ModeDecisionCont
     uint64_t rd              = (uint64_t)~0;
     uint32_t best_filters    = 0;
 
+    // Where the luma prediction of the best pair so far lives: nowhere (it has to be predicted again), in the
+    // candidate's own buffer (the pair predicts like the incoming filters), or in ctx->ifs_best_pred. A plain
+    // prediction computed here is what the caller would compute again for the winning pair, so it is kept.
+    enum { IFS_PRED_NONE, IFS_PRED_CAND, IFS_PRED_SIDE };
+
+    // (Not at MDS0, where the caller's own prediction also feeds the block's prediction caches.)
+    // The caller must be on the same prediction path as the search: the light path for the planes it will ask for.
+    const uint32_t ifs_caller_mask = ctx->mds_do_chroma ? PICTURE_BUFFER_DESC_FULL_MASK : PICTURE_BUFFER_DESC_LUMA_MASK;
+    const bool     ifs_caller_light = is_plain_prediction(
+                                      pcs, ctx, cand_bf->cand, hbd_md, ifs_caller_mask, ref_pic_list0, ref_pic_list1) &&
+        (ifs_caller_mask == PICTURE_BUFFER_DESC_LUMA_MASK ||
+         (ctx->blk_geom->bwidth > 4 && ctx->blk_geom->bheight > 4 && ctx->blk_geom->bwidth_uv <= 64 &&
+          ctx->blk_geom->bheight_uv <= 64));
+    const bool ifs_keep = plain_luma && ifs_caller_light && pcs->ppcs->is_not_scaled && ctx->md_stage > MD_STAGE_0 &&
+        (SVT_EFFECTIVE_BIT_DEPTH(encoder_bit_depth) == EB_EIGHT_BIT || can_reuse_hbd_pred);
+    int ifs_best_src = IFS_PRED_NONE;
+    int ifs_side_id  = -1; // identity of the prediction in ctx->ifs_best_pred
+    int ifs_cand_id  = -1; // identity of the prediction in the candidate's buffer
+
     // Loop over allowable filter combinations and select the best one
     for (unsigned int i = 0; i < DUAL_FILTER_SET_SIZE; i++) {
+        int  ifs_cur_id      = -1; // identity of this combination's prediction (-1: none was needed)
+        bool ifs_cur_scratch = false; // it was just written to the scratch picture
         // If dual filter is disabled, only test combos that use the same horizontal and vertical filter
         if (enable_dual_filter == 0 && (filter_sets[i][0] != filter_sets[i][1])) {
             continue;
@@ -2222,8 +2253,13 @@ static void interpolation_filter_search(PictureControlSet* pcs, ModeDecisionCont
                                                   ctx->md_stage > MD_STAGE_0 &&
                                                   (SVT_EFFECTIVE_BIT_DEPTH(encoder_bit_depth) == EB_EIGHT_BIT ||
                                                    can_reuse_hbd_pred));
-
+            if (is_pred_buffer_ready) {
+                ifs_cand_id = (int)i;
+            }
+            ifs_cur_id      = (int)i;
+            ifs_cur_scratch = false;
             if (is_pred_buffer_ready == 0 && plain_luma) {
+                ifs_cur_scratch = true;
                 av1_inter_prediction_light_pd1(scs,
                                                ctx,
                                                &cand_bf->cand->block_mi,
@@ -2303,14 +2339,41 @@ static void interpolation_filter_search(PictureControlSet* pcs, ModeDecisionCont
             rd              = tmp_rd;
             switchable_rate = tmp_rs;
             best_filters    = cand_bf->cand->block_mi.interp_filters;
+            if (ifs_keep && ifs_cur_id >= 0) {
+                if (ifs_cur_scratch) {
+                    ifs_copy_luma(ctx,
+                                  ctx->ifs_best_pred,
+                                  ctx->blk_geom->bwidth,
+                                  ctx->scratch_prediction_ptr->y_buffer,
+                                  ctx->scratch_prediction_ptr->y_stride,
+                                  hbd_md);
+                    ifs_side_id  = ifs_cur_id;
+                    ifs_best_src = IFS_PRED_SIDE;
+                } else if (ifs_cur_id == ifs_cand_id) {
+                    ifs_best_src = IFS_PRED_CAND;
+                } else if (ifs_cur_id == ifs_side_id) {
+                    ifs_best_src = IFS_PRED_SIDE;
+                } else {
+                    ifs_best_src = IFS_PRED_NONE;
+                }
+            } else {
+                ifs_best_src = IFS_PRED_NONE;
+            }
         }
     }
 
     cand_bf->cand->block_mi.interp_filters = best_filters;
 
-    // If a new interp filter was selected, then the existing pred will not be valid (unless it's
-    // a fullpel MV, in which case the interp filter won't impact prediction and one may be chosen for rate only)
-    if (!is_fp && org_interp_filters != best_filters) {
+    if (!is_fp && ifs_best_src == IFS_PRED_SIDE) {
+        // The winning pair's prediction was computed during the search: hand it to the candidate.
+        ifs_copy_luma(
+            ctx, cand_bf->pred->y_buffer, cand_bf->pred->y_stride, ctx->ifs_best_pred, ctx->blk_geom->bwidth, hbd_md);
+        cand_bf->dct_dct_key     = 0;
+        cand_bf->valid_luma_pred = true;
+    } else if (!is_fp && org_interp_filters != best_filters && ifs_best_src != IFS_PRED_CAND) {
+        // If a new interp filter was selected, then the existing pred will not be valid (unless it's
+        // a fullpel MV, in which case the interp filter won't impact prediction and one may be chosen for rate
+        // only, or the new pair predicts exactly like the incoming one)
         cand_bf->valid_luma_pred = false;
     }
 

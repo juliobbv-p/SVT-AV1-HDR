@@ -1171,6 +1171,8 @@ typedef struct ModeDecisionContext {
     uint32_t          me_cand_offset;
     // Pointer to a scratch buffer used by CFL & IFS
     EbPictureBufferDesc* scratch_prediction_ptr;
+    // Luma prediction of the best filter pair found so far by the interpolation filter search (one block).
+    uint8_t*             ifs_best_pred;
     uint8_t              tx_depth;
     uint8_t              txb_itr;
     uint32_t             me_sb_addr;
