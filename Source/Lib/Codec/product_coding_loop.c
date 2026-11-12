@@ -2064,6 +2064,11 @@ static void svt_init_mv_cost_params(svt_mv_cost_param* mv_cost_params, ModeDecis
     mv_cost_params->mvcost[1]     = ctx->md_rate_est_ctx->nmvcoststack[1];
 }
 
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+void svt_aom_variance_grid_neon_dotprod(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride, int bw,
+                                        int bh, int nx, int ny, int step, uint32_t* var);
+#endif
+
 static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictureBufferDesc* input_pic,
                                EbPictureBufferDesc* ref_pic, uint32_t input_origin_index, DistortionType dist_type,
                                int16_t mvx, int16_t mvy, int16_t search_position_start_x, int16_t search_position_end_x,
@@ -2156,6 +2161,37 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
         }
         return;
     }
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+    // 8-bit variance searches: one kernel call computes the variance of every position of the grid, loading
+    // each source vector once per row of positions. The loop below then visits the positions in the usual order.
+    uint32_t var_grid[256];
+
+    const uint32_t* var_tab = NULL;
+
+    int32_t grid_ny = 0;
+    if (dist_type == VAR && !hbd_md && (bw == 8 || bw == 16 || bw == 32 || bw == 64) && nx > 0 && ny > 0 &&
+        sparse_search_step > 0 && svt_aom_variance16x16 == svt_aom_variance16x16_neon_dotprod) {
+        const int32_t gx = (nx - 1) / sparse_search_step + 1;
+        const int32_t gy = (ny - 1) / sparse_search_step + 1;
+        // The batched kernel evaluates rows of three or five horizontally adjacent positions.
+        if ((gx == 3 || gx == 5) && gx * gy <= 256) {
+            svt_aom_variance_grid_neon_dotprod(
+                input_pic->y_buffer + input_origin_index,
+                input_pic->y_stride,
+                ref_pic->y_buffer + (ctx->blk_org_x + (mvx >> 3) + search_position_start_x) +
+                    (ctx->blk_org_y + (mvy >> 3) + search_position_start_y) * ref_pic->y_stride,
+                ref_pic->y_stride,
+                bw,
+                ctx->blk_geom->bheight,
+                gx,
+                gy,
+                sparse_search_step,
+                var_grid);
+            var_tab = var_grid;
+            grid_ny = gy;
+        }
+    }
+#endif
     for (int32_t refinement_pos_x = search_position_start_x; refinement_pos_x <= search_position_end_x;
          refinement_pos_x         = refinement_pos_x + sparse_search_step) {
         for (int32_t refinement_pos_y = search_position_start_y; refinement_pos_y <= search_position_end_y;
@@ -2177,7 +2213,13 @@ static void md_full_pel_search(PictureControlSet* pcs, ModeDecisionContext* ctx,
                 (ctx->blk_org_y + (mvy >> 3) + refinement_pos_y) * ref_pic->y_stride;
 
             if (dist_type == VAR) {
-                if (!hbd_md) {
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+                if (var_tab) {
+                    cost = var_tab[((refinement_pos_x - search_position_start_x) / sparse_search_step) * grid_ny +
+                                   (refinement_pos_y - search_position_start_y) / sparse_search_step];
+                } else
+#endif
+                    if (!hbd_md) {
                     const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
                     unsigned int            sse;
                     uint8_t*                pred_y = ref_pic->y_buffer + ref_origin_index;
