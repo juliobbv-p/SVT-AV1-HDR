@@ -798,8 +798,67 @@ uint64_t svt_search_one_dual_c(int* lev0, int* lev1, int nb_strengths, uint64_t*
  * start_gi : starting strength index for the search of the additional strengths.
  * end_gi : End index for the for the search of the additional strengths.
 */
-static uint64_t joint_strength_search_dual(int32_t* best_lev0, int32_t* best_lev1, int32_t nb_strengths,
-                                           uint64_t** mse[2], int32_t sb_count, int32_t start_gi, int32_t end_gi) {
+// Results of the svt_search_one_dual() calls of one frame's strength search. For fixed mse arrays and strength
+// range, a call is a function of the set of already selected (luma, chroma) pairs only: each filter block uses
+// the minimum over the set, so neither the order nor repetitions matter. The four searches of a frame (1, 2, 4
+// and 8 strengths) each restart the same greedy sequence, and their refinement loops revisit the same sets once
+// they stop improving, so many calls repeat.
+#define CDEF_MEMO_ENTRIES 80 // one frame makes 75 calls
+
+typedef struct CdefSearchMemo {
+    int count;
+
+    struct {
+        uint8_t  n;
+        uint16_t pairs[CDEF_MAX_STRENGTHS];
+        int32_t  id0, id1;
+        uint64_t tot_mse;
+    } e[CDEF_MEMO_ENTRIES];
+} CdefSearchMemo;
+
+static uint64_t search_one_dual_memo(CdefSearchMemo* memo, int32_t* lev0, int32_t* lev1, int32_t nb_strengths,
+                                     uint64_t** mse[2], int32_t sb_count, int32_t start_gi, int32_t end_gi) {
+    // the selected pairs as a sorted set
+    uint16_t key[CDEF_MAX_STRENGTHS];
+    int      n = 0;
+    for (int i = 0; i < nb_strengths; i++) {
+        const uint16_t v = (uint16_t)((lev0[i] << 8) | lev1[i]);
+
+        int j = 0;
+        while (j < n && key[j] < v) {
+            j++;
+        }
+        if (j < n && key[j] == v) {
+            continue;
+        }
+        for (int k = n; k > j; k--) {
+            key[k] = key[k - 1];
+        }
+        key[j] = v;
+        n++;
+    }
+    for (int i = 0; i < memo->count; i++) {
+        if (memo->e[i].n == n && !memcmp(memo->e[i].pairs, key, n * sizeof(key[0]))) {
+            lev0[nb_strengths] = memo->e[i].id0;
+            lev1[nb_strengths] = memo->e[i].id1;
+            return memo->e[i].tot_mse;
+        }
+    }
+    const uint64_t tot_mse = svt_search_one_dual(lev0, lev1, nb_strengths, mse, sb_count, start_gi, end_gi);
+    if (memo->count < CDEF_MEMO_ENTRIES) {
+        memo->e[memo->count].n = (uint8_t)n;
+        memcpy(memo->e[memo->count].pairs, key, n * sizeof(key[0]));
+        memo->e[memo->count].id0     = lev0[nb_strengths];
+        memo->e[memo->count].id1     = lev1[nb_strengths];
+        memo->e[memo->count].tot_mse = tot_mse;
+        memo->count++;
+    }
+    return tot_mse;
+}
+
+static uint64_t joint_strength_search_dual(CdefSearchMemo* memo, int32_t* best_lev0, int32_t* best_lev1,
+                                           int32_t nb_strengths, uint64_t** mse[2], int32_t sb_count, int32_t start_gi,
+                                           int32_t end_gi) {
     uint64_t best_tot_mse;
     int32_t  i;
     best_tot_mse = (uint64_t)1 << 63;
@@ -815,7 +874,7 @@ static uint64_t joint_strength_search_dual(int32_t* best_lev0, int32_t* best_lev
     selected list of best (Luma_strength, Chroma_strength) pairs.
     */
     for (i = 0; i < nb_strengths; i++) {
-        best_tot_mse = svt_search_one_dual(best_lev0, best_lev1, i, mse, sb_count, start_gi, end_gi);
+        best_tot_mse = search_one_dual_memo(memo, best_lev0, best_lev1, i, mse, sb_count, start_gi, end_gi);
     }
     /* Performing further refinements on the search based on the results
     from the step above. Trying to refine the greedy search by reconsidering each
@@ -826,7 +885,8 @@ static uint64_t joint_strength_search_dual(int32_t* best_lev0, int32_t* best_lev
             best_lev0[j] = best_lev0[j + 1];
             best_lev1[j] = best_lev1[j + 1];
         }
-        best_tot_mse = svt_search_one_dual(best_lev0, best_lev1, nb_strengths - 1, mse, sb_count, start_gi, end_gi);
+        best_tot_mse = search_one_dual_memo(
+            memo, best_lev0, best_lev1, nb_strengths - 1, mse, sb_count, start_gi, end_gi);
     }
     return best_tot_mse;
 }
@@ -1057,12 +1117,14 @@ void finish_cdef_search(PictureControlSet* pcs) {
     uint64_t zero_cost = RDCOST(lambda, av1_cost_literal(CDEF_STRENGTH_BITS * 2), zero_dist << 4);
 
     // Search for different numbers of signalling bits
+    CdefSearchMemo memo;
+    memo.count = 0;
     for (i = 0; i <= 3; i++) {
         int32_t best_lev0[CDEF_MAX_STRENGTHS] = {0};
         int32_t best_lev1[CDEF_MAX_STRENGTHS] = {0};
         nb_strengths                          = 1 << i;
         uint64_t tot_mse                      = joint_strength_search_dual(
-            best_lev0, best_lev1, nb_strengths, mse, sb_count, start_gi, end_gi);
+            &memo, best_lev0, best_lev1, nb_strengths, mse, sb_count, start_gi, end_gi);
 
         const int      total_bits = sb_count * i + nb_strengths * CDEF_STRENGTH_BITS * 2;
         const uint64_t cost       = RDCOST(lambda, av1_cost_literal(total_bits), tot_mse * 16);
