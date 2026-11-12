@@ -35,6 +35,9 @@ void svt_aom_sub_pixel_variance_cross_half_avx512(const uint8_t* ref, int ref_st
 #if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
 void svt_aom_sub_pixel_variance_cross_half_neon_dotprod(const uint8_t* c, int c_stride, const uint8_t* src,
                                                         int src_stride, int w, int h, uint32_t var[4]);
+void svt_aom_sub_pixel_variance_cross_quarter_neon_dotprod(const uint8_t* c, int c_stride, int sx, int sy,
+                                                           const uint8_t* src, int src_stride, int w, int h,
+                                                           uint32_t var[4]);
 #endif
 
 /*
@@ -475,6 +478,33 @@ static AOM_FORCE_INLINE Mv first_level_check_fast(const Mv this_mv, Mv* best_mv,
                                                                var_params->w,
                                                                var_params->h,
                                                                var);
+            left = check_better_fast_in_range(
+                left_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[0]);
+            right = check_better_fast_in_range(
+                right_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[1]);
+            up = check_better_fast_in_range(top_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[2]);
+            down = check_better_fast_in_range(
+                bottom_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[3]);
+        } else if (hstep == 2 && !(this_mv.x & 3) && !(this_mv.y & 3) &&
+                   (var_params->w == 8 || var_params->w == 16 || var_params->w == 32) && var_params->h <= 64 &&
+                   svt_aom_variance16x16 == svt_aom_variance16x16_neon_dotprod &&
+                   svt_av1_is_subpelmv_in_range(mv_limits, left_mv) &&
+                   svt_av1_is_subpelmv_in_range(mv_limits, right_mv) &&
+                   svt_av1_is_subpelmv_in_range(mv_limits, top_mv) &&
+                   svt_av1_is_subpelmv_in_range(mv_limits, bottom_mv)) {
+            // Quarter-pel cross around a full- or half-pel centre, likewise from one kernel call.
+            const MSBuffers* ms_buffers = &var_params->ms_buffers;
+
+            uint32_t var[4];
+            svt_aom_sub_pixel_variance_cross_quarter_neon_dotprod(svt_get_buf_from_mv(ms_buffers->ref, this_mv),
+                                                                  ms_buffers->ref->stride,
+                                                                  this_mv.x & 7,
+                                                                  this_mv.y & 7,
+                                                                  ms_buffers->src->buf,
+                                                                  ms_buffers->src->stride,
+                                                                  var_params->w,
+                                                                  var_params->h,
+                                                                  var);
             left = check_better_fast_in_range(
                 left_mv, best_mv, var_params, mv_cost_params, besterr, distortion, &var[0]);
             right = check_better_fast_in_range(

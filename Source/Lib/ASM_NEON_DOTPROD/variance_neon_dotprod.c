@@ -1134,3 +1134,113 @@ void svt_aom_sub_pixel_variance_cross_half_neon_dotprod(const uint8_t* c, int c_
         var[k] = e - (uint32_t)((sum * sum) >> shift);
     }
 }
+
+// Sixteen samples at p (eight, zero-extended, for 8-wide blocks).
+static AOM_FORCE_INLINE uint8x16_t cross_load(const uint8_t* p, const bool w8) {
+    return w8 ? vcombine_u8(vld1_u8(p), vdup_n_u8(0)) : vld1q_u8(p);
+}
+
+// Bilinear blend of a and b at offset o eighths (o is 2, 4 or 6).
+static AOM_FORCE_INLINE uint8x16_t cross_blend(uint8x16_t a, uint8x16_t b, const int o) {
+    return o == 2 ? interp_3_1_w16(a, b) : o == 4 ? interp_1_1_w16(a, b) : interp_1_3_w16(a, b);
+}
+
+// Horizontal pass at offset xo eighths (0, 2, 4 or 6) of the samples at p.
+static AOM_FORCE_INLINE uint8x16_t cross_hpass(const uint8_t* p, const int xo, const bool w8) {
+    const uint8x16_t a = cross_load(p, w8);
+    return xo == 0 ? a : cross_blend(a, cross_load(p + 1, w8), xo);
+}
+
+// The four quarter-pel positions around a centre whose sub-pel part (sx, sy) is 0 or 4 eighths on each axis; c
+// points at the centre's integer position. Left / right move the horizontal offset by two eighths and keep the
+// vertical one, up / down the reverse, so up and down share their horizontal pass and, for a half-pel row centre,
+// every position blends the same two filtered rows.
+static AOM_FORCE_INLINE void cross_quarter_impl(const uint8_t* c, int c_stride, const uint8_t* src, int src_stride,
+                                                int w, int h, uint32_t var[4], const int sx, const int sy) {
+    const bool w8   = w == 8;
+    const int  cols = w8 ? 1 : w / 16;
+    const int  lx = sx == 0 ? -1 : 0, lxo = sx == 0 ? 6 : 2, rxo = sx == 0 ? 2 : 6;
+
+    const uint8x16_t ones = vdupq_n_u8(1);
+
+    uint32x4_t sse[4], psum[4];
+
+    uint32x4_t ssum = vdupq_n_u32(0);
+    for (int k = 0; k < 4; k++) {
+        sse[k]  = vdupq_n_u32(0);
+        psum[k] = vdupq_n_u32(0);
+    }
+    uint8x16_t hc_prev[2], hc[2], hl[2], hr[2];
+    for (int t = 0; t < cols; t++) {
+        hc[t] = cross_hpass(c + t * 16, sx, w8);
+        if (sy == 0) {
+            hc_prev[t] = cross_hpass(c - c_stride + t * 16, sx, w8);
+        } else {
+            hl[t] = cross_hpass(c + lx + t * 16, lxo, w8);
+            hr[t] = cross_hpass(c + t * 16, rxo, w8);
+        }
+    }
+#define CROSS_Q_ACCUM(k, p)                                     \
+    do {                                                        \
+        const uint8x16_t pred = p;                              \
+        const uint8x16_t d    = vabdq_u8(pred, s);              \
+        psum[k]               = vdotq_u32(psum[k], pred, ones); \
+        sse[k]                = vdotq_u32(sse[k], d, d);        \
+    } while (0)
+    for (int r = 0; r < h; r++) {
+        for (int t = 0; t < cols; t++) {
+            const uint8x16_t s = cross_load(src + t * 16, w8);
+
+            const uint8x16_t hc_next = cross_hpass(c + c_stride + t * 16, sx, w8);
+
+            ssum = vdotq_u32(ssum, s, ones);
+            if (sy == 0) {
+                CROSS_Q_ACCUM(0, cross_hpass(c + lx + t * 16, lxo, w8));
+                CROSS_Q_ACCUM(1, cross_hpass(c + t * 16, rxo, w8));
+                CROSS_Q_ACCUM(2, cross_blend(hc_prev[t], hc[t], 6));
+                CROSS_Q_ACCUM(3, cross_blend(hc[t], hc_next, 2));
+                hc_prev[t] = hc[t];
+            } else {
+                const uint8x16_t hl_next = cross_hpass(c + c_stride + lx + t * 16, lxo, w8);
+                const uint8x16_t hr_next = cross_hpass(c + c_stride + t * 16, rxo, w8);
+                CROSS_Q_ACCUM(0, cross_blend(hl[t], hl_next, 4));
+                CROSS_Q_ACCUM(1, cross_blend(hr[t], hr_next, 4));
+                CROSS_Q_ACCUM(2, cross_blend(hc[t], hc_next, 2));
+                CROSS_Q_ACCUM(3, cross_blend(hc[t], hc_next, 6));
+                hl[t] = hl_next;
+                hr[t] = hr_next;
+            }
+            hc[t] = hc_next;
+        }
+        c += c_stride;
+        src += src_stride;
+    }
+#undef CROSS_Q_ACCUM
+    const int     shift   = 31 - __builtin_clz((unsigned)(w * h));
+    const int32_t s_total = (int32_t)vaddvq_u32(ssum);
+    for (int k = 0; k < 4; k++) {
+        const uint32_t e   = vaddvq_u32(sse[k]);
+        const int64_t  sum = (int64_t)vaddvq_u32(psum[k]) - s_total;
+
+        var[k] = e - (uint32_t)((sum * sum) >> shift);
+    }
+}
+
+// Variances of the w x h source block against the bilinear predictions at (sx - 2, sy), (sx + 2, sy), (sx, sy - 2)
+// and (sx, sy + 2) eighths from the integer position c, in that order, where sx and sy are each 0 or 4. Each
+// equals svt_aom_sub_pixel_variance{w}x{h}() for that position. w is 8, 16 or 32 and h at most 64.
+void svt_aom_sub_pixel_variance_cross_quarter_neon_dotprod(const uint8_t* c, int c_stride, int sx, int sy,
+                                                           const uint8_t* src, int src_stride, int w, int h,
+                                                           uint32_t var[4]) {
+    if (sy == 0) {
+        if (sx == 0) {
+            cross_quarter_impl(c, c_stride, src, src_stride, w, h, var, 0, 0);
+        } else {
+            cross_quarter_impl(c, c_stride, src, src_stride, w, h, var, 4, 0);
+        }
+    } else if (sx == 0) {
+        cross_quarter_impl(c, c_stride, src, src_stride, w, h, var, 0, 4);
+    } else {
+        cross_quarter_impl(c, c_stride, src, src_stride, w, h, var, 4, 4);
+    }
+}
