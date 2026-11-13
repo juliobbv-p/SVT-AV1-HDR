@@ -844,6 +844,65 @@ void svt_lbd_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t str
     }
 }
 
+// TPL source-based search: the cost of a 16x16 candidate is the sum of the absolute DCT coefficients of
+// (src - pred), and the coefficients themselves are only needed for the candidate that wins. The two functions
+// below split svt_lbd_fwd_txfm2d_16x16_neon(DCT_DCT) accordingly.
+//
+// svt_aom_tpl_dct16_satd_neon() forms the residual, runs both passes and returns the sum of the absolute values
+// of the row-pass output - what svt_aom_satd() returns for the coefficients, the sum not depending on their
+// order. The row-pass output is left in rows[] (2 x 16 vectors of 8, not yet transposed). All of it stays in
+// 16-bit lanes: an 8-bit residual is within +-255, and the transform is the 8-bit one above. A coefficient of
+// -32768 has the absolute value 0x8000, which the unsigned pairwise accumulation reads as 32768; a 32-bit lane
+// receives at most 2 * 16 * 32768 < 2^21.
+uint32_t svt_aom_tpl_dct16_satd_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* pred, uint32_t pred_stride,
+                                     int16_t* rows) {
+    int16x8_t buf0[16], buf1[32];
+    for (int i = 0; i < 2; i++) {
+        int16x8_t in[16];
+        for (int r = 0; r < 16; r++) {
+            const uint8x8_t s = vld1_u8(src + r * src_stride + 8 * i);
+            const uint8x8_t p = vld1_u8(pred + r * pred_stride + 8 * i);
+
+            in[r] = vshlq_n_s16(vreinterpretq_s16_u16(vsubl_u8(s, p)), 2);
+        }
+        fdct16x16_neon(in, buf0, 13);
+        shift_right_2_round_s16_x8(buf0, buf0, 16);
+        transpose_arrays_s16_8x8(buf0 + 0, buf1 + 0 * 16 + 8 * i);
+        transpose_arrays_s16_8x8(buf0 + 8, buf1 + 1 * 16 + 8 * i);
+    }
+    uint32x4_t sum0 = vdupq_n_u32(0), sum1 = vdupq_n_u32(0);
+    for (int i = 0; i < 2; i++) {
+        int16x8_t rowout[16];
+        fdct16x16_neon(buf1 + 16 * i, rowout, 12);
+        for (int r = 0; r < 16; r += 2) {
+            vst1q_s16(rows + (16 * i + r) * 8, rowout[r]);
+            vst1q_s16(rows + (16 * i + r + 1) * 8, rowout[r + 1]);
+            sum0 = vpadalq_u16(sum0, vreinterpretq_u16_s16(vabsq_s16(rowout[r])));
+            sum1 = vpadalq_u16(sum1, vreinterpretq_u16_s16(vabsq_s16(rowout[r + 1])));
+        }
+    }
+    return vaddvq_u32(vaddq_u32(sum0, sum1));
+}
+
+// The coefficients for rows[] as svt_lbd_fwd_txfm2d_16x16_neon() stores them (16 rows of 16).
+void svt_aom_tpl_dct16_coeffs_neon(const int16_t* rows, int32_t* coeff) {
+    for (int i = 0; i < 2; i++) {
+        int16x8_t rowout[16], ta[8], tb[8];
+        for (int r = 0; r < 16; r++) {
+            rowout[r] = vld1q_s16(rows + (16 * i + r) * 8);
+        }
+        transpose_arrays_s16_8x8(rowout + 0, ta);
+        transpose_arrays_s16_8x8(rowout + 8, tb);
+        for (int r = 0; r < 8; r++) {
+            int32_t* o = coeff + (8 * i + r) * 16;
+            vst1q_s32(o + 0, vmovl_s16(vget_low_s16(ta[r])));
+            vst1q_s32(o + 4, vmovl_s16(vget_high_s16(ta[r])));
+            vst1q_s32(o + 8, vmovl_s16(vget_low_s16(tb[r])));
+            vst1q_s32(o + 12, vmovl_s16(vget_high_s16(tb[r])));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 32x32 1D primitives + driver (DCT/IDTX only; no ADST at size >= 32)
 // ---------------------------------------------------------------------------

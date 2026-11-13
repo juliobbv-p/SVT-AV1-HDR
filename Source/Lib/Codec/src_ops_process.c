@@ -188,7 +188,7 @@ static void tpl_prep_info(PictureParentControlSet* pcs) {
 void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep_cost_base) {
     Av1Common*   cm                    = pcs->av1_cm;
     uint8_t      tpl_synth_size_offset = pcs->tpl_ctrls.synth_blk_size == 8 ? 1
-        : pcs->tpl_ctrls.synth_blk_size == 16                               ? 2
+             : pcs->tpl_ctrls.synth_blk_size == 16                          ? 2
                                                                             : 3;
     const int    step                  = 1 << (tpl_synth_size_offset);
     const int    mi_cols_sr            = ((pcs->enhanced_unscaled_pic->width + 15) / 16) << 2;
@@ -242,6 +242,14 @@ void generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep
 }
 
 #if CONFIG_ENABLE_TPL
+#if defined(ARCH_AARCH64)
+// Cost of a 16x16 candidate (sum of the absolute DCT coefficients of src - pred) without writing the coefficients,
+// and the coefficients afterwards for a candidate worth keeping; see lowbd_fwd_txfm2d_neon.c.
+uint32_t svt_aom_tpl_dct16_satd_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* pred, uint32_t pred_stride,
+                                     int16_t* rows);
+void     svt_aom_tpl_dct16_coeffs_neon(const int16_t* rows, int32_t* coeff);
+#endif
+
 // Forward transform of (src - pred); the 8-bit 16x16 N4 DCT forms the residual inside the transform.
 static AOM_INLINE void tpl_residual_fwd_txfm(const TplControls* tpl_ctrls, uint32_t size, TxSize tx_size,
                                              int16_t* src_diff, const uint8_t* src, uint32_t src_stride,
@@ -466,8 +474,8 @@ static void tpl_subpel_search(SequenceControlSet* scs, PictureParentControlSet* 
                               const uint32_t mb_origin_y, const uint8_t bsize, Mv* best_mv) {
     const Av1Common* const cm         = pcs->av1_cm;
     const BlockSize        block_size = bsize == 8 ? BLOCK_8X8
-        : bsize == 16                              ? BLOCK_16X16
-        : bsize == 32                              ? BLOCK_32X32
+               : bsize == 16                       ? BLOCK_16X16
+               : bsize == 32                       ? BLOCK_32X32
                                                    : BLOCK_64X64;
 
     // ref_mv is used to calculate the cost of the motion vector
@@ -581,6 +589,15 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
     DECLARE_ALIGNED(32, TranLow, best_coeff[MAX_TPL_SAMPLES_PER_BLOCK]);
     DECLARE_ALIGNED(16, uint8_t, compensated_blk[(const uint32_t)MAX_TPL_SAMPLES_PER_BLOCK]);
     uint8_t* predictor = predictor8;
+#if defined(ARCH_AARCH64)
+    // Full-shape 16x16 transforms of 8-bit pictures go through the fused cost kernel.
+    DECLARE_ALIGNED(16, int16_t, tpl_rows[16 * 16]);
+    const bool tpl_fused16 = tx_size == TX_16X16 && size_array[dispenser_search_level] == 16 &&
+        tpl_ctrls->subsample_tx == 0 && tpl_ctrls->pf_shape == DEFAULT_SHAPE &&
+        svt_av1_fwd_txfm2d_16x16 == svt_av1_fwd_txfm2d_16x16_neon;
+#else
+    const bool tpl_fused16 = false;
+#endif
     // get_quantize_error() writes only the leading N2/N4 coefficients
     const int tx_pix_num = 1 << eb_num_pels_log2_lookup[txsize_to_bsize[tx_size]];
     memset(qcoeff, 0, tx_pix_num * sizeof(*qcoeff));
@@ -608,8 +625,8 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
         const CodedBlockStats* blk_stats_ptr = svt_aom_get_coded_blk_stats(z_blk_index);
         const uint8_t          bsize         = blk_stats_ptr->size;
         const BlockSize        block_size    = bsize == 8 ? BLOCK_8X8
-            : bsize == 16                                 ? BLOCK_16X16
-            : bsize == 32                                 ? BLOCK_32X32
+                      : bsize == 16                       ? BLOCK_16X16
+                      : bsize == 32                       ? BLOCK_32X32
                                                           : BLOCK_64X64;
         const uint32_t         mb_origin_x   = b64_geom->org_x + blk_stats_ptr->org_x;
         const uint32_t         mb_origin_y   = b64_geom->org_y + blk_stats_ptr->org_y;
@@ -761,6 +778,11 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                         int64_t intra_cost;
                         if (pcs->tpl_ctrls.use_sad_in_src_search) {
                             intra_cost = svt_nxm_sad_kernel(src_mb, input_pic->y_stride, predictor, size, size, size);
+#if defined(ARCH_AARCH64)
+                        } else if (tpl_fused16) {
+                            intra_cost = svt_aom_tpl_dct16_satd_neon(
+                                src_mb, input_pic->y_stride, predictor, size, tpl_rows);
+#endif
                         } else {
                             svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
                                                    size,
@@ -899,6 +921,15 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                         subpel_mv ? size : ref_pic_ptr->y_stride,
                         size,
                         size);
+#if defined(ARCH_AARCH64)
+                } else if (tpl_fused16) {
+                    inter_cost = svt_aom_tpl_dct16_satd_neon(
+                        src_mb,
+                        input_pic->y_stride,
+                        subpel_mv ? compensated_blk : ref_pic_ptr->y_buffer + ref_origin_index,
+                        subpel_mv ? size : ref_pic_ptr->y_stride,
+                        tpl_rows);
+#endif
                 } else {
                     svt_aom_subtract_block(size >> tpl_ctrls->subsample_tx,
                                            size,
@@ -917,7 +948,12 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
 
                 if (inter_cost < best_inter_cost) {
                     if (!pcs->tpl_ctrls.use_sad_in_src_search) {
-                        memcpy(best_coeff, coeff, sizeof(best_coeff));
+#if defined(ARCH_AARCH64)
+                        if (tpl_fused16) {
+                            svt_aom_tpl_dct16_coeffs_neon(tpl_rows, best_coeff);
+                        } else
+#endif
+                            memcpy(best_coeff, coeff, sizeof(best_coeff));
                     }
 
                     best_ref_poc    = pcs->tpl_data.tpl_ref_ds_ptr_array[list_index][ref_pic_index].picture_number;
@@ -1153,8 +1189,8 @@ static void tpl_mc_flow_dispenser_sb_generic(EncodeContext* enc_ctx, SequenceCon
                                                                          input_pic->height);
                 uint8_t ois_intra_mode = best_intra_mode;
                 int32_t p_angle        = av1_is_directional_mode((PredictionMode)ois_intra_mode)
-                    ? mode_to_angle_map[(PredictionMode)ois_intra_mode]
-                    : 0;
+                           ? mode_to_angle_map[(PredictionMode)ois_intra_mode]
+                           : 0;
                 // Edge filter
 #if CONFIG_ENABLE_TPL_HQ
                 if (av1_is_directional_mode((PredictionMode)ois_intra_mode)) {
@@ -2091,8 +2127,8 @@ EbErrorType svt_aom_tpl_disp_kernel_iter(void* context) {
     int32_t frame_idx           = in_results_ptr->frame_index;
     context_ptr->coded_sb_count = 0;
 
-    uint16_t        tile_group_width_in_sb = pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
-                                                 .tile_group_width_in_sb;
+    uint16_t tile_group_width_in_sb = pcs->tile_group_info[0 /*context_ptr->tile_group_index*/] //  1 tile
+                                          .tile_group_width_in_sb;
     EncDecSegments* segments_ptr;
 
     segments_ptr = pcs->tpl_disp_segment_ctrl[0 /*context_ptr->tile_group_index*/]; //  1 tile
@@ -2130,7 +2166,7 @@ EbErrorType svt_aom_tpl_disp_kernel_iter(void* context) {
             segment_row_index  = segment_index / segments_ptr->segment_band_count;
             segment_band_index = segment_index - segment_row_index * segments_ptr->segment_band_count;
             segment_band_size  = (segments_ptr->sb_band_count * (segment_band_index + 1) +
-                                  segments_ptr->segment_band_count - 1) /
+                                 segments_ptr->segment_band_count - 1) /
                 segments_ptr->segment_band_count;
 
             for (y_sb_index = y_sb_start_index, sb_segment_index = sb_start_index;
