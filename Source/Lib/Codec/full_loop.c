@@ -2212,6 +2212,15 @@ uint8_t svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisionContex
         return 0;
     }
 
+    // A luma candidate of MD stage 1 or 2 is quantized again at stage 3 before its context level can reach the
+    // block: md_stage_3() runs full_loop_core() on every candidate it keeps. Before that the stored level is
+    // read only at transform depths above 0, where tx_update_neighbor_arrays() feeds it to the contexts of the
+    // next transform block (stages 1 and 2 do not search depths, but some block sizes are forced to depth 1:
+    // see get_start_end_tx_depth()). At depth 0 the scan that derives the level is therefore left out.
+    if (!is_encode_pass && component_type == COMPONENT_LUMA && ctx->pd_pass == PD_PASS_1 &&
+        (ctx->md_stage == MD_STAGE_1 || ctx->md_stage == MD_STAGE_2) && ctx->tx_depth == 0) {
+        return 0;
+    }
     // Derive cul_level
     return compute_cul_level_fast(scan_order->scan, quant_coeff, n_coeffs, eob);
 }
