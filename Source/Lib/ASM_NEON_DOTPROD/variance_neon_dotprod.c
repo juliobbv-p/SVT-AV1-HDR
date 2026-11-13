@@ -971,7 +971,23 @@ static AOM_FORCE_INLINE void variance_xk_neon_dotprod(const uint8_t* src, int sr
             ref += ref_stride;
         }
     }
-    for (int k = 0; k < K; k++) {
+    // Positions 0..3 (0..2 for K == 3) are finished together, one lane per position.
+    const uint32x4_t zero = vdupq_n_u32(0);
+    const uint32x4_t e4   = vpaddq_u32(vpaddq_u32(sse[0], sse[1]), vpaddq_u32(sse[2], K > 3 ? sse[3] : zero));
+    const uint32x4_t r4   = vpaddq_u32(vpaddq_u32(ref_sum[0], ref_sum[1]),
+                                     vpaddq_u32(ref_sum[2], K > 3 ? ref_sum[3] : zero));
+    const int32x4_t  sum4 = vsubq_s32(vdupq_n_s32(src_total), vreinterpretq_s32_u32(r4));
+    const int64x2_t  nsh  = vdupq_n_s64(-shift);
+    const uint64x2_t q_lo = vshlq_u64(vreinterpretq_u64_s64(vmull_s32(vget_low_s32(sum4), vget_low_s32(sum4))), nsh);
+    const uint64x2_t q_hi = vshlq_u64(vreinterpretq_u64_s64(vmull_high_s32(sum4, sum4)), nsh);
+    const uint32x4_t var4 = vsubq_u32(e4, vcombine_u32(vmovn_u64(q_lo), vmovn_u64(q_hi)));
+    vst1q_lane_u32(var + 0 * var_stride, var4, 0);
+    vst1q_lane_u32(var + 1 * var_stride, var4, 1);
+    vst1q_lane_u32(var + 2 * var_stride, var4, 2);
+    if (K > 3) {
+        vst1q_lane_u32(var + 3 * var_stride, var4, 3);
+    }
+    for (int k = 4; k < K; k++) {
         const uint32_t e    = vaddvq_u32(sse[k]);
         const int64_t  sum  = (int64_t)src_total - (int64_t)vaddvq_u32(ref_sum[k]);
         var[k * var_stride] = e - (uint32_t)((sum * sum) >> shift);
@@ -1021,9 +1037,228 @@ static inline int32_t block_sum_neon_dotprod(const uint8_t* src, int src_stride,
 // Variances of the bw x bh source block against the reference blocks of an nx x ny grid of full-pel positions
 // (nx is 3 or 5, bw is 8, 16, 32 or 64): var[i * ny + j] belongs to ref + (j * step) * ref_stride + i * step
 // and equals svt_aom_varianceWxH(that block, src).
+// The same variances from sums that are cheaper to accumulate. With s the source block and r a reference block,
+//     sum((s - r)^2) = sum(s^2) + sum(r^2) - 2 * sum(s * r),
+// so a position only needs its correlation sum(s * r) over the block: one dot product per vector instead of an
+// absolute difference and two dot products. sum(r) and sum(r^2) of the K positions of a grid row follow from the
+// previous grid row's by adding the rows that entered the window and removing those that left it (kept as two
+// running accumulators each, entered and left, so nothing is ever subtracted lane by lane).
+// 8-wide blocks take two rows per vector in the correlation; single rows are zero-extended.
+static AOM_FORCE_INLINE uint8x16_t grid_row8(const uint8_t* p) {
+    return vcombine_u8(vld1_u8(p), vdup_n_u8(0));
+}
+
+static AOM_FORCE_INLINE void variance_grid_corr_neon_dotprod(const uint8_t* src, int src_stride, const uint8_t* ref,
+                                                             int ref_stride, const int bw, int bh, const int K, int ny,
+                                                             int step, uint32_t* var) {
+    const uint8x16_t ones = vdupq_n_u8(1);
+
+    const int shift = 31 - __builtin_clz((unsigned)(bw * bh));
+    // source sum and sum of squares
+    uint32x4_t s_sum_v = vdupq_n_u32(0), s_sq_v = vdupq_n_u32(0);
+    for (int r = 0; r < bh; r++) {
+        if (bw == 8) {
+            const uint8x16_t sv = grid_row8(src + r * src_stride);
+
+            s_sum_v = vdotq_u32(s_sum_v, sv, ones);
+
+            s_sq_v = vdotq_u32(s_sq_v, sv, sv);
+        } else {
+            for (int c = 0; c < bw; c += 16) {
+                const uint8x16_t sv = vld1q_u8(src + r * src_stride + c);
+
+                s_sum_v = vdotq_u32(s_sum_v, sv, ones);
+
+                s_sq_v = vdotq_u32(s_sq_v, sv, sv);
+            }
+        }
+    }
+    const uint32_t s_sum = vaddvq_u32(s_sum_v);
+    const uint32_t s_sq  = vaddvq_u32(s_sq_v);
+    // reference rows that entered (in) and left (out) the window so far, per horizontal position
+    uint32x4_t in_sum[5], in_sq[5], out_sum[5], out_sq[5];
+    for (int k = 0; k < K; k++) {
+        in_sum[k] = in_sq[k] = out_sum[k] = out_sq[k] = vdupq_n_u32(0);
+    }
+    for (int j = 0; j < ny; j++) {
+        const uint8_t* p = ref + j * step * ref_stride;
+        uint32x4_t     corr[5];
+        for (int k = 0; k < K; k++) {
+            corr[k] = vdupq_n_u32(0);
+        }
+        // rows above the window that the previous grid row still covered
+        for (int r = j ? -step : 0; r < 0; r++) {
+            if (bw == 8) {
+                for (int k = 0; k < K; k++) {
+                    const uint8x16_t v = grid_row8(p + r * ref_stride + k * step);
+
+                    out_sum[k] = vdotq_u32(out_sum[k], v, ones);
+
+                    out_sq[k] = vdotq_u32(out_sq[k], v, v);
+                }
+            } else {
+                for (int c = 0; c < bw; c += 16) {
+                    for (int k = 0; k < K; k++) {
+                        const uint8x16_t v = vld1q_u8(p + r * ref_stride + k * step + c);
+
+                        out_sum[k] = vdotq_u32(out_sum[k], v, ones);
+
+                        out_sq[k] = vdotq_u32(out_sq[k], v, v);
+                    }
+                }
+            }
+        }
+        // rows of this window: the first `fresh` of them were already counted by the previous grid row
+        const int fresh = j ? bh - step : 0;
+        if (bw == 8) {
+            assert(!(bh & 1));
+            int r = 0;
+            for (; r + 1 < fresh; r += 2) { // both rows already counted
+                const uint8x16_t sv = vcombine_u8(vld1_u8(src + r * src_stride), vld1_u8(src + (r + 1) * src_stride));
+                for (int k = 0; k < K; k++) {
+                    const uint8x16_t v = vcombine_u8(vld1_u8(p + r * ref_stride + k * step),
+                                                     vld1_u8(p + (r + 1) * ref_stride + k * step));
+
+                    corr[k] = vdotq_u32(corr[k], sv, v);
+                }
+            }
+            if (r < fresh) { // the second row of the pair is new
+                const uint8x16_t sv = vcombine_u8(vld1_u8(src + r * src_stride), vld1_u8(src + (r + 1) * src_stride));
+                for (int k = 0; k < K; k++) {
+                    const uint8x8_t  v1 = vld1_u8(p + (r + 1) * ref_stride + k * step);
+                    const uint8x16_t v  = vcombine_u8(vld1_u8(p + r * ref_stride + k * step), v1);
+                    const uint8x16_t n  = vcombine_u8(vdup_n_u8(0), v1);
+
+                    corr[k] = vdotq_u32(corr[k], sv, v);
+
+                    in_sum[k] = vdotq_u32(in_sum[k], n, ones);
+
+                    in_sq[k] = vdotq_u32(in_sq[k], n, n);
+                }
+                r += 2;
+            }
+            for (; r < bh; r += 2) { // both rows new
+                const uint8x16_t sv = vcombine_u8(vld1_u8(src + r * src_stride), vld1_u8(src + (r + 1) * src_stride));
+                for (int k = 0; k < K; k++) {
+                    const uint8x16_t v = vcombine_u8(vld1_u8(p + r * ref_stride + k * step),
+                                                     vld1_u8(p + (r + 1) * ref_stride + k * step));
+
+                    corr[k] = vdotq_u32(corr[k], sv, v);
+
+                    in_sum[k] = vdotq_u32(in_sum[k], v, ones);
+
+                    in_sq[k] = vdotq_u32(in_sq[k], v, v);
+                }
+            }
+        } else {
+            for (int r = 0; r < fresh; r++) {
+                for (int c = 0; c < bw; c += 16) {
+                    const uint8x16_t sv = vld1q_u8(src + r * src_stride + c);
+                    for (int k = 0; k < K; k++) {
+                        corr[k] = vdotq_u32(corr[k], sv, vld1q_u8(p + r * ref_stride + k * step + c));
+                    }
+                }
+            }
+            for (int r = fresh; r < bh; r++) {
+                for (int c = 0; c < bw; c += 16) {
+                    const uint8x16_t sv = vld1q_u8(src + r * src_stride + c);
+                    for (int k = 0; k < K; k++) {
+                        const uint8x16_t v = vld1q_u8(p + r * ref_stride + k * step + c);
+
+                        corr[k] = vdotq_u32(corr[k], sv, v);
+
+                        in_sum[k] = vdotq_u32(in_sum[k], v, ones);
+
+                        in_sq[k] = vdotq_u32(in_sq[k], v, v);
+                    }
+                }
+            }
+        }
+        // Positions 0..3 (0..2 for K == 3) are finished together: one lane per position.
+        const uint32x4_t zero = vdupq_n_u32(0);
+        const uint32x4_t c3   = K > 3 ? corr[3] : zero;
+        const uint32x4_t rs3  = K > 3 ? vsubq_u32(in_sum[3], out_sum[3]) : zero;
+        const uint32x4_t rq3  = K > 3 ? vsubq_u32(in_sq[3], out_sq[3]) : zero;
+        const uint32x4_t c4   = vpaddq_u32(vpaddq_u32(corr[0], corr[1]), vpaddq_u32(corr[2], c3));
+        const uint32x4_t rs4  = vpaddq_u32(
+            vpaddq_u32(vsubq_u32(in_sum[0], out_sum[0]), vsubq_u32(in_sum[1], out_sum[1])),
+            vpaddq_u32(vsubq_u32(in_sum[2], out_sum[2]), rs3));
+        const uint32x4_t rq4  = vpaddq_u32(vpaddq_u32(vsubq_u32(in_sq[0], out_sq[0]), vsubq_u32(in_sq[1], out_sq[1])),
+                                          vpaddq_u32(vsubq_u32(in_sq[2], out_sq[2]), rq3));
+        const uint32x4_t sse4 = vsubq_u32(vaddq_u32(vdupq_n_u32(s_sq), rq4), vshlq_n_u32(c4, 1));
+        const int32x4_t  sum4 = vsubq_s32(vdupq_n_s32((int32_t)s_sum), vreinterpretq_s32_u32(rs4));
+        const int64x2_t  nsh  = vdupq_n_s64(-shift);
+        const uint64x2_t q_lo = vshlq_u64(vreinterpretq_u64_s64(vmull_s32(vget_low_s32(sum4), vget_low_s32(sum4))),
+                                          nsh);
+        const uint64x2_t q_hi = vshlq_u64(vreinterpretq_u64_s64(vmull_high_s32(sum4, sum4)), nsh);
+        const uint32x4_t var4 = vsubq_u32(sse4, vcombine_u32(vmovn_u64(q_lo), vmovn_u64(q_hi)));
+        vst1q_lane_u32(var + 0 * ny + j, var4, 0);
+        vst1q_lane_u32(var + 1 * ny + j, var4, 1);
+        vst1q_lane_u32(var + 2 * ny + j, var4, 2);
+        if (K > 3) {
+            vst1q_lane_u32(var + 3 * ny + j, var4, 3);
+        }
+        for (int k = 4; k < K; k++) {
+            const uint32_t r_sum = vaddvq_u32(vsubq_u32(in_sum[k], out_sum[k]));
+            const uint32_t r_sq  = vaddvq_u32(vsubq_u32(in_sq[k], out_sq[k]));
+            const uint32_t sse   = s_sq + r_sq - 2 * vaddvq_u32(corr[k]);
+            const int64_t  sum   = (int64_t)s_sum - (int64_t)r_sum;
+            var[k * ny + j]      = sse - (uint32_t)((sum * sum) >> shift);
+        }
+    }
+}
+
+#define VARIANCE_GRID_CORR(w, k)                                                                    \
+    static NOINLINE void variance_grid_corr_##w##_x##k##_neon_dotprod(const uint8_t* src,           \
+                                                                      int            src_stride,    \
+                                                                      const uint8_t* ref,           \
+                                                                      int            ref_stride,    \
+                                                                      int            bh,            \
+                                                                      int            ny,            \
+                                                                      int            step,          \
+                                                                      uint32_t*      var) {              \
+        variance_grid_corr_neon_dotprod(src, src_stride, ref, ref_stride, w, bh, k, ny, step, var); \
+    }
+VARIANCE_GRID_CORR(16, 3)
+VARIANCE_GRID_CORR(16, 5)
+VARIANCE_GRID_CORR(32, 3)
+VARIANCE_GRID_CORR(32, 5)
+VARIANCE_GRID_CORR(64, 3)
+VARIANCE_GRID_CORR(64, 5)
+
 void svt_aom_variance_grid_neon_dotprod(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride, int bw,
                                         int bh, int nx, int ny, int step, uint32_t* var) {
     assert((nx == 3 || nx == 5) && (bw == 8 || bw == 16 || bw == 32 || bw == 64));
+    // (The sliding sums assume consecutive grid rows overlap.)
+    // 8-wide blocks are faster through the per-row kernels below: their cost is in forming the vectors.
+    if (step <= bh && bw >= 16) {
+        if (nx == 3) {
+            switch (bw) {
+            case 16:
+                variance_grid_corr_16_x3_neon_dotprod(src, src_stride, ref, ref_stride, bh, ny, step, var);
+                break;
+            case 32:
+                variance_grid_corr_32_x3_neon_dotprod(src, src_stride, ref, ref_stride, bh, ny, step, var);
+                break;
+            default:
+                variance_grid_corr_64_x3_neon_dotprod(src, src_stride, ref, ref_stride, bh, ny, step, var);
+                break;
+            }
+        } else {
+            switch (bw) {
+            case 16:
+                variance_grid_corr_16_x5_neon_dotprod(src, src_stride, ref, ref_stride, bh, ny, step, var);
+                break;
+            case 32:
+                variance_grid_corr_32_x5_neon_dotprod(src, src_stride, ref, ref_stride, bh, ny, step, var);
+                break;
+            default:
+                variance_grid_corr_64_x5_neon_dotprod(src, src_stride, ref, ref_stride, bh, ny, step, var);
+                break;
+            }
+        }
+        return;
+    }
     const int     shift = 31 - __builtin_clz((unsigned)(bw * bh));
     const int32_t st    = block_sum_neon_dotprod(src, src_stride, bw, bh);
     for (int j = 0; j < ny; j++) {
