@@ -274,41 +274,39 @@ static inline void highbd_10_convolve_x_sr_16bit_neon(const uint16_t* src, int s
     int16x8_t f;
     int16x4_t base;
     highbd_10_filter_split(filter, &f, &base);
-    const int16x8_t bias   = vdupq_n_s16(2); // round(S / 8) = B part + floor((G part + 2) / 4)
-    const int16x8_t offset = vdupq_n_s16(8);
+    // round(S / 8) = B part + floor((G part + 2) / 4): the rounding shift-accumulate supplies the 2
+    const int16x8_t offset = highbd_10_seed(8);
     do {
         const int16_t* s = (const int16_t*)src;
 
         int x = 0;
         if (taps <= 6) {
             do {
-                const int16x8_t v = highbd_10_mac6(vld1q_s16(s + x + 1),
-                                                   vld1q_s16(s + x + 2),
-                                                   vld1q_s16(s + x + 3),
-                                                   vld1q_s16(s + x + 4),
-                                                   vld1q_s16(s + x + 5),
-                                                   vld1q_s16(s + x + 6),
-                                                   f,
-                                                   base,
-                                                   bias,
-                                                   offset);
+                const int16x8_t v = highbd_10_mac6_r(vld1q_s16(s + x + 1),
+                                                     vld1q_s16(s + x + 2),
+                                                     vld1q_s16(s + x + 3),
+                                                     vld1q_s16(s + x + 4),
+                                                     vld1q_s16(s + x + 5),
+                                                     vld1q_s16(s + x + 6),
+                                                     f,
+                                                     base,
+                                                     offset);
                 vst1q_u16(dst + x, highbd_10_shift4_clip(v));
                 x += 8;
             } while (x < w);
         } else {
             do {
-                const int16x8_t v = highbd_10_mac8(vld1q_s16(s + x),
-                                                   vld1q_s16(s + x + 1),
-                                                   vld1q_s16(s + x + 2),
-                                                   vld1q_s16(s + x + 3),
-                                                   vld1q_s16(s + x + 4),
-                                                   vld1q_s16(s + x + 5),
-                                                   vld1q_s16(s + x + 6),
-                                                   vld1q_s16(s + x + 7),
-                                                   f,
-                                                   base,
-                                                   bias,
-                                                   offset);
+                const int16x8_t v = highbd_10_mac8_r(vld1q_s16(s + x),
+                                                     vld1q_s16(s + x + 1),
+                                                     vld1q_s16(s + x + 2),
+                                                     vld1q_s16(s + x + 3),
+                                                     vld1q_s16(s + x + 4),
+                                                     vld1q_s16(s + x + 5),
+                                                     vld1q_s16(s + x + 6),
+                                                     vld1q_s16(s + x + 7),
+                                                     f,
+                                                     base,
+                                                     offset);
                 vst1q_u16(dst + x, highbd_10_shift4_clip(v));
                 x += 8;
             } while (x < w);
@@ -324,8 +322,8 @@ static inline void highbd_10_convolve_y_sr_16bit_neon(const uint16_t* src, int s
     int16x8_t f;
     int16x4_t base;
     highbd_10_filter_split(filter, &f, &base);
-    const int16x8_t bias   = vdupq_n_s16(32);
-    const int16x8_t offset = vdupq_n_s16(0);
+    const int16x8_t bias   = highbd_10_seed(32);
+    const int16x8_t offset = vdupq_n_s16(0); // visible on purpose: the centre chain then starts with a multiply
     for (int x = 0; x < w; x += 8) {
         const int16_t* s = (const int16_t*)src + x;
         uint16_t*      d = dst + x;
@@ -1519,6 +1517,81 @@ bool svt_aom_highbd_10_convolve_2d_sr_dual_neon(const uint16_t* src, int src_str
     return true;
 }
 
+// Vertical-only prediction P and compound intermediate I of one 8-wide vector from the two 16-bit chains (see
+// highbd_10_filter_split() and highbd_10_chains6()). With S the filter sum, S / 2 = 4 * C + D, so
+//   P = clip((S + 64) >> 7) = clip((C + ((D + 32) >> 2)) >> 4) = clip((C + 8 + (D >> 2)) >> 4)
+//   I = ((S + 4) >> 3) + 24576 = C + 24576 + ((D + 2) >> 2)
+// (32 is a multiple of 4, so it leaves the shift as 8). centre8 is C + 8, at most 16376; D >> 2 lies within
+// [-7929, 7928], so the value shifted for P lies within [-7921, 24304] and fits 16 signed bits. I lies between
+// 21000 and 45000 and is formed modulo 2^16, as in the compound kernels; cmp_k is 24576 - 8.
+static AOM_FORCE_INLINE void highbd_10_dual_y_finish(int16x8_t centre8, int16x8_t delta, int16x8_t cmp_k, uint16_t* d,
+                                                     uint16_t* c) {
+    vst1q_u16(d, highbd_10_shift4_clip(vsraq_n_s16(centre8, delta, 2)));
+    vst1q_u16(c, vreinterpretq_u16_s16(vrsraq_n_s16(vaddq_s16(centre8, cmp_k), delta, 2)));
+}
+
+// Both outputs of the vertical-only filter in 16-bit lanes, for the 8-tap-kernel filter families and widths of 8
+// and up. src points at the row of tap 0.
+static inline void highbd_10_dual_y_16bit_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                               uint16_t* cmp, int cmp_stride, int w, int h, const int16_t* filter,
+                                               int taps) {
+    int16x8_t f;
+    int16x4_t base;
+    highbd_10_filter_split(filter, &f, &base);
+    const int16x8_t seed  = highbd_10_seed(8);
+    const int16x8_t cmp_k = vdupq_n_s16(HBD10_CMP_OFFSET - 8);
+    for (int x = 0; x < w; x += 8) {
+        const int16_t* s = (const int16_t*)src + x;
+        uint16_t*      d = dst + x;
+        uint16_t*      c = cmp + x;
+        if (taps <= 6) {
+            int16x8_t s0 = vld1q_s16(s + 1 * src_stride), s1 = vld1q_s16(s + 2 * src_stride);
+            int16x8_t s2 = vld1q_s16(s + 3 * src_stride), s3 = vld1q_s16(s + 4 * src_stride);
+            int16x8_t s4 = vld1q_s16(s + 5 * src_stride);
+            s += 6 * src_stride;
+            for (int y = 0; y < h; y++) {
+                const int16x8_t s5 = vld1q_s16(s);
+
+                int16x8_t delta;
+
+                const int16x8_t centre8 = highbd_10_chains6(s0, s1, s2, s3, s4, s5, f, base, seed, &delta);
+                highbd_10_dual_y_finish(centre8, delta, cmp_k, d, c);
+                s0 = s1;
+                s1 = s2;
+                s2 = s3;
+                s3 = s4;
+                s4 = s5;
+                s += src_stride;
+                d += dst_stride;
+                c += cmp_stride;
+            }
+        } else {
+            int16x8_t s0 = vld1q_s16(s), s1 = vld1q_s16(s + 1 * src_stride), s2 = vld1q_s16(s + 2 * src_stride);
+            int16x8_t s3 = vld1q_s16(s + 3 * src_stride), s4 = vld1q_s16(s + 4 * src_stride);
+            int16x8_t s5 = vld1q_s16(s + 5 * src_stride), s6 = vld1q_s16(s + 6 * src_stride);
+            s += 7 * src_stride;
+            for (int y = 0; y < h; y++) {
+                const int16x8_t s7 = vld1q_s16(s);
+
+                int16x8_t delta;
+
+                const int16x8_t centre8 = highbd_10_chains8(s0, s1, s2, s3, s4, s5, s6, s7, f, base, seed, &delta);
+                highbd_10_dual_y_finish(centre8, delta, cmp_k, d, c);
+                s0 = s1;
+                s1 = s2;
+                s2 = s3;
+                s3 = s4;
+                s4 = s5;
+                s5 = s6;
+                s6 = s7;
+                s += src_stride;
+                d += dst_stride;
+                c += cmp_stride;
+            }
+        }
+    }
+}
+
 // Mirrors svt_av1_highbd_convolve_y_sr_neon for bd == 10.
 bool svt_aom_highbd_10_convolve_y_sr_dual_neon(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
                                                uint16_t* cmp, int cmp_stride, int w, int h,
@@ -1533,6 +1606,11 @@ bool svt_aom_highbd_10_convolve_y_sr_dual_neon(const uint16_t* src, int src_stri
         return false;
     }
     src -= vert_offset * src_stride;
+    if (w >= 8 && filter_params_y->interp_filter < BILINEAR) {
+        highbd_10_dual_y_16bit_neon(
+            src, src_stride, dst, dst_stride, cmp, cmp_stride, w, h, y_filter_ptr, y_filter_taps);
+        return true;
+    }
     if (y_filter_taps < 8) {
         hbd10_dual_vert_y_6tap(src + src_stride, src_stride, dst, dst_stride, cmp, cmp_stride, w, h, y_filter_ptr);
     } else {

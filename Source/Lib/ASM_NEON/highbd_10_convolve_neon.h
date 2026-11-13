@@ -28,6 +28,19 @@
 // exactly 8192 + B*pixels/4 + round(G*pixels/4). The result and all intermediate
 // sums fit signed 16 bits. Keep the vertical pass and its rounding unchanged.
 
+// A constant vector that the optimiser cannot see through. A multiply-accumulate chain that starts from a visible
+// constant is rewritten by clang into multiply, accumulate, ..., add constant: one more multiply and one more
+// addition per output vector than the chain as written. Create seeds once, outside the loops.
+static AOM_FORCE_INLINE int16x8_t highbd_10_seed(int16_t value) {
+    int16x8_t v = vdupq_n_s16(value);
+#if defined(__GNUC__) || defined(__clang__)
+    __asm__("" : "+w"(v));
+#endif
+    return v;
+}
+
+// offset must come from highbd_10_seed(): the centre chain then starts from it, and the residual chain is joined
+// by one rounding shift-accumulate.
 static inline uint16x8_t highbd_10_convolve6_8_h(const int16x8_t s[6], int16x8_t filter, int16x4_t base,
                                                  int16x8_t offset) {
     const int16x4_t f0    = vget_low_s16(filter);
@@ -38,9 +51,9 @@ static inline uint16x8_t highbd_10_convolve6_8_h(const int16x8_t s[6], int16x8_t
     delta                 = vmlaq_lane_s16(delta, s[3], f1, 0);
     delta                 = vmlaq_lane_s16(delta, s[4], f1, 1);
     delta                 = vmlaq_lane_s16(delta, s[5], f1, 2);
-    int16x8_t predictor   = vmulq_lane_s16(s[2], base, 0);
+    int16x8_t predictor   = vmlaq_lane_s16(offset, s[2], base, 0);
     predictor             = vmlaq_lane_s16(predictor, s[3], base, 1);
-    return vreinterpretq_u16_s16(vaddq_s16(offset, vaddq_s16(predictor, vrshrq_n_s16(delta, 2))));
+    return vreinterpretq_u16_s16(vrsraq_n_s16(predictor, delta, 2));
 }
 
 static inline void highbd_10_convolve_2d_horiz_6tap_neon(const uint16_t* src_ptr, int src_stride, uint16_t* dst_ptr,
@@ -51,6 +64,8 @@ static inline void highbd_10_convolve_2d_horiz_6tap_neon(const uint16_t* src_ptr
     assert(h >= 5);
 
     int height = h;
+
+    const int16x8_t offset = highbd_10_seed(8192);
 
     do {
         int            width = w;
@@ -64,10 +79,10 @@ static inline void highbd_10_convolve_2d_horiz_6tap_neon(const uint16_t* src_ptr
             load_s16_8x6(s + 2 * src_stride, 1, &s2[0], &s2[1], &s2[2], &s2[3], &s2[4], &s2[5]);
             load_s16_8x6(s + 3 * src_stride, 1, &s3[0], &s3[1], &s3[2], &s3[3], &s3[4], &s3[5]);
 
-            uint16x8_t d0 = highbd_10_convolve6_8_h(s0, x_filter, base, vdupq_n_s16(8192));
-            uint16x8_t d1 = highbd_10_convolve6_8_h(s1, x_filter, base, vdupq_n_s16(8192));
-            uint16x8_t d2 = highbd_10_convolve6_8_h(s2, x_filter, base, vdupq_n_s16(8192));
-            uint16x8_t d3 = highbd_10_convolve6_8_h(s3, x_filter, base, vdupq_n_s16(8192));
+            uint16x8_t d0 = highbd_10_convolve6_8_h(s0, x_filter, base, offset);
+            uint16x8_t d1 = highbd_10_convolve6_8_h(s1, x_filter, base, offset);
+            uint16x8_t d2 = highbd_10_convolve6_8_h(s2, x_filter, base, offset);
+            uint16x8_t d3 = highbd_10_convolve6_8_h(s3, x_filter, base, offset);
 
             store_u16_8x4(d, dst_stride, d0, d1, d2, d3);
 
@@ -89,7 +104,7 @@ static inline void highbd_10_convolve_2d_horiz_6tap_neon(const uint16_t* src_ptr
             int16x8_t s0[6];
             load_s16_8x6(s, 1, &s0[0], &s0[1], &s0[2], &s0[3], &s0[4], &s0[5]);
 
-            uint16x8_t d0 = highbd_10_convolve6_8_h(s0, x_filter, base, vdupq_n_s16(8192));
+            uint16x8_t d0 = highbd_10_convolve6_8_h(s0, x_filter, base, offset);
             vst1q_u16(d, d0);
 
             s += 8;
@@ -113,9 +128,9 @@ static inline uint16x8_t highbd_10_convolve8_8_h(const int16x8_t s[8], int16x8_t
     delta                 = vmlaq_lane_s16(delta, s[5], f1, 1);
     delta                 = vmlaq_lane_s16(delta, s[6], f1, 2);
     delta                 = vmlaq_lane_s16(delta, s[7], f1, 3);
-    int16x8_t predictor   = vmulq_lane_s16(s[3], base, 0);
+    int16x8_t predictor   = vmlaq_lane_s16(offset, s[3], base, 0);
     predictor             = vmlaq_lane_s16(predictor, s[4], base, 1);
-    return vreinterpretq_u16_s16(vaddq_s16(offset, vaddq_s16(predictor, vrshrq_n_s16(delta, 2))));
+    return vreinterpretq_u16_s16(vrsraq_n_s16(predictor, delta, 2));
 }
 
 static inline void highbd_10_convolve_2d_horiz_8tap_neon(const uint16_t* src_ptr, int src_stride, uint16_t* dst_ptr,
@@ -126,6 +141,8 @@ static inline void highbd_10_convolve_2d_horiz_8tap_neon(const uint16_t* src_ptr
     assert(h >= 5);
 
     int height = h;
+
+    const int16x8_t offset = highbd_10_seed(8192);
 
     do {
         int            width = w;
@@ -139,10 +156,10 @@ static inline void highbd_10_convolve_2d_horiz_8tap_neon(const uint16_t* src_ptr
             load_s16_8x8(s + 2 * src_stride, 1, &s2[0], &s2[1], &s2[2], &s2[3], &s2[4], &s2[5], &s2[6], &s2[7]);
             load_s16_8x8(s + 3 * src_stride, 1, &s3[0], &s3[1], &s3[2], &s3[3], &s3[4], &s3[5], &s3[6], &s3[7]);
 
-            uint16x8_t d0 = highbd_10_convolve8_8_h(s0, x_filter, base, vdupq_n_s16(8192));
-            uint16x8_t d1 = highbd_10_convolve8_8_h(s1, x_filter, base, vdupq_n_s16(8192));
-            uint16x8_t d2 = highbd_10_convolve8_8_h(s2, x_filter, base, vdupq_n_s16(8192));
-            uint16x8_t d3 = highbd_10_convolve8_8_h(s3, x_filter, base, vdupq_n_s16(8192));
+            uint16x8_t d0 = highbd_10_convolve8_8_h(s0, x_filter, base, offset);
+            uint16x8_t d1 = highbd_10_convolve8_8_h(s1, x_filter, base, offset);
+            uint16x8_t d2 = highbd_10_convolve8_8_h(s2, x_filter, base, offset);
+            uint16x8_t d3 = highbd_10_convolve8_8_h(s3, x_filter, base, offset);
 
             store_u16_8x4(d, dst_stride, d0, d1, d2, d3);
 
@@ -164,7 +181,7 @@ static inline void highbd_10_convolve_2d_horiz_8tap_neon(const uint16_t* src_ptr
             int16x8_t s0[8];
             load_s16_8x8(s + 0 * src_stride, 1, &s0[0], &s0[1], &s0[2], &s0[3], &s0[4], &s0[5], &s0[6], &s0[7]);
 
-            uint16x8_t d0 = highbd_10_convolve8_8_h(s0, x_filter, base, vdupq_n_s16(8192));
+            uint16x8_t d0 = highbd_10_convolve8_8_h(s0, x_filter, base, offset);
             vst1q_u16(d, d0);
 
             s += 8;
@@ -233,7 +250,56 @@ static AOM_FORCE_INLINE int16x8_t highbd_10_mac6(int16x8_t s0, int16x8_t s1, int
     return vsraq_n_s16(centre, delta, 2);
 }
 
+// offset + B * samples / 4 + ((G * samples + 2) >> 2) for the six samples of taps 1..6: the form for a bias that is
+// the rounding term of the shift. offset must come from highbd_10_seed().
+static AOM_FORCE_INLINE int16x8_t highbd_10_mac6_r(int16x8_t s0, int16x8_t s1, int16x8_t s2, int16x8_t s3, int16x8_t s4,
+                                                   int16x8_t s5, int16x8_t f, int16x4_t base, int16x8_t offset) {
+    const int16x4_t f0 = vget_low_s16(f);
+    const int16x4_t f1 = vget_high_s16(f);
+
+    int16x8_t delta = vmulq_lane_s16(s0, f0, 1);
+
+    delta = vmlaq_lane_s16(delta, s1, f0, 2);
+
+    delta = vmlaq_lane_s16(delta, s2, f0, 3);
+
+    delta = vmlaq_lane_s16(delta, s3, f1, 0);
+    delta = vmlaq_lane_s16(delta, s4, f1, 1);
+    delta = vmlaq_lane_s16(delta, s5, f1, 2);
+
+    int16x8_t centre = vmlaq_lane_s16(offset, s2, base, 0);
+
+    centre = vmlaq_lane_s16(centre, s3, base, 1);
+    return vrsraq_n_s16(centre, delta, 2);
+}
+
 // The same for the eight samples of taps 0..7
+static AOM_FORCE_INLINE int16x8_t highbd_10_mac8_r(int16x8_t s0, int16x8_t s1, int16x8_t s2, int16x8_t s3, int16x8_t s4,
+                                                   int16x8_t s5, int16x8_t s6, int16x8_t s7, int16x8_t f,
+                                                   int16x4_t base, int16x8_t offset) {
+    const int16x4_t f0 = vget_low_s16(f);
+    const int16x4_t f1 = vget_high_s16(f);
+
+    int16x8_t delta = vmulq_lane_s16(s0, f0, 0);
+
+    delta = vmlaq_lane_s16(delta, s1, f0, 1);
+
+    delta = vmlaq_lane_s16(delta, s2, f0, 2);
+
+    delta = vmlaq_lane_s16(delta, s3, f0, 3);
+
+    delta = vmlaq_lane_s16(delta, s4, f1, 0);
+    delta = vmlaq_lane_s16(delta, s5, f1, 1);
+    delta = vmlaq_lane_s16(delta, s6, f1, 2);
+    delta = vmlaq_lane_s16(delta, s7, f1, 3);
+
+    int16x8_t centre = vmlaq_lane_s16(offset, s3, base, 0);
+
+    centre = vmlaq_lane_s16(centre, s4, base, 1);
+    return vrsraq_n_s16(centre, delta, 2);
+}
+
+// offset + B * samples / 4 + ((G * samples + bias) >> 2) for the eight samples of taps 0..7
 static AOM_FORCE_INLINE int16x8_t highbd_10_mac8(int16x8_t s0, int16x8_t s1, int16x8_t s2, int16x8_t s3, int16x8_t s4,
                                                  int16x8_t s5, int16x8_t s6, int16x8_t s7, int16x8_t f, int16x4_t base,
                                                  int16x8_t bias, int16x8_t offset) {
@@ -257,6 +323,47 @@ static AOM_FORCE_INLINE int16x8_t highbd_10_mac8(int16x8_t s0, int16x8_t s1, int
 
     centre = vmlaq_lane_s16(centre, s4, base, 1);
     return vsraq_n_s16(centre, delta, 2);
+}
+
+// The two chains on their own, for kernels that finish them in more than one way: returns
+// seed + C with C = B * samples / 4, and stores D = G * samples (six samples of taps 1..6). Ranges for 10-bit
+// samples: 0 <= C <= 16 * 1023 = 16368 and |D| <= 31 * 1023 = 31713, as is every partial sum of D.
+// seed must come from highbd_10_seed().
+static AOM_FORCE_INLINE int16x8_t highbd_10_chains6(int16x8_t s0, int16x8_t s1, int16x8_t s2, int16x8_t s3,
+                                                    int16x8_t s4, int16x8_t s5, int16x8_t f, int16x4_t base,
+                                                    int16x8_t seed, int16x8_t* delta) {
+    const int16x4_t f0 = vget_low_s16(f);
+    const int16x4_t f1 = vget_high_s16(f);
+
+    int16x8_t d      = vmulq_lane_s16(s0, f0, 1);
+    d                = vmlaq_lane_s16(d, s1, f0, 2);
+    d                = vmlaq_lane_s16(d, s2, f0, 3);
+    d                = vmlaq_lane_s16(d, s3, f1, 0);
+    d                = vmlaq_lane_s16(d, s4, f1, 1);
+    d                = vmlaq_lane_s16(d, s5, f1, 2);
+    *delta           = d;
+    int16x8_t centre = vmlaq_lane_s16(seed, s2, base, 0);
+    return vmlaq_lane_s16(centre, s3, base, 1);
+}
+
+// The same for the eight samples of taps 0..7
+static AOM_FORCE_INLINE int16x8_t highbd_10_chains8(int16x8_t s0, int16x8_t s1, int16x8_t s2, int16x8_t s3,
+                                                    int16x8_t s4, int16x8_t s5, int16x8_t s6, int16x8_t s7, int16x8_t f,
+                                                    int16x4_t base, int16x8_t seed, int16x8_t* delta) {
+    const int16x4_t f0 = vget_low_s16(f);
+    const int16x4_t f1 = vget_high_s16(f);
+
+    int16x8_t d      = vmulq_lane_s16(s0, f0, 0);
+    d                = vmlaq_lane_s16(d, s1, f0, 1);
+    d                = vmlaq_lane_s16(d, s2, f0, 2);
+    d                = vmlaq_lane_s16(d, s3, f0, 3);
+    d                = vmlaq_lane_s16(d, s4, f1, 0);
+    d                = vmlaq_lane_s16(d, s5, f1, 1);
+    d                = vmlaq_lane_s16(d, s6, f1, 2);
+    d                = vmlaq_lane_s16(d, s7, f1, 3);
+    *delta           = d;
+    int16x8_t centre = vmlaq_lane_s16(seed, s3, base, 0);
+    return vmlaq_lane_s16(centre, s4, base, 1);
 }
 
 #endif // ARCH_AARCH64 && CONFIG_ENABLE_HIGH_BIT_DEPTH

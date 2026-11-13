@@ -714,30 +714,34 @@ static uint32_t calculate_squared_errors_sum_no_div_highbd_neon(const uint16_t* 
     assert(w % 16 == 0 && "block width must be multiple of 16");
     unsigned int i, j;
 
-    int32x4_t sum = vdupq_n_s32(0);
+    // Two multiply-accumulates per vector, each half of the row into its own pair of accumulators. A difference
+    // of two samples of up to 12 bits is within +-4095 and fits 16 bits; its square needs up to 24 bits, so the
+    // products are formed in 32-bit lanes. A lane receives one square per row: at most 16 * 4095^2 < 2^29 for the
+    // 16x16 blocks this is called with.
+    int32x4_t sum[4] = {vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0), vdupq_n_s32(0)};
 
     for (i = 0; i < h; i++) {
-        for (j = 0; j < w; j += 8) {
-            const uint16x8_t s_16 = vld1q_u16(s + i * s_stride + j);
-            const uint16x8_t p_16 = vld1q_u16(p + i * p_stride + j);
-
-            const int16x8_t dif = vreinterpretq_s16_u16(vsubq_u16(s_16, p_16));
-            sum = vaddq_s32(sum, vpaddq_s32(vmull_s16(vget_low_s16(dif), vget_low_s16(dif)), vmull_high_s16(dif, dif)));
+        for (j = 0; j < w; j += 16) {
+            const int16x8_t dif0 = vreinterpretq_s16_u16(
+                vsubq_u16(vld1q_u16(s + i * s_stride + j), vld1q_u16(p + i * p_stride + j)));
+            const int16x8_t dif1 = vreinterpretq_s16_u16(
+                vsubq_u16(vld1q_u16(s + i * s_stride + j + 8), vld1q_u16(p + i * p_stride + j + 8)));
+            sum[0] = vmlal_s16(sum[0], vget_low_s16(dif0), vget_low_s16(dif0));
+            sum[1] = vmlal_high_s16(sum[1], dif0, dif0);
+            sum[2] = vmlal_s16(sum[2], vget_low_s16(dif1), vget_low_s16(dif1));
+            sum[3] = vmlal_high_s16(sum[3], dif1, dif1);
         }
     }
 
-    sum = vpaddq_s32(sum, sum);
-    sum = vpaddq_s32(sum, sum);
-
-    return vgetq_lane_s32(sum, 0) >> shift_factor;
+    return vaddvq_s32(vaddq_s32(vaddq_s32(sum[0], sum[1]), vaddq_s32(sum[2], sum[3]))) >> shift_factor;
 }
 
 static void calculate_squared_errors_sum_2x8xh_no_div_highbd_neon(const uint16_t* s, int s_stride, const uint16_t* p,
                                                                   int p_stride, unsigned int h, int shift_factor,
                                                                   uint32_t* output) {
     const int32x4_t zero  = vdupq_n_s32(0);
-    int32x4_t       sum_0 = zero;
-    int32x4_t       sum_1 = zero;
+    int32x4_t       sum_0 = zero, sum_0b = zero;
+    int32x4_t       sum_1 = zero, sum_1b = zero;
 
     for (unsigned int i = 0; i < h; i++) {
         const uint16x8_t s_8_0 = vld1q_u16(s + i * s_stride);
@@ -748,18 +752,14 @@ static void calculate_squared_errors_sum_2x8xh_no_div_highbd_neon(const uint16_t
         const int16x8_t dif_0 = vreinterpretq_s16_u16(vsubq_u16(s_8_0, p_8_0));
         const int16x8_t dif_1 = vreinterpretq_s16_u16(vsubq_u16(s_8_1, p_8_1));
 
-        sum_0 = vaddq_s32(
-            sum_0, vpaddq_s32(vmull_s16(vget_low_s16(dif_0), vget_low_s16(dif_0)), vmull_high_s16(dif_0, dif_0)));
-        sum_1 = vaddq_s32(
-            sum_1, vpaddq_s32(vmull_s16(vget_low_s16(dif_1), vget_low_s16(dif_1)), vmull_high_s16(dif_1, dif_1)));
+        sum_0  = vmlal_s16(sum_0, vget_low_s16(dif_0), vget_low_s16(dif_0));
+        sum_0b = vmlal_high_s16(sum_0b, dif_0, dif_0);
+        sum_1  = vmlal_s16(sum_1, vget_low_s16(dif_1), vget_low_s16(dif_1));
+        sum_1b = vmlal_high_s16(sum_1b, dif_1, dif_1);
     }
-    sum_0 = vpaddq_s32(sum_0, sum_0);
-    sum_0 = vpaddq_s32(sum_0, sum_0);
-    sum_1 = vpaddq_s32(sum_1, sum_1);
-    sum_1 = vpaddq_s32(sum_1, sum_1);
 
-    output[0] = vgetq_lane_s32(sum_0, 0) >> shift_factor;
-    output[1] = vgetq_lane_s32(sum_1, 0) >> shift_factor;
+    output[0] = vaddvq_s32(vaddq_s32(sum_0, sum_0b)) >> shift_factor;
+    output[1] = vaddvq_s32(vaddq_s32(sum_1, sum_1b)) >> shift_factor;
 }
 
 static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_neon(
@@ -883,16 +883,15 @@ static void apply_filtering_central_loop_hbd(uint16_t w, uint16_t h, uint16_t* s
                                              uint32_t* accum, uint16_t* count) {
     assert(w % 8 == 0);
 
-    uint32x4_t modifier       = vdupq_n_u32(TF_PLANEWISE_FILTER_WEIGHT_SCALE);
+    // Sample and weight both fit 16 bits, so one widening multiply gives the 32-bit product directly.
     uint16x8_t modifier_epi16 = vdupq_n_u16(TF_PLANEWISE_FILTER_WEIGHT_SCALE);
 
     for (uint16_t k = 0, i = 0; i < h; i++) {
         for (uint16_t j = 0; j < w; j += 8) {
-            const uint32x4_t src_1 = vmovl_u16(vld1_u16(src + i * src_stride + j + 0));
-            const uint32x4_t src_2 = vmovl_u16(vld1_u16(src + i * src_stride + j + 4));
+            const uint16x8_t src_8 = vld1q_u16(src + i * src_stride + j);
 
-            vst1q_u32(accum + k + 0, vmulq_u32(modifier, src_1));
-            vst1q_u32(accum + k + 4, vmulq_u32(modifier, src_2));
+            vst1q_u32(accum + k + 0, vmull_u16(vget_low_u16(src_8), vget_low_u16(modifier_epi16)));
+            vst1q_u32(accum + k + 4, vmull_high_u16(src_8, modifier_epi16));
             vst1q_u16(count + k, modifier_epi16);
 
             k += 8;
