@@ -1080,10 +1080,33 @@ static uint64_t pd0_prediction_distortion(PictureControlSet* pcs, ModeDecisionCo
     return distortion;
 }
 
-static void fast_loop_core_pd0(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs, ModeDecisionContext* ctx,
-                               EbPictureBufferDesc* input_pic, uint32_t input_origin_index, uint32_t cu_origin_index) {
+// PD0 prediction of the candidate. A 10-bit single-reference prediction is a block of the packed reference
+// (PD0 uses the integer part of the MV only): the candidate buffer then reads it in place, through a
+// descriptor whose luma points at that block. PD0 only reads the luma prediction after this point (distortion,
+// residual, reconstruction), and md_encode_block_pd0() restores the buffers' own descriptors.
+static void pd0_predict(PictureControlSet* pcs, ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf) {
+    const int bi  = cand_bf == ctx->cand_bf_ptr_array[1];
+    cand_bf->pred = ctx->pd0_pred_own[bi];
+
+    uint32_t ref_stride = 0;
+
+    const uint16_t* const ref = svt_aom_pd0_luma_pred_packed(pcs, ctx, cand_bf->cand, &ref_stride);
+    if (ref) {
+        ctx->pd0_pred_alias[bi].y_buffer = (uint8_t*)ref;
+        ctx->pd0_pred_alias[bi].y_stride = (uint16_t)ref_stride;
+
+        cand_bf->pred = &ctx->pd0_pred_alias[bi];
+
+        cand_bf->dct_dct_key = 0;
+        return;
+    }
     product_prediction_fun_table_pd0[is_inter_mode(cand_bf->cand->block_mi.mode)](
         SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+}
+
+static void fast_loop_core_pd0(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs, ModeDecisionContext* ctx,
+                               EbPictureBufferDesc* input_pic, uint32_t input_origin_index, uint32_t cu_origin_index) {
+    pd0_predict(pcs, ctx, cand_bf);
     *cand_bf->fast_cost = pd0_prediction_distortion(pcs, ctx, cand_bf, input_pic, input_origin_index, cu_origin_index);
 }
 
@@ -1385,8 +1408,26 @@ void fast_loop_core(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs
     EbPictureBufferDesc*   pred        = cand_bf->pred;
     // Prediction
     ctx->uv_intra_comp_only = false;
-    product_prediction_fun_table[is_inter_mode(cand->block_mi.mode) || cand->block_mi.use_intrabc](
-        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+    // A plain 10-bit single-reference prediction with a full-pel MV is a block of the packed reference. Its
+    // variance is taken there, and the copy is left to the first full-loop stage that keeps the candidate
+    // (full_loop_core() predicts when valid_luma_pred is 0). Not when this stage searches filters, or when
+    // something else reads the prediction here (SSD / Hadamard distortion, the OBMC face-off).
+    uint32_t ref_y_stride = 0;
+
+    const uint16_t* ref_y = NULL;
+    if (SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) && ctx->md_stage == MD_STAGE_0 && ctx->pd_pass == PD_PASS_1 &&
+        is_inter_mode(cand->block_mi.mode) && !ctx->mds_do_ifs && ctx->mds0_ctrls.mds0_dist_type != SSD &&
+        !ctx->mds0_use_hadamard_blk &&
+        !(SVT_EFFECTIVE_OBMC(ctx->obmc_ctrls.enabled) && ctx->obmc_ctrls.trans_face_off == 1)) {
+        ref_y = svt_aom_fullpel_luma_pred_packed(pcs, ctx, cand, &ref_y_stride);
+    }
+    if (ref_y) {
+        cand_bf->valid_luma_pred = 0;
+        cand_bf->dct_dct_key     = 0;
+    } else {
+        product_prediction_fun_table[is_inter_mode(cand->block_mi.mode) || cand->block_mi.use_intrabc](
+            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+    }
     if (ctx->mds0_ctrls.mds0_dist_type == SSD) {
         EbSpatialFullDistType spatial_full_dist_type_fun = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)
             ? svt_full_distortion_kernel16_bits
@@ -1445,10 +1486,14 @@ void fast_loop_core(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs
         } else {
             const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
             unsigned int            sse;
-            uint16_t*               pred_y = ((uint16_t*)pred->y_buffer);
+            const uint16_t*         pred_y = ref_y ? ref_y : ((uint16_t*)pred->y_buffer);
             uint16_t*               src_y  = ((uint16_t*)input_pic->y_buffer) + input_origin_index;
-            cand_bf->luma_fast_dist        = fn_ptr->vf_hbd_10(
-                CONVERT_TO_BYTEPTR(pred_y), pred->y_stride, CONVERT_TO_BYTEPTR(src_y), input_pic->y_stride, &sse);
+
+            cand_bf->luma_fast_dist = fn_ptr->vf_hbd_10(CONVERT_TO_BYTEPTR(pred_y),
+                                                        ref_y ? ref_y_stride : pred->y_stride,
+                                                        CONVERT_TO_BYTEPTR(src_y),
+                                                        input_pic->y_stride,
+                                                        &sse);
         }
         // Shift variance by 4 because we use full lambda in the cost (since variance is proportional to sse)
         // and full lambda is set with the expectation the variance is a squared metric shifted by 4 (the same
@@ -1491,7 +1536,7 @@ void fast_loop_core(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs
         *(cand_bf->fast_cost) = av1_product_fast_cost_func_table[is_inter_mode(cand->block_mi.mode)](
             pcs, ctx, cand_bf, full_lambda, luma_fast_dist);
     }
-    cand_bf->valid_luma_pred = 1;
+    cand_bf->valid_luma_pred = ref_y ? 0 : 1;
 
     if (SVT_EFFECTIVE_OBMC(ctx->obmc_ctrls.enabled) && ctx->obmc_ctrls.trans_face_off == 1) {
         obmc_trans_face_off(cand_bf, pcs, ctx, input_pic, loc);
@@ -9302,6 +9347,11 @@ static void md_encode_block_pd0(PictureControlSet* pcs, ModeDecisionContext* ctx
     }
 
     generate_md_stage_0_cand_pd0(ctx, &fast_candidate_total_count, pcs);
+    // The two candidate buffers PD0 uses may read a prediction in place (see pd0_predict()).
+    for (int bi = 0; bi < 2; bi++) {
+        ctx->pd0_pred_own[bi]   = ctx->cand_bf_ptr_array[bi]->pred;
+        ctx->pd0_pred_alias[bi] = *ctx->pd0_pred_own[bi];
+    }
 
     // Only access neighbors when this pass initialized the corresponding array.
     if (!ctx->skip_intra && ctx->pd0_use_src_samples) {
@@ -9317,8 +9367,7 @@ static void md_encode_block_pd0(PictureControlSet* pcs, ModeDecisionContext* ctx
         ModeDecisionCandidateBuffer* cand_bf = ctx->cand_bf_ptr_array[0];
         cand_bf->cand                        = &ctx->fast_cand_array[0];
         cand_bf->cand->block_mi.tx_depth     = 0;
-        product_prediction_fun_table_pd0[is_inter_mode(cand_bf->cand->block_mi.mode)](
-            SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx, pcs, cand_bf);
+        pd0_predict(pcs, ctx, cand_bf);
     } else {
         md_stage_0_pd0(pcs, ctx, fast_candidate_total_count, input_pic, input_origin_index, blk_origin_index);
     }
@@ -9365,6 +9414,9 @@ static void md_encode_block_pd0(PictureControlSet* pcs, ModeDecisionContext* ctx
 
         store_pd0_recon_neighbors(ctx, cand_bf->recon);
     }
+    // back to the candidate buffers' own prediction descriptors
+    ctx->cand_bf_ptr_array[0]->pred = ctx->pd0_pred_own[0];
+    ctx->cand_bf_ptr_array[1]->pred = ctx->pd0_pred_own[1];
 }
 
 int svt_aom_get_comp_group_idx_context_enc(const MacroBlockD* xd);

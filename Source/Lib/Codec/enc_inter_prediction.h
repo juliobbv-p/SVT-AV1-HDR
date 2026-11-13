@@ -63,8 +63,16 @@ EbErrorType svt_aom_inter_pu_prediction_av1_pd0(uint8_t hbd_md, struct ModeDecis
                                                 ModeDecisionCandidateBuffer* cand_bf);
 EbErrorType svt_aom_inter_pu_prediction_av1_light_pd1(uint8_t hbd_md, struct ModeDecisionContext* ctx,
                                                       PictureControlSet* pcs, ModeDecisionCandidateBuffer* cand_bf);
-const uint8_t* svt_aom_light_pd1_fullpel_luma_ref(SequenceControlSet* scs, struct ModeDecisionContext* ctx,
-                                                  const EbPictureBufferDesc* ref_pic, Mv mv);
+// The block of the packed 10-bit reference that is the luma prediction of the candidate, when it is a plain
+// single-reference candidate with a full-pel MV (the block av1_inter_prediction_light_pd1() would copy); NULL
+// otherwise. *stride receives the reference stride in samples.
+const uint16_t* svt_aom_fullpel_luma_pred_packed(struct PictureControlSet* pcs, struct ModeDecisionContext* ctx,
+                                                 const struct ModeDecisionCandidate* cand, uint32_t* stride);
+// The same for PD0, whose predictions ignore the fractional part of the MV and do no clamping.
+const uint16_t* svt_aom_pd0_luma_pred_packed(struct PictureControlSet* pcs, struct ModeDecisionContext* ctx,
+                                             const struct ModeDecisionCandidate* cand, uint32_t* stride);
+const uint8_t*  svt_aom_light_pd1_fullpel_luma_ref(SequenceControlSet* scs, struct ModeDecisionContext* ctx,
+                                                   const EbPictureBufferDesc* ref_pic, Mv mv);
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
 void svt_aom_pred_cmp_cache_begin(PictureControlSet* pcs, struct ModeDecisionContext* ctx, const uint16_t* cand_list,
                                   uint32_t cand_count);

@@ -53,8 +53,8 @@ EbPictureBufferDesc* svt_aom_get_ref_pic_buffer(PictureControlSet* pcs, MvRefere
     return pcs->ref_pic_buf[rf];
 }
 
-static INLINE Mv clamp_mv_to_umv_border_sb(const MacroBlockD* xd, Mv src_mv, int32_t bw, int32_t bh, int32_t ss_x,
-                                           int32_t ss_y) {
+static AOM_FORCE_INLINE Mv clamp_mv_to_umv_border_sb(const MacroBlockD* xd, Mv src_mv, int32_t bw, int32_t bh,
+                                                     int32_t ss_x, int32_t ss_y) {
     // If the MV points so far into the UMV border that no visible pixels
     // are used for reconstruction, the subpel part of the MV can be
     // discarded and the MV limited to 16 pixels with equivalent results.
@@ -4414,6 +4414,71 @@ const uint8_t* svt_aom_light_pd1_fullpel_luma_ref(SequenceControlSet* scs, ModeD
                           &pos_x);
     assert(!subpel_params.subpel_x && !subpel_params.subpel_y);
     return ref_pic->y_buffer + pos_x + pos_y * ref_pic->y_stride;
+}
+
+const uint16_t* svt_aom_fullpel_luma_pred_packed(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                                 const ModeDecisionCandidate* cand, uint32_t* stride) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    const BlockModeInfo* bmi = &cand->block_mi;
+    if (!is_inter_mode(bmi->mode) || bmi->use_intrabc || has_second_ref(bmi) || bmi->ref_frame[0] <= INTRA_FRAME ||
+        ((bmi->mv[0].x | bmi->mv[0].y) & 7) || !svt_aom_highbd_dual_pred_supported()) {
+        return NULL;
+    }
+    const EbPictureBufferDesc* ref = svt_aom_get_ref_pic_buffer(pcs, bmi->ref_frame[0]);
+    if (!ref || !ref->y_buffer_packed ||
+        !is_plain_prediction(pcs, ctx, cand, 1, PICTURE_BUFFER_DESC_LUMA_MASK, ref, NULL)) {
+        return NULL;
+    }
+    SubpelParams subpel_params;
+    int32_t      pos_y, pos_x;
+    compute_subpel_params(pcs->scs,
+                          ctx->blk_org_y,
+                          ctx->blk_org_x,
+                          bmi->mv[0],
+                          &pcs->scs->sf_identity,
+                          ref->width,
+                          ref->height,
+                          ctx->blk_geom->bwidth,
+                          ctx->blk_geom->bheight,
+                          ctx->blk_ptr->av1xd,
+                          0,
+                          0,
+                          &subpel_params,
+                          &pos_y,
+                          &pos_x);
+    if (subpel_params.subpel_x || subpel_params.subpel_y) {
+        return NULL;
+    }
+    *stride = ref->y_stride;
+    return ref->y_buffer_packed + pos_x + pos_y * ref->y_stride;
+#else
+    (void)pcs, (void)ctx, (void)cand, (void)stride;
+    return NULL;
+#endif
+}
+
+const uint16_t* svt_aom_pd0_luma_pred_packed(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                             const ModeDecisionCandidate* cand, uint32_t* stride) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // the conditions under which the prediction of av1_inter_prediction_pd0() is a block of the packed plane
+    const BlockModeInfo* bmi = &cand->block_mi;
+    if (!SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) || !is_inter_mode(bmi->mode) || has_second_ref(bmi) ||
+        !pcs->ppcs->is_not_scaled || pcs->scs->static_config.encoder_bit_depth != EB_TEN_BIT ||
+        !svt_aom_highbd_dual_pred_supported()) {
+        return NULL;
+    }
+    const EbPictureBufferDesc* ref = svt_aom_get_ref_pic_buffer(pcs, bmi->ref_frame[0]);
+    if (!ref || !ref->y_buffer_packed) {
+        return NULL;
+    }
+    const int32_t pos_x = ctx->blk_org_x + (bmi->mv[0].x >> 3);
+    const int32_t pos_y = ctx->blk_org_y + (bmi->mv[0].y >> 3);
+    *stride             = ref->y_stride;
+    return ref->y_buffer_packed + pos_x + pos_y * ref->y_stride;
+#else
+    (void)pcs, (void)ctx, (void)cand, (void)stride;
+    return NULL;
+#endif
 }
 
 EbErrorType svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,

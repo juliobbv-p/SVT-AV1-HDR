@@ -1178,6 +1178,11 @@ typedef struct ModeDecisionContext {
     // (cleared where the superblock is set up): return value, inter selection, largest list-0 / list-1 index.
     uint8_t sb_tpl_stats_valid;
     uint8_t sb_tpl_stats[4];
+    // PD0, 10-bit: a single-reference prediction is a block of the packed reference. The two PD0 candidate
+    // buffers then use a descriptor whose luma points at that block (pd0_pred_alias) instead of their own
+    // (pd0_pred_own); md_encode_block_pd0() restores the own descriptors before it returns.
+    EbPictureBufferDesc  pd0_pred_alias[2];
+    EbPictureBufferDesc* pd0_pred_own[2];
     // Pointer to a scratch buffer used by CFL & IFS
     EbPictureBufferDesc* scratch_prediction_ptr;
     // Luma prediction of the best filter pair found so far by the interpolation filter search (one block).
