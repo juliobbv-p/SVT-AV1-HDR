@@ -3119,7 +3119,10 @@ uint8_t svt_aom_do_md_recon(PictureParentControlSet* pcs, ModeDecisionContext* c
     const uint8_t need_md_rec_for_quality            = (pcs->compute_psnr || pcs->compute_ssim) &&
         (ctx->pd_pass == PD_PASS_1); // stat report needs recon samples for metrics
     uint8_t do_recon;
-    if (need_md_rec_for_intra_pred || need_md_rec_for_ref || need_md_rec_for_dlf_search ||
+    // With EncDec bypassed, MD's recon is the decoder's recon, so always build it: on 10-bit,
+    // skipping it codes coefficients from an 8-bit residual and mismatches the decoder, causing
+    // severe blocking on frames where no in-loop filter needs recon (high-skip frames at >= M8).
+    if (encdec_bypass || need_md_rec_for_intra_pred || need_md_rec_for_ref || need_md_rec_for_dlf_search ||
         need_md_rec_for_cdef_search || need_md_rec_for_restoration_search || need_md_rec_for_quality) {
         do_recon = 1;
     } else {
