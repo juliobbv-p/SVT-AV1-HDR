@@ -210,7 +210,7 @@ static int16_t roi_map_weighted_median(const size_t histogram[511], int low, int
     return (int16_t)high;
 }
 
-static EbErrorType parse_rio_map_file(EbConfig* app_cfg) {
+static EbErrorType parse_roi_map_file(EbConfig* app_cfg) {
     enum { MAX_SEGMENTS = 8 };
 
     FILE* file = app_cfg->roi_map_file;
@@ -455,7 +455,7 @@ EbErrorType init_encoder(EbConfig* app_cfg) {
     if (app_cfg->roi_map_file != NULL) {
         // Load ROI map data from file
         app_cfg->config.enable_roi_map = true;
-        EbErrorType return_error       = parse_rio_map_file(app_cfg);
+        EbErrorType return_error       = parse_roi_map_file(app_cfg);
         if (return_error != EB_ErrorNone) {
             return return_error;
         }
