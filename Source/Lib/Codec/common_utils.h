@@ -157,7 +157,7 @@ static INLINE BlockSize get_plane_block_size(BlockSize bsize, int32_t subsamplin
     return svt_aom_ss_size_lookup[bsize][subsampling_x][subsampling_y];
 }
 
-static INLINE TxSize av1_get_max_uv_txsize(BlockSize bsize, int32_t subsampling_x, int32_t subsampling_y) {
+static AOM_FORCE_INLINE TxSize av1_get_max_uv_txsize(BlockSize bsize, int32_t subsampling_x, int32_t subsampling_y) {
     const BlockSize plane_bsize = get_plane_block_size(bsize, subsampling_x, subsampling_y);
     TxSize          uv_tx       = TX_INVALID;
     if (plane_bsize < BLOCK_SIZES_ALL) {

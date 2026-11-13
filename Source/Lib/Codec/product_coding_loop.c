@@ -4125,9 +4125,19 @@ static bool uv_store_result_ok(const ModeDecisionContext* ctx, const ModeDecisio
         return false;
     }
     // The last stage can switch the chroma transform to a reduced coefficient shape; the search never does.
-    if (ctx->md_stage == MD_STAGE_3 && ctx->chroma_complexity == COMPONENT_LUMA &&
-        (ctx->use_tx_shortcuts_mds3 || ctx->tx_shortcut_ctrls.apply_pf_on_coeffs)) {
-        return false;
+    // (svt_aom_full_loop_uv() decides that from the same fields, read here in the state it would see them.)
+    if (ctx->md_stage == MD_STAGE_3 && ctx->chroma_complexity == COMPONENT_LUMA) {
+        if (ctx->use_tx_shortcuts_mds3) {
+            return false;
+        }
+        if (ctx->tx_shortcut_ctrls.apply_pf_on_coeffs) {
+            const TxSize tx_size_uv = av1_get_max_uv_txsize(bsize, chroma_ss, chroma_ss);
+
+            const uint16_t th = (tx_size_wide[tx_size_uv] >> 4) * (tx_size_high[tx_size_uv] >> 4);
+            if (cand_bf->cnt_nz_coeff < th || !cand_bf->block_has_coeff) {
+                return false;
+            }
+        }
     }
     const uint32_t full_lambda = ctx->full_lambda_md[SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? EB_10_BIT_MD : EB_8_BIT_MD];
     return st->pf_shape == (uint8_t)ctx->pf_ctrls.pf_shape &&
