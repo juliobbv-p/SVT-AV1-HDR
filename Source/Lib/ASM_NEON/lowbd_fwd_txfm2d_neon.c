@@ -755,12 +755,13 @@ static AOM_FORCE_INLINE void fidentity16x16_neon(const int16x8_t* input, int16x8
     }
 }
 
-#define TRANSFORM_COL_16(name)                                                                           \
-    static void name##_col_neon(const int16_t* input, int16x8_t* output, uint32_t stride, int cos_bit) { \
-        int16x8_t buf0[16];                                                                              \
-        load_buffer_s16_x8(input, stride, buf0, 16);                                                     \
-        shift_left_2_s16_x8(buf0, buf0, 16);                                                             \
-        name##_neon(buf0, output, cos_bit);                                                              \
+#define TRANSFORM_COL_16(name)                                                   \
+    static AOM_FORCE_INLINE void name##_col_neon(                                \
+        const int16_t* input, int16x8_t* output, uint32_t stride, int cos_bit) { \
+        int16x8_t buf0[16];                                                      \
+        load_buffer_s16_x8(input, stride, buf0, 16);                             \
+        shift_left_2_s16_x8(buf0, buf0, 16);                                     \
+        name##_neon(buf0, output, cos_bit);                                      \
     }
 TRANSFORM_COL_16(fdct16x16)
 TRANSFORM_COL_16(fadst16x16)
@@ -801,6 +802,99 @@ void svt_lbd_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t str
         transpose_arrays_s16_8x8(buf0 + 8, buf1 + 1 * 16 + 8 * i);
     }
 
+    for (int i = 0; i < 2; i++) {
+        int16x8_t rin[16];
+        if (lr_flip) {
+            flip_buf_8_neon(buf1 + 16 * i, rin, 16);
+        }
+        const int16x8_t* row_in = lr_flip ? rin : (buf1 + 16 * i);
+
+        int16x8_t rowout[16];
+        switch (tx_type) {
+        case DCT_DCT:
+        case ADST_DCT:
+        case FLIPADST_DCT:
+        case H_DCT:
+            fdct16x16_neon(row_in, rowout, 12);
+            break;
+        case DCT_ADST:
+        case ADST_ADST:
+        case DCT_FLIPADST:
+        case FLIPADST_FLIPADST:
+        case ADST_FLIPADST:
+        case FLIPADST_ADST:
+        case H_ADST:
+        case H_FLIPADST:
+            fadst16x16_neon(row_in, rowout, 12);
+            break;
+        default:
+            fidentity16x16_neon(row_in, rowout, 12);
+            break;
+        }
+
+        int16x8_t ta[8], tb[8];
+        transpose_arrays_s16_8x8(rowout + 0, ta);
+        transpose_arrays_s16_8x8(rowout + 8, tb);
+        for (int r = 0; r < 8; r++) {
+            int32_t* o = output + (8 * i + r) * 16;
+            vst1q_s32(o + 0, vmovl_s16(vget_low_s16(ta[r])));
+            vst1q_s32(o + 4, vmovl_s16(vget_high_s16(ta[r])));
+            vst1q_s32(o + 8, vmovl_s16(vget_low_s16(tb[r])));
+            vst1q_s32(o + 12, vmovl_s16(vget_high_s16(tb[r])));
+        }
+    }
+}
+
+// The two passes of svt_lbd_fwd_txfm2d_16x16_neon() on their own, for callers that transform one residual block
+// with several transform types. The column pass depends only on the column transform of the type (DCT, ADST,
+// flipped ADST or identity), so types that share it can share `mid`: the 32 vectors of 8 the row pass starts
+// from (column output after its rounding shift, transposed).
+void svt_lbd_fwd_txfm2d_16x16_cols_neon(const int16_t* input, uint32_t stride, TxType tx_type, int16_t* mid) {
+    int ud_flip, lr_flip;
+    get_flip_cfg(tx_type, &ud_flip, &lr_flip);
+    const int16_t* in = input;
+    ud_adjust_input_and_stride(ud_flip, &in, &stride, 16);
+
+    int16x8_t buf0[16], buf1[32];
+    for (int i = 0; i < 2; i++) {
+        switch (tx_type) {
+        case DCT_DCT:
+        case DCT_ADST:
+        case DCT_FLIPADST:
+        case V_DCT:
+            fdct16x16_col_neon(in + 8 * i, buf0, stride, 13);
+            break;
+        case ADST_DCT:
+        case ADST_ADST:
+        case FLIPADST_DCT:
+        case FLIPADST_FLIPADST:
+        case ADST_FLIPADST:
+        case FLIPADST_ADST:
+        case V_ADST:
+        case V_FLIPADST:
+            fadst16x16_col_neon(in + 8 * i, buf0, stride, 13);
+            break;
+        default:
+            fidentity16x16_col_neon(in + 8 * i, buf0, stride, 13);
+            break;
+        }
+        shift_right_2_round_s16_x8(buf0, buf0, 16);
+        transpose_arrays_s16_8x8(buf0 + 0, buf1 + 0 * 16 + 8 * i);
+        transpose_arrays_s16_8x8(buf0 + 8, buf1 + 1 * 16 + 8 * i);
+    }
+    for (int k = 0; k < 32; k++) {
+        vst1q_s16(mid + 8 * k, buf1[k]);
+    }
+}
+
+void svt_lbd_fwd_txfm2d_16x16_rows_neon(const int16_t* mid, TxType tx_type, int32_t* output) {
+    int ud_flip, lr_flip;
+    get_flip_cfg(tx_type, &ud_flip, &lr_flip);
+
+    int16x8_t buf1[32];
+    for (int k = 0; k < 32; k++) {
+        buf1[k] = vld1q_s16(mid + 8 * k);
+    }
     for (int i = 0; i < 2; i++) {
         int16x8_t rin[16];
         if (lr_flip) {

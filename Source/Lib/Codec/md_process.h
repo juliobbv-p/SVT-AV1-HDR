@@ -1161,7 +1161,8 @@ typedef struct ModeDecisionContext {
     uint8_t intra_luma_top_ctx;
 
     WarpSampleInfo wm_sample_info[REF_FRAMES];
-    int16_t*       pred_buf_q3;
+
+    int16_t* pred_buf_q3;
     // Track all MVs that are prepared for candidates prior to MDS0. Used to avoid MV duplication.
     Mv (*injected_mvs)[2];
     // Track the reference types for each MV
@@ -1172,18 +1173,18 @@ typedef struct ModeDecisionContext {
     // Pointer to a scratch buffer used by CFL & IFS
     EbPictureBufferDesc* scratch_prediction_ptr;
     // Luma prediction of the best filter pair found so far by the interpolation filter search (one block).
-    uint8_t*             ifs_best_pred;
-    uint8_t              tx_depth;
-    uint8_t              txb_itr;
-    uint32_t             me_sb_addr;
-    uint32_t             geom_offset_x;
-    uint32_t             geom_offset_y;
-    int16_t              luma_txb_skip_context;
-    int16_t              luma_dc_sign_context;
-    int16_t              cb_txb_skip_context;
-    int16_t              cb_dc_sign_context;
-    int16_t              cr_txb_skip_context;
-    int16_t              cr_dc_sign_context;
+    uint8_t* ifs_best_pred;
+    uint8_t  tx_depth;
+    uint8_t  txb_itr;
+    uint32_t me_sb_addr;
+    uint32_t geom_offset_x;
+    uint32_t geom_offset_y;
+    int16_t  luma_txb_skip_context;
+    int16_t  luma_dc_sign_context;
+    int16_t  cb_txb_skip_context;
+    int16_t  cb_dc_sign_context;
+    int16_t  cr_txb_skip_context;
+    int16_t  cr_dc_sign_context;
     // Multi-modes signal(s)
     uint8_t           global_mv_injection;
     uint8_t           new_nearest_injection;
@@ -1466,6 +1467,22 @@ typedef struct ModeDecisionContext {
     IntraEdgeCache16 intra_edge16; // switched on and off with intra_edge.on
     UvSearchStore    uv_store; // per-mode results of search_best_mds3_uv_mode() for the current block
     PredCmpCache     pred_cmp_cache; // compound intermediates of the current block's single-reference MDS0 predictions
+
+    // Transform-type search: column passes of the 16x16 forward transform already computed for the residual
+    // block being searched (one per column transform), see svt_av1_fwd_txfm2d_16x16_shared_neon(). Only
+    // consulted while `active`, which the search sets around its loop over the transform types.
+    struct {
+        const int16_t* residual;
+
+        uint32_t stride;
+
+        uint8_t active;
+
+        uint8_t valid;
+
+        int8_t fits;
+        DECLARE_ALIGNED(16, int16_t, mid[4][256]);
+    } txs_share;
 } ModeDecisionContext;
 
 static INLINE SvtPsyEnergyCache* svt_aom_get_psy_energy_cache(ModeDecisionContext* ctx, int plane) {

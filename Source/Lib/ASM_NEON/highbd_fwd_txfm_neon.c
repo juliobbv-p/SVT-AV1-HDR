@@ -1818,6 +1818,46 @@ static NOINLINE void highbd_fwd_txfm2d_16x16_fallback_neon(int16_t* input, int32
 }
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
 
+void svt_lbd_fwd_txfm2d_16x16_cols_neon(const int16_t* input, uint32_t stride, TxType tx_type, int16_t* mid);
+void svt_lbd_fwd_txfm2d_16x16_rows_neon(const int16_t* mid, TxType tx_type, int32_t* output);
+
+// svt_av1_fwd_txfm2d_16x16_neon() for a caller that transforms one residual block with several transform types:
+// the column pass of each of the four column transforms is computed once and kept in mid[kind] (256 values
+// each, *valid has a bit per kind; *fits caches the residual range check, -1 while unknown). Returns false,
+// having done nothing, when this residual and type need the 32-bit kernels - the caller then runs the regular
+// transform. The caller resets *valid and *fits whenever the residual changes.
+bool svt_av1_fwd_txfm2d_16x16_shared_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd,
+                                          int16_t (*mid)[256], uint8_t* valid, int8_t* fits) {
+    // column transform of each type: 0 DCT, 1 ADST, 2 flipped ADST, 3 identity
+    static const uint8_t col_kind[TX_TYPES] = {0, 1, 0, 1, 2, 0, 2, 1, 2, 3, 0, 3, 1, 3, 2, 3};
+
+    const int kind = col_kind[tx_type];
+
+    bool narrow = bd == 8;
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
+    // The same conditions as below: an identity column pass, or a residual within +-255.
+    if (bd == 10) {
+        if (kind == 3) {
+            narrow = true;
+        } else {
+            if (*fits < 0) {
+                *fits = (int8_t)residual_fits_255(input, stride, 16);
+            }
+            narrow = *fits != 0;
+        }
+    }
+#endif
+    if (!narrow) {
+        return false;
+    }
+    if (!(*valid & (1 << kind))) {
+        svt_lbd_fwd_txfm2d_16x16_cols_neon(input, stride, tx_type, mid[kind]);
+        *valid |= (uint8_t)(1 << kind);
+    }
+    svt_lbd_fwd_txfm2d_16x16_rows_neon(mid[kind], tx_type, output);
+    return true;
+}
+
 void svt_av1_fwd_txfm2d_16x16_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
     // An identity column pass also bounds the row intermediates for the full

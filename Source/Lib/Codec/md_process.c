@@ -228,6 +228,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     uint32_t   cand_index;
 
     ctx->intrabc_last_dv.as_int = 0; // no last DV yet (seeds the RTC IntraBC BVP fallback)
+    ctx->txs_share.active       = 0; // only set inside a transform-type search
     ctx->init_max_block_cnt     = max_block_cnt;
     uint32_t block_max_count_sb = max_block_cnt;
 
@@ -697,7 +698,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
 
     for (buffer_index = 0; buffer_index < ctx->max_nics_uv; ++buffer_index) {
         ctx->cand_bf_ptr_array[buffer_index] = &ctx->cand_bf_pool[buffer_index];
-        EbErrorType cbf_err = svt_aom_mode_decision_cand_bf_ctor(ctx->cand_bf_ptr_array[buffer_index],
+        EbErrorType cbf_err                  = svt_aom_mode_decision_cand_bf_ctor(ctx->cand_bf_ptr_array[buffer_index],
                                                                  &ctx->cand_pred_pool.descs[buffer_index],
                                                                  &ctx->cand_rec_coeff_pool.descs[buffer_index],
                                                                  &ctx->cand_quant_pool.descs[buffer_index],

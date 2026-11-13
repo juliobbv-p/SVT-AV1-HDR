@@ -1181,7 +1181,7 @@ static void obmc_trans_face_off(ModeDecisionCandidateBuffer* cand_bf, PictureCon
         if (is_inter_mode(cand_bf->cand->block_mi.mode) && is_obmc_allowed &&
             cand->block_mi.motion_mode == SIMPLE_TRANSLATION && cand->block_mi.is_interintra_used == 0) {
             // Derive the fast luma rate of OBMC
-            MotionMode last_motion_mode_allowed = svt_aom_motion_mode_allowed(pcs,
+            MotionMode last_motion_mode_allowed        = svt_aom_motion_mode_allowed(pcs,
                                                                               cand->block_mi.num_proj_ref,
                                                                               ctx->blk_ptr->overlappable_neighbors,
                                                                               ctx->blk_geom->bsize,
@@ -1435,10 +1435,10 @@ void fast_loop_core(ModeDecisionCandidateBuffer* cand_bf, PictureControlSet* pcs
                 } else {
                     const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
                     var                            = fn_ptr->vf(pred->y_buffer,
-                                                                pred->y_stride,
-                                                                input_pic->y_buffer + input_origin_index,
-                                                                input_pic->y_stride,
-                                                                &sse);
+                                     pred->y_stride,
+                                     input_pic->y_buffer + input_origin_index,
+                                     input_pic->y_stride,
+                                     &sse);
                 }
             }
             cand_bf->luma_fast_dist = var;
@@ -1814,12 +1814,12 @@ static void md_stage_0(PictureControlSet* pcs, ModeDecisionContext* ctx,
     //      and if the cost to the best is significant
     //    - skip filter-intra mode if regular winner does not match (e.g. test filter-paeth if Paeth is best at first pass). Always test filter-DC.
     uint8_t        tot_itr             = (ctx->target_class != CAND_CLASS_0 ||
-                                          (!ctx->cand_reduction_ctrls.reduce_filter_intra &&
-                                           !((ctx->intra_ctrls.skip_angular_delta1_th != -1 ||
-                                              ctx->intra_ctrls.skip_angular_delta2_th != -1 ||
-                                              ctx->intra_ctrls.skip_angular_delta3_th != -1))))
-        ? 1
-        : 2;
+                       (!ctx->cand_reduction_ctrls.reduce_filter_intra &&
+                        !((ctx->intra_ctrls.skip_angular_delta1_th != -1 ||
+                           ctx->intra_ctrls.skip_angular_delta2_th != -1 ||
+                           ctx->intra_ctrls.skip_angular_delta3_th != -1))))
+                           ? 1
+                           : 2;
     uint64_t       best_reg_intra_cost = MAX_CU_COST; // Derived at the 1st itr
     PredictionMode best_reg_intra_mode = INTRA_INVALID; // Derived at the 1st itr
     uint64_t       regular_intra_cost[PAETH_PRED + 1];
@@ -2055,8 +2055,8 @@ static void svt_init_mv_cost_params(svt_mv_cost_param* mv_cost_params, ModeDecis
     // With approx_inter_rate the MV cost tables are not built (svt_aom_estimate_mv_rate zeroes them), so the entropy
     // cost would be 0; use the L1 approximation instead.
     mv_cost_params->mv_cost_type  = ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3 || ctx->approx_inter_rate
-        ? MV_COST_OPT
-        : MV_COST_ENTROPY;
+         ? MV_COST_OPT
+         : MV_COST_ENTROPY;
     mv_cost_params->error_per_bit = AOMMAX(rdmult >> RD_EPB_SHIFT, 1);
     mv_cost_params->sad_per_bit   = svt_aom_get_sad_per_bit(base_q_idx, hbd_md);
     mv_cost_params->mvjcost       = ctx->md_rate_est_ctx->nmv_vec_cost;
@@ -3313,7 +3313,7 @@ static bool get_sb_tpl_inter_stats(PictureControlSet* pcs, ModeDecisionContext* 
         const uint32_t mb_origin_x     = ctx->sb_origin_x;
         const uint32_t mb_origin_y     = ctx->sb_origin_y;
         const int      tpl_blk_size    = ppcs->tpl_ctrls.dispenser_search_level == 0 ? 16
-            : ppcs->tpl_ctrls.dispenser_search_level == 1                            ? 32
+                    : ppcs->tpl_ctrls.dispenser_search_level == 1                    ? 32
                                                                                      : 64;
         // tpl_src_stats_buffer is created for 16x16 always, so TPL dispenser is for larger block sizes
         // the step between blocks must be adjusted
@@ -3536,10 +3536,10 @@ static void build_single_ref_mvp_array(PictureControlSet* pcs, ModeDecisionConte
                 if (!get_pd0_fullpel_var(ctx, svt_get_ref_frame_type(list, ref), fp_mv, &mvp_cost, &sse)) {
                     const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[ctx->blk_geom->bsize];
                     mvp_cost                       = fn_ptr->vf(ref_pic->y_buffer + ref_origin_index,
-                                                                ref_pic->y_stride,
-                                                                input_pic->y_buffer + input_origin_index,
-                                                                input_pic->y_stride,
-                                                                &sse);
+                                          ref_pic->y_stride,
+                                          input_pic->y_buffer + input_origin_index,
+                                          input_pic->y_stride,
+                                          &sse);
                 }
 
                 if (mvp_cost < best_mvp_cost) {
@@ -4199,8 +4199,8 @@ static void cfl_prediction(PictureControlSet* pcs, ModeDecisionCandidateBuffer* 
     // OW compute the reference non-CFL cost and select the best of CFL vs. non-CFL
     uint64_t               non_cfl_cost        = MAX_MODE_COST;
     const UvPredictionMode non_cfl_uv_mode     = cand_bf->cand->block_mi.uv_mode == UV_CFL_PRED
-        ? UV_DC_PRED
-        : cand_bf->cand->block_mi.uv_mode;
+            ? UV_DC_PRED
+            : cand_bf->cand->block_mi.uv_mode;
     const int8_t           non_cfl_angle_delta = cand_bf->cand->block_mi.angle_delta[PLANE_TYPE_UV];
     const TxType           non_cfl_tx_type     = cand_bf->cand->transform_type_uv;
     if (!ctx->ind_uv_avail) {
@@ -4384,7 +4384,7 @@ static void check_best_indepedant_cfl(PictureControlSet* pcs, EbPictureBufferDes
     uint64_t     chroma_rate = svt_aom_get_intra_uv_fast_rate(pcs, ctx, cand_bf, 1);
     int          coeff_rate  = (int)(*cb_coeff_bits + *cr_coeff_bits);
     int          distortion  = (int)(cb_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL] +
-                                     cr_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL]);
+                           cr_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL]);
     int          rate        = (int)(coeff_rate + chroma_rate);
     uint64_t     cfl_uv_cost = RDCOST(full_lambda, rate, distortion);
     // The independent chroma cost assumes luma palette is off. If luma palette is on, the rate for the chroma mode
@@ -4400,7 +4400,7 @@ static void check_best_indepedant_cfl(PictureControlSet* pcs, EbPictureBufferDes
         const int use_palette_y = cand_bf->cand->palette_info && (cand_bf->cand->palette_size[0] > 0);
         if (use_palette_y) {
             const int use_palette_uv = cand_bf->cand->palette_info && (cand_bf->cand->palette_size[1] > 0);
-            ind_palette_cost_diff = (int64_t)RDCOST(
+            ind_palette_cost_diff    = (int64_t)RDCOST(
                                         full_lambda,
                                         ctx->md_rate_est_ctx->palette_uv_mode_fac_bits[use_palette_y][use_palette_uv],
                                         0) -
@@ -5099,8 +5099,8 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     uint64_t       dct_dct_cost        = (uint64_t)~0;
     int            best_satd_tx_search = INT_MAX;
     uint16_t       satd_early_exit_th  = only_dct_dct ? 0
-        : is_inter                                    ? ctx->txt_ctrls.satd_early_exit_th_inter
-                   : ctx->txt_ctrls.satd_early_exit_th_intra; // only compute satd when using TXT search
+               : is_inter                             ? ctx->txt_ctrls.satd_early_exit_th_inter
+                          : ctx->txt_ctrls.satd_early_exit_th_intra; // only compute satd when using TXT search
 
     if (ctx->txt_ctrls.satd_th_q_weight) {
         uint32_t q_weight, q_weight_denom;
@@ -5204,6 +5204,10 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                                        svt_aom_get_psy_energy_cache(ctx, PLANE_Y))
         : 0;
     prediction_spatial_dist += prediction_psy_dist;
+    // The residual stays fixed throughout the search too, so the transform types that share a column transform
+    // can share its pass (see svt_aom_estimate_transform()).
+    ctx->txs_share.residual = NULL;
+    ctx->txs_share.active   = true;
     for (int tx_type_group_idx = 0; tx_type_group_idx < tx_type_tot_group; ++tx_type_group_idx) {
         uint32_t best_tx_non_coeff = 64 * 64;
         for (int tx_type_idx = 0; tx_type_idx < TX_TYPES; ++tx_type_idx) {
@@ -5502,6 +5506,7 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
             }
         }
     }
+    ctx->txs_share.active = 0;
 
     if (ssim_level > SSIM_LVL_1) {
         const uint64_t ssd_cost_threshold       = (uint64_t)(cost_threshold_factor * best_cost_tx_search);
@@ -5951,8 +5956,8 @@ static void perform_tx_partitioning(ModeDecisionCandidateBuffer* cand_bf, ModeDe
                 uint64_t normlized_cost = ((ctx->txb_itr + 1) * best_cost_search) / txb_count;
 
                 uint64_t       tx_size_bit_tmp = pcs->ppcs->frm_hdr.tx_mode == TX_MODE_SELECT
-                    ? svt_aom_get_tx_size_bits(tx_cand_bf, ctx, pcs, ctx->tx_depth, block_has_coeff)
-                    : 0;
+                          ? svt_aom_get_tx_size_bits(tx_cand_bf, ctx, pcs, ctx->tx_depth, block_has_coeff)
+                          : 0;
                 const uint64_t cost_tmp        = RDCOST(
                     full_lambda, tx_y_coeff_bits + tx_size_bit_tmp, tx_y_full_distortion[DIST_SSD][DIST_CALC_RESIDUAL]);
 
@@ -6197,9 +6202,11 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
                                                                                : pcs->ppcs->enhanced_pic;
     const bool is_inter = (is_inter_mode(cand_bf->cand->block_mi.mode) || cand_bf->cand->block_mi.use_intrabc) ? true
                                                                                                                : false;
-    ctx->tx_depth       = 0;
-    ctx->txb_itr        = 0;
-    ctx->txb_1d_offset  = 0;
+
+    ctx->tx_depth = 0;
+    ctx->txb_itr  = 0;
+
+    ctx->txb_1d_offset      = 0;
     ctx->three_quad_energy  = 0;
     const int tx_depth      = 0;
     const int txb_itr       = 0;
@@ -7760,7 +7767,7 @@ static void md_stage_2(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictu
 
     // If IFS is set to MDS1, but MDS1 is bypassed, perform IFS in MDS2 instead. Note if ctx->perform_mds1 is false, MDS2 is also skipped
     ctx->mds_do_ifs         = (ctx->ifs_ctrls.level == IFS_MDS2 ||
-                               (ctx->ifs_ctrls.level == IFS_MDS1 && (!ctx->perform_mds1 || ctx->bypass_md_stage_1)));
+                       (ctx->ifs_ctrls.level == IFS_MDS1 && (!ctx->perform_mds1 || ctx->bypass_md_stage_1)));
     ctx->mds_do_txs         = false;
     ctx->mds_do_rdoq        = false;
     ctx->mds_do_spatial_sse = ctx->spatial_sse_ctrls.level <= SSSE_MDS2;
@@ -7865,13 +7872,14 @@ static void md_stage_3(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictu
     }
 
     // If IFS is set to a previous MD stage, but that MD stage is bypassed, perform IFS in MDS3 instead
-    ctx->mds_do_ifs         = (ctx->ifs_ctrls.level == IFS_MDS3 ||
-                               (ctx->ifs_ctrls.level == IFS_MDS1 &&
-                                (!ctx->perform_mds1 || (ctx->bypass_md_stage_1 && ctx->bypass_md_stage_2))) ||
-                               (ctx->ifs_ctrls.level == IFS_MDS2 && (!ctx->perform_mds1 || ctx->bypass_md_stage_2)));
-    ctx->mds_do_txs         = ctx->txs_ctrls.enabled;
-    ctx->mds_do_rdoq        = true;
-    ctx->mds_do_spatial_sse = ctx->spatial_sse_ctrls.level <= SSSE_MDS3;
+    ctx->mds_do_ifs  = (ctx->ifs_ctrls.level == IFS_MDS3 ||
+                       (ctx->ifs_ctrls.level == IFS_MDS1 &&
+                        (!ctx->perform_mds1 || (ctx->bypass_md_stage_1 && ctx->bypass_md_stage_2))) ||
+                       (ctx->ifs_ctrls.level == IFS_MDS2 && (!ctx->perform_mds1 || ctx->bypass_md_stage_2)));
+    ctx->mds_do_txs  = ctx->txs_ctrls.enabled;
+    ctx->mds_do_rdoq = true;
+
+    ctx->mds_do_spatial_sse       = ctx->spatial_sse_ctrls.level <= SSSE_MDS3;
     ctx->mds_fast_coeff_est_level = (ctx->pd_pass == PD_PASS_1) ? 1 : ctx->rate_est_ctrls.pd0_fast_coeff_est_level;
     ctx->mds_subres_step          = (ctx->pd_pass == PD_PASS_1) ? 0 : ctx->subres_ctrls.step;
     ctx->mds_do_chroma            = (ctx->has_uv && ctx->uv_ctrls.uv_mode <= CHROMA_MODE_1) ? true : false;
@@ -8550,7 +8558,7 @@ static void search_best_independent_uv_mode(PictureControlSet* pcs, EbPictureBuf
         ctx->best_uv_cost[intra_mode] = (uint64_t)~0;
         for (uv_mode_count = 0; uv_mode_count < MIN(uv_mode_total_count, uv_mode_nfl_count); uv_mode_count++) {
             ModeDecisionCandidateBuffer* cand_bf = ctx->cand_bf_ptr_array[uv_cand_buff_indices[uv_mode_count]];
-            ModeDecisionCandidate* cand = &(ctx->fast_cand_array[uv_cand_buff_indices[uv_mode_count] -
+            ModeDecisionCandidate*       cand    = &(ctx->fast_cand_array[uv_cand_buff_indices[uv_mode_count] -
                                                                  start_full_buffer_index + start_fast_buffer_index]);
             // Update the luma intra mode, as it affects the chroma mode rate
             cand->block_mi.mode       = intra_mode;
@@ -8584,8 +8592,8 @@ static void post_mds0_nic_pruning(PictureControlSet* pcs, ModeDecisionContext* c
                                             &q_weight_denom,
                                             pcs->ppcs->scs->static_config.qp);
     uint64_t mds1_class_th            = (pcs->slice_type == I_SLICE || pruning_ctrls.mds1_class_th == (uint64_t)~0)
-        ? (uint64_t)~0
-        : DIVIDE_AND_ROUND(pruning_ctrls.mds1_class_th * q_weight, q_weight_denom);
+                   ? (uint64_t)~0
+                   : DIVIDE_AND_ROUND(pruning_ctrls.mds1_class_th * q_weight, q_weight_denom);
     uint8_t  mds1_band_cnt            = pruning_ctrls.mds1_band_cnt;
     uint16_t mds1_cand_th_rank_factor = pruning_ctrls.mds1_cand_th_rank_factor;
 
@@ -8594,8 +8602,8 @@ static void post_mds0_nic_pruning(PictureControlSet* pcs, ModeDecisionContext* c
         : DIVIDE_AND_ROUND(pruning_ctrls.mds1_cand_base_th_intra * q_weight, q_weight_denom);
 
     uint64_t                      mds1_cand_base_th_inter = (pruning_ctrls.mds1_cand_base_th_inter == (uint64_t)~0)
-        ? pruning_ctrls.mds1_cand_base_th_inter
-        : DIVIDE_AND_ROUND(pruning_ctrls.mds1_cand_base_th_inter * q_weight, q_weight_denom);
+                             ? pruning_ctrls.mds1_cand_base_th_inter
+                             : DIVIDE_AND_ROUND(pruning_ctrls.mds1_cand_base_th_inter * q_weight, q_weight_denom);
     ModeDecisionCandidateBuffer** cand_bf_arr             = ctx->cand_bf_ptr_array;
     for (CandClass cidx = CAND_CLASS_0; cidx < CAND_CLASS_TOTAL; cidx++) {
         const uint64_t mds1_cand_th = is_intra_class(cidx) ? mds1_cand_base_th_intra : mds1_cand_base_th_inter;
@@ -8656,8 +8664,8 @@ static void post_mds1_nic_pruning(PictureControlSet* pcs, ModeDecisionContext* c
         : DIVIDE_AND_ROUND(pruning_ctrls.mds2_cand_base_th * q_weight, q_weight_denom);
 
     const uint64_t mds2_class_th        = (pcs->slice_type == I_SLICE || pruning_ctrls.mds2_class_th == (uint64_t)~0)
-        ? (uint64_t)~0
-        : DIVIDE_AND_ROUND(pruning_ctrls.mds2_class_th * q_weight, q_weight_denom);
+               ? (uint64_t)~0
+               : DIVIDE_AND_ROUND(pruning_ctrls.mds2_class_th * q_weight, q_weight_denom);
     const uint8_t  mds2_band_cnt        = pruning_ctrls.mds2_band_cnt;
     const uint16_t mds2_relative_dev_th = pruning_ctrls.mds2_relative_dev_th;
     ModeDecisionCandidateBuffer** cand_bf_arr = ctx->cand_bf_ptr_array;
@@ -9712,7 +9720,7 @@ static void convert_md_recon_16bit_to_8bit(PictureControlSet* pcs, ModeDecisionC
 
     uint8_t* dst_nbit        = recon_buffer_8bit->y_buffer_bit_inc ? recon_buffer_8bit->y_buffer_bit_inc +
             pred_buf_x_offest_8bit + (pred_buf_y_offest_8bit)*recon_buffer_8bit->y_stride
-                                                            : recon_buffer_8bit->y_buffer_bit_inc;
+                                                                   : recon_buffer_8bit->y_buffer_bit_inc;
     int32_t  dst_nbit_stride = recon_buffer_8bit->y_stride_bit_inc;
 
     svt_aom_un_pack2d(dst_16bit,
@@ -10439,7 +10447,7 @@ static void md_encode_block_internal(PictureControlSet* pcs, ModeDecisionContext
 
                 uint32_t* cand_buff_indices = ctx->cand_buff_indices[cand_class_it];
                 best_md_stage_cost          = MIN((*(ctx->cand_bf_ptr_array[cand_buff_indices[0]]->full_cost)),
-                                                  best_md_stage_cost);
+                                         best_md_stage_cost);
             }
         }
     }
@@ -10611,23 +10619,23 @@ static bool update_skip_nsq_based_on_split_rate(PictureControlSet* pcs, ModeDeci
             H_vs_V_split_rate_th += ctx->nsq_search_ctrls.rate_th_offset_lte16;
         }
         const uint64_t H_rate      = svt_aom_partition_rate_cost(pcs->ppcs,
-                                                                 pc_tree->bsize,
-                                                                 pc_tree->mi_row,
-                                                                 pc_tree->mi_col,
-                                                                 ctx->md_rate_est_ctx,
-                                                                 PARTITION_HORZ,
-                                                                 pc_tree->left_part_ctx,
-                                                                 pc_tree->above_part_ctx);
+                                                            pc_tree->bsize,
+                                                            pc_tree->mi_row,
+                                                            pc_tree->mi_col,
+                                                            ctx->md_rate_est_ctx,
+                                                            PARTITION_HORZ,
+                                                            pc_tree->left_part_ctx,
+                                                            pc_tree->above_part_ctx);
         const uint64_t H_rate_cost = RDCOST(full_lambda, H_rate, 0);
 
         const uint64_t V_rate      = svt_aom_partition_rate_cost(pcs->ppcs,
-                                                                 pc_tree->bsize,
-                                                                 pc_tree->mi_row,
-                                                                 pc_tree->mi_col,
-                                                                 ctx->md_rate_est_ctx,
-                                                                 PARTITION_VERT,
-                                                                 pc_tree->left_part_ctx,
-                                                                 pc_tree->above_part_ctx);
+                                                            pc_tree->bsize,
+                                                            pc_tree->mi_row,
+                                                            pc_tree->mi_col,
+                                                            ctx->md_rate_est_ctx,
+                                                            PARTITION_VERT,
+                                                            pc_tree->left_part_ctx,
+                                                            pc_tree->above_part_ctx);
         const uint64_t V_rate_cost = RDCOST(full_lambda, V_rate, 0);
 
         if (shape == PART_H && H_rate_cost * H_vs_V_split_rate_th > V_rate_cost * 100) {
@@ -11786,13 +11794,13 @@ static bool test_depth(SequenceControlSet* scs, PictureControlSet* pcs, ModeDeci
         }
 
         const int64_t part_rate  = svt_aom_partition_rate_cost(pcs->ppcs,
-                                                               pc_tree->bsize,
-                                                               mi_row,
-                                                               mi_col,
-                                                               ctx->md_rate_est_ctx,
-                                                               from_shape_to_part[shape],
-                                                               pc_tree->left_part_ctx,
-                                                               pc_tree->above_part_ctx);
+                                                              pc_tree->bsize,
+                                                              mi_row,
+                                                              mi_col,
+                                                              ctx->md_rate_est_ctx,
+                                                              from_shape_to_part[shape],
+                                                              pc_tree->left_part_ctx,
+                                                              pc_tree->above_part_ctx);
         int64_t       part_cost  = RDCOST(full_lambda, part_rate, 0);
         bool          valid_part = true;
 

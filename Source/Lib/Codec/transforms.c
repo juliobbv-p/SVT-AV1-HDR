@@ -3476,6 +3476,11 @@ void svt_av1_fwht4x4_c(int16_t* input, int32_t* output, uint32_t stride) {
 *   Note there is an implicit assumption that TU Size <= PU Size,
 *   which is different than the HEVC requirements.
 *********************************************************************/
+#if defined(ARCH_AARCH64)
+bool svt_av1_fwd_txfm2d_16x16_shared_neon(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd,
+                                          int16_t (*mid)[256], uint8_t* valid, int8_t* fits);
+#endif
+
 EbErrorType svt_aom_estimate_transform(PictureControlSet* pcs, ModeDecisionContext* ctx, int16_t* residual_buffer,
                                        uint32_t residual_stride, int32_t* coeff_buffer, uint32_t coeff_stride,
                                        TxSize transform_size, uint64_t* three_quad_energy, uint32_t bit_depth,
@@ -3501,6 +3506,28 @@ EbErrorType svt_aom_estimate_transform(PictureControlSet* pcs, ModeDecisionConte
         return EB_ErrorNone;
     }
 
+#if defined(ARCH_AARCH64)
+    // Inside a transform-type search the 16x16 types that share a column transform share its pass.
+    if (ctx->txs_share.active && transform_size == TX_16X16 && trans_coeff_shape == DEFAULT_SHAPE &&
+        svt_av1_fwd_txfm2d_16x16 == svt_av1_fwd_txfm2d_16x16_neon) {
+        if (ctx->txs_share.residual != residual_buffer || ctx->txs_share.stride != residual_stride) {
+            ctx->txs_share.residual = residual_buffer;
+            ctx->txs_share.stride   = residual_stride;
+            ctx->txs_share.valid    = 0;
+            ctx->txs_share.fits     = -1;
+        }
+        if (svt_av1_fwd_txfm2d_16x16_shared_neon(residual_buffer,
+                                                 coeff_buffer,
+                                                 residual_stride,
+                                                 transform_type,
+                                                 (uint8_t)bit_depth,
+                                                 ctx->txs_share.mid,
+                                                 &ctx->txs_share.valid,
+                                                 &ctx->txs_share.fits)) {
+            return EB_ErrorNone;
+        }
+    }
+#endif
     switch (trans_coeff_shape) {
     case DEFAULT_SHAPE:
         return av1_estimate_transform_default(residual_buffer,
