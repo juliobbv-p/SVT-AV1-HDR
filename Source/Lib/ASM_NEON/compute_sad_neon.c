@@ -1203,20 +1203,27 @@ static inline uint16x8_t sea16_bounds_neon(const uint16x8_t* sums, const uint16_
 // first candidate, whose box (i, j) starts 4 * i columns and 4 * j rows (row4 apart) further. The sum of the
 // sixteen absolute differences is at most 16 * 16 * 255 = 65280 and, like the four-quadrant bound it refines,
 // never above the SAD.
-static inline uint16x8_t sea16_bounds4_neon(const uint16x8_t* sums4, const uint16_t* sea4, uint32_t row4) {
-    uint16x8_t acc0 = vdupq_n_u16(0), acc1 = vdupq_n_u16(0);
-    for (int j = 0; j < 4; j++) {
-        const uint16_t* r = sea4 + j * row4;
+// *bottom receives the part of the bound that belongs to the bottom half of the block (box rows 2 and 3).
+static inline uint16x8_t sea16_bounds4_neon(const uint16x8_t* sums4, const uint16_t* sea4, uint32_t row4,
+                                            uint16x8_t* bottom) {
+    uint16x8_t half[2];
+    for (int h = 0; h < 2; h++) {
+        uint16x8_t acc0 = vdupq_n_u16(0), acc1 = vdupq_n_u16(0);
+        for (int j = 2 * h; j < 2 * h + 2; j++) {
+            const uint16_t* r = sea4 + j * row4;
 
-        acc0 = vabaq_u16(acc0, sums4[4 * j + 0], vld1q_u16(r));
+            acc0 = vabaq_u16(acc0, sums4[4 * j + 0], vld1q_u16(r));
 
-        acc1 = vabaq_u16(acc1, sums4[4 * j + 1], vld1q_u16(r + 4));
+            acc1 = vabaq_u16(acc1, sums4[4 * j + 1], vld1q_u16(r + 4));
 
-        acc0 = vabaq_u16(acc0, sums4[4 * j + 2], vld1q_u16(r + 8));
+            acc0 = vabaq_u16(acc0, sums4[4 * j + 2], vld1q_u16(r + 8));
 
-        acc1 = vabaq_u16(acc1, sums4[4 * j + 3], vld1q_u16(r + 12));
+            acc1 = vabaq_u16(acc1, sums4[4 * j + 3], vld1q_u16(r + 12));
+        }
+        half[h] = vaddq_u16(acc0, acc1);
     }
-    return vaddq_u16(acc0, acc1);
+    *bottom = half[1];
+    return vaddq_u16(half[0], half[1]);
 }
 
 // Smallest (SAD, raster position) pair of the eight candidates of a group as one integer: the SAD (up to 65280)
@@ -1285,12 +1292,14 @@ static void sad_loop_16xh_sea_batched_neon(const uint8x16_t* prepared, const uin
         list_g[n] = (uint16_t)g;
         n += (bound[g] < seed_limit) & (g != seed_g);
     }
-    uint32_t raster_best = 0xffffff; // smallest SAD among the listed groups evaluated so far
+    const bool half_first  = sea4 != NULL;
+    uint32_t   raster_best = 0xffffff; // smallest SAD among the listed groups evaluated so far
     for (int i = 0; i < n; i += SEA_BATCH) {
         const uint32_t limit = raster_best < seed_limit ? raster_best : seed_limit;
         const int      end   = i + SEA_BATCH < n ? i + SEA_BATCH : n;
 
-        uint16_t todo[SEA_BATCH];
+        uint16_t   todo[SEA_BATCH];
+        uint16x8_t bottom_bound[SEA_BATCH + 1]; // second-level bounds of the bottom halves of the todo groups
 
         int m = 0;
         for (int k = i; k < end; ++k) {
@@ -1306,7 +1315,8 @@ static void sad_loop_16xh_sea_batched_neon(const uint8x16_t* prepared, const uin
                 const uint32_t b2 = vminvq_u16(sea16_bounds4_neon(
                     sums4,
                     sea4 + first_row + (uint32_t)(g / groups_per_row) * row_step + 8 * (g % groups_per_row),
-                    4 * src_stride_raw));
+                    4 * src_stride_raw,
+                    &bottom_bound[m2]));
 
                 todo[m2] = (uint16_t)g;
                 m2 += b2 < limit;
@@ -1314,10 +1324,28 @@ static void sad_loop_16xh_sea_batched_neon(const uint8x16_t* prepared, const uin
             m = m2;
         }
         for (int k = 0; k < m; ++k) {
-            const int      g   = todo[k];
-            const uint32_t key = sea16_group_key_neon(
-                sad16xhx8_prepared_neon(prepared, SEA_GROUP_REF(g), ref_stride, height), g);
-            best_key    = key < best_key ? key : best_key;
+            const int  g = todo[k];
+            uint16x8_t sad;
+            if (half_first) {
+                // Top half first. Its SADs plus the bottom half's bounds are lower bounds of the full SADs as
+                // well: when none of them is below the limit the group cannot hold a candidate that matters, and
+                // leaving it out of raster_best only keeps later limits a little looser.
+                const uint32_t half = height / 2;
+
+                sad = sad16xhx8_prepared_neon(prepared, SEA_GROUP_REF(g), ref_stride, half);
+                if (vminvq_u16(vqaddq_u16(sad, bottom_bound[k])) >= limit) {
+                    continue;
+                }
+                sad = vaddq_u16(
+                    sad,
+                    sad16xhx8_prepared_neon(prepared + half, SEA_GROUP_REF(g) + half * ref_stride, ref_stride, half));
+            } else {
+                sad = sad16xhx8_prepared_neon(prepared, SEA_GROUP_REF(g), ref_stride, height);
+            }
+            const uint32_t key = sea16_group_key_neon(sad, g);
+
+            best_key = key < best_key ? key : best_key;
+
             raster_best = (key >> 14) < raster_best ? (key >> 14) : raster_best;
         }
     }
