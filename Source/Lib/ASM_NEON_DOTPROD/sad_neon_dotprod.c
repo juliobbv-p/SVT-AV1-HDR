@@ -85,7 +85,7 @@ static inline void update_eight_sad_8x8_16x16(const uint32x4_t sad[8], uint32_t 
     min_sad_idx(&s[2], &i[2], s[3], i[3]);
     min_sad_idx(&s[0], &i[0], s[2], i[2]);
     const uint32x4_t mv_vec       = vorrq_u32(vdupq_n_u32(y_mv << 16),
-                                              vandq_u32(vaddq_u32(vdupq_n_u32(x_mv), i[0]), vdupq_n_u32(0xFFFF)));
+                                        vandq_u32(vaddq_u32(vdupq_n_u32(x_mv), i[0]), vdupq_n_u32(0xFFFF)));
     uint32x4_t       best_sad_vec = vld1q_u32(p_best_sad_8x8 + start_8x8_pos);
     uint32x4_t       best_mv_vec  = vld1q_u32(p_best_mv8x8 + start_8x8_pos);
     min_sad_idx(&best_sad_vec, &best_mv_vec, s[0], mv_vec);
@@ -110,7 +110,7 @@ static inline void update_eight_sad_8x8_16x16(const uint32x4_t sad[8], uint32_t 
     }
 }
 
-static inline void svt_ext_eight_sad_calculation_8x8_16x16_sub_sad_1_neon_dotprod(
+static AOM_FORCE_INLINE void svt_ext_eight_sad_calculation_8x8_16x16_sub_sad_1_neon_dotprod(
     uint8_t* src, uint32_t src_stride, uint8_t* ref, uint32_t ref_stride, uint32_t mv, uint32_t start_16x16_pos,
     uint32_t* p_best_sad_8x8, uint32_t* p_best_sad_16x16, uint32_t* p_best_mv8x8, uint32_t* p_best_mv16x16,
     uint32_t p_eight_sad16x16[16][8]) {
@@ -138,6 +138,191 @@ static inline void svt_ext_eight_sad_calculation_8x8_16x16_sub_sad_0_neon_dotpro
     }
     update_eight_sad_8x8_16x16(
         sad, mv, start_16x16_pos, p_best_sad_8x8, p_best_sad_16x16, p_best_mv8x8, p_best_mv16x16, p_eight_sad16x16);
+}
+
+// ---------------------------------------------------------------------------
+// The same eight-position search with the absolute differences of several rows accumulated in 8-bit lanes
+// before each dot product. Whether that is safe is decided per 16x16 block, once per search, from value ranges:
+// with every source sample of the block within [smin, smax] and every reference sample the block's searches
+// read within [rmin, rmax], no absolute difference exceeds D = max(smax - rmin, rmax - smin), and a lane that
+// accumulates `chunk` rows holds at most chunk * D. The tiers are
+//     1: D <= 127, two rows per lane   (at most 254)
+//     2: D <=  63, four rows per lane  (at most 252)
+//     3: D <=  31, eight rows per lane (at most 248)
+// and 0 otherwise (the kernel above). A full search takes 16 difference and 16 dot-product operations per
+// position and 16x16 block; tier 3 takes 16 and 2.
+// ---------------------------------------------------------------------------
+
+// Tiers of the sixteen 16x16 blocks of a 64x64 block (raster order) for a search whose eight-position calls start
+// at the reference positions (x, y), x in [0, area_w), y in [0, area_h), area_w a multiple of 8: a block's
+// reference region is the (area_w + 15) x (area_h + 15) rectangle at its own offset.
+void svt_ext_all_sad_tiers_neon_dotprod(const uint8_t* src, uint32_t src_stride, const uint8_t* ref,
+                                        uint32_t ref_stride, uint32_t area_w, uint32_t area_h, uint8_t tiers[16]) {
+    const uint32_t reg_w = area_w + 15, reg_h = area_h + 15;
+    for (int by = 0; by < 4; by++) {
+        for (int bx = 0; bx < 4; bx++) {
+            const uint8_t* s    = src + 16 * by * src_stride + 16 * bx;
+            const uint8_t* r    = ref + 16 * by * ref_stride + 16 * bx;
+            uint8x16_t     smin = vdupq_n_u8(255), smax = vdupq_n_u8(0);
+            for (int y = 0; y < 16; y++) {
+                const uint8x16_t v = vld1q_u8(s + y * src_stride);
+
+                smin = vminq_u8(smin, v);
+
+                smax = vmaxq_u8(smax, v);
+            }
+            uint8x16_t rmin0 = vdupq_n_u8(255), rmax0 = vdupq_n_u8(0), rmin1 = rmin0, rmax1 = rmax0;
+            for (uint32_t y = 0; y < reg_h; y++) {
+                const uint8_t* p = r + y * ref_stride;
+
+                uint32_t x = 0;
+                for (; x + 16 <= reg_w; x += 16) {
+                    const uint8x16_t v = vld1q_u8(p + x);
+
+                    rmin0 = vminq_u8(rmin0, v);
+
+                    rmax0 = vmaxq_u8(rmax0, v);
+                }
+                // the last, overlapping vector of the row (reg_w is at least 23)
+                const uint8x16_t v = vld1q_u8(p + reg_w - 16);
+
+                rmin1 = vminq_u8(rmin1, v);
+
+                rmax1 = vmaxq_u8(rmax1, v);
+            }
+            const int s_lo = vminvq_u8(smin), s_hi = vmaxvq_u8(smax);
+            const int r_lo = vminvq_u8(vminq_u8(rmin0, rmin1)), r_hi = vmaxvq_u8(vmaxq_u8(rmax0, rmax1));
+            const int d = AOMMAX(s_hi - r_lo, r_hi - s_lo);
+
+            tiers[4 * by + bx] = d <= 31 ? 3 : d <= 63 ? 2 : d <= 127 ? 1 : 0;
+        }
+    }
+}
+
+// The four 8x8 SADs of one 16x16 block at eight positions: `rows` rows per 8x8 (8, or 4 with every other row
+// and the sums doubled), `chunk` of them accumulated per dot product. Position by position inside each row keeps
+// the eight accumulation chains independent.
+static AOM_FORCE_INLINE void eight_sad_chunked_neon_dotprod(const uint8_t* src, uint32_t src_stride, const uint8_t* ref,
+                                                            uint32_t ref_stride, const int rows, const int chunk,
+                                                            const int mult, uint32x4_t sad[8]) {
+    const uint8x16_t weight = vdupq_n_u8((uint8_t)mult);
+
+    uint32x4_t half[2][8];
+    for (int h = 0; h < 2; h++) {
+        for (int k = 0; k < 8; k++) {
+            half[h][k] = vdupq_n_u32(0);
+        }
+        for (int r = 0; r < rows; r += chunk) {
+            uint8x16_t acc[8];
+
+            const uint8x16_t s0 = vld1q_u8(src);
+            for (int k = 0; k < 8; k++) {
+                acc[k] = vabdq_u8(s0, vld1q_u8(ref + k));
+            }
+            src += src_stride;
+            ref += ref_stride;
+            for (int c = 1; c < chunk; c++) {
+                const uint8x16_t s = vld1q_u8(src);
+                for (int k = 0; k < 8; k++) {
+                    acc[k] = vabaq_u8(acc[k], s, vld1q_u8(ref + k));
+                }
+                src += src_stride;
+                ref += ref_stride;
+            }
+            for (int k = 0; k < 8; k++) {
+                half[h][k] = vdotq_u32(half[h][k], acc[k], weight);
+            }
+        }
+    }
+    for (int k = 0; k < 8; k++) {
+        sad[k] = vpaddq_u32(half[0][k], half[1][k]);
+    }
+}
+
+#define EIGHT_SAD_CHUNKED(name, rows, chunk, mult, stride_mult)                                        \
+    static NOINLINE void name(uint8_t*  src,                                                           \
+                              uint32_t  src_stride,                                                    \
+                              uint8_t*  ref,                                                           \
+                              uint32_t  ref_stride,                                                    \
+                              uint32_t  mv,                                                            \
+                              uint32_t  start_16x16_pos,                                               \
+                              uint32_t* p_best_sad_8x8,                                                \
+                              uint32_t* p_best_sad_16x16,                                              \
+                              uint32_t* p_best_mv8x8,                                                  \
+                              uint32_t* p_best_mv16x16,                                                \
+                              uint32_t  p_eight_sad16x16[16][8]) {                                      \
+        uint32x4_t sad[8];                                                                             \
+        eight_sad_chunked_neon_dotprod(                                                                \
+            src, (stride_mult) * src_stride, ref, (stride_mult) * ref_stride, rows, chunk, mult, sad); \
+        update_eight_sad_8x8_16x16(sad,                                                                \
+                                   mv,                                                                 \
+                                   start_16x16_pos,                                                    \
+                                   p_best_sad_8x8,                                                     \
+                                   p_best_sad_16x16,                                                   \
+                                   p_best_mv8x8,                                                       \
+                                   p_best_mv16x16,                                                     \
+                                   p_eight_sad16x16);                                                  \
+    }
+EIGHT_SAD_CHUNKED(eight_sad_full_chunk2_neon_dotprod, 8, 2, 1, 1)
+EIGHT_SAD_CHUNKED(eight_sad_full_chunk4_neon_dotprod, 8, 4, 1, 1)
+EIGHT_SAD_CHUNKED(eight_sad_full_chunk8_neon_dotprod, 8, 8, 1, 1)
+// every other row: four rows per 8x8, so tiers 2 and 3 both take them in one chunk
+EIGHT_SAD_CHUNKED(eight_sad_sub_chunk2_neon_dotprod, 4, 2, 2, 2)
+EIGHT_SAD_CHUNKED(eight_sad_sub_chunk4_neon_dotprod, 4, 4, 2, 2)
+
+// svt_ext_all_sad_calculation_8x8_16x16_neon_dotprod() with the tiers of svt_ext_all_sad_tiers_neon_dotprod().
+void svt_ext_all_sad_calculation_8x8_16x16_tiers_neon_dotprod(uint8_t* src, uint32_t src_stride, uint8_t* ref,
+                                                              uint32_t ref_stride, uint32_t mv,
+                                                              uint32_t* p_best_sad_8x8, uint32_t* p_best_sad_16x16,
+                                                              uint32_t* p_best_mv8x8, uint32_t* p_best_mv16x16,
+                                                              uint32_t p_eight_sad16x16[16][8], bool sub_sad,
+                                                              const uint8_t tiers[16]) {
+    static const char offsets[16] = {0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15};
+    const uint32_t    pf_step     = sub_sad ? 2 : 1;
+    for (uint32_t r = 0; r < 64; r += pf_step) {
+        __builtin_prefetch(ref + r * ref_stride + 64, 0, 3);
+    }
+    for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x++) {
+            uint8_t* const s   = src + 16 * y * src_stride + 16 * x;
+            uint8_t* const p   = ref + 16 * y * ref_stride + 16 * x;
+            const uint32_t pos = (uint32_t)offsets[4 * y + x];
+#define EIGHT_SAD_ARGS                                                                                     \
+    s, src_stride, p, ref_stride, mv, pos, p_best_sad_8x8, p_best_sad_16x16, p_best_mv8x8, p_best_mv16x16, \
+        p_eight_sad16x16
+            switch (tiers[4 * y + x]) {
+            case 3:
+                if (sub_sad) {
+                    eight_sad_sub_chunk4_neon_dotprod(EIGHT_SAD_ARGS);
+                } else {
+                    eight_sad_full_chunk8_neon_dotprod(EIGHT_SAD_ARGS);
+                }
+                break;
+            case 2:
+                if (sub_sad) {
+                    eight_sad_sub_chunk4_neon_dotprod(EIGHT_SAD_ARGS);
+                } else {
+                    eight_sad_full_chunk4_neon_dotprod(EIGHT_SAD_ARGS);
+                }
+                break;
+            case 1:
+                if (sub_sad) {
+                    eight_sad_sub_chunk2_neon_dotprod(EIGHT_SAD_ARGS);
+                } else {
+                    eight_sad_full_chunk2_neon_dotprod(EIGHT_SAD_ARGS);
+                }
+                break;
+            default:
+                if (sub_sad) {
+                    svt_ext_eight_sad_calculation_8x8_16x16_sub_sad_1_neon_dotprod(EIGHT_SAD_ARGS);
+                } else {
+                    svt_ext_eight_sad_calculation_8x8_16x16_sub_sad_0_neon_dotprod(EIGHT_SAD_ARGS);
+                }
+                break;
+            }
+#undef EIGHT_SAD_ARGS
+        }
+    }
 }
 
 void svt_ext_all_sad_calculation_8x8_16x16_neon_dotprod(uint8_t* src, uint32_t src_stride, uint8_t* ref,

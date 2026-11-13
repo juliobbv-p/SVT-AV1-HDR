@@ -409,6 +409,17 @@ void svt_ext_all_sad_pre_8x8_16x16_avx512(const uint8_t* prep, uint8_t* ref, uin
                                           uint32_t* p_best_mv16x16, uint32_t p_eight_sad16x16[16][8], bool sub_sad);
 #endif
 
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+void svt_ext_all_sad_tiers_neon_dotprod(const uint8_t* src, uint32_t src_stride, const uint8_t* ref,
+                                        uint32_t ref_stride, uint32_t area_w, uint32_t area_h, uint8_t tiers[16]);
+void svt_ext_all_sad_calculation_8x8_16x16_tiers_neon_dotprod(uint8_t* src, uint32_t src_stride, uint8_t* ref,
+                                                              uint32_t ref_stride, uint32_t mv,
+                                                              uint32_t* p_best_sad_8x8, uint32_t* p_best_sad_16x16,
+                                                              uint32_t* p_best_mv8x8, uint32_t* p_best_mv16x16,
+                                                              uint32_t p_eight_sad16x16[16][8], bool sub_sad,
+                                                              const uint8_t tiers[16]);
+#endif
+
 /*******************************************
  * open_loop_me_get_search_point_results_block
  *******************************************/
@@ -447,6 +458,22 @@ static void open_loop_me_get_eight_search_point_results_block(
                                              me_ctx->p_best_mv16x16,
                                              me_ctx->p_eight_sad16x16,
                                              sub_sad);
+    } else
+#endif
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+        if (me_ctx->ext_sad_tiers_valid) {
+        svt_ext_all_sad_calculation_8x8_16x16_tiers_neon_dotprod(me_ctx->b64_src_ptr,
+                                                                 me_ctx->b64_src_stride,
+                                                                 ref_ptr,
+                                                                 ref_luma_stride,
+                                                                 curr_mv,
+                                                                 me_ctx->p_best_sad_8x8,
+                                                                 me_ctx->p_best_sad_16x16,
+                                                                 me_ctx->p_best_mv8x8,
+                                                                 me_ctx->p_best_mv16x16,
+                                                                 me_ctx->p_eight_sad16x16,
+                                                                 sub_sad,
+                                                                 me_ctx->ext_sad_tiers);
     } else
 #endif
         svt_ext_all_sad_calculation_8x8_16x16(me_ctx->b64_src_ptr,
@@ -789,6 +816,26 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
         me_ctx->ext_sad_prep_sub = sub_sad;
     }
 #endif
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+    // One pass over the source block and the reference area tells, per 16x16 block, how many rows of absolute
+    // differences the eight-position kernel may accumulate in 8-bit lanes. The pass costs about as much as one
+    // or two kernel calls, so short searches go without it (an every-other-row search saves half as much per call).
+    me_ctx->ext_sad_tiers_valid = false;
+    const uint32_t eight_calls  = search_area_height * (search_area_width_mult_8 >> 3);
+    if (eight_calls >= (me_ctx->me_search_method == SUB_SAD_SEARCH ? 12u : 6u) &&
+        svt_ext_all_sad_calculation_8x8_16x16 == svt_ext_all_sad_calculation_8x8_16x16_neon_dotprod) {
+        const uint32_t ref_stride = me_ctx->interpolated_full_stride[list_index][ref_pic_index];
+        svt_ext_all_sad_tiers_neon_dotprod(me_ctx->b64_src_ptr,
+                                           me_ctx->b64_src_stride,
+                                           me_ctx->integer_buffer_ptr[list_index][ref_pic_index] +
+                                               (ME_FILTER_TAP >> 1) * ref_stride + (ME_FILTER_TAP >> 1),
+                                           ref_stride,
+                                           search_area_width_mult_8,
+                                           search_area_height,
+                                           me_ctx->ext_sad_tiers);
+        me_ctx->ext_sad_tiers_valid = true;
+    }
+#endif
     for (y_search_index = 0; y_search_index < search_area_height; y_search_index++) {
         for (x_search_index = 0; x_search_index < search_area_width_mult_8; x_search_index += 8) {
             // this function will do:  x_search_index, +1, +2, ..., +7
@@ -811,6 +858,9 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
                 (int32_t)y_search_index + y_search_area_origin);
         }
     }
+#if defined(ARCH_AARCH64) && HAVE_NEON_DOTPROD
+    me_ctx->ext_sad_tiers_valid = false;
+#endif
 }
 
 // Sixteenth-resolution 16-wide full-pel search (pre-HME / HME level 0); successive elimination when box sums exist
@@ -1328,8 +1378,8 @@ static void integer_search_b64(PictureParentControlSet* pcs, MeContext* me_ctx, 
             x_search_area_origin = ((org_x + x_search_area_origin) < -pad_width) ? -pad_width - org_x
                                                                                  : x_search_area_origin;
             search_area_width    = ((org_x + x_search_area_origin) < -pad_width)
-                ? search_area_width - (-pad_width - (org_x + x_search_area_origin))
-                : search_area_width;
+                   ? search_area_width - (-pad_width - (org_x + x_search_area_origin))
+                   : search_area_width;
             // Correct the right edge of the Search Area if its not on the
             // reference Picture
             x_search_area_origin = ((org_x + x_search_area_origin) > picture_width - 1)
@@ -1349,16 +1399,16 @@ static void integer_search_b64(PictureParentControlSet* pcs, MeContext* me_ctx, 
             y_search_area_origin = ((org_y + y_search_area_origin) < -pad_height) ? -pad_height - org_y
                                                                                   : y_search_area_origin;
             search_area_height   = ((org_y + y_search_area_origin) < -pad_height)
-                ? search_area_height - (-pad_height - (org_y + y_search_area_origin))
-                : search_area_height;
+                  ? search_area_height - (-pad_height - (org_y + y_search_area_origin))
+                  : search_area_height;
             // Correct the bottom edge of the Search Area if its not on the
             // reference Picture
             y_search_area_origin = ((org_y + y_search_area_origin) > picture_height - 1)
                 ? y_search_area_origin - ((org_y + y_search_area_origin) - (picture_height - 1))
                 : y_search_area_origin;
             search_area_height   = (org_y + y_search_area_origin + search_area_height > picture_height)
-                ? MAX(1, search_area_height - ((org_y + y_search_area_origin + search_area_height) - picture_height))
-                : search_area_height;
+                  ? MAX(1, search_area_height - ((org_y + y_search_area_origin + search_area_height) - picture_height))
+                  : search_area_height;
 
             x_top_left_search_region = (int16_t)(b64_origin_x) - (ME_FILTER_TAP >> 1) + x_search_area_origin;
             y_top_left_search_region = (int16_t)(b64_origin_y) - (ME_FILTER_TAP >> 1) + y_search_area_origin;
@@ -1588,7 +1638,7 @@ static void prehme_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_t or
                         continue;
                     }
                     prehme_data->sa.width  = MIN((me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_min.width * hme_sr_factor),
-                                                 me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_max.width);
+                                                me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_max.width);
                     prehme_data->sa.height = MIN(
                         (me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_min.height * hme_sr_factor),
                         me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_max.height);
@@ -1627,7 +1677,7 @@ static void prehme_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_t or
 
                 const uint32_t prhme_th   = me_ctx->me_hme_prune_ctrls.phme_sad_pct;
                 uint32_t       prehme_sad = (uint32_t)MIN(me_ctx->prehme_data[list_i][ref_i][0].sad,
-                                                          me_ctx->prehme_data[list_i][ref_i][1].sad);
+                                                    me_ctx->prehme_data[list_i][ref_i][1].sad);
                 if ((prehme_sad - best_sad) * 100 > (prhme_th * best_sad)) {
                     me_ctx->search_results[list_i][ref_i].do_ref = 0;
                 }
@@ -1654,9 +1704,9 @@ static void get_hme_l0_search_area(MeContext* me_ctx, uint8_t list_index, uint8_
 
                 // Determine whether the computed motion from list0/ref_index0 is in vertical or horizintal direction
                 is_ver   = ((ABS(l0_mvx) < me_ctx->reduce_hme_l0_sr_th_min) &&
-                            (ABS(l0_mvy) > me_ctx->reduce_hme_l0_sr_th_max));
+                          (ABS(l0_mvy) > me_ctx->reduce_hme_l0_sr_th_max));
                 is_hor   = ((ABS(l0_mvx) > me_ctx->reduce_hme_l0_sr_th_max) &&
-                            (ABS(l0_mvy) < me_ctx->reduce_hme_l0_sr_th_min));
+                          (ABS(l0_mvy) < me_ctx->reduce_hme_l0_sr_th_min));
                 is_still = ((ABS(l0_mvx) < (me_ctx->reduce_hme_l0_sr_th_min * 3)) &&
                             (ABS(l0_mvy) < (me_ctx->reduce_hme_l0_sr_th_min * 3)));
             }
@@ -1689,10 +1739,10 @@ static void get_hme_l0_search_area(MeContext* me_ctx, uint8_t list_index, uint8_
     // Derive the search area width and height, rounding the width up to the nearest sixteenth
     int16_t search_area_width  = me_ctx->hme_l0_sa.sa_min.width / me_ctx->num_hme_sa_w;
     search_area_width          = (int16_t)MIN((((search_area_width * hme_sr_factor) + 15) & ~0x0F),
-                                              (((me_ctx->hme_l0_sa.sa_max.width / me_ctx->num_hme_sa_w) + 15) & ~0x0F));
+                                     (((me_ctx->hme_l0_sa.sa_max.width / me_ctx->num_hme_sa_w) + 15) & ~0x0F));
     int16_t search_area_height = me_ctx->hme_l0_sa.sa_min.height / me_ctx->num_hme_sa_h;
     search_area_height         = (int16_t)MIN((search_area_height * hme_sr_factor),
-                                              me_ctx->hme_l0_sa.sa_max.height / me_ctx->num_hme_sa_h);
+                                      me_ctx->hme_l0_sa.sa_max.height / me_ctx->num_hme_sa_h);
 
     *sa_width  = search_area_width;
     *sa_height = search_area_height;
@@ -2290,8 +2340,8 @@ static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_
             if (me_ctx->temporal_layer_index > 0 || list_i == 0) {
                 EbPictureBufferDesc* ref_pic = me_ctx->me_ds_ref_array[list_i][ref_i].picture_ptr;
                 uint32_t             zz_sad  = list_i == REF_LIST_0 && ref_i == 0
-                    ? l0r0_zz_sad
-                    : get_zz_sad(ref_pic, me_ctx, org_x, org_y, block_width, block_height);
+                                 ? l0r0_zz_sad
+                                 : get_zz_sad(ref_pic, me_ctx, org_x, org_y, block_width, block_height);
                 //normalize for incomplete b64
                 zz_sad                        = (zz_sad * 64 * 64) / (block_width * block_height);
                 me_ctx->zz_sad[list_i][ref_i] = zz_sad;
@@ -2460,10 +2510,10 @@ static void construct_me_candidate_array_mrp_off(PictureParentControlSet* pcs, M
         }
         uint8_t        blk_do_ref[MAX_NUM_OF_REF_PIC_LIST] = {blk_do_ref_org[REF_LIST_0], blk_do_ref_org[REF_LIST_1]};
         const uint32_t best_me_dist                        = blk_do_ref_org[REF_LIST_0] && blk_do_ref_org[REF_LIST_1]
-            ? MIN(me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx],
+                                   ? MIN(me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx],
                   me_ctx->p_sb_best_sad[REF_LIST_1][ref_pic_idx][n_idx])
-            : blk_do_ref_org[REF_LIST_0] ? me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx]
-                                         : me_ctx->p_sb_best_sad[REF_LIST_1][ref_pic_idx][n_idx];
+                                   : blk_do_ref_org[REF_LIST_0] ? me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx]
+                                                                : me_ctx->p_sb_best_sad[REF_LIST_1][ref_pic_idx][n_idx];
 
         me_ctx->me_distortion[pu_index] = best_me_dist;
         int8_t min_dist_list            = -1;
@@ -2546,8 +2596,8 @@ static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs
     // Set the count to 1 for all PUs using memset, which is faster than setting at the end of each loop.  The count will only need
     // to be updated if both reference frames are allowed.
     uint8_t            number_of_pus = pcs->enable_me_16x16
-        ? pcs->enable_me_8x8 ? pcs->max_number_of_pus_per_sb : MAX_SB64_PU_COUNT_NO_8X8
-        : MAX_SB64_PU_COUNT_WO_16X16;
+                   ? pcs->enable_me_8x8 ? pcs->max_number_of_pus_per_sb : MAX_SB64_PU_COUNT_NO_8X8
+                   : MAX_SB64_PU_COUNT_WO_16X16;
     MeSbResults* const me_results    = pcs->pa_me_data->me_results[sb_index];
     memset(me_results->total_me_candidate_index, 1, number_of_pus);
 
@@ -2739,8 +2789,8 @@ static void perform_gm_detection(
                 pcs->pa_me_data->me_results[sb_index]->me_candidate_array[n_idx * pcs->pa_me_data->max_cand]);
 
             uint32_t list_index    = (me_candidate->direction == 0 || me_candidate->direction == 2)
-                ? me_candidate->ref0_list
-                : me_candidate->ref1_list;
+                   ? me_candidate->ref0_list
+                   : me_candidate->ref1_list;
             uint32_t ref_pic_index = (me_candidate->direction == 0 || me_candidate->direction == 2)
                 ? me_candidate->ref_idx_l0
                 : me_candidate->ref_idx_l1;
@@ -2774,8 +2824,8 @@ static void perform_gm_detection(
                 pcs->pa_me_data->me_results[sb_index]->me_candidate_array[n_idx * pcs->pa_me_data->max_cand]);
 
             uint32_t list_index    = (me_candidate->direction == 0 || me_candidate->direction == 2)
-                ? me_candidate->ref0_list
-                : me_candidate->ref1_list;
+                   ? me_candidate->ref0_list
+                   : me_candidate->ref1_list;
             uint32_t ref_pic_index = (me_candidate->direction == 0 || me_candidate->direction == 2)
                 ? me_candidate->ref_idx_l0
                 : me_candidate->ref_idx_l1;

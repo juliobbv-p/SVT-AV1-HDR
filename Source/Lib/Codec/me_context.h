@@ -413,23 +413,23 @@ typedef struct MeContext {
     SearchInfo  prehme_data[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][SEARCH_REGION_COUNT];
     PreHmeCtrls prehme_ctrl;
     int16_t     x_hme_level0_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                                          [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    int16_t     y_hme_level0_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                                          [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    uint64_t    hme_level0_sad[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                              [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    int16_t     x_hme_level1_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                                          [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    int16_t     y_hme_level1_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                                          [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    uint64_t    hme_level1_sad[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                              [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    int16_t     x_hme_level2_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                                          [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    int16_t     y_hme_level2_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                                          [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
-    uint64_t    hme_level2_sad[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
-                              [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+                                      [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    int16_t y_hme_level0_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                                      [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    uint64_t hme_level0_sad[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                           [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    int16_t x_hme_level1_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                                      [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    int16_t y_hme_level1_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                                      [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    uint64_t hme_level1_sad[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                           [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    int16_t x_hme_level2_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                                      [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    int16_t y_hme_level2_search_center[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                                      [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
+    uint64_t hme_level2_sad[MAX_NUM_OF_REF_PIC_LIST][MAX_REF_IDX][EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT]
+                           [EB_HME_SEARCH_AREA_ROW_MAX_COUNT];
     // ------- Context for Alt-Ref ME ------
     void* alt_ref_reference_ptr;
     // Open Loop ME
@@ -481,6 +481,10 @@ typedef struct MeContext {
     uint32_t b64_height;
     uint8_t  performed_phme[MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH][2];
     uint32_t prev_me_stage_based_exit_th;
+    // Accumulation tiers of the sixteen 16x16 blocks for the eight-position SAD kernel, valid for the full-pel
+    // search in progress (see svt_ext_all_sad_tiers_neon_dotprod()); ext_sad_tiers_valid is false outside of one.
+    uint8_t ext_sad_tiers[16];
+    bool    ext_sad_tiers_valid;
 #if EN_AVX512_SUPPORT
     // Source rows of the current 64x64 block prepared for svt_ext_all_sad_pre_8x8_16x16_avx512()
     uint8_t        ext_sad_src_prep[64 * 2 * 2 * 64];
