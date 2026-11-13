@@ -108,6 +108,10 @@ typedef struct EbPictureBufferDesc {
     // origin and stride as y_buffer: 8 columns x rows 0,2,4,6 (sub-sampled SAD) and 8 columns x 8 rows.
     uint16_t* sea_sub;
     uint16_t* sea_full;
+    // The same for 4-column boxes: rows 0 and 2 (sub-sampled SAD) and 4 rows. Sixteen of them tile a 16x16 block
+    // (or its even rows) and give a tighter lower bound than the four 8x8 sums.
+    uint16_t* sea4_sub;
+    uint16_t* sea4_full;
     uint16_t* sea_alloc;
     size_t    sea_alloc_size;
 } EbPictureBufferDesc;

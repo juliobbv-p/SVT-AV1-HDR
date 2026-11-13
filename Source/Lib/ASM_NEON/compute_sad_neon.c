@@ -1198,6 +1198,27 @@ static inline uint16x8_t sea16_bounds_neon(const uint16x8_t* sums, const uint16_
     return vaddq_u16(top, bot);
 }
 
+// Second level: lower bounds from the sixteen 4-column boxes of the block (4 rows each, or 2 of the even rows).
+// sums4[4 * j + i] holds the source sum of box (i, j) in every lane; sea4 points at the 4-column box sums of the
+// first candidate, whose box (i, j) starts 4 * i columns and 4 * j rows (row4 apart) further. The sum of the
+// sixteen absolute differences is at most 16 * 16 * 255 = 65280 and, like the four-quadrant bound it refines,
+// never above the SAD.
+static inline uint16x8_t sea16_bounds4_neon(const uint16x8_t* sums4, const uint16_t* sea4, uint32_t row4) {
+    uint16x8_t acc0 = vdupq_n_u16(0), acc1 = vdupq_n_u16(0);
+    for (int j = 0; j < 4; j++) {
+        const uint16_t* r = sea4 + j * row4;
+
+        acc0 = vabaq_u16(acc0, sums4[4 * j + 0], vld1q_u16(r));
+
+        acc1 = vabaq_u16(acc1, sums4[4 * j + 1], vld1q_u16(r + 4));
+
+        acc0 = vabaq_u16(acc0, sums4[4 * j + 2], vld1q_u16(r + 8));
+
+        acc1 = vabaq_u16(acc1, sums4[4 * j + 3], vld1q_u16(r + 12));
+    }
+    return vaddq_u16(acc0, acc1);
+}
+
 // Smallest (SAD, raster position) pair of the eight candidates of a group as one integer: the SAD (up to 65280)
 // above the position, group * 8 + lane, which is below 2^14.
 static inline uint32_t sea16_group_key_neon(uint16x8_t sad, int group) {
@@ -1226,7 +1247,7 @@ static void sad_loop_16xh_sea_batched_neon(const uint8x16_t* prepared, const uin
                                            uint32_t ref_stride, uint32_t height, const uint16_t* sea, uint32_t sea_bl,
                                            uint64_t* best_sad, int16_t* x_search_center, int16_t* y_search_center,
                                            uint32_t src_stride_raw, uint8_t skip_search_line, int groups_per_row,
-                                           int rows) {
+                                           int rows, const uint16x8_t* sums4, const uint16_t* sea4) {
     uint16_t  bound[SEA_MAX_BATCH_GROUPS]; // smallest lower bound of each group
     uint16_t  list_g[SEA_MAX_BATCH_GROUPS + SEA_BATCH]; // groups below the seed limit, raster order
     const int num_groups = groups_per_row * rows;
@@ -1275,6 +1296,22 @@ static void sad_loop_16xh_sea_batched_neon(const uint8x16_t* prepared, const uin
         for (int k = i; k < end; ++k) {
             todo[m] = list_g[k];
             m += bound[list_g[k]] < limit;
+        }
+        if (sea4) {
+            // Second level for the groups still listed: a group none of whose finer bounds is below the limit
+            // cannot hold a candidate that matters either.
+            int m2 = 0;
+            for (int k = 0; k < m; ++k) {
+                const int      g  = todo[k];
+                const uint32_t b2 = vminvq_u16(sea16_bounds4_neon(
+                    sums4,
+                    sea4 + first_row + (uint32_t)(g / groups_per_row) * row_step + 8 * (g % groups_per_row),
+                    4 * src_stride_raw));
+
+                todo[m2] = (uint16_t)g;
+                m2 += b2 < limit;
+            }
+            m = m2;
         }
         for (int k = 0; k < m; ++k) {
             const int      g   = todo[k];
@@ -1343,10 +1380,40 @@ static void sad_loop_16xh_sea_raster_neon(const uint8x16_t* prepared, const uint
     }
 }
 
+void svt_sad_loop_16xh_sea4_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                 uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                 int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
+                                 uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height,
+                                 const uint16_t* sea4);
+
 void svt_sad_loop_16xh_sea_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
                                 uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
                                 int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
                                 uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height) {
+    svt_sad_loop_16xh_sea4_neon(src,
+                                src_stride,
+                                ref,
+                                ref_stride,
+                                height,
+                                sea,
+                                sea_bl,
+                                best_sad,
+                                x_search_center,
+                                y_search_center,
+                                src_stride_raw,
+                                skip_search_line,
+                                search_area_width,
+                                search_area_height,
+                                NULL);
+}
+
+// The same search with a second level of bounds when sea4 (4-column box sums laid out like sea, see
+// sea16_bounds4_neon()) is given.
+void svt_sad_loop_16xh_sea4_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                 uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                 int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
+                                 uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height,
+                                 const uint16_t* sea4) {
     assert(height == 8 || height == 16);
     uint8x16_t     prepared[16];
     uint16x8_t     top_sum = vdupq_n_u16(0), bottom_sum = vdupq_n_u16(0);
@@ -1373,6 +1440,22 @@ void svt_sad_loop_16xh_sea_neon(const uint8_t* src, uint32_t src_stride, const u
 
     const int rows = skip_search_line ? search_area_height >> 1 : search_area_height;
     if (!(search_area_width & 7) && groups_per_row > 0 && rows > 0 && groups_per_row * rows <= SEA_MAX_BATCH_GROUPS) {
+        // Source sums of the sixteen 4-column boxes (height / 4 rows each) for the second level
+        uint16x8_t sums4[16];
+        if (sea4) {
+            const uint32_t h4 = height / 4;
+            for (int j = 0; j < 4; j++) {
+                uint32x4_t box = vpaddlq_u16(vpaddlq_u8(prepared[j * h4]));
+                for (uint32_t r = 1; r < h4; r++) {
+                    box = vpadalq_u16(box, vpaddlq_u8(prepared[j * h4 + r]));
+                }
+                const uint16x4_t b16 = vmovn_u32(box);
+                sums4[4 * j + 0]     = vdupq_lane_u16(b16, 0);
+                sums4[4 * j + 1]     = vdupq_lane_u16(b16, 1);
+                sums4[4 * j + 2]     = vdupq_lane_u16(b16, 2);
+                sums4[4 * j + 3]     = vdupq_lane_u16(b16, 3);
+            }
+        }
         sad_loop_16xh_sea_batched_neon(prepared,
                                        sums,
                                        ref,
@@ -1386,7 +1469,9 @@ void svt_sad_loop_16xh_sea_neon(const uint8_t* src, uint32_t src_stride, const u
                                        src_stride_raw,
                                        skip_search_line,
                                        groups_per_row,
-                                       rows);
+                                       rows,
+                                       sums4,
+                                       sea4);
     } else {
         sad_loop_16xh_sea_raster_neon(prepared,
                                       sums,

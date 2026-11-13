@@ -1505,13 +1505,13 @@ static void compute_sea_planes(EbPictureBufferDesc* pic) {
     const int w      = pic->width + 2 * b;
     const int h      = pic->height + 2 * b;
     // a pooled picture can be re-described larger after a resolution change
-    const size_t size = (size_t)2 * stride * h;
+    const size_t size = (size_t)4 * stride * h;
     if (pic->sea_alloc_size < size) {
         EB_FREE_ARRAY(pic->sea_alloc);
         pic->sea_alloc_size = 0;
         EB_CALLOC_ARRAY_NO_CHECK(pic->sea_alloc, size);
         if (!pic->sea_alloc) {
-            pic->sea_sub = pic->sea_full = NULL;
+            pic->sea_sub = pic->sea_full = pic->sea4_sub = pic->sea4_full = NULL;
             return;
         }
         pic->sea_alloc_size = size;
@@ -1519,7 +1519,7 @@ static void compute_sea_planes(EbPictureBufferDesc* pic) {
     uint16_t* hsum;
     EB_MALLOC_ARRAY_NO_CHECK(hsum, (size_t)stride * h);
     if (!hsum) {
-        pic->sea_sub = pic->sea_full = NULL;
+        pic->sea_sub = pic->sea_full = pic->sea4_sub = pic->sea4_full = NULL;
         return;
     }
     uint16_t* const      sub  = pic->sea_alloc;
@@ -1548,9 +1548,40 @@ static void compute_sea_planes(EbPictureBufferDesc* pic) {
             f[x]                = even + r[x + stride] + r[x + 3 * stride] + r[x + 5 * stride] + r[x + 7 * stride];
         }
     }
+    // 4-column boxes: horizontal sums of four, then rows 0 and 2 / rows 0 to 3
+    uint16_t* const sub4  = full + (size_t)stride * h;
+    uint16_t* const full4 = sub4 + (size_t)stride * h;
+    for (int y = 0; y < h; y++) {
+        const uint8_t* r = src + y * stride;
+        uint16_t*      o = hsum + y * stride;
+
+        uint16_t a = (uint16_t)(r[0] + r[1] + r[2] + r[3]);
+
+        o[0] = a;
+        for (int x = 1; x <= w - 4; x++) {
+            a    = a - r[x - 1] + r[x + 3];
+            o[x] = a;
+        }
+    }
+    for (int y = 0; y + 4 <= h; y++) {
+        const uint16_t* r = hsum + y * stride;
+
+        uint16_t* s = sub4 + y * stride;
+        uint16_t* f = full4 + y * stride;
+
+        for (int x = 0; x <= w - 4; x++) {
+            const uint16_t even = r[x] + r[x + 2 * stride];
+
+            s[x] = even;
+
+            f[x] = even + r[x + stride] + r[x + 3 * stride];
+        }
+    }
     EB_FREE_ARRAY(hsum);
-    pic->sea_sub  = sub + b * stride + b;
-    pic->sea_full = full + b * stride + b;
+    pic->sea_sub   = sub + b * stride + b;
+    pic->sea_full  = full + b * stride + b;
+    pic->sea4_sub  = sub4 + b * stride + b;
+    pic->sea4_full = full4 + b * stride + b;
 }
 #endif
 

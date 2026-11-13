@@ -863,6 +863,14 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
 #endif
 }
 
+#if defined(ARCH_AARCH64)
+void svt_sad_loop_16xh_sea4_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                 uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                 int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
+                                 uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height,
+                                 const uint16_t* sea4);
+#endif
+
 // Sixteenth-resolution 16-wide full-pel search (pre-HME / HME level 0); successive elimination when box sums exist
 static void sixteenth_sad_loop(MeContext* me_ctx, EbPictureBufferDesc* ref_pic, int32_t search_region_index,
                                uint32_t block_width, uint32_t block_height, uint64_t* best_sad, int16_t* x, int16_t* y,
@@ -870,8 +878,29 @@ static void sixteenth_sad_loop(MeContext* me_ctx, EbPictureBufferDesc* ref_pic, 
     const bool full = me_ctx->hme_search_method == FULL_SAD_SEARCH;
 #if defined(ARCH_AARCH64) || defined(ARCH_X86_64)
     const uint16_t* sea = full ? ref_pic->sea_full : ref_pic->sea_sub;
+#if defined(ARCH_AARCH64)
+    const uint16_t* sea4 = full ? ref_pic->sea4_full : ref_pic->sea4_sub;
+    if (sea && sea4 && block_width == 16 && block_height == 16 && svt_sad_loop_16xh_sea == svt_sad_loop_16xh_sea_neon) {
+        // with the 4x4 sums as a second level of bounds
+        svt_sad_loop_16xh_sea4_neon(
+            me_ctx->sixteenth_b64_buffer,
+            full ? me_ctx->sixteenth_b64_buffer_stride : 2 * me_ctx->sixteenth_b64_buffer_stride,
+            ref_pic->y_buffer + search_region_index,
+            full ? ref_pic->y_stride : 2 * ref_pic->y_stride,
+            full ? block_height : block_height / 2,
+            sea + search_region_index,
+            8 * ref_pic->y_stride,
+            best_sad,
+            x,
+            y,
+            ref_pic->y_stride,
+            skip_search_line,
+            sa_width,
+            sa_height,
+            sea4 + search_region_index);
+        return;
+    }
 #endif
-#if defined(ARCH_AARCH64) || defined(ARCH_X86_64)
     if (sea && block_width == 16 && block_height == 16 && svt_sad_loop_16xh_sea != svt_sad_loop_16xh_sea_c) {
         svt_sad_loop_16xh_sea(me_ctx->sixteenth_b64_buffer,
                               full ? me_ctx->sixteenth_b64_buffer_stride : 2 * me_ctx->sixteenth_b64_buffer_stride,
