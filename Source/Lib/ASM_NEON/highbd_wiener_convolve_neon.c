@@ -118,152 +118,111 @@ static inline void highbd_convolve_add_src_7tap_horiz(const uint16_t* src_ptr, p
     } while (--h != 0);
 }
 
-static inline uint16x8_t highbd_wiener_convolve5_8_2d_v(const int16x8_t s0, const int16x8_t s1, const int16x8_t s2,
-                                                        const int16x8_t s3, const int16x8_t s4,
-                                                        const int16x4_t y_filter, const int32x4_t round_vec,
-                                                        const uint16x8_t res_max_val) {
-    const int32x2_t y_filter_lo = vget_low_s32(vmovl_s16(y_filter));
-    const int32x2_t y_filter_hi = vget_high_s32(vmovl_s16(y_filter));
-    /* Wiener filter is symmetric so add mirrored source elements. */
-    int32x4_t s04_lo = vaddl_s16(vget_low_s16(s0), vget_low_s16(s4));
-    int32x4_t s13_lo = vaddl_s16(vget_low_s16(s1), vget_low_s16(s3));
+// Vertical pass. The intermediate is clamped to [0, 2^(bd + 1 + FILTER_BITS - WIENER_ROUND0_BITS) - 1], at most
+// 32767 for the bit depths this file supports (8 and 10). A row minus 16384 therefore lies within [-16384, 16383]
+// and the sum of two mirrored rows within [-32768, 32766]: the pair sums fit 16 signed bits, and one widening
+// multiply-accumulate per half vector takes each of them. The rows arrive with the 16384 already removed; it
+// comes back through the rounding vector as 16384 * (sum of the seven taps), see the caller.
+// r points at the first of the `taps` rows.
+static AOM_FORCE_INLINE uint16x8_t highbd_wiener_convolve_8_2d_v(const int16x8_t* r, const int16x4_t y_filter,
+                                                                 const int32x4_t  round_vec,
+                                                                 const uint16x8_t res_max_val, const int taps) {
+    int32x4_t sum_lo = round_vec, sum_hi = round_vec;
+    if (taps == WIENER_WIN) {
+        const int16x8_t s06 = vaddq_s16(r[0], r[6]);
 
-    /* y_filter[0] = 0. (5-tap filters are 0-padded to 7 taps.) */
-    int32x4_t sum_lo = vmlaq_lane_s32(round_vec, s04_lo, y_filter_lo, 1);
-    sum_lo           = vmlaq_lane_s32(sum_lo, s13_lo, y_filter_hi, 0);
-    sum_lo           = vmlaq_lane_s32(sum_lo, vmovl_s16(vget_low_s16(s2)), y_filter_hi, 1);
+        sum_lo = vmlal_lane_s16(sum_lo, vget_low_s16(s06), y_filter, 0);
 
-    int32x4_t s04_hi = vaddl_s16(vget_high_s16(s0), vget_high_s16(s4));
-    int32x4_t s13_hi = vaddl_s16(vget_high_s16(s1), vget_high_s16(s3));
+        sum_hi = vmlal_high_lane_s16(sum_hi, s06, y_filter, 0);
+        r += 1;
+    }
+    /* Wiener filter is symmetric so add mirrored source elements. (5-tap filters are 0-padded to 7 taps.) */
+    const int16x8_t s04 = vaddq_s16(r[0], r[4]);
+    const int16x8_t s13 = vaddq_s16(r[1], r[3]);
 
-    int32x4_t sum_hi = vmlaq_lane_s32(round_vec, s04_hi, y_filter_lo, 1);
-    sum_hi           = vmlaq_lane_s32(sum_hi, s13_hi, y_filter_hi, 0);
-    sum_hi           = vmlaq_lane_s32(sum_hi, vmovl_s16(vget_high_s16(s2)), y_filter_hi, 1);
+    sum_lo = vmlal_lane_s16(sum_lo, vget_low_s16(s04), y_filter, 1);
+
+    sum_hi = vmlal_high_lane_s16(sum_hi, s04, y_filter, 1);
+
+    sum_lo = vmlal_lane_s16(sum_lo, vget_low_s16(s13), y_filter, 2);
+
+    sum_hi = vmlal_high_lane_s16(sum_hi, s13, y_filter, 2);
+
+    sum_lo = vmlal_lane_s16(sum_lo, vget_low_s16(r[2]), y_filter, 3);
+
+    sum_hi = vmlal_high_lane_s16(sum_hi, r[2], y_filter, 3);
 
     uint16x4_t res_lo = vqrshrun_n_s32(sum_lo, 2 * FILTER_BITS - WIENER_ROUND0_BITS);
     uint16x4_t res_hi = vqrshrun_n_s32(sum_hi, 2 * FILTER_BITS - WIENER_ROUND0_BITS);
 
     return vminq_u16(vcombine_u16(res_lo, res_hi), res_max_val);
+}
+
+#define WIENER_V_BIAS 16384
+
+// round_vec must include WIENER_V_BIAS * (sum of the seven taps).
+static AOM_FORCE_INLINE void highbd_convolve_add_src_vert(const uint16_t* src_ptr, ptrdiff_t src_stride,
+                                                          uint16_t* dst_ptr, ptrdiff_t dst_stride, int w, int h,
+                                                          const int16x4_t y_filter, const int32x4_t round_vec,
+                                                          const uint16x8_t res_max_val, const int taps) {
+    const int16x8_t bias = vdupq_n_s16(WIENER_V_BIAS);
+    do {
+        const int16_t* s      = (const int16_t*)src_ptr;
+        uint16_t*      d      = dst_ptr;
+        int            height = h;
+        int16x8_t      r[WIENER_WIN + 3];
+        for (int i = 0; i < taps - 1; i++) {
+            r[i] = vsubq_s16(vld1q_s16(s + i * src_stride), bias);
+        }
+        s += (taps - 1) * src_stride;
+
+        while (height > 3) {
+            for (int i = 0; i < 4; i++) {
+                r[taps - 1 + i] = vsubq_s16(vld1q_s16(s + i * src_stride), bias);
+            }
+            uint16x8_t d0 = highbd_wiener_convolve_8_2d_v(r + 0, y_filter, round_vec, res_max_val, taps);
+            uint16x8_t d1 = highbd_wiener_convolve_8_2d_v(r + 1, y_filter, round_vec, res_max_val, taps);
+            uint16x8_t d2 = highbd_wiener_convolve_8_2d_v(r + 2, y_filter, round_vec, res_max_val, taps);
+            uint16x8_t d3 = highbd_wiener_convolve_8_2d_v(r + 3, y_filter, round_vec, res_max_val, taps);
+
+            store_u16_8x4(d, dst_stride, d0, d1, d2, d3);
+
+            for (int i = 0; i < taps - 1; i++) {
+                r[i] = r[i + 4];
+            }
+            s += 4 * src_stride;
+            d += 4 * dst_stride;
+            height -= 4;
+        }
+
+        while (height-- != 0) {
+            r[taps - 1] = vsubq_s16(vld1q_s16(s), bias);
+            vst1q_u16(d, highbd_wiener_convolve_8_2d_v(r, y_filter, round_vec, res_max_val, taps));
+            for (int i = 0; i < taps - 1; i++) {
+                r[i] = r[i + 1];
+            }
+            s += src_stride;
+            d += dst_stride;
+        }
+
+        src_ptr += 8;
+        dst_ptr += 8;
+        w -= 8;
+    } while (w != 0);
 }
 
 static inline void highbd_convolve_add_src_5tap_vert(const uint16_t* src_ptr, ptrdiff_t src_stride, uint16_t* dst_ptr,
                                                      ptrdiff_t dst_stride, int w, int h, const int16x4_t y_filter,
                                                      const int32x4_t round_vec, const uint16x8_t res_max_val) {
-    do {
-        const int16_t* s      = (int16_t*)src_ptr;
-        uint16_t*      d      = dst_ptr;
-        int            height = h;
-
-        while (height > 3) {
-            int16x8_t s0, s1, s2, s3, s4, s5, s6, s7;
-            load_s16_8x8(s, src_stride, &s0, &s1, &s2, &s3, &s4, &s5, &s6, &s7);
-
-            uint16x8_t d0 = highbd_wiener_convolve5_8_2d_v(s0, s1, s2, s3, s4, y_filter, round_vec, res_max_val);
-            uint16x8_t d1 = highbd_wiener_convolve5_8_2d_v(s1, s2, s3, s4, s5, y_filter, round_vec, res_max_val);
-            uint16x8_t d2 = highbd_wiener_convolve5_8_2d_v(s2, s3, s4, s5, s6, y_filter, round_vec, res_max_val);
-            uint16x8_t d3 = highbd_wiener_convolve5_8_2d_v(s3, s4, s5, s6, s7, y_filter, round_vec, res_max_val);
-
-            store_u16_8x4(d, dst_stride, d0, d1, d2, d3);
-
-            s += 4 * src_stride;
-            d += 4 * dst_stride;
-            height -= 4;
-        }
-
-        while (height-- != 0) {
-            int16x8_t s0, s1, s2, s3, s4;
-            load_s16_8x5(s, src_stride, &s0, &s1, &s2, &s3, &s4);
-
-            uint16x8_t d0 = highbd_wiener_convolve5_8_2d_v(s0, s1, s2, s3, s4, y_filter, round_vec, res_max_val);
-
-            vst1q_u16(d, d0);
-
-            s += src_stride;
-            d += dst_stride;
-        }
-
-        src_ptr += 8;
-        dst_ptr += 8;
-        w -= 8;
-    } while (w != 0);
-}
-
-static inline uint16x8_t highbd_wiener_convolve7_8_2d_v(const int16x8_t s0, const int16x8_t s1, const int16x8_t s2,
-                                                        const int16x8_t s3, const int16x8_t s4, const int16x8_t s5,
-                                                        const int16x8_t s6, const int16x4_t y_filter,
-                                                        const int32x4_t round_vec, const uint16x8_t res_max_val) {
-    const int32x2_t y_filter_lo = vget_low_s32(vmovl_s16(y_filter));
-    const int32x2_t y_filter_hi = vget_high_s32(vmovl_s16(y_filter));
-    /* Wiener filter is symmetric so add mirrored source elements. */
-    int32x4_t s06_lo = vaddl_s16(vget_low_s16(s0), vget_low_s16(s6));
-    int32x4_t s15_lo = vaddl_s16(vget_low_s16(s1), vget_low_s16(s5));
-    int32x4_t s24_lo = vaddl_s16(vget_low_s16(s2), vget_low_s16(s4));
-
-    int32x4_t sum_lo = vmlaq_lane_s32(round_vec, s06_lo, y_filter_lo, 0);
-    sum_lo           = vmlaq_lane_s32(sum_lo, s15_lo, y_filter_lo, 1);
-    sum_lo           = vmlaq_lane_s32(sum_lo, s24_lo, y_filter_hi, 0);
-    sum_lo           = vmlaq_lane_s32(sum_lo, vmovl_s16(vget_low_s16(s3)), y_filter_hi, 1);
-
-    int32x4_t s06_hi = vaddl_s16(vget_high_s16(s0), vget_high_s16(s6));
-    int32x4_t s15_hi = vaddl_s16(vget_high_s16(s1), vget_high_s16(s5));
-    int32x4_t s24_hi = vaddl_s16(vget_high_s16(s2), vget_high_s16(s4));
-
-    int32x4_t sum_hi = vmlaq_lane_s32(round_vec, s06_hi, y_filter_lo, 0);
-    sum_hi           = vmlaq_lane_s32(sum_hi, s15_hi, y_filter_lo, 1);
-    sum_hi           = vmlaq_lane_s32(sum_hi, s24_hi, y_filter_hi, 0);
-    sum_hi           = vmlaq_lane_s32(sum_hi, vmovl_s16(vget_high_s16(s3)), y_filter_hi, 1);
-
-    uint16x4_t res_lo = vqrshrun_n_s32(sum_lo, 2 * FILTER_BITS - WIENER_ROUND0_BITS);
-    uint16x4_t res_hi = vqrshrun_n_s32(sum_hi, 2 * FILTER_BITS - WIENER_ROUND0_BITS);
-
-    return vminq_u16(vcombine_u16(res_lo, res_hi), res_max_val);
+    highbd_convolve_add_src_vert(
+        src_ptr, src_stride, dst_ptr, dst_stride, w, h, y_filter, round_vec, res_max_val, WIENER_WIN_REDUCED);
 }
 
 static inline void highbd_convolve_add_src_7tap_vert(const uint16_t* src_ptr, ptrdiff_t src_stride, uint16_t* dst_ptr,
                                                      ptrdiff_t dst_stride, int w, int h, const int16x4_t y_filter,
                                                      const int32x4_t round_vec, const uint16x8_t res_max_val) {
-    do {
-        const int16_t* s      = (int16_t*)src_ptr;
-        uint16_t*      d      = dst_ptr;
-        int            height = h;
-
-        while (height > 3) {
-            int16x8_t s0, s1, s2, s3, s4, s5, s6, s7, s8, s9;
-            load_s16_8x10(s, src_stride, &s0, &s1, &s2, &s3, &s4, &s5, &s6, &s7, &s8, &s9);
-
-            uint16x8_t d0 = highbd_wiener_convolve7_8_2d_v(
-                s0, s1, s2, s3, s4, s5, s6, y_filter, round_vec, res_max_val);
-            uint16x8_t d1 = highbd_wiener_convolve7_8_2d_v(
-                s1, s2, s3, s4, s5, s6, s7, y_filter, round_vec, res_max_val);
-            uint16x8_t d2 = highbd_wiener_convolve7_8_2d_v(
-                s2, s3, s4, s5, s6, s7, s8, y_filter, round_vec, res_max_val);
-            uint16x8_t d3 = highbd_wiener_convolve7_8_2d_v(
-                s3, s4, s5, s6, s7, s8, s9, y_filter, round_vec, res_max_val);
-
-            store_u16_8x4(d, dst_stride, d0, d1, d2, d3);
-
-            s += 4 * src_stride;
-            d += 4 * dst_stride;
-            height -= 4;
-        }
-
-        while (height-- != 0) {
-            int16x8_t s0, s1, s2, s3, s4, s5, s6;
-            load_s16_8x7(s, src_stride, &s0, &s1, &s2, &s3, &s4, &s5, &s6);
-
-            uint16x8_t d0 = highbd_wiener_convolve7_8_2d_v(
-                s0, s1, s2, s3, s4, s5, s6, y_filter, round_vec, res_max_val);
-
-            vst1q_u16(d, d0);
-
-            s += src_stride;
-            d += dst_stride;
-        }
-
-        src_ptr += 8;
-        dst_ptr += 8;
-        w -= 8;
-    } while (w != 0);
+    highbd_convolve_add_src_vert(
+        src_ptr, src_stride, dst_ptr, dst_stride, w, h, y_filter, round_vec, res_max_val, WIENER_WIN);
 }
 
 static inline int get_wiener_filter_taps(const int16_t* filter) {
@@ -302,8 +261,13 @@ void svt_av1_highbd_wiener_convolve_add_src_neon(const uint8_t* const src8, ptrd
     const uint16x8_t im_max_val            = vdupq_n_u16(extraprec_clamp_limit - 1);
     const int32x4_t  horiz_round_vec       = vdupq_n_s32(1 << (bd + FILTER_BITS - 1));
 
-    const uint16x8_t res_max_val    = vdupq_n_u16((1 << bd) - 1);
-    const int32x4_t  vert_round_vec = vdupq_n_s32(-(1 << (bd + 2 * FILTER_BITS - WIENER_ROUND0_BITS - 1)));
+    const uint16x8_t res_max_val = vdupq_n_u16((1 << bd) - 1);
+    // The vertical pass takes its rows minus WIENER_V_BIAS (their clamp limit must not exceed twice that); the
+    // seven taps, tap 3 with its added 128, weigh the bias back in.
+    assert(extraprec_clamp_limit <= 2 * WIENER_V_BIAS);
+    const int32_t   y_tap_sum      = 2 * (y_filter[0] + y_filter[1] + y_filter[2]) + y_filter[3] + 128;
+    const int32x4_t vert_round_vec = vdupq_n_s32(WIENER_V_BIAS * y_tap_sum -
+                                                 (1 << (bd + 2 * FILTER_BITS - WIENER_ROUND0_BITS - 1)));
 
     uint16_t* src = CONVERT_TO_SHORTPTR(src8);
     uint16_t* dst = CONVERT_TO_SHORTPTR(dst8);
