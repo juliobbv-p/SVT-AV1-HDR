@@ -33,6 +33,24 @@ static inline void highbd_comp_avg_neon(const uint16_t* src_ptr, int src_stride,
     const uint16x4_t offset_vec = vdup_n_u16((uint16_t)offset);
     const uint16x8_t max        = vdupq_n_u16((1 << bd) - 1);
 
+    if (bd == 10 && w >= 8) {
+        // 10 bits: the offset is 24576 and the shift 4, so the result is clip((avg - 24576 + 8) >> 4) and never
+        // leaves 16-bit lanes: the halving add cannot overflow, the saturating subtraction of 24568 gives 0
+        // exactly where the reference clips a negative value to 0, and what is left is at most 40967.
+        assert(offset == 24576 && ROUND_SHIFT == 4);
+        const uint16x8_t off = vdupq_n_u16(24576 - 8);
+        do {
+            for (int x = 0; x < w; x += 8) {
+                const uint16x8_t avg = vhaddq_u16(vld1q_u16(src_ptr + x), vld1q_u16(ref_ptr + x));
+                vst1q_u16(dst_ptr + x, vminq_u16(vshrq_n_u16(vqsubq_u16(avg, off), 4), max));
+            }
+            src_ptr += src_stride;
+            ref_ptr += ref_stride;
+            dst_ptr += dst_stride;
+        } while (--h != 0);
+        return;
+    }
+
     if (w == 4) {
         do {
             const uint16x4_t src = vld1_u16(src_ptr);

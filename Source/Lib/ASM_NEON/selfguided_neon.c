@@ -66,20 +66,11 @@ static inline void calc_ab_fast_internal_common(uint32x4_t s0, uint32x4_t s1, ui
     q2 = vmulq_u32(s6, s6);
     q3 = vmulq_u32(s7, s7);
 
-    p0 = vcleq_u32(q0, s0);
-    p1 = vcleq_u32(q1, s1);
-    p2 = vcleq_u32(q2, s2);
-    p3 = vcleq_u32(q3, s3);
-
-    q0 = vsubq_u32(s0, q0);
-    q1 = vsubq_u32(s1, q1);
-    q2 = vsubq_u32(s2, q2);
-    q3 = vsubq_u32(s3, q3);
-
-    p0 = vandq_u32(p0, q0);
-    p1 = vandq_u32(p1, q1);
-    p2 = vandq_u32(p2, q2);
-    p3 = vandq_u32(p3, q3);
+    // max(n * sum_sq - sum^2, 0): the unsigned saturating subtraction is exactly that.
+    p0 = vqsubq_u32(s0, q0);
+    p1 = vqsubq_u32(s1, q1);
+    p2 = vqsubq_u32(s2, q2);
+    p3 = vqsubq_u32(s3, q3);
 
     p0 = vmulq_u32(p0, s_vec);
     p1 = vmulq_u32(p1, s_vec);
@@ -180,32 +171,15 @@ static inline void calc_ab_internal_common(uint32x4_t s0, uint32x4_t s1, uint32x
     q6 = vmull_u16(d6, d6);
     q7 = vmull_u16(d7, d7);
 
-    p0 = vcleq_u32(q0, s0);
-    p1 = vcleq_u32(q1, s1);
-    p2 = vcleq_u32(q2, s2);
-    p3 = vcleq_u32(q3, s3);
-    p4 = vcleq_u32(q4, s4);
-    p5 = vcleq_u32(q5, s5);
-    p6 = vcleq_u32(q6, s6);
-    p7 = vcleq_u32(q7, s7);
-
-    q0 = vsubq_u32(s0, q0);
-    q1 = vsubq_u32(s1, q1);
-    q2 = vsubq_u32(s2, q2);
-    q3 = vsubq_u32(s3, q3);
-    q4 = vsubq_u32(s4, q4);
-    q5 = vsubq_u32(s5, q5);
-    q6 = vsubq_u32(s6, q6);
-    q7 = vsubq_u32(s7, q7);
-
-    p0 = vandq_u32(p0, q0);
-    p1 = vandq_u32(p1, q1);
-    p2 = vandq_u32(p2, q2);
-    p3 = vandq_u32(p3, q3);
-    p4 = vandq_u32(p4, q4);
-    p5 = vandq_u32(p5, q5);
-    p6 = vandq_u32(p6, q6);
-    p7 = vandq_u32(p7, q7);
+    // max(n * sum_sq - sum^2, 0): the unsigned saturating subtraction is exactly that.
+    p0 = vqsubq_u32(s0, q0);
+    p1 = vqsubq_u32(s1, q1);
+    p2 = vqsubq_u32(s2, q2);
+    p3 = vqsubq_u32(s3, q3);
+    p4 = vqsubq_u32(s4, q4);
+    p5 = vqsubq_u32(s5, q5);
+    p6 = vqsubq_u32(s6, q6);
+    p7 = vqsubq_u32(s7, q7);
 
     p0 = vmulq_u32(p0, s_vec);
     p1 = vmulq_u32(p1, s_vec);
@@ -260,23 +234,35 @@ static inline void calc_ab_internal_common(uint32x4_t s0, uint32x4_t s1, uint32x
         vst1q_u16(dst_A16 + 3 * buf_stride, vsubq_u16(vdupq_n_u16(256), s16_7));
     }
 
-    s0 = vmull_u16(vget_low_u16(s16_0), one_by_n_minus_1_vec);
-    s1 = vmull_u16(vget_low_u16(s16_1), one_by_n_minus_1_vec);
-    s2 = vmull_u16(vget_low_u16(s16_2), one_by_n_minus_1_vec);
-    s3 = vmull_u16(vget_low_u16(s16_3), one_by_n_minus_1_vec);
-    s4 = vmull_u16(vget_high_u16(s16_0), one_by_n_minus_1_vec);
-    s5 = vmull_u16(vget_high_u16(s16_1), one_by_n_minus_1_vec);
-    s6 = vmull_u16(vget_high_u16(s16_2), one_by_n_minus_1_vec);
-    s7 = vmull_u16(vget_high_u16(s16_3), one_by_n_minus_1_vec);
+    // (256 - a) * sum * one_by_n: the box sum (16 bits) and 256 - a (at most 255) go through one widening
+    // multiply, and the product takes the reciprocal in 32-bit lanes. The reference forms the same product modulo
+    // 2^32, where the order of the factors does not matter.
+    const uint32x4_t one_by_n = vmovl_u16(one_by_n_minus_1_vec);
 
-    s0 = vmulq_u32(s0, vmovl_u16(vget_low_u16(s16_4)));
-    s1 = vmulq_u32(s1, vmovl_u16(vget_low_u16(s16_5)));
-    s2 = vmulq_u32(s2, vmovl_u16(vget_low_u16(s16_6)));
-    s3 = vmulq_u32(s3, vmovl_u16(vget_low_u16(s16_7)));
-    s4 = vmulq_u32(s4, vmovl_u16(vget_high_u16(s16_4)));
-    s5 = vmulq_u32(s5, vmovl_u16(vget_high_u16(s16_5)));
-    s6 = vmulq_u32(s6, vmovl_u16(vget_high_u16(s16_6)));
-    s7 = vmulq_u32(s7, vmovl_u16(vget_high_u16(s16_7)));
+    s0 = vmull_u16(vget_low_u16(s16_0), vget_low_u16(s16_4));
+
+    s1 = vmull_u16(vget_low_u16(s16_1), vget_low_u16(s16_5));
+
+    s2 = vmull_u16(vget_low_u16(s16_2), vget_low_u16(s16_6));
+
+    s3 = vmull_u16(vget_low_u16(s16_3), vget_low_u16(s16_7));
+
+    s4 = vmull_high_u16(s16_0, s16_4);
+
+    s5 = vmull_high_u16(s16_1, s16_5);
+
+    s6 = vmull_high_u16(s16_2, s16_6);
+
+    s7 = vmull_high_u16(s16_3, s16_7);
+
+    s0 = vmulq_u32(s0, one_by_n);
+    s1 = vmulq_u32(s1, one_by_n);
+    s2 = vmulq_u32(s2, one_by_n);
+    s3 = vmulq_u32(s3, one_by_n);
+    s4 = vmulq_u32(s4, one_by_n);
+    s5 = vmulq_u32(s5, one_by_n);
+    s6 = vmulq_u32(s6, one_by_n);
+    s7 = vmulq_u32(s7, one_by_n);
 
     p0 = vrshrq_n_u32(s0, SGRPROJ_RECIP_BITS);
     p1 = vrshrq_n_u32(s1, SGRPROJ_RECIP_BITS);
@@ -1039,7 +1025,9 @@ static inline int32x4_t cross_sum_inp_s32(int32_t* buf, int buf_stride) {
     return res;
 }
 
-static inline void cross_sum_inp_u16(uint16_t* buf, int buf_stride, int32x4_t* a0, int32x4_t* a1) {
+// Weighted 3x3 sum of the a plane (weights 4 and 3, 32 in total). a is at most 256, so the sum is at most 8192 and
+// stays in 16-bit lanes.
+static inline uint16x8_t cross_sum_inp_u16(uint16_t* buf, int buf_stride) {
     uint16x8_t xtr, xt, xtl, xl, x, xr, xbr, xb, xbl;
     uint16x8_t r0, r1;
 
@@ -1067,8 +1055,7 @@ static inline void cross_sum_inp_u16(uint16_t* buf, int buf_stride, int32x4_t* a
     r1 = vshlq_n_u16(xtl, 2);
     r1 = vsubq_u16(r1, xtl);
 
-    *a0 = vreinterpretq_s32_u32(vaddq_u32(vmovl_u16(vget_low_u16(r0)), vmovl_u16(vget_low_u16(r1))));
-    *a1 = vreinterpretq_s32_u32(vaddq_u32(vmovl_u16(vget_high_u16(r0)), vmovl_u16(vget_high_u16(r1))));
+    return vaddq_u16(r0, r1);
 }
 
 static inline int32x4_t cross_sum_fast_even_row(int32_t* buf, int buf_stride) {
@@ -1089,7 +1076,8 @@ static inline int32x4_t cross_sum_fast_even_row(int32_t* buf, int buf_stride) {
     return vaddq_s32(vaddq_s32(vshlq_n_s32(fives_plus_sixes, 2), fives_plus_sixes), sixes);
 }
 
-static inline void cross_sum_fast_even_row_inp16(uint16_t* buf, int buf_stride, int32x4_t* a0, int32x4_t* a1) {
+// Weights 5 and 6, 32 in total: at most 8192 for a of at most 256.
+static inline uint16x8_t cross_sum_fast_even_row_inp16(uint16_t* buf, int buf_stride) {
     uint16x8_t xtr, xt, xtl, xbr, xb, xbl, xb0;
 
     xtl = vld1q_u16(buf - buf_stride - 1);
@@ -1110,8 +1098,7 @@ static inline void cross_sum_fast_even_row_inp16(uint16_t* buf, int buf_stride, 
     xb  = vshlq_n_u16(xb, 2);
     xb  = vaddq_u16(xb, xb0);
 
-    *a0 = vreinterpretq_s32_u32(vaddq_u32(vmovl_u16(vget_low_u16(xbr)), vmovl_u16(vget_low_u16(xb))));
-    *a1 = vreinterpretq_s32_u32(vaddq_u32(vmovl_u16(vget_high_u16(xbr)), vmovl_u16(vget_high_u16(xb))));
+    return vaddq_u16(xbr, xb);
 }
 
 static inline int32x4_t cross_sum_fast_odd_row(int32_t* buf) {
@@ -1128,7 +1115,8 @@ static inline int32x4_t cross_sum_fast_odd_row(int32_t* buf) {
     return vaddq_s32(vaddq_s32(vshlq_n_s32(fives_plus_sixes, 2), fives_plus_sixes), sixes);
 }
 
-static inline void cross_sum_fast_odd_row_inp16(uint16_t* buf, int32x4_t* a0, int32x4_t* a1) {
+// Weights 5, 6, 5, 16 in total: at most 4096 for a of at most 256.
+static inline uint16x8_t cross_sum_fast_odd_row_inp16(uint16_t* buf) {
     uint16x8_t xl, x, xr;
     uint16x8_t x0;
 
@@ -1143,8 +1131,7 @@ static inline void cross_sum_fast_odd_row_inp16(uint16_t* buf, int32x4_t* a0, in
     x  = vshlq_n_u16(x, 2);
     x  = vaddq_u16(x, x0);
 
-    *a0 = vreinterpretq_s32_u32(vaddq_u32(vmovl_u16(vget_low_u16(xl)), vmovl_u16(vget_low_u16(x))));
-    *a1 = vreinterpretq_s32_u32(vaddq_u32(vmovl_u16(vget_high_u16(xl)), vmovl_u16(vget_high_u16(x))));
+    return vaddq_u16(xl, x);
 }
 
 static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_stride, int16_t* src,
@@ -1173,9 +1160,12 @@ static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_st
         if (!(count & 1)) {
             do {
                 s0 = vld1q_s16(src_ptr);
-                cross_sum_fast_even_row_inp16(A_tmp, buf_stride, &a_res0, &a_res1);
-                a_res0 = vmulq_s32(vmovl_s16(vget_low_s16(s0)), a_res0);
-                a_res1 = vmulq_s32(vmovl_s16(vget_high_s16(s0)), a_res1);
+                // sample (at most 12 bits) times neighbour sum (at most 8192): one widening multiply
+                const int16x8_t a_sum = vreinterpretq_s16_u16(cross_sum_fast_even_row_inp16(A_tmp, buf_stride));
+
+                a_res0 = vmull_s16(vget_low_s16(s0), vget_low_s16(a_sum));
+
+                a_res1 = vmull_high_s16(s0, a_sum);
 
                 b_res0 = cross_sum_fast_even_row(B_tmp, buf_stride);
                 b_res1 = cross_sum_fast_even_row(B_tmp + 4, buf_stride);
@@ -1197,9 +1187,12 @@ static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_st
         } else {
             do {
                 s0 = vld1q_s16(src_ptr);
-                cross_sum_fast_odd_row_inp16(A_tmp, &a_res0, &a_res1);
-                a_res0 = vmulq_s32(vmovl_s16(vget_low_s16(s0)), a_res0);
-                a_res1 = vmulq_s32(vmovl_s16(vget_high_s16(s0)), a_res1);
+
+                const int16x8_t a_sum = vreinterpretq_s16_u16(cross_sum_fast_odd_row_inp16(A_tmp));
+
+                a_res0 = vmull_s16(vget_low_s16(s0), vget_low_s16(a_sum));
+
+                a_res1 = vmull_high_s16(s0, a_sum);
 
                 b_res0 = cross_sum_fast_odd_row(B_tmp);
                 b_res1 = cross_sum_fast_odd_row(B_tmp + 4);
@@ -1245,9 +1238,12 @@ static void final_filter_internal(uint16_t* A, int32_t* B, const int buf_stride,
         w       = width;
         do {
             s0 = vld1q_s16(src_ptr);
-            cross_sum_inp_u16(A_tmp, buf_stride, &a_res0, &a_res1);
-            a_res0 = vmulq_s32(vmovl_s16(vget_low_s16(s0)), a_res0);
-            a_res1 = vmulq_s32(vmovl_s16(vget_high_s16(s0)), a_res1);
+            // sample (at most 12 bits) times neighbour sum (at most 8192): one widening multiply
+            const int16x8_t a_sum = vreinterpretq_s16_u16(cross_sum_inp_u16(A_tmp, buf_stride));
+
+            a_res0 = vmull_s16(vget_low_s16(s0), vget_low_s16(a_sum));
+
+            a_res1 = vmull_high_s16(s0, a_sum);
 
             b_res0 = cross_sum_inp_s32(B_tmp, buf_stride);
             b_res1 = cross_sum_inp_s32(B_tmp + 4, buf_stride);
