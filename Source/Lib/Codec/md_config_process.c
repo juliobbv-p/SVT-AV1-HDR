@@ -292,6 +292,18 @@ const QmVal* svt_av1_get_qmpsnr_weights(int level, int plane, TxSize tx_size) {
 #endif
 }
 
+// True when p points into the quantization matrices that svt_av1_qm_init() hands out. Those tables are constant
+// data, so a property of a table (its largest weight, say) can be remembered by address.
+bool svt_av1_qm_table_is_immutable(const QmVal* p) {
+#if CONFIG_ENABLE_QUANT_MATRIX
+    const uintptr_t first = (uintptr_t)&wt_matrix_ref[0][0][0];
+    return (uintptr_t)p >= first && (uintptr_t)p < first + sizeof(wt_matrix_ref);
+#else
+    UNUSED(p);
+    return false;
+#endif
+}
+
 static void svt_av1_qm_init(PictureParentControlSet* pcs) {
     const uint8_t num_planes = 3; // MAX_PLANES;// NM- No monochroma
     uint8_t       q, c, t;
@@ -886,8 +898,8 @@ static bool me_based_cdef_skip(PictureControlSet* pcs) {
     const uint8_t in_res = pcs->ppcs->input_resolution;
     // For flat, mult should be based on update_type since all pics are temporal layer 0
     const int      mult = pcs->ppcs->hierarchical_levels ? (pcs->temporal_layer_index + 1)
-        : frame_is_boosted(pcs->ppcs)                    ? 1
-        : frame_is_leaf(pcs->ppcs)                       ? 3
+             : frame_is_boosted(pcs->ppcs)               ? 1
+             : frame_is_leaf(pcs->ppcs)                  ? 3
                                                          : 2;
     const uint32_t use_zero_strength_th =
         disable_cdef_th[pcs->ppcs->cdef_recon_ctrls.zero_filter_strength_lvl][in_res] * mult;

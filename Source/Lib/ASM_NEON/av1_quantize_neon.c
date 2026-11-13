@@ -115,7 +115,7 @@ static AOM_FORCE_INLINE uint16x8_t quantize_fp_logscale2_8(const TranLow* coeff_
     const int16x8_t  v_coeff_sign = vshrq_n_s16(v_coeff, 15);
     const int16x8_t  v_abs_coeff  = vabsq_s16(v_coeff);
     const uint16x8_t v_mask       = vcgeq_u16(vshlq_n_u16(vreinterpretq_u16_s16(v_abs_coeff), 1),
-                                              vshrq_n_u16(vreinterpretq_u16_s16(v_dequant), 2));
+                                        vshrq_n_u16(vreinterpretq_u16_s16(v_dequant), 2));
     // abs_coeff = vmask ? (int64_t)abs_coeff + log_scaled_round : 0
     const int16x8_t v_tmp = vandq_s16(vqaddq_s16(v_abs_coeff, v_round), vreinterpretq_s16_u16(v_mask));
     // tmp32 = (int)((abs_coeff * quant_ptr[rc != 0]) >> (16 - log_scale));
@@ -304,6 +304,37 @@ static AOM_FORCE_INLINE int32_t qm_max_weight_neon(const QmVal* qm_ptr, intptr_t
     return vmaxvq_u8(vmaxq_u8(vmaxq_u8(m0, m1), vmaxq_u8(m2, m3)));
 }
 
+// The same value, remembered per table. The encoder's quantization matrices are constant data
+// (svt_av1_qm_table_is_immutable() recognises them by address), so the largest weight of the n entries at such an
+// address never changes, and every call after the first for a table skips the scan above. An entry packs the
+// address (below 2^47), n / 8 (n is a multiple of 8 of at most 1024) and the weight into one word, so that
+// entries read and written concurrently by several threads are always whole. An entry is only ever stored for a
+// table that passed the check, so a hit needs no check of its own; any other table never gets an entry and is
+// scanned on every call, as is anything that does not fit an entry. Matrices of fewer than 64 weights are
+// scanned too: one or two vectors cost less than the lookup.
+bool svt_av1_qm_table_is_immutable(const QmVal* p);
+
+static AOM_FORCE_INLINE int32_t qm_max_weight_cached_neon(const QmVal* qm_ptr, intptr_t n) {
+#if defined(__GNUC__) || defined(__clang__)
+    static uint64_t cache[64];
+    const uint64_t  addr = (uint64_t)(uintptr_t)qm_ptr;
+    if (n >= 64 && n <= 1024 && !(addr >> 47)) {
+        const uint64_t tag   = (addr << 16) | ((uint64_t)(n >> 3) << 8);
+        uint64_t*      slot  = &cache[(addr ^ (addr >> 6) ^ (addr >> 12) ^ (uint64_t)n) & 63];
+        const uint64_t entry = __atomic_load_n(slot, __ATOMIC_RELAXED);
+        if ((entry & ~(uint64_t)0xff) == tag && (entry & 0xff)) {
+            return (int32_t)(entry & 0xff);
+        }
+        const int32_t max_weight = qm_max_weight_neon(qm_ptr, n);
+        if (svt_av1_qm_table_is_immutable(qm_ptr)) {
+            __atomic_store_n(slot, tag | (uint64_t)max_weight, __ATOMIC_RELAXED);
+        }
+        return max_weight;
+    }
+#endif
+    return qm_max_weight_neon(qm_ptr, n);
+}
+
 // True when the 16 coefficients at coeff are all at most `bound` in magnitude; they are then below the
 // quantization threshold for every weight of the matrix, and their outputs are zeroed here.
 static AOM_FORCE_INLINE int qm_skip16_neon(const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff, int32x4_t bound) {
@@ -359,7 +390,7 @@ static AOM_FORCE_INLINE void quantize_fp_qm_neon_impl(const TranLow* coeff_ptr, 
 
     // abs * wt < thr holds for every weight when abs <= (thr - 1) / max(wt).
     const int32_t   thr_ac_s   = (int32_t)dequant_ptr[1] << thr_sh;
-    const int32x4_t v_skip_max = vdupq_n_s32((thr_ac_s - 1) / AOMMAX(qm_max_weight_neon(qm_ptr, n_coeffs), 1));
+    const int32x4_t v_skip_max = vdupq_n_s32((thr_ac_s - 1) / AOMMAX(qm_max_weight_cached_neon(qm_ptr, n_coeffs), 1));
 
     intptr_t i = 0;
     for (;;) {
@@ -563,8 +594,8 @@ static AOM_FORCE_INLINE void quantize_b_qm_neon_impl(const TranLow* coeff_ptr, i
     int32x4_t v_qshift_scl_lo = vshlq_s32(v_qshift_lo, vdupq_n_s32(qsh));
 
     // abs * wt < zbin holds for every weight when abs <= (zbin - 1) / max(wt).
-    const int32x4_t v_skip_max = vdupq_n_s32(zbn_ac > 0 ? (zbn_ac - 1) / AOMMAX(qm_max_weight_neon(qm_ptr, n_coeffs), 1)
-                                                        : -1);
+    const int32x4_t v_skip_max = vdupq_n_s32(
+        zbn_ac > 0 ? (zbn_ac - 1) / AOMMAX(qm_max_weight_cached_neon(qm_ptr, n_coeffs), 1) : -1);
 
     int16x8_t v_eobmax = vdupq_n_s16(-1);
     for (intptr_t i = 0;;) {
