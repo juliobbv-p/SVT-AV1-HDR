@@ -106,6 +106,8 @@ typedef struct EbPictureBufferDesc {
     uint32_t buffer_enable_mask;
     // Luma box sums of the sixteenth-resolution ME pictures for successive elimination (NULL otherwise), same
     // origin and stride as y_buffer: 8 columns x rows 0,2,4,6 (sub-sampled SAD) and 8 columns x 8 rows.
+    // AArch64 builds keep only the even-row planes (the others are NULL): an all-rows box is the sum of two
+    // even-row boxes one row apart.
     uint16_t* sea_sub;
     uint16_t* sea_full;
     // The same for 4-column boxes: rows 0 and 2 (sub-sampled SAD) and 4 rows. Sixteen of them tile a 16x16 block

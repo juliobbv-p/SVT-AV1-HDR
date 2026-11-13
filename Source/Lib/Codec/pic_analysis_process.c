@@ -1498,14 +1498,17 @@ bool svt_aom_is_input_luma_dominant(const EbPictureBufferDesc* input_pic) {
  * 1/4 & 1/16 input picture downsampling (filtering)
  ************************************************/
 #if defined(ARCH_X86_64) || defined(ARCH_AARCH64)
-// Box sums for the HME successive elimination (see EbPictureBufferDesc::sea_sub), over the padded picture
+// Box sums for the HME successive elimination (see EbPictureBufferDesc::sea_sub), over the padded picture.
+// Two planes of the picture's size either way: AArch64 keeps the even-row sums of the 8-column and of the 4-column
+// boxes (its kernel forms an all-rows box from two even-row boxes one row apart), the others the even-row and the
+// all-rows sums of the 8-column boxes. Entries whose box would leave the padded picture stay 0 and are never read.
 static void compute_sea_planes(EbPictureBufferDesc* pic) {
     const int stride = pic->y_stride;
     const int b      = pic->border;
     const int w      = pic->width + 2 * b;
     const int h      = pic->height + 2 * b;
     // a pooled picture can be re-described larger after a resolution change
-    const size_t size = (size_t)4 * stride * h;
+    const size_t size = (size_t)2 * stride * h;
     if (pic->sea_alloc_size < size) {
         EB_FREE_ARRAY(pic->sea_alloc);
         pic->sea_alloc_size = 0;
@@ -1522,9 +1525,9 @@ static void compute_sea_planes(EbPictureBufferDesc* pic) {
         pic->sea_sub = pic->sea_full = pic->sea4_sub = pic->sea4_full = NULL;
         return;
     }
-    uint16_t* const      sub  = pic->sea_alloc;
-    uint16_t* const      full = sub + (size_t)stride * h;
-    const uint8_t* const src  = pic->y_buffer - b * stride - b;
+    uint16_t* const      sub    = pic->sea_alloc;
+    uint16_t* const      second = sub + (size_t)stride * h;
+    const uint8_t* const src    = pic->y_buffer - b * stride - b;
     for (int y = 0; y < h; y++) {
         const uint8_t* r = src + y * stride;
         uint16_t*      o = hsum + y * stride;
@@ -1538,19 +1541,16 @@ static void compute_sea_planes(EbPictureBufferDesc* pic) {
             o[x] = a;
         }
     }
-    for (int y = 0; y + 8 <= h; y++) {
+#if defined(ARCH_AARCH64)
+    // rows 0, 2, 4 and 6 from the top row of the box: the last box starts 7 rows above the bottom
+    for (int y = 0; y + 7 <= h; y++) {
         const uint16_t* r = hsum + y * stride;
         uint16_t*       s = sub + y * stride;
-        uint16_t*       f = full + y * stride;
         for (int x = 0; x <= w - 8; x++) {
-            const uint16_t even = r[x] + r[x + 2 * stride] + r[x + 4 * stride] + r[x + 6 * stride];
-            s[x]                = even;
-            f[x]                = even + r[x + stride] + r[x + 3 * stride] + r[x + 5 * stride] + r[x + 7 * stride];
+            s[x] = r[x] + r[x + 2 * stride] + r[x + 4 * stride] + r[x + 6 * stride];
         }
     }
-    // 4-column boxes: horizontal sums of four, then rows 0 and 2 / rows 0 to 3
-    uint16_t* const sub4  = full + (size_t)stride * h;
-    uint16_t* const full4 = sub4 + (size_t)stride * h;
+    // 4-column boxes: horizontal sums of four, then rows 0 and 2
     for (int y = 0; y < h; y++) {
         const uint8_t* r = src + y * stride;
         uint16_t*      o = hsum + y * stride;
@@ -1563,25 +1563,35 @@ static void compute_sea_planes(EbPictureBufferDesc* pic) {
             o[x] = a;
         }
     }
-    for (int y = 0; y + 4 <= h; y++) {
+    for (int y = 0; y + 3 <= h; y++) {
         const uint16_t* r = hsum + y * stride;
 
-        uint16_t* s = sub4 + y * stride;
-        uint16_t* f = full4 + y * stride;
-
+        uint16_t* s = second + y * stride;
         for (int x = 0; x <= w - 4; x++) {
-            const uint16_t even = r[x] + r[x + 2 * stride];
-
-            s[x] = even;
-
-            f[x] = even + r[x + stride] + r[x + 3 * stride];
+            s[x] = r[x] + r[x + 2 * stride];
         }
     }
-    EB_FREE_ARRAY(hsum);
     pic->sea_sub   = sub + b * stride + b;
-    pic->sea_full  = full + b * stride + b;
-    pic->sea4_sub  = sub4 + b * stride + b;
-    pic->sea4_full = full4 + b * stride + b;
+    pic->sea_full  = NULL;
+    pic->sea4_sub  = second + b * stride + b;
+    pic->sea4_full = NULL;
+#else
+    for (int y = 0; y + 8 <= h; y++) {
+        const uint16_t* r = hsum + y * stride;
+        uint16_t*       s = sub + y * stride;
+        uint16_t*       f = second + y * stride;
+        for (int x = 0; x <= w - 8; x++) {
+            const uint16_t even = r[x] + r[x + 2 * stride] + r[x + 4 * stride] + r[x + 6 * stride];
+            s[x]                = even;
+            f[x]                = even + r[x + stride] + r[x + 3 * stride] + r[x + 5 * stride] + r[x + 7 * stride];
+        }
+    }
+    pic->sea_sub   = sub + b * stride + b;
+    pic->sea_full  = second + b * stride + b;
+    pic->sea4_sub  = NULL;
+    pic->sea4_full = NULL;
+#endif
+    EB_FREE_ARRAY(hsum);
 }
 #endif
 
