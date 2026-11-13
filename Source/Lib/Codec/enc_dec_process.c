@@ -2933,13 +2933,19 @@ EbErrorType svt_aom_mode_decision_kernel_iter(void* context) {
                                                                                   pic_width_in_sb +
                                                                               x_sb_index + tile_group_x_sb_start);
                     sb_ptr = ed_ctx->md_ctx->sb_ptr = pcs->sb_ptr_array[sb_index];
-                    uint32_t sb_origin_x            = (x_sb_index + tile_group_x_sb_start) << sb_size_log2;
-                    uint32_t sb_origin_y            = (y_sb_index + tile_group_y_sb_start) << sb_size_log2;
-                    ed_ctx->tile_index              = sb_ptr->tile_info.tile_rs_index;
-                    ed_ctx->md_ctx->tile_index      = sb_ptr->tile_info.tile_rs_index;
-                    ed_ctx->md_ctx->sb_origin_x     = sb_origin_x;
-                    ed_ctx->md_ctx->sb_origin_y     = sb_origin_y;
-                    ed_ctx->sb_index                = sb_index;
+
+                    uint32_t sb_origin_x = (x_sb_index + tile_group_x_sb_start) << sb_size_log2;
+
+                    uint32_t sb_origin_y = (y_sb_index + tile_group_y_sb_start) << sb_size_log2;
+                    ed_ctx->tile_index   = sb_ptr->tile_info.tile_rs_index;
+
+                    ed_ctx->md_ctx->tile_index  = sb_ptr->tile_info.tile_rs_index;
+                    ed_ctx->md_ctx->sb_origin_x = sb_origin_x;
+                    ed_ctx->md_ctx->sb_origin_y = sb_origin_y;
+
+                    ed_ctx->md_ctx->sb_tpl_stats_valid = 0;
+
+                    ed_ctx->sb_index = sb_index;
                     if (pcs->cdf_ctrl.enabled) {
                         if (scs->pic_based_rate_est && scs->enc_dec_segment_row_count_array == 1 &&
                             scs->enc_dec_segment_col_count_array == 1) {

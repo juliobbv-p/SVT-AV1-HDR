@@ -209,6 +209,31 @@ uint8_t svt_aom_is_me_data_present(uint32_t me_block_offset, uint32_t me_cand_of
     return 0;
 }
 
+uint8_t svt_aom_is_me_data_present_blk(ModeDecisionContext* ctx, const MeSbResults* me_results, uint8_t list_idx,
+                                       uint8_t ref_idx) {
+    if (!ctx->me_present_valid) {
+        const uint8_t      total_me_cnt     = me_results->total_me_candidate_index[ctx->me_block_offset];
+        const MeCandidate* me_block_results = &me_results->me_candidate_array[ctx->me_cand_offset];
+
+        uint8_t mask[2] = {0, 0};
+        for (uint32_t me_cand_i = 0; me_cand_i < total_me_cnt; ++me_cand_i) {
+            const MeCandidate* me_cand = &me_block_results[me_cand_i];
+            // the list fields are one bit wide and the reference indices two
+            if (me_cand->direction == 0 || me_cand->direction == 2) {
+                mask[me_cand->ref0_list] |= (uint8_t)(1 << me_cand->ref_idx_l0);
+            }
+            if (me_cand->direction == 1 || me_cand->direction == 2) {
+                mask[me_cand->ref1_list] |= (uint8_t)(1 << me_cand->ref_idx_l1);
+            }
+        }
+        ctx->me_present[0]    = mask[0];
+        ctx->me_present[1]    = mask[1];
+        ctx->me_present_valid = 1;
+    }
+    const uint8_t present = list_idx < 2 && ref_idx < 8 ? (ctx->me_present[list_idx] >> ref_idx) & 1 : 0;
+    return present;
+}
+
 /********************************************
 * Constants
 ********************************************/
@@ -1718,10 +1743,9 @@ static void inject_new_nearest_new_comb_candidates(PictureControlSet* pcs, ModeD
                 const MeSbResults* me_results = pcs->ppcs->pa_me_data->me_results[ctx->me_sb_addr];
                 Mv                 to_inj_mv0 = {.as_int = ctx->ref_mv_stack[ref_pair][0].this_mv.as_int};
                 Mv                 to_inj_mv1 = ctx->sb_me_mv[list_idx_1][ref_idx_1];
-                bool               inj_mv =
-                    (ctx->injected_mv_count == 0 || !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
-                    svt_aom_is_me_data_present(
-                        ctx->me_block_offset, ctx->me_cand_offset, me_results, get_list_idx(rf[1]), ref_idx_1);
+                bool               inj_mv     = (ctx->injected_mv_count == 0 ||
+                               !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
+                    svt_aom_is_me_data_present_blk(ctx, me_results, get_list_idx(rf[1]), ref_idx_1);
                 if (inj_mv) {
                     svt_aom_get_av1_mv_pred_drl(ctx,
                                                 ctx->blk_ptr,
@@ -1766,8 +1790,8 @@ static void inject_new_nearest_new_comb_candidates(PictureControlSet* pcs, ModeD
                 Mv                 to_inj_mv0 = ctx->sb_me_mv[list_idx_0][ref_idx_0];
                 Mv                 to_inj_mv1 = {.as_int = ctx->ref_mv_stack[ref_pair][0].comp_mv.as_int};
                 bool               inj_mv     = (ctx->injected_mv_count == 0 ||
-                                                 !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
-                    svt_aom_is_me_data_present(ctx->me_block_offset, ctx->me_cand_offset, me_results, 0, ref_idx_0);
+                               !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
+                    svt_aom_is_me_data_present_blk(ctx, me_results, 0, ref_idx_0);
                 if (inj_mv) {
                     svt_aom_get_av1_mv_pred_drl(ctx,
                                                 ctx->blk_ptr,
@@ -1823,8 +1847,8 @@ static void inject_new_nearest_new_comb_candidates(PictureControlSet* pcs, ModeD
                     Mv                 to_inj_mv0 = ctx->sb_me_mv[list_idx_0][ref_idx_0];
                     Mv                 to_inj_mv1 = {.as_int = nearmv[1].as_int};
                     bool               inj_mv     = (ctx->injected_mv_count == 0 ||
-                                                     !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
-                        svt_aom_is_me_data_present(ctx->me_block_offset, ctx->me_cand_offset, me_results, 0, ref_idx_0);
+                                   !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
+                        svt_aom_is_me_data_present_blk(ctx, me_results, 0, ref_idx_0);
                     if (inj_mv) {
                         ModeDecisionCandidate* cand       = &cand_array[cand_idx];
                         cand->block_mi.mode               = NEW_NEARMV;
@@ -1866,9 +1890,8 @@ static void inject_new_nearest_new_comb_candidates(PictureControlSet* pcs, ModeD
                     Mv                 to_inj_mv0 = {.as_int = nearmv[0].as_int};
                     Mv                 to_inj_mv1 = ctx->sb_me_mv[list_idx_1][ref_idx_1];
                     bool               inj_mv     = (ctx->injected_mv_count == 0 ||
-                                                     !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
-                        svt_aom_is_me_data_present(
-                                      ctx->me_block_offset, ctx->me_cand_offset, me_results, list_idx_1, ref_idx_1);
+                                   !mv_is_already_injected(ctx, to_inj_mv0, to_inj_mv1, ref_pair)) &&
+                        svt_aom_is_me_data_present_blk(ctx, me_results, list_idx_1, ref_idx_1);
 
                     if (inj_mv) {
                         ModeDecisionCandidate* cand       = &cand_array[cand_idx];

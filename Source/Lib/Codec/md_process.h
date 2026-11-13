@@ -1170,6 +1170,14 @@ typedef struct ModeDecisionContext {
     uint16_t          injected_mv_count;
     uint32_t          me_block_offset;
     uint32_t          me_cand_offset;
+    // Which (list, reference) pairs the block's ME candidates cover: bit ref_idx of me_present[list]. Built on the
+    // first query after the ME offsets of a block are set (see svt_aom_is_me_data_present_blk()).
+    uint8_t me_present_valid;
+    uint8_t me_present[2];
+    // get_sb_tpl_inter_stats() depends on the superblock only; its result is kept for the superblock's blocks
+    // (cleared where the superblock is set up): return value, inter selection, largest list-0 / list-1 index.
+    uint8_t sb_tpl_stats_valid;
+    uint8_t sb_tpl_stats[4];
     // Pointer to a scratch buffer used by CFL & IFS
     EbPictureBufferDesc* scratch_prediction_ptr;
     // Luma prediction of the best filter pair found so far by the interpolation filter search (one block).

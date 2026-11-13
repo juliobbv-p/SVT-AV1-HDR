@@ -1569,6 +1569,41 @@ static void sort_fast_cost_based_candidates(
     uint32_t                      input_buffer_end_idx = input_buffer_start_idx + input_buffer_count - 1;
     uint32_t                      buffer_index, i, j;
     uint32_t                      k = 0;
+
+    enum { SORT_KEYS_MAX = 256 };
+
+    if (input_buffer_count >= 2 && input_buffer_count <= SORT_KEYS_MAX) {
+        // The exchange sort below, with the costs read once into a local array and moved along with the
+        // indices: the same comparisons in the same order on the same values, hence the same permutation
+        // (ties included), without three dependent loads per comparison.
+        uint64_t key[SORT_KEYS_MAX];
+        for (k = 0; k < input_buffer_count; k++) {
+            cand_buff_indices[k] = input_buffer_start_idx + k;
+
+            key[k] = *(buffer_ptr_array[input_buffer_start_idx + k]->fast_cost);
+        }
+        for (i = 0; i < input_buffer_count - 1; ++i) {
+            uint64_t key_i = key[i];
+            uint32_t idx_i = cand_buff_indices[i];
+            for (j = i + 1; j < input_buffer_count; ++j) {
+                const uint64_t key_j = key[j];
+                const uint32_t idx_j = cand_buff_indices[j];
+                const bool     swap  = key_j < key_i;
+
+                key[j] = swap ? key_i : key_j;
+
+                cand_buff_indices[j] = swap ? idx_i : idx_j;
+
+                key_i = swap ? key_j : key_i;
+
+                idx_i = swap ? idx_j : idx_i;
+            }
+            key[i] = key_i;
+
+            cand_buff_indices[i] = idx_i;
+        }
+        return;
+    }
     for (buffer_index = input_buffer_start_idx; buffer_index <= input_buffer_end_idx; buffer_index++, k++) {
         cand_buff_indices[k] = buffer_index;
     }
@@ -1828,6 +1863,10 @@ static void md_stage_0(PictureControlSet* pcs, ModeDecisionContext* ctx,
     }
 
     uint32_t tot_processed_cand = 0;
+    // Once the buffers are full: the largest cost among them, found at highest_cost_index (its first holder).
+    uint64_t highest_cost = 0;
+
+    bool highest_cost_known = false;
 
     for (uint8_t itr = 0; itr < tot_itr; itr++) {
         for (uint32_t k = 0; k < cand_list_count; k++) {
@@ -1898,15 +1937,23 @@ static void md_stage_0(PictureControlSet* pcs, ModeDecisionContext* ctx,
                     highest_cost_index = fast_cost_array[buffer_index_start] < fast_cost_array[buffer_index_start + 1]
                         ? buffer_index_start + 1
                         : buffer_index_start;
+                } else if (highest_cost_known && fast_cost_array[highest_cost_index] >= highest_cost) {
+                    // The candidate just evaluated went into the buffer that held the first largest cost and is
+                    // no better than what it replaced: the buffers before it are all below the old largest cost
+                    // and the ones after it not above it, so this buffer is still the first holder of the
+                    // largest cost and the scan would return it again.
+                    highest_cost = fast_cost_array[highest_cost_index];
                 } else {
-                    highest_cost_index    = buffer_index_start;
-                    uint64_t highest_cost = fast_cost_array[buffer_index_start];
+                    highest_cost_index = buffer_index_start;
+
+                    highest_cost = fast_cost_array[buffer_index_start];
                     // Branchless first-maximum scan (the comparison is unpredictable)
                     for (uint32_t buff = buffer_index_start + 1; buff < buffer_index_end; buff++) {
                         const bool gt      = fast_cost_array[buff] > highest_cost;
                         highest_cost_index = gt ? buff : highest_cost_index;
                         highest_cost       = gt ? fast_cost_array[buff] : highest_cost;
                     }
+                    highest_cost_known = true;
                 }
             }
         }
@@ -2396,7 +2443,8 @@ static void derive_me_offsets(const SequenceControlSet* scs, PictureControlSet* 
     }
 
     assert(ctx->me_block_offset != (uint32_t)(-1));
-    ctx->me_cand_offset = ctx->me_block_offset * pcs->ppcs->pa_me_data->max_cand;
+    ctx->me_cand_offset   = ctx->me_block_offset * pcs->ppcs->pa_me_data->max_cand;
+    ctx->me_present_valid = 0;
 }
 
 #define MAX_MD_NSQ_SARCH_MVC_CNT 6
@@ -3105,7 +3153,7 @@ static void read_refine_me_mvs_light_pd1(PictureControlSet* pcs, EbPictureBuffer
             const uint8_t list = get_list_idx(rf[0]);
             const uint8_t ref  = get_ref_frame_idx(rf[0]);
 
-            if (svt_aom_is_me_data_present(ctx->me_block_offset, ctx->me_cand_offset, me_results, list, ref)) {
+            if (svt_aom_is_me_data_present_blk(ctx, me_results, list, ref)) {
                 EbPictureBufferDesc* ref_pic = svt_aom_get_ref_pic_buffer(pcs, rf[0]);
                 EbReferenceObject*   ref_obj = pcs->ref_pic_ptr_array[list][ref]->object_ptr;
                 // -------
@@ -3200,7 +3248,7 @@ static void read_refine_me_mvs(PictureControlSet* pcs, ModeDecisionContext* ctx,
             svt_aom_use_scaled_rec_refs_if_needed(pcs, input_pic, ref_obj, &ref_pic, hbd_md);
 
             // Get the ME MV
-            if (svt_aom_is_me_data_present(ctx->me_block_offset, ctx->me_cand_offset, me_results, list, ref)) {
+            if (svt_aom_is_me_data_present_blk(ctx, me_results, list, ref)) {
                 Mv me_mv;
                 if (blk_avail_sqi &&
                     // If NSQ then use the MV of SQ as default MV center
@@ -3297,8 +3345,34 @@ Loop over TPL blocks in the SB to update inter information.  Return 1 if the sta
 sb_max_rf_idx: The maximum rf_idx selected by any TPL block in the SB
 */
 
+static bool get_sb_tpl_inter_stats_compute(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                           uint8_t* sb_inter_selection, uint8_t* sb_max_list0_ref_idx,
+                                           uint8_t* sb_max_list1_ref_idx);
+
+// The statistics depend on the superblock alone (the TPL data of a picture is complete before its mode
+// decision starts), so they are computed for the first block that asks and kept for the others.
 static bool get_sb_tpl_inter_stats(PictureControlSet* pcs, ModeDecisionContext* ctx, uint8_t* sb_inter_selection,
                                    uint8_t* sb_max_list0_ref_idx, uint8_t* sb_max_list1_ref_idx) {
+    if (!ctx->sb_tpl_stats_valid) {
+        uint8_t sel = 0, l0 = 0, l1 = 0;
+        ctx->sb_tpl_stats[0]    = get_sb_tpl_inter_stats_compute(pcs, ctx, &sel, &l0, &l1);
+        ctx->sb_tpl_stats[1]    = sel;
+        ctx->sb_tpl_stats[2]    = l0;
+        ctx->sb_tpl_stats[3]    = l1;
+        ctx->sb_tpl_stats_valid = 1;
+    }
+    if (!ctx->sb_tpl_stats[0]) {
+        return false; // the outputs are left untouched, as the computation leaves them
+    }
+    *sb_inter_selection   = ctx->sb_tpl_stats[1];
+    *sb_max_list0_ref_idx = ctx->sb_tpl_stats[2];
+    *sb_max_list1_ref_idx = ctx->sb_tpl_stats[3];
+    return true;
+}
+
+static bool get_sb_tpl_inter_stats_compute(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                           uint8_t* sb_inter_selection, uint8_t* sb_max_list0_ref_idx,
+                                           uint8_t* sb_max_list1_ref_idx) {
 #if !CONFIG_ENABLE_TPL
     (void)pcs, (void)ctx, (void)sb_inter_selection, (void)sb_max_list0_ref_idx, (void)sb_max_list1_ref_idx;
     return false; // TPL disabled: tpl_ctrls.enable is always 0, this is never reached at runtime
@@ -3396,7 +3470,7 @@ static void perform_md_reference_pruning(PictureControlSet* pcs, ModeDecisionCon
             // Evaluate the PA_ME MVs (if available)
             uint32_t           pa_me_distortion = (uint32_t)~0; //any non zero value
             const MeSbResults* me_results       = pcs->ppcs->pa_me_data->me_results[ctx->me_sb_addr];
-            if (svt_aom_is_me_data_present(ctx->me_block_offset, ctx->me_cand_offset, me_results, list_idx, ref_idx)) {
+            if (svt_aom_is_me_data_present_blk(ctx, me_results, list_idx, ref_idx)) {
                 //uint32_t pa_me_distortion = ctx->post_subpel_me_mv_cost[][];
                 pa_me_distortion = ctx->fp_me_dist[list_idx][ref_idx];
             }
@@ -3613,8 +3687,7 @@ static void pme_search(PictureControlSet* pcs, ModeDecisionContext* ctx, EbPictu
             // Get the ME MV
             const MeSbResults* me_results = pcs->ppcs->pa_me_data->me_results[ctx->me_sb_addr];
 
-            uint8_t me_data_present = svt_aom_is_me_data_present(
-                ctx->me_block_offset, ctx->me_cand_offset, me_results, list_idx, ref_idx);
+            uint8_t me_data_present = svt_aom_is_me_data_present_blk(ctx, me_results, list_idx, ref_idx);
 
             if (me_data_present) {
                 // Early MVP vs. ME_MV check; do not perform PME search for blocks that have a valid ME_MV unless the ME_MV has a different direction than all MVP(s) and the ME_MV mag is higher than MV_TH (not around(0,0))
@@ -9069,7 +9142,8 @@ static void compute_lpd0_cost_inter(PictureControlSet* pcs, ModeDecisionContext*
     ctx->me_sb_addr      = ctx->sb_ptr->index;
     ctx->me_block_offset = svt_aom_get_me_block_offset(
         ctx->blk_org_x, ctx->blk_org_y, ctx->blk_geom->bsize, pcs->ppcs->enable_me_8x8, pcs->ppcs->enable_me_16x16);
-    ctx->me_cand_offset = ctx->me_block_offset * pcs->ppcs->pa_me_data->max_cand;
+    ctx->me_cand_offset   = ctx->me_block_offset * pcs->ppcs->pa_me_data->max_cand;
+    ctx->me_present_valid = 0;
 
     const uint32_t input_origin_index = (ctx->blk_org_y) * input_pic->y_stride + (ctx->blk_org_x);
     uint8_t* const src_y              = input_pic->y_buffer + input_origin_index;
@@ -9828,9 +9902,10 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
         ctx->blk_org_x, ctx->blk_org_y, ctx->blk_geom->bsize, pcs->ppcs->enable_me_8x8, pcs->ppcs->enable_me_16x16);
 
     // derive me offsets
-    ctx->geom_offset_x  = 0;
-    ctx->geom_offset_y  = 0;
-    ctx->me_cand_offset = ctx->me_block_offset * pcs->ppcs->pa_me_data->max_cand;
+    ctx->geom_offset_x    = 0;
+    ctx->geom_offset_y    = 0;
+    ctx->me_cand_offset   = ctx->me_block_offset * pcs->ppcs->pa_me_data->max_cand;
+    ctx->me_present_valid = 0;
 
     ctx->tot_ref_frame_types = pcs->ppcs->tot_ref_frame_types;
     memcpy(ctx->ref_frame_type_arr, pcs->ppcs->ref_frame_type_arr, sizeof(MvReferenceFrame) * MODE_CTX_REF_FRAMES);
@@ -10280,8 +10355,11 @@ static void md_encode_block_internal(PictureControlSet* pcs, ModeDecisionContext
     // Fast candidate indices grouped by class (stable), so each class pass of md_stage_0 visits only its own
     uint16_t cand_order[MODE_DECISION_CANDIDATE_MAX_COUNT];
     uint32_t class_start[CAND_CLASS_TOTAL + 1] = {0};
+    uint8_t  cand_class_of[MODE_DECISION_CANDIDATE_MAX_COUNT]; // one pass over the (large) candidate structs
     for (uint32_t i = 0; i < fast_candidate_total_count; i++) {
-        class_start[ctx->fast_cand_array[i].cand_class + 1]++;
+        const uint8_t cls = (uint8_t)ctx->fast_cand_array[i].cand_class;
+        cand_class_of[i]  = cls;
+        class_start[cls + 1]++;
     }
     for (int c = 0; c < CAND_CLASS_TOTAL; c++) {
         class_start[c + 1] += class_start[c];
@@ -10290,7 +10368,7 @@ static void md_encode_block_internal(PictureControlSet* pcs, ModeDecisionContext
         uint32_t fill[CAND_CLASS_TOTAL];
         memcpy(fill, class_start, sizeof(fill));
         for (uint32_t i = 0; i < fast_candidate_total_count; i++) {
-            cand_order[fill[ctx->fast_cand_array[i].cand_class]++] = (uint16_t)i;
+            cand_order[fill[cand_class_of[i]]++] = (uint16_t)i;
         }
     }
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH

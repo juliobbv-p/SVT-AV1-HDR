@@ -178,6 +178,10 @@ uint32_t svt_aom_get_me_block_offset(const uint32_t org_x, const uint32_t org_y,
                                      const uint8_t enable_me_8x8, const uint8_t enable_me_16x16);
 uint8_t  svt_aom_is_me_data_present(uint32_t me_block_offset, uint32_t me_cand_offset, const MeSbResults* me_results,
                                     uint8_t list_idx, uint8_t ref_idx);
+// The same answer for the current block (ctx->me_block_offset, ctx->me_cand_offset and the ME results of
+// ctx->me_sb_addr), from a mask built once per block instead of a scan of the block's ME candidates per query.
+uint8_t svt_aom_is_me_data_present_blk(struct ModeDecisionContext* ctx, const MeSbResults* me_results, uint8_t list_idx,
+                                       uint8_t ref_idx);
 
 int32_t    svt_aom_have_newmv_in_inter_mode(PredictionMode mode);
 uint8_t    svt_aom_get_max_drl_index(uint8_t refmvCnt, PredictionMode mode);
