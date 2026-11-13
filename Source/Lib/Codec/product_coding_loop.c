@@ -5091,7 +5091,9 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     pf_shape = svt_get_qmpsnr_coeff_shape(pcs, ctx, PLANE_Y, pf_shape, true);
     // Inter tx-depth-0 DCT_DCT coeffs persist in the candidate buffer across MD stages; the buffer holds one transform,
     // so blocks with several depth-0 transforms (128-wide/tall) do not use it
-    const uint32_t dct_key             = (is_inter && ctx->tx_depth == 0 && !tx_search_skip_flag &&
+    // (Intra candidates too: at depth 0 their prediction is the one of MD stage 0, and svt_av1_intra_prediction()
+    // clears the key like the inter predictors do.)
+    const uint32_t dct_key             = (ctx->tx_depth == 0 && !tx_search_skip_flag &&
                               tx_blocks_per_depth[ctx->blk_geom->bsize][0] == 1)
                     ? get_dct_dct_key(tx_size, pf_shape, SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx->mds_subres_step)
                     : 0;
@@ -6305,7 +6307,7 @@ static void perform_dct_dct_tx(PictureControlSet* pcs, ModeDecisionContext* ctx,
     EbPictureBufferDesc* const recon_ptr       = cand_bf->recon;
     EbPictureBufferDesc* const quant_coeff_ptr = cand_bf->quant;
     // Inter coeffs persist in the candidate buffer so a later MD stage can skip the transform
-    const uint32_t dct_key = (is_inter && !tx_search_skip_flag)
+    const uint32_t dct_key = !tx_search_skip_flag
         ? get_dct_dct_key(tx_size, pf_shape, SVT_EFFECTIVE_HBD_MD(ctx->hbd_md), ctx->mds_subres_step)
         : 0;
     int32_t* const coeff   = dct_key ? cand_bf->dct_dct_coeff : &(((int32_t*)ctx->tx_coeffs->y_buffer)[txb_1d_offset]);

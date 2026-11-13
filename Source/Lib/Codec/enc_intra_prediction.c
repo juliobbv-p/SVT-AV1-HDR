@@ -1139,7 +1139,10 @@ EbErrorType svt_av1_intra_prediction(uint8_t hbd_md, ModeDecisionContext* ctx, P
     int32_t start_plane = (ctx->uv_intra_comp_only) ? 1 : 0;
     int32_t end_plane   = ctx->mds_do_chroma ? MAX_PLANES : 1;
 
-    cand_bf->dct_dct_key = 0;
+    // The stored luma transform stays valid when only chroma is predicted here.
+    if (start_plane == 0) {
+        cand_bf->dct_dct_key = 0;
+    }
     for (int32_t plane = start_plane; plane < end_plane; ++plane) {
         if (plane) {
             mode = (cand_bf->cand->block_mi.uv_mode == UV_CFL_PRED) ? (PredictionMode)UV_DC_PRED
