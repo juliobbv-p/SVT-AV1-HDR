@@ -652,9 +652,63 @@ static inline void compressed_packmsb_64xh(const uint8_t* in8_bit_buffer, uint32
     } while (--height != 0);
 }
 
+// The 64-sample groups of whole rows, a row at a time. A wide plane used to be packed as 64-sample columns of
+// the full height: a picture was walked top to bottom once per column, with a new cache line (and, for the
+// 16-bit output, a new page every few rows) on every access. Row order reads and writes each plane as one
+// forward stream. The samples written are the same.
+static inline void compressed_packmsb_rows_neon(const uint8_t* in8_bit_buffer, uint32_t in8_stride,
+                                                const uint8_t* inn_bit_buffer, uint32_t inn_stride,
+                                                uint16_t* out16_bit_buffer, uint32_t out_stride, uint32_t width64,
+                                                uint32_t height) {
+    const uint8x16_t idx0_3   = vld1q_u8(unpack_tbl + 0 * 16);
+    const uint8x16_t idx4_7   = vld1q_u8(unpack_tbl + 1 * 16);
+    const uint8x16_t idx8_11  = vld1q_u8(unpack_tbl + 2 * 16);
+    const uint8x16_t idx12_15 = vld1q_u8(unpack_tbl + 3 * 16);
+    const int8x16_t  shift_s8 = vreinterpretq_s8_s32(vld1q_dup_s32((const int32_t*)shift));
+    do {
+        for (uint32_t x = 0; x < width64; x += 64) {
+            const uint8x16_t in_2_bit = vld1q_u8(inn_bit_buffer + (x >> 2));
+            const uint8x16_t ext0     = vshlq_u8(vqtbl1q_u8(in_2_bit, idx0_3), shift_s8);
+            const uint8x16_t ext1     = vshlq_u8(vqtbl1q_u8(in_2_bit, idx4_7), shift_s8);
+            const uint8x16_t ext2     = vshlq_u8(vqtbl1q_u8(in_2_bit, idx8_11), shift_s8);
+            const uint8x16_t ext3     = vshlq_u8(vqtbl1q_u8(in_2_bit, idx12_15), shift_s8);
+            const uint8x16_t in0      = vld1q_u8(in8_bit_buffer + x + 0);
+            const uint8x16_t in1      = vld1q_u8(in8_bit_buffer + x + 16);
+            const uint8x16_t in2      = vld1q_u8(in8_bit_buffer + x + 32);
+            const uint8x16_t in3      = vld1q_u8(in8_bit_buffer + x + 48);
+            uint16_t* const  out      = out16_bit_buffer + x;
+            // (out_pixel | n_bit_pixel) concatenation
+            vst1q_u16(out + 0, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(ext0, in0)), 6));
+            vst1q_u16(out + 8, vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(ext0, in0)), 6));
+            vst1q_u16(out + 16, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(ext1, in1)), 6));
+            vst1q_u16(out + 24, vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(ext1, in1)), 6));
+            vst1q_u16(out + 32, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(ext2, in2)), 6));
+            vst1q_u16(out + 40, vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(ext2, in2)), 6));
+            vst1q_u16(out + 48, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(ext3, in3)), 6));
+            vst1q_u16(out + 56, vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(ext3, in3)), 6));
+        }
+        in8_bit_buffer += in8_stride;
+        inn_bit_buffer += inn_stride;
+        out16_bit_buffer += out_stride;
+    } while (--height != 0);
+}
+
 void svt_compressed_packmsb_neon(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8_t* inn_bit_buffer,
                                  uint32_t inn_stride, uint16_t* out16_bit_buffer, uint32_t out_stride, uint32_t width,
                                  uint32_t height) {
+    if (width >= 128 && height) {
+        const uint32_t width64 = width & ~63u;
+        compressed_packmsb_rows_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, inn_stride, out16_bit_buffer, out_stride, width64, height);
+        // what is left of each row (fewer than 64 samples) goes through the narrow paths below
+        inn_bit_buffer += width64 >> 2;
+        in8_bit_buffer += width64;
+        out16_bit_buffer += width64;
+        width -= width64;
+        if (!width) {
+            return;
+        }
+    }
     if (width == 32) {
         compressed_packmsb_32x2h(
             in8_bit_buffer, in8_stride, inn_bit_buffer, inn_stride, out16_bit_buffer, out_stride, height);
