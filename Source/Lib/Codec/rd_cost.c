@@ -1995,9 +1995,6 @@ uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, 
     const TxSize tx_size = tx_depth_to_tx_size[tx_depth][bsize];
     MbModeInfo*  mbmi    = xd->mi[0];
 
-    svt_memcpy(ctx->above_txfm_context, txfm_above_ptr, (ctx->blk_geom->bwidth >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
-    svt_memcpy(ctx->left_txfm_context, txfm_left_ptr, (ctx->blk_geom->bheight >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
-
     xd->above_txfm_context      = ctx->above_txfm_context;
     xd->left_txfm_context       = ctx->left_txfm_context;
     mbmi->bsize                 = ctx->blk_geom->bsize;
@@ -2005,18 +2002,33 @@ uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, 
     mbmi->block_mi.ref_frame[0] = candidateBuffer->cand->block_mi.ref_frame[0];
     mbmi->block_mi.tx_depth     = tx_depth;
 
-    const uint64_t bits = svt_aom_tx_size_bits(pcs,
-                                               ctx->blk_ptr->segment_id,
-                                               ctx->md_rate_est_ctx,
-                                               xd,
-                                               mbmi,
-                                               tx_size,
-                                               tx_mode,
-                                               bsize,
-                                               !block_has_coeff,
-                                               NULL,
-                                               0);
-    return bits;
+    const bool is_inter_tx = is_inter_block(&mbmi->block_mi);
+    if (tx_mode != TX_MODE_SELECT || !block_signals_txsize(bsize) || (is_inter_tx && !block_has_coeff) ||
+        svt_av1_is_lossless_segment(pcs, ctx->blk_ptr->segment_id)) {
+        // No transform size is signalled, and the context updates would be discarded.
+        return 0;
+    }
+    if (!is_inter_tx) {
+        // The rate depends on the first context of each side only.
+        ctx->above_txfm_context[0] = txfm_above_ptr[0];
+        ctx->left_txfm_context[0]  = txfm_left_ptr[0];
+        return cost_selected_tx_size(xd, ctx->md_rate_est_ctx, tx_size, NULL, 0);
+    }
+
+    // The variable transform size rate reads and updates the contexts along the block.
+    svt_memcpy(ctx->above_txfm_context, txfm_above_ptr, (ctx->blk_geom->bwidth >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
+    svt_memcpy(ctx->left_txfm_context, txfm_left_ptr, (ctx->blk_geom->bheight >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
+    return svt_aom_tx_size_bits(pcs,
+                                ctx->blk_ptr->segment_id,
+                                ctx->md_rate_est_ctx,
+                                xd,
+                                mbmi,
+                                tx_size,
+                                tx_mode,
+                                bsize,
+                                !block_has_coeff,
+                                NULL,
+                                0);
 }
 
 /*
