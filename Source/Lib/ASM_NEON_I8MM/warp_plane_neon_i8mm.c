@@ -49,43 +49,52 @@ static AOM_FORCE_INLINE void vertical_filter_4x1_f4(const int16x8_t* src, int32x
     *res = horizontal_add_4d_s32x4(m0123_pairs);
 }
 
+// Filter taps of the eight output pixels of a row, in tap order: out[t / 2] holds tap t of every pixel in its
+// low (even t) or high (odd t) half.
+static AOM_FORCE_INLINE void load_filters_8_by_tap(int8x16_t out[4], int offset, int stride) {
+    int8x16_t f[8];
+    for (int n = 0; n < 8; ++n) {
+        f[n] = vcombine_s8(vld1_s8(svt_aom_warped_filter8[(offset + n * stride) >> WARPEDDIFF_PREC_BITS]),
+                           vdup_n_s8(0));
+    }
+    const int16x8_t p01 = vreinterpretq_s16_s8(vzip1q_s8(f[0], f[1]));
+    const int16x8_t p23 = vreinterpretq_s16_s8(vzip1q_s8(f[2], f[3]));
+    const int16x8_t p45 = vreinterpretq_s16_s8(vzip1q_s8(f[4], f[5]));
+    const int16x8_t p67 = vreinterpretq_s16_s8(vzip1q_s8(f[6], f[7]));
+
+    const int32x4_t q0 = vreinterpretq_s32_s16(vzip1q_s16(p01, p23));
+    const int32x4_t q1 = vreinterpretq_s32_s16(vzip2q_s16(p01, p23));
+    const int32x4_t q2 = vreinterpretq_s32_s16(vzip1q_s16(p45, p67));
+    const int32x4_t q3 = vreinterpretq_s32_s16(vzip2q_s16(p45, p67));
+
+    out[0] = vreinterpretq_s8_s32(vzip1q_s32(q0, q2));
+    out[1] = vreinterpretq_s8_s32(vzip2q_s32(q0, q2));
+    out[2] = vreinterpretq_s8_s32(vzip1q_s32(q1, q3));
+    out[3] = vreinterpretq_s8_s32(vzip2q_s32(q1, q3));
+}
+
 static AOM_FORCE_INLINE void vertical_filter_8x1_f8(const int16x8_t* src, int32x4_t* res_low, int32x4_t* res_high,
                                                     int sy, int gamma) {
-    int16x8_t s0 = src[0];
-    int16x8_t s1 = src[1];
-    int16x8_t s2 = src[2];
-    int16x8_t s3 = src[3];
-    int16x8_t s4 = src[4];
-    int16x8_t s5 = src[5];
-    int16x8_t s6 = src[6];
-    int16x8_t s7 = src[7];
-    transpose_elems_inplace_s16_8x8(&s0, &s1, &s2, &s3, &s4, &s5, &s6, &s7);
+    int8x16_t f[4];
+    load_filters_8_by_tap(f, sy, gamma);
 
-    int16x8_t f[8];
-    load_filters_8(f, sy, gamma);
-
-    int32x4_t m0 = vmull_s16(vget_low_s16(s0), vget_low_s16(f[0]));
-    m0           = vmlal_s16(m0, vget_high_s16(s0), vget_high_s16(f[0]));
-    int32x4_t m1 = vmull_s16(vget_low_s16(s1), vget_low_s16(f[1]));
-    m1           = vmlal_s16(m1, vget_high_s16(s1), vget_high_s16(f[1]));
-    int32x4_t m2 = vmull_s16(vget_low_s16(s2), vget_low_s16(f[2]));
-    m2           = vmlal_s16(m2, vget_high_s16(s2), vget_high_s16(f[2]));
-    int32x4_t m3 = vmull_s16(vget_low_s16(s3), vget_low_s16(f[3]));
-    m3           = vmlal_s16(m3, vget_high_s16(s3), vget_high_s16(f[3]));
-    int32x4_t m4 = vmull_s16(vget_low_s16(s4), vget_low_s16(f[4]));
-    m4           = vmlal_s16(m4, vget_high_s16(s4), vget_high_s16(f[4]));
-    int32x4_t m5 = vmull_s16(vget_low_s16(s5), vget_low_s16(f[5]));
-    m5           = vmlal_s16(m5, vget_high_s16(s5), vget_high_s16(f[5]));
-    int32x4_t m6 = vmull_s16(vget_low_s16(s6), vget_low_s16(f[6]));
-    m6           = vmlal_s16(m6, vget_high_s16(s6), vget_high_s16(f[6]));
-    int32x4_t m7 = vmull_s16(vget_low_s16(s7), vget_low_s16(f[7]));
-    m7           = vmlal_s16(m7, vget_high_s16(s7), vget_high_s16(f[7]));
-
-    int32x4_t m0123_pairs[] = {m0, m1, m2, m3};
-    int32x4_t m4567_pairs[] = {m4, m5, m6, m7};
-
-    *res_low  = horizontal_add_4d_s32x4(m0123_pairs);
-    *res_high = horizontal_add_4d_s32x4(m4567_pairs);
+    // Two accumulators per half keep the multiply-accumulate chains at four links.
+    int16x8_t tap = vmovl_s8(vget_low_s8(f[0]));
+    int32x4_t lo0 = vmull_s16(vget_low_s16(src[0]), vget_low_s16(tap));
+    int32x4_t hi0 = vmull_high_s16(src[0], tap);
+    tap           = vmovl_high_s8(f[0]);
+    int32x4_t lo1 = vmull_s16(vget_low_s16(src[1]), vget_low_s16(tap));
+    int32x4_t hi1 = vmull_high_s16(src[1], tap);
+    for (int t = 1; t < 4; ++t) {
+        tap = vmovl_s8(vget_low_s8(f[t]));
+        lo0 = vmlal_s16(lo0, vget_low_s16(src[2 * t]), vget_low_s16(tap));
+        hi0 = vmlal_high_s16(hi0, src[2 * t], tap);
+        tap = vmovl_high_s8(f[t]);
+        lo1 = vmlal_s16(lo1, vget_low_s16(src[2 * t + 1]), vget_low_s16(tap));
+        hi1 = vmlal_high_s16(hi1, src[2 * t + 1], tap);
+    }
+    *res_low  = vaddq_s32(lo0, lo1);
+    *res_high = vaddq_s32(hi0, hi1);
 }
 
 void svt_av1_warp_affine_neon_i8mm(const int32_t* mat, const uint8_t* ref, int width, int height, int stride,
