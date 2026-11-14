@@ -322,29 +322,208 @@ static int64_t get_pixel_proj_error(const uint8_t* src8, int32_t width, int32_t 
 #endif
 }
 
-static int64_t finer_search_pixel_proj_error(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
-                                             const uint8_t* dat8, int32_t dat_stride, int32_t use_highbitdepth,
-                                             int32_t* flt0, int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride,
-                                             int32_t start_step, int32_t* xqd, int8_t do_refine,
-                                             const SgrParamsType* params) {
-    int64_t err = get_pixel_proj_error(src8,
-                                       width,
-                                       height,
-                                       src_stride,
-                                       dat8,
-                                       dat_stride,
-                                       use_highbitdepth,
-                                       flt0,
-                                       flt0_stride,
-                                       flt1,
-                                       flt1_stride,
-                                       xqd,
-                                       params);
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+bool svt_av1_highbd_sgrproj_residual_neon(const uint8_t* dat8, int32_t width, int32_t height, int32_t dat_stride,
+                                          const int32_t* flt, int32_t flt_stride, int16_t* a, int32_t a_stride);
+
+void svt_av1_highbd_sgrproj_line_errors_neon(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                             const uint8_t* dat8, int32_t dat_stride, const int16_t* a0,
+                                             const int16_t* a1, int32_t a_stride, const int32_t xq[2],
+                                             const int32_t xq_inc[2], int32_t n, int64_t* err);
+
+int64_t svt_av1_highbd_sgrproj_filtered_sse_neon(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                                 const uint8_t* dat8, int32_t dat_stride, const int16_t* a0,
+                                                 const int16_t* a1, int32_t a_stride, const int32_t xq[2],
+                                                 int32_t bit_depth);
+
+// Number of measured projection errors kept per parameter set, and of projections measured in one pass
+#define SGRPROJ_MEMO_SIZE 32
+#define SGRPROJ_LINE_MAX 8
+#endif
+
+// The unit and the filter outputs of one parameter set, as the projection error needs them.
+typedef struct SgrprojTrial {
+    const uint8_t*       src8;
+    const uint8_t*       dat8;
+    int32_t              width;
+    int32_t              height;
+    int32_t              src_stride;
+    int32_t              dat_stride;
+    int32_t              use_highbitdepth;
+    int32_t*             flt0;
+    int32_t*             flt1;
+    int32_t              flt_stride;
+    const SgrParamsType* params;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // Residual planes flt - (dat << SGRPROJ_RST_BITS) with the stride of the filter outputs; when they are set
+    // (a0 != NULL) the errors are computed from them and each measured error is kept, the newest replacing the
+    // oldest.
+    const int16_t* a0;
+    const int16_t* a1;
+    int32_t        memo_count;
+    int8_t         memo_xqd[SGRPROJ_MEMO_SIZE][2];
+    int64_t        memo_err[SGRPROJ_MEMO_SIZE];
+#endif
+} SgrprojTrial;
+
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+static bool sgrproj_memo_find(const SgrprojTrial* t, int32_t xqd0, int32_t xqd1, int64_t* err) {
+    const int32_t n = AOMMIN(t->memo_count, SGRPROJ_MEMO_SIZE);
+    for (int32_t i = 0; i < n; i++) {
+        if (t->memo_xqd[i][0] == xqd0 && t->memo_xqd[i][1] == xqd1) {
+            *err = t->memo_err[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+// Estimate of how many points a run of steps along coordinate p will ask for, starting with xqd (the point one
+// step ahead of the current one): the steps a parabola through the errors of the current point and of the two
+// points behind it keeps descending, plus the step that ends the run.
+static int32_t sgrproj_run_length(const SgrprojTrial* t, const int32_t* xqd, int32_t p, int32_t step) {
+    int32_t q[2] = {xqd[0], xqd[1]};
+    int64_t e[3];
+    for (int32_t i = 0; i < 3; i++) {
+        q[p] -= step;
+        if (!sgrproj_memo_find(t, q[0], q[1], &e[i])) {
+            return 3;
+        }
+    }
+    // In units of one step, with the current point at 0 and the measured points at 0, -1 and -2
+    const double curvature = (double)(e[2] - 2 * e[1] + e[0]);
+    const double slope     = (double)(e[0] - e[1]) + 0.5 * curvature;
+    if (curvature <= 0) {
+        return slope <= 0 ? SGRPROJ_LINE_MAX : 1;
+    }
+    // The parabola does not rise from i to i + 1 while i + 0.5 is not beyond its lowest point
+    const double lowest = -slope / curvature;
+    if (lowest < 0.5) {
+        return 1;
+    }
+    return lowest < SGRPROJ_LINE_MAX - 1.5 ? (int32_t)(lowest + 0.5) + 1 : SGRPROJ_LINE_MAX;
+}
+
+// Projection error of xqd from the residual planes. Each point is measured once; a point that has not been
+// measured is measured together with other points on the line through it along coordinate p, in one pass over the
+// unit. step tells which trial of the refinement asks (0: its starting point, otherwise the step just applied to
+// xqd[p]) and start_step is the largest step of the refinement (0: no refinement). Both only select the other
+// points of the pass, namely the ones the refinement is expected to ask for next; the value returned for a point
+// does not depend on them.
+static int64_t sgrproj_memo_error(SgrprojTrial* t, const int32_t* xqd, int32_t p, int32_t step, int32_t start_step) {
+    int64_t err;
+    if (sgrproj_memo_find(t, xqd[0], xqd[1], &err)) {
+        return err;
+    }
+
+    // The points measured have coordinate p equal to first + i * inc, i = 0..n-1, and include xqd.
+    int32_t first = xqd[p];
+    int32_t inc   = 1;
+    int32_t n     = 1;
+    if (step == 0) {
+        if (start_step) {
+            // Starting point: the first run of steps goes down, then up, along the first coordinate searched
+            p     = t->params->r[0] > 0 ? 0 : 1;
+            inc   = start_step;
+            first = xqd[p] - 3 * inc;
+            n     = 5;
+        }
+    } else if (step == start_step || step == -start_step) {
+        int32_t q[2] = {xqd[0], xqd[1]};
+        q[p] -= 2 * step;
+        if (step < 0 && !sgrproj_memo_find(t, q[0], q[1], &err)) {
+            // First step along this line: the points on both sides of the current one
+            inc = -2 * step;
+            n   = 2;
+        } else {
+            inc = step;
+            n   = sgrproj_run_length(t, xqd, p, step);
+        }
+    } else if (step < 0) {
+        // Smaller steps are tried once in each direction
+        inc = -2 * step;
+        n   = 2;
+    }
+
+    // Drop the points outside the range of the coordinate; xqd itself is inside
+    const int32_t tap_min = p ? SGRPROJ_PRJ_MIN1 : SGRPROJ_PRJ_MIN0;
+    const int32_t tap_max = p ? SGRPROJ_PRJ_MAX1 : SGRPROJ_PRJ_MAX0;
+    while (first < tap_min || first > tap_max) {
+        first += inc;
+        n--;
+    }
+    while (first + (n - 1) * inc < tap_min || first + (n - 1) * inc > tap_max) {
+        n--;
+    }
+
+    // svt_decode_xq() is affine in xqd, so the projections of the points are equally spaced too
+    int32_t q[2] = {xqd[0], xqd[1]};
+    int32_t xq[2];
+    int32_t xq_inc[2];
+    q[p] = first + inc;
+    svt_decode_xq(q, xq_inc, t->params);
+    q[p] = first;
+    svt_decode_xq(q, xq, t->params);
+    xq_inc[0] -= xq[0];
+    xq_inc[1] -= xq[1];
+
+    int64_t errs[SGRPROJ_LINE_MAX];
+    svt_av1_highbd_sgrproj_line_errors_neon(t->src8,
+                                            t->width,
+                                            t->height,
+                                            t->src_stride,
+                                            t->dat8,
+                                            t->dat_stride,
+                                            t->a0,
+                                            t->a1,
+                                            t->flt_stride,
+                                            xq,
+                                            xq_inc,
+                                            n,
+                                            errs);
+    for (int32_t i = 0; i < n; i++, q[p] += inc) {
+        const int32_t slot   = t->memo_count++ % SGRPROJ_MEMO_SIZE;
+        t->memo_xqd[slot][0] = (int8_t)q[0];
+        t->memo_xqd[slot][1] = (int8_t)q[1];
+        t->memo_err[slot]    = errs[i];
+    }
+    return errs[(xqd[p] - first) / inc];
+}
+#endif
+
+// Projection error of xqd for the refinement; p, step and start_step are described at sgrproj_memo_error().
+static int64_t sgrproj_trial_error(SgrprojTrial* t, int32_t* xqd, int32_t p, int32_t step, int32_t start_step) {
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (t->a0) {
+        return sgrproj_memo_error(t, xqd, p, step, start_step);
+    }
+#else
+    (void)p;
+    (void)step;
+    (void)start_step;
+#endif
+    return get_pixel_proj_error(t->src8,
+                                t->width,
+                                t->height,
+                                t->src_stride,
+                                t->dat8,
+                                t->dat_stride,
+                                t->use_highbitdepth,
+                                t->flt0,
+                                t->flt_stride,
+                                t->flt1,
+                                t->flt_stride,
+                                xqd,
+                                t->params);
+}
+
+static int64_t finer_search_pixel_proj_error(SgrprojTrial* t, int32_t start_step, int32_t* xqd, int8_t do_refine) {
+    const SgrParamsType* params = t->params;
+    int64_t              err    = sgrproj_trial_error(t, xqd, 0, 0, do_refine ? start_step : 0);
     if (!do_refine) {
         return err;
     }
 
-    (void)start_step;
     int64_t       err2;
     const int32_t tap_min[] = {SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1};
     const int32_t tap_max[] = {SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1};
@@ -357,19 +536,7 @@ static int64_t finer_search_pixel_proj_error(const uint8_t* src8, int32_t width,
             do {
                 if (xqd[p] - s >= tap_min[p]) {
                     xqd[p] -= s;
-                    err2 = get_pixel_proj_error(src8,
-                                                width,
-                                                height,
-                                                src_stride,
-                                                dat8,
-                                                dat_stride,
-                                                use_highbitdepth,
-                                                flt0,
-                                                flt0_stride,
-                                                flt1,
-                                                flt1_stride,
-                                                xqd,
-                                                params);
+                    err2 = sgrproj_trial_error(t, xqd, p, -s, start_step);
                     if (err2 > err) {
                         xqd[p] += s;
                     } else {
@@ -389,19 +556,7 @@ static int64_t finer_search_pixel_proj_error(const uint8_t* src8, int32_t width,
             do {
                 if (xqd[p] + s <= tap_max[p]) {
                     xqd[p] += s;
-                    err2 = get_pixel_proj_error(src8,
-                                                width,
-                                                height,
-                                                src_stride,
-                                                dat8,
-                                                dat_stride,
-                                                use_highbitdepth,
-                                                flt0,
-                                                flt0_stride,
-                                                flt1,
-                                                flt1_stride,
-                                                xqd,
-                                                params);
+                    err2 = sgrproj_trial_error(t, xqd, p, s, start_step);
                     if (err2 > err) {
                         xqd[p] -= s;
                     } else {
@@ -591,6 +746,108 @@ static int64_t sgrproj_filtered_sse_highbd(const uint8_t* src8, int32_t width, i
 }
 #endif
 
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+// search_selfguided_restoration() for high bit depth units, with the filter outputs of each parameter set reduced
+// to int16 residual planes: the projection errors and the SSE of the filtered unit are computed from them, several
+// projections per pass. Returns false, without a result, when a residual does not fit in 16 bits; the caller then
+// runs the search on the filter outputs.
+static bool search_selfguided_restoration_residual(const uint8_t* dat8, int32_t width, int32_t height,
+                                                   int32_t dat_stride, const uint8_t* src8, int32_t src_stride,
+                                                   int32_t bit_depth, int32_t pu_width, int32_t pu_height,
+                                                   int32_t* rstbuf, const SgFilterCtrls* ctrls, int32_t plane,
+                                                   int64_t* unit_sse, SgrprojInfo* info) {
+    int32_t* flt0 = rstbuf;
+    int32_t* flt1 = flt0 + RESTORATION_UNITPELS_MAX;
+    // Two residual planes each for the current and for the best parameter set so far, in the two int32 planes the
+    // search on the filter outputs uses for its best set; the pairs swap roles when a set becomes the best.
+    int16_t*      a          = (int16_t*)(rstbuf + 2 * RESTORATION_UNITPELS_MAX);
+    int16_t*      best_a     = (int16_t*)(rstbuf + 3 * RESTORATION_UNITPELS_MAX);
+    int32_t       bestep     = 0;
+    int64_t       besterr    = -1;
+    int32_t       bestxqd[2] = {0, 0};
+    const int32_t flt_stride = ((width + 7) & ~7) + 8;
+    const int8_t  start_ep   = ctrls->start_ep[plane];
+    const int8_t  end_ep     = ctrls->end_ep[plane];
+    const int8_t  ep_inc     = ctrls->ep_inc[plane];
+    const int8_t  do_refine  = ctrls->refine[plane];
+    // The error of a parameter set only serves the refinement and the comparison with other sets
+    const bool need_err = do_refine || start_ep + ep_inc < end_ep;
+    for (int32_t ep = start_ep; ep < end_ep; ep += ep_inc) {
+        int32_t exq[2];
+        int32_t exqd[2];
+        apply_sgr(ep, dat8, width, height, dat_stride, 1, bit_depth, pu_width, pu_height, flt0, flt1, flt_stride);
+
+        const SgrParamsType* const params = &svt_aom_eb_sgr_params[ep];
+        svt_get_proj_subspace(
+            src8, width, height, src_stride, dat8, dat_stride, 1, flt0, flt_stride, flt1, flt_stride, exq, params);
+        encode_xq(exq, exqd, params);
+
+        // The output of a radius that is not filtered is not written and its projection coefficient is 0
+        for (int32_t i = 0; i < 2; i++) {
+            int16_t* const a_i = a + i * RESTORATION_UNITPELS_MAX;
+            if (params->r[i] == 0) {
+                memset(a_i, 0, sizeof(*a_i) * flt_stride * height);
+            } else if (!svt_av1_highbd_sgrproj_residual_neon(
+                           dat8, width, height, dat_stride, i ? flt1 : flt0, flt_stride, a_i, flt_stride)) {
+                return false;
+            }
+        }
+
+        int64_t err = 0;
+        if (need_err) {
+            SgrprojTrial trial;
+            trial.src8             = src8;
+            trial.dat8             = dat8;
+            trial.width            = width;
+            trial.height           = height;
+            trial.src_stride       = src_stride;
+            trial.dat_stride       = dat_stride;
+            trial.use_highbitdepth = 1;
+            trial.flt0             = flt0;
+            trial.flt1             = flt1;
+            trial.flt_stride       = flt_stride;
+            trial.params           = params;
+            trial.a0               = a;
+            trial.a1               = a + RESTORATION_UNITPELS_MAX;
+            trial.memo_count       = 0;
+            err                    = finer_search_pixel_proj_error(&trial, 2, exqd, do_refine);
+        }
+        if (besterr == -1 || err < besterr) {
+            bestep     = ep;
+            besterr    = err;
+            bestxqd[0] = exqd[0];
+            bestxqd[1] = exqd[1];
+            int16_t* t = best_a;
+            best_a     = a;
+            a          = t;
+        }
+    }
+    if (unit_sse) {
+        *unit_sse = -1;
+        if (besterr != -1) {
+            int32_t xq[2];
+            svt_decode_xq(bestxqd, xq, &svt_aom_eb_sgr_params[bestep]);
+            *unit_sse = svt_av1_highbd_sgrproj_filtered_sse_neon(src8,
+                                                                 width,
+                                                                 height,
+                                                                 src_stride,
+                                                                 dat8,
+                                                                 dat_stride,
+                                                                 best_a,
+                                                                 best_a + RESTORATION_UNITPELS_MAX,
+                                                                 flt_stride,
+                                                                 xq,
+                                                                 bit_depth);
+        }
+    }
+
+    info->ep     = bestep;
+    info->xqd[0] = bestxqd[0];
+    info->xqd[1] = bestxqd[1];
+    return true;
+}
+#endif
+
 // When unit_sse is not NULL it receives the SSE of the unit filtered with the returned parameters, or -1 when
 // the caller has to obtain it by filtering the unit.
 static SgrprojInfo search_selfguided_restoration(const uint8_t* dat8, int32_t width, int32_t height, int32_t dat_stride,
@@ -609,7 +866,30 @@ static SgrprojInfo search_selfguided_restoration(const uint8_t* dat8, int32_t wi
     int32_t  flt_stride = ((width + 7) & ~7) + 8;
     assert(pu_width == (RESTORATION_PROC_UNIT_SIZE >> 1) || pu_width == RESTORATION_PROC_UNIT_SIZE);
     assert(pu_height == (RESTORATION_PROC_UNIT_SIZE >> 1) || pu_height == RESTORATION_PROC_UNIT_SIZE);
-    plane            = !!plane; // plane > 0 ? 1 : 0;
+    plane = !!plane; // plane > 0 ? 1 : 0;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // The residual kernels are written for samples of at most 10 bits and rows of 8 to 384 samples.
+    if (use_highbitdepth && bit_depth <= 10 && width >= 8 && width <= RESTORATION_UNITSIZE_MAX * 3 / 2 &&
+        svt_av1_highbd_pixel_proj_error == svt_av1_highbd_pixel_proj_error_neon) {
+        SgrprojInfo info;
+        if (search_selfguided_restoration_residual(dat8,
+                                                   width,
+                                                   height,
+                                                   dat_stride,
+                                                   src8,
+                                                   src_stride,
+                                                   bit_depth,
+                                                   pu_width,
+                                                   pu_height,
+                                                   rstbuf,
+                                                   ctrls,
+                                                   plane,
+                                                   unit_sse,
+                                                   &info)) {
+            return info;
+        }
+    }
+#endif
     int8_t start_ep  = ctrls->start_ep[plane];
     int8_t end_ep    = ctrls->end_ep[plane];
     int8_t ep_inc    = ctrls->ep_inc[plane];
@@ -645,21 +925,22 @@ static SgrprojInfo search_selfguided_restoration(const uint8_t* dat8, int32_t wi
                               params);
 
         encode_xq(exq, exqd, params);
-        int64_t err = finer_search_pixel_proj_error(src8,
-                                                    width,
-                                                    height,
-                                                    src_stride,
-                                                    dat8,
-                                                    dat_stride,
-                                                    use_highbitdepth,
-                                                    flt0,
-                                                    flt_stride,
-                                                    flt1,
-                                                    flt_stride,
-                                                    2,
-                                                    exqd,
-                                                    do_refine,
-                                                    params);
+        SgrprojTrial trial;
+        trial.src8             = src8;
+        trial.dat8             = dat8;
+        trial.width            = width;
+        trial.height           = height;
+        trial.src_stride       = src_stride;
+        trial.dat_stride       = dat_stride;
+        trial.use_highbitdepth = use_highbitdepth;
+        trial.flt0             = flt0;
+        trial.flt1             = flt1;
+        trial.flt_stride       = flt_stride;
+        trial.params           = params;
+#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+        trial.a0 = NULL;
+#endif
+        int64_t err = finer_search_pixel_proj_error(&trial, 2, exqd, do_refine);
         if (besterr == -1 || err < besterr) {
             bestep     = ep;
             besterr    = err;

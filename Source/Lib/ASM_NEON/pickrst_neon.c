@@ -1659,4 +1659,213 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
 
     return vaddvq_s64(sse_s64);
 }
+
+// What a projection needs from a self-guided filter output is its difference to the upscaled sample,
+// a = flt - (dat << SGRPROJ_RST_BITS). Stores it as int16 and returns whether every difference lies strictly inside
+// the int16 range, in which case the stored plane is exact. The subtraction is done modulo 2^32: a difference that
+// wraps has a true value below -2^31, so its wrapped value is above 2^30 and saturates. A saturated lane holds
+// INT16_MIN or INT16_MAX, so tracking the extremes of the stored values detects every misfit (and rejects the two
+// limit values themselves). dat << 4 fits in 16 bits for bit depths up to 12. width must be at least 8: the last
+// block of a row is taken at width - 8 and may overlap the previous one.
+bool svt_av1_highbd_sgrproj_residual_neon(const uint8_t* dat8, int32_t width, int32_t height, int32_t dat_stride,
+                                          const int32_t* flt, int32_t flt_stride, int16_t* a, int32_t a_stride) {
+    const uint16_t* dat = CONVERT_TO_SHORTPTR(dat8);
+    int16x8_t       max = vdupq_n_s16(0);
+    int16x8_t       min = vdupq_n_s16(0);
+
+    do {
+        for (int j = 0; j < width; j += 8) {
+            if (j > width - 8) {
+                j = width - 8;
+            }
+            const uint16x8_t u  = vshlq_n_u16(vld1q_u16(&dat[j]), SGRPROJ_RST_BITS);
+            const uint32x4_t lo = vsubw_u16(vreinterpretq_u32_s32(vld1q_s32(&flt[j])), vget_low_u16(u));
+            const uint32x4_t hi = vsubw_high_u16(vreinterpretq_u32_s32(vld1q_s32(&flt[j + 4])), u);
+            const int16x8_t  r  = vqmovn_high_s32(vqmovn_s32(vreinterpretq_s32_u32(lo)), vreinterpretq_s32_u32(hi));
+
+            max = vmaxq_s16(max, r);
+            min = vminq_s16(min, r);
+            vst1q_s16(&a[j], r);
+        }
+        dat += dat_stride;
+        flt += flt_stride;
+        a += a_stride;
+    } while (--height != 0);
+
+    return vmaxvq_s16(max) < INT16_MAX && vminvq_s16(min) > INT16_MIN;
+}
+
+// Squared errors of one block of 8 samples for the n projections xq + i * xq_inc, i = 0..n-1: those of the low
+// four samples are added to acc[i], those of the high four to acc[i + hi]. c holds 32 * {xq[0], xq[1], xq_inc[0],
+// xq_inc[1]}.
+//
+// With u = dat << SGRPROJ_RST_BITS, a0 = flt0 - u and a1 = flt1 - u, the projection of a sample is
+//   r = (xq0 * a0 + xq1 * a1 + (1 << 10)) >> 11,
+// the error of the projection search is e = r + dat - src and the filtered sample is clip(dat + r): the reference
+// forms add dat << 11 (u << SGRPROJ_PRJ_BITS) before the shift, a multiple of 1 << 11 that moves out of the floor
+// unchanged, or compute the same sum with its terms regrouped.
+//
+// The block evaluates v = 32 * (xq0 * a0 + xq1 * a1) + (1 << 15) + (top << 16) in 32-bit lanes, top being
+// dat - src (error) or dat (filtered sample), and takes the high halves of the lanes: floor(v / 65536) = top + r.
+// The next projection on the line is reached by adding the per-sample increment 32 * (inc0 * a0 + inc1 * a1).
+// Ranges, for |a0|, |a1| <= 32767, |xq0| + |xq1| <= 352 (all projections the syntax can express: xq0 in [-96, 31]
+// and xq1 in [2, 256], or one of them 0) and samples of at most 10 bits:
+//   |32 * (xq0 * a0 + xq1 * a1)| <= 32 * 352 * 32767 < 2^28.5 and |top << 16| < 2^26, so v is below 2^29 in
+//   magnitude: the lanes are computed modulo 2^32 and hold v exactly, whatever the order of the additions;
+//   |r| <= 5632 and |top + r| <= 6655, which fits the 16-bit lanes.
+// Samples masked to zero in all four inputs give v = 1 << 15 and a zero error.
+static AOM_FORCE_INLINE void sgrproj_line_block(const uint16x8_t d, const uint16x8_t s, const int16x8_t a0,
+                                                const int16x8_t a1, const int16x4_t c, const int n, const int hi,
+                                                const int clip_max, int32x4_t* acc) {
+    const int16x8_t half = vdupq_n_s16(INT16_MIN);
+    const int16x8_t top  = vreinterpretq_s16_u16(clip_max ? d : vsubq_u16(d, s));
+
+    int32x4_t v_lo = vreinterpretq_s32_s16(vzip1q_s16(half, top));
+    int32x4_t v_hi = vreinterpretq_s32_s16(vzip2q_s16(half, top));
+    v_lo           = vmlal_lane_s16(v_lo, vget_low_s16(a0), c, 0);
+    v_hi           = vmlal_high_lane_s16(v_hi, a0, c, 0);
+    v_lo           = vmlal_lane_s16(v_lo, vget_low_s16(a1), c, 1);
+    v_hi           = vmlal_high_lane_s16(v_hi, a1, c, 1);
+
+    int32x4_t inc_lo = vdupq_n_s32(0);
+    int32x4_t inc_hi = vdupq_n_s32(0);
+    if (n > 1) {
+        inc_lo = vmlal_lane_s16(vmull_lane_s16(vget_low_s16(a0), c, 2), vget_low_s16(a1), c, 3);
+        inc_hi = vmlal_high_lane_s16(vmull_high_lane_s16(a0, c, 2), a1, c, 3);
+    }
+
+    for (int i = 0;;) {
+        int16x8_t e = vuzp2q_s16(vreinterpretq_s16_s32(v_lo), vreinterpretq_s16_s32(v_hi));
+        if (clip_max) {
+            e = vminq_s16(vmaxq_s16(e, vdupq_n_s16(0)), vdupq_n_s16((int16_t)clip_max));
+            e = vsubq_s16(e, vreinterpretq_s16_u16(s));
+        }
+        acc[i]      = vmlal_s16(acc[i], vget_low_s16(e), vget_low_s16(e));
+        acc[i + hi] = vmlal_high_s16(acc[i + hi], e, e);
+        if (++i == n) {
+            break;
+        }
+        v_lo = vaddq_s32(v_lo, inc_lo);
+        v_hi = vaddq_s32(v_hi, inc_hi);
+    }
+}
+
+// Sums of squared errors over a unit for n projections on a line (see sgrproj_line_block()) or, when clip_max is
+// not 0, the sum of squared differences between the source and the unit filtered with the projection xq.
+// A 32-bit lane of acc receives at most two squares per block, so at most 96 squares of at most 6655^2 per row for
+// widths up to 384 (RESTORATION_UNITSIZE_MAX * 3 / 2): less than 2^32, and the lanes are widened as unsigned values
+// once per row. Up to four projections have separate accumulators for the two halves of a block, so that each
+// accumulator is updated once per block; more projections share one per projection.
+static AOM_FORCE_INLINE void sgrproj_line_errors(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                                 const uint8_t* dat8, int32_t dat_stride, const int16_t* a0,
+                                                 const int16_t* a1, int32_t a_stride, const int32_t* xq,
+                                                 const int32_t* xq_inc, const int n, const int clip_max, int64_t* err) {
+    const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
+    const uint16_t* dat = CONVERT_TO_SHORTPTR(dat8);
+
+    const int16_t c_s16[4] = {
+        (int16_t)(32 * xq[0]), (int16_t)(32 * xq[1]), (int16_t)(32 * xq_inc[0]), (int16_t)(32 * xq_inc[1])};
+    const int16x4_t c = vld1_s16(c_s16);
+
+    uint64x2_t sum[8];
+    for (int i = 0; i < n; i++) {
+        sum[i] = vdupq_n_u64(0);
+    }
+
+    assert(width >= 8 && width <= RESTORATION_UNITSIZE_MAX * 3 / 2);
+    const int hi = n <= 4 ? n : 0;
+    do {
+        int32x4_t acc[8];
+        for (int i = 0; i < n + hi; i++) {
+            acc[i] = vdupq_n_s32(0);
+        }
+
+        int j = 0;
+        for (; j <= width - 8; j += 8) {
+            sgrproj_line_block(
+                vld1q_u16(&dat[j]), vld1q_u16(&src[j]), vld1q_s16(&a0[j]), vld1q_s16(&a1[j]), c, n, hi, clip_max, acc);
+        }
+        if (j != width) {
+            // the last 8 samples of the row, with the ones already counted masked out
+            const int16x8_t mask = vld1q_s16(mask_16x8[width % 8 - 1]);
+            j                    = width - 8;
+            sgrproj_line_block(vandq_u16(vld1q_u16(&dat[j]), vreinterpretq_u16_s16(mask)),
+                               vandq_u16(vld1q_u16(&src[j]), vreinterpretq_u16_s16(mask)),
+                               vandq_s16(vld1q_s16(&a0[j]), mask),
+                               vandq_s16(vld1q_s16(&a1[j]), mask),
+                               c,
+                               n,
+                               hi,
+                               clip_max,
+                               acc);
+        }
+
+        for (int i = 0; i < n; i++) {
+            sum[i] = vpadalq_u32(sum[i], vreinterpretq_u32_s32(acc[i]));
+            if (hi) {
+                sum[i] = vpadalq_u32(sum[i], vreinterpretq_u32_s32(acc[i + hi]));
+            }
+        }
+        dat += dat_stride;
+        src += src_stride;
+        a0 += a_stride;
+        a1 += a_stride;
+    } while (--height != 0);
+
+    for (int i = 0; i < n; i++) {
+        err[i] = (int64_t)vaddvq_u64(sum[i]);
+    }
+}
+
+// Projection errors (the value of svt_av1_highbd_pixel_proj_error()) of the n <= 8 projections xq + i * xq_inc,
+// from the residual planes of svt_av1_highbd_sgrproj_residual_neon(). The plane of a radius that is not filtered
+// is all zeros and its xq is 0. Every projection on the line must be within the limits of sgrproj_line_block().
+void svt_av1_highbd_sgrproj_line_errors_neon(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                             const uint8_t* dat8, int32_t dat_stride, const int16_t* a0,
+                                             const int16_t* a1, int32_t a_stride, const int32_t xq[2],
+                                             const int32_t xq_inc[2], int32_t n, int64_t* err) {
+#define SGRPROJ_LINE_ERRORS(n_) \
+    sgrproj_line_errors(src8, width, height, src_stride, dat8, dat_stride, a0, a1, a_stride, xq, xq_inc, n_, 0, err)
+    switch (n) {
+    case 1:
+        SGRPROJ_LINE_ERRORS(1);
+        break;
+    case 2:
+        SGRPROJ_LINE_ERRORS(2);
+        break;
+    case 3:
+        SGRPROJ_LINE_ERRORS(3);
+        break;
+    case 4:
+        SGRPROJ_LINE_ERRORS(4);
+        break;
+    case 5:
+        SGRPROJ_LINE_ERRORS(5);
+        break;
+    case 6:
+        SGRPROJ_LINE_ERRORS(6);
+        break;
+    case 7:
+        SGRPROJ_LINE_ERRORS(7);
+        break;
+    default:
+        assert(n == 8);
+        SGRPROJ_LINE_ERRORS(8);
+        break;
+    }
+#undef SGRPROJ_LINE_ERRORS
+}
+
+// Sum of squared differences between the source and the unit filtered with the projection xq, with the arithmetic
+// of svt_apply_selfguided_restoration(), from the residual planes.
+int64_t svt_av1_highbd_sgrproj_filtered_sse_neon(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                                 const uint8_t* dat8, int32_t dat_stride, const int16_t* a0,
+                                                 const int16_t* a1, int32_t a_stride, const int32_t xq[2],
+                                                 int32_t bit_depth) {
+    const int32_t xq_inc[2] = {0, 0};
+    int64_t       err;
+    sgrproj_line_errors(
+        src8, width, height, src_stride, dat8, dat_stride, a0, a1, a_stride, xq, xq_inc, 1, (1 << bit_depth) - 1, &err);
+    return err;
+}
 #endif
