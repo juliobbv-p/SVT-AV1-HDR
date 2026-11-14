@@ -415,10 +415,13 @@ static AOM_FORCE_INLINE void butterfly_dct_post_s16_x8(const int16x8_t* in0, con
 // 8x8 1D primitives (cospi32 butterflies use vqrdmulh)
 // ---------------------------------------------------------------------------
 
-static AOM_FORCE_INLINE void fdct8x8_neon(const int16x8_t* input, int16x8_t* output, int cos_bit) {
+// dc_wide: the sum and the difference of the DC butterfly are formed in the 32-bit products instead of in 16-bit
+// lanes, for callers whose x2[0] +- x2[1] (the eight inputs added with either sign pattern) can leave int16_t.
+static AOM_FORCE_INLINE void fdct8x8_impl_neon(const int16x8_t* input, int16x8_t* output, int cos_bit, int dc_wide) {
     const int16_t*  cospi      = fwd_cospi_q13(cos_bit);
     const int16x8_t cospi32_16 = vld1q_s16(&cospi[4 * 0]);
     const int16x8_t cospi8_24  = vld1q_s16(&cospi[4 * 2]);
+    const int16x4_t cospi32    = vget_low_s16(cospi32_16);
     const int16x4_t cospi16    = vget_high_s16(cospi32_16);
     const int16x4_t cospi8     = vget_low_s16(cospi8_24);
     const int16x4_t cospi24    = vget_high_s16(cospi8_24);
@@ -431,12 +434,20 @@ static AOM_FORCE_INLINE void fdct8x8_neon(const int16x8_t* input, int16x8_t* out
     btf_cospi32_0112_x8(w32, x1[6], x1[5], &x2[6], &x2[5]);
 
     int16x8_t x3[8];
-    btf_cospi32_0112_x8(w32, x2[0], x2[1], &output[0], &output[4]);
+    if (dc_wide) {
+        butterfly_s16_s32_x8_neon(cospi32, 0, 1, 1, 2, x2[0], x2[1], &output[0], &output[4]);
+    } else {
+        btf_cospi32_0112_x8(w32, x2[0], x2[1], &output[0], &output[4]);
+    }
     butterfly_0112_x8(cospi16, x2[3], x2[2], &output[2], &output[6]);
     butterfly_dct_post_s16_x8(x1 + 4, x2 + 4, x3 + 4, 4);
 
     butterfly_0112_x8(cospi8, x3[7], x3[4], &output[1], &output[7]);
     butterfly_1003_x8(cospi24, x3[6], x3[5], &output[5], &output[3]);
+}
+
+static AOM_FORCE_INLINE void fdct8x8_neon(const int16x8_t* input, int16x8_t* output, int cos_bit) {
+    fdct8x8_impl_neon(input, output, cos_bit, 0);
 }
 
 static AOM_FORCE_INLINE void fadst8x8_neon(const int16x8_t* input, int16x8_t* output, int cos_bit) {
@@ -1325,7 +1336,13 @@ void svt_lbd_fwd_txfm2d_8x32_neon(int16_t* input, int32_t* output, uint32_t stri
         }
         const int16x8_t* ri = lr_flip ? rin : (buf1 + 8 * i);
         int16x8_t        rout[8];
-        fwd_txfm8x8_neon(ri, rout, htx_tab[tx_type], 12);
+        if (htx_tab[tx_type] == DCT_1D) {
+            // A row of the 32-point column pass reaches 22.63 * |residual| per sample (its DC row, after the >> 2),
+            // so the eight samples summed in the row DCT's DC butterfly reach 181 * |residual|: 17 bits above 181.
+            fdct8x8_impl_neon(ri, rout, 12, 1);
+        } else {
+            fwd_txfm8x8_neon(ri, rout, htx_tab[tx_type], 12);
+        }
         int16x8_t t[8];
         transpose_arrays_s16_8x8(rout, t);
         for (int r = 0; r < 8; r++) {

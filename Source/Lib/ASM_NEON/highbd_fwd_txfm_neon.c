@@ -2613,9 +2613,10 @@ void svt_av1_fwd_txfm2d_8x32_neon(int16_t* input, int32_t* coeff, uint32_t strid
         return;
     }
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH && !CONFIG_ENABLE_FAST_LBD_TXFM
-    // The 8-bit 8x32 kernel saturates its 32-point column DC path from |residual| = 182 (flat blocks), so it
-    // gets a tighter bound than the other sizes.
-    if (bd == 10 && residual_rect_fits(input, stride, 8, 32, 127)) {
+    // The 16-bit 8x32 kernel holds |residual| <= 255 like the other sizes: its largest 16-bit value is the DC
+    // coefficient, 128 * |residual| for a flat block; the eight-term sum of the row DC butterfly, up to
+    // 181 * |residual|, is formed in 32 bits.
+    if (bd == 10 && residual_rect_fits(input, stride, 8, 32, 255)) {
         svt_lbd_fwd_txfm2d_8x32_neon(input, coeff, stride, tx_type);
         return;
     }
