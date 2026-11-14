@@ -596,6 +596,10 @@ void svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx
                     pcost->base_cost16_ok &= c >= 0 && c <= INT16_MAX;
                     pcost->base_cost16[l][ctx] = (int16_t)c;
                 }
+                for (int ctx = 0; ctx < 32; ++ctx) {
+                    pcost->base_cost8[32 * l + ctx]       = (uint8_t)(pcost->base_cost16[l][ctx] & 0xff);
+                    pcost->base_cost8[128 + 32 * l + ctx] = (uint8_t)((pcost->base_cost16[l][ctx] >> 8) & 0xff);
+                }
             }
             for (int ctx = 0; ctx < EOB_COEF_CONTEXTS; ++ctx) {
                 svt_aom_get_syntax_rate_from_cdf(

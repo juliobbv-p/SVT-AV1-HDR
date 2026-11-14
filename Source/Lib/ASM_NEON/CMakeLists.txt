@@ -36,6 +36,7 @@ target_sources(
   PUBLIC convolve_neon.c
   PUBLIC convolve_scale_neon.c
   PUBLIC corner_match_neon.c
+  PUBLIC cost_coeffs_neon.c
   PUBLIC dav1d_asm.S
   PUBLIC dav1d_util.S
   PUBLIC deblocking_filter_intrinsic_neon.c

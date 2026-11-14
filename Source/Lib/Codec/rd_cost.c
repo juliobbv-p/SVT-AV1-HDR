@@ -277,6 +277,56 @@ COST_COEFFS_MID(TX_CLASS_HORIZ)
 COST_COEFFS_MID(TX_CLASS_VERT)
 #undef COST_COEFFS_MID
 
+#if defined(ARCH_AARCH64)
+int svt_av1_cost_coeffs_base_2d_neon(const int16_t* iscan, const int8_t* coeff_contexts, const uint8_t* levels,
+                                     const uint8_t* base_cost8, int bwl, int height, int diag, int eob, int32_t* cost,
+                                     int32_t* nz_count, uint16_t* big_start, uint64_t* big_mask);
+
+// Shorter blocks leave the raster-order kernel little to do per visited row.
+#define COST_RASTER_MIN_EOB 16
+
+// Rate of the 2D-class scan positions [1, eob - 2]. The kernel sums the base-level rates in raster order and
+// reports the positions with levels above the base levels, whose range rates are added here.
+static NOINLINE int32_t cost_coeffs_mid_raster_2d_neon(const int16_t* const scan, const int16_t* const iscan,
+                                                       const TranLow* const qcoeff, const int8_t* const coeff_contexts,
+                                                       const LvMapCoeffCost* coeff_costs, const uint8_t* const levels,
+                                                       const int32_t bwl, int32_t height, int32_t eob) {
+    uint16_t      big_start[64];
+    uint64_t      big_mask[64];
+    const int32_t last = scan[eob - 1];
+    // No earlier scan position lies on a later anti-diagonal than the last coefficient.
+    const int32_t diag = (last >> bwl) + (last & ((1 << bwl) - 1));
+    int32_t       cost, nz;
+    const int32_t groups = svt_av1_cost_coeffs_base_2d_neon(iscan,
+                                                            coeff_contexts,
+                                                            levels,
+                                                            coeff_costs->base_cost8,
+                                                            bwl,
+                                                            height,
+                                                            diag,
+                                                            eob,
+                                                            &cost,
+                                                            &nz,
+                                                            big_start,
+                                                            big_mask);
+    for (int32_t g = 0; g < groups; ++g) {
+        // one bit per position
+        uint64_t big = big_mask[g] & 0x1111111111111111ULL;
+        do {
+            const int32_t pos        = big_start[g] + (svt_ctzll(big) >> 2);
+            const int32_t level      = abs(qcoeff[pos]);
+            const int32_t ctx        = get_br_ctx(levels, pos, bwl, TX_CLASS_2D);
+            const int32_t base_range = level - 1 - NUM_BASE_LEVELS;
+            cost += base_range < COEFF_BASE_RANGE
+                ? coeff_costs->lps_cost[ctx][base_range]
+                : get_golomb_cost(level) + coeff_costs->lps_cost[ctx][COEFF_BASE_RANGE];
+            big &= big - 1;
+        } while (big);
+    }
+    return cost + nz * av1_cost_literal(1);
+}
+#endif // ARCH_AARCH64
+
 #if EN_AVX512_SUPPORT
 #include <immintrin.h>
 
@@ -437,6 +487,13 @@ static AOM_FORCE_INLINE int32_t av1_cost_coeffs_txb_loop_cost_eob(
                                               bwl,
                                               get_levels_rows(scan, eob, bwl, height, TX_CLASS_2D) << bwl,
                                               eob);
+            break;
+        }
+#elif defined(ARCH_AARCH64)
+        if (c_start == eob - 2 && eob >= COST_RASTER_MIN_EOB && coeff_costs->base_cost16_ok &&
+            svt_av1_get_nz_map_contexts == svt_av1_get_nz_map_contexts_neon) {
+            cost += cost_coeffs_mid_raster_2d_neon(
+                scan, iscan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, height, eob);
             break;
         }
 #else

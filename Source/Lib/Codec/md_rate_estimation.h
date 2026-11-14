@@ -44,6 +44,9 @@ typedef struct LvMapCoeffCost {
     // base_cost[ctx][level] for level 0..3, transposed to int16 (64 contexts) for SIMD table lookups
     int16_t base_cost16[4][64];
     bool    base_cost16_ok;
+    // The same costs of the first 32 contexts (which include the 26 of the 2D transform class) as bytes for
+    // byte table lookups: low bytes at [32 * level + ctx], high bytes 128 entries further.
+    uint8_t base_cost8[256];
 } LvMapCoeffCost;
 
 /**************************************
