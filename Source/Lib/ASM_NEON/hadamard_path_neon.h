@@ -347,7 +347,9 @@ static inline void highbd_hadamard_8x8_neon(const uint16_t* src, ptrdiff_t src_s
         vmaxq_u16(vreinterpretq_u16_s16(a6), vreinterpretq_u16_s16(a7)),
     };
 
-    *satd = horizontal_add_4d_u16x8(max);
+    // A lane of max is half the absolute sum of two coefficients, at most 32 * 1023 for 10-bit samples: two of them
+    // fit 16 bits, four do not.
+    *satd = vpaddq_u32(vpaddlq_u16(vpaddq_u16(max[0], max[1])), vpaddlq_u16(vpaddq_u16(max[2], max[3])));
 }
 
 static inline uint32x4_t highbd_hadamard_8x8_h_pass_satd_neon(int16x8_t s[8]) {
@@ -403,7 +405,8 @@ static inline uint32x4_t highbd_hadamard_8x8_h_pass_satd_neon(int16x8_t s[8]) {
         vmaxq_u16(vreinterpretq_u16_s16(a6), vreinterpretq_u16_s16(a7)),
     };
 
-    return horizontal_add_4d_u16x8(max);
+    // Two lanes of max fit 16 bits, four do not (see highbd_hadamard_8x8_neon()).
+    return vpaddq_u32(vpaddlq_u16(vpaddq_u16(max[0], max[1])), vpaddlq_u16(vpaddq_u16(max[2], max[3])));
 }
 
 #endif // SVT_AV1_HADAMARD_PATH_NEON_H_
