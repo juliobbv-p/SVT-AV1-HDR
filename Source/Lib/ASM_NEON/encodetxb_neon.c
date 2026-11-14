@@ -100,21 +100,14 @@ static const DECLARE_ALIGNED(16, uint8_t, c_4_po_ver[16]) = {SIG_COEF_CONTEXTS_2
                                                              SIG_COEF_CONTEXTS_2D + 10,
                                                              SIG_COEF_CONTEXTS_2D + 10};
 
-/* get_8_coeff_contexts_2d coefficients:
-if (height == 8) */
-static const DECLARE_ALIGNED(16, uint8_t, c_8_po_2d_8[2][16]) = {
-    {0, 1, 6, 6, 21, 21, 21, 21, 1, 6, 6, 21, 21, 21, 21, 21},
-    {6, 6, 21, 21, 21, 21, 21, 21, 6, 21, 21, 21, 21, 21, 21, 21}};
-
-/* if (height < 8) */
-static const DECLARE_ALIGNED(16, uint8_t, c_8_po_2d_l[2][16]) = {
-    {0, 16, 6, 6, 21, 21, 21, 21, 16, 16, 6, 21, 21, 21, 21, 21},
-    {16, 16, 21, 21, 21, 21, 21, 21, 16, 16, 21, 21, 21, 21, 21, 21}};
-
-/* if (height > 8) */
-static const DECLARE_ALIGNED(16, uint8_t, c_8_po_2d_g[2][16]) = {
-    {0, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11},
-    {6, 6, 21, 21, 21, 21, 21, 21, 6, 21, 21, 21, 21, 21, 21, 21}};
+/* get_8_coeff_contexts_2d coefficients, for height == 8, height < 8 and height > 8: */
+static const DECLARE_ALIGNED(16, uint8_t, c_8_po_2d[3][2][16]) = {
+    {{0, 1, 6, 6, 21, 21, 21, 21, 1, 6, 6, 21, 21, 21, 21, 21},
+     {6, 6, 21, 21, 21, 21, 21, 21, 6, 21, 21, 21, 21, 21, 21, 21}},
+    {{0, 16, 6, 6, 21, 21, 21, 21, 16, 16, 6, 21, 21, 21, 21, 21},
+     {16, 16, 21, 21, 21, 21, 21, 21, 16, 16, 21, 21, 21, 21, 21, 21}},
+    {{0, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11},
+     {6, 6, 21, 21, 21, 21, 21, 21, 6, 21, 21, 21, 21, 21, 21, 21}}};
 
 /* get_4_nz_map_contexts_ver coefficients: */
 static const DECLARE_ALIGNED(16, uint8_t, c_8_po_ver[16]) = {SIG_COEF_CONTEXTS_2D + 0,
@@ -173,20 +166,19 @@ static const DECLARE_ALIGNED(16, uint8_t, c_16_po_ver[16]) = {SIG_COEF_CONTEXTS_
 
 /* end of coefficients declaration area */
 
-static inline uint8x16_t load_8bit_4x4_to_1_reg(const uint8_t* const src, const int byte_stride) {
-    uint32x4_t v_data = vld1q_u32((uint32_t*)src);
-    v_data            = vld1q_lane_u32((uint32_t*)(src + 1 * byte_stride), v_data, 1);
-    v_data            = vld1q_lane_u32((uint32_t*)(src + 2 * byte_stride), v_data, 2);
-    v_data            = vld1q_lane_u32((uint32_t*)(src + 3 * byte_stride), v_data, 3);
+// Four rows of a 4-wide level array. Its rows are 4 + TX_PAD_HOR = 8 bytes apart, so two 16-byte loads hold the
+// four rows in their even 32-bit lanes. The second load ends with the padding of the fourth row; with the largest
+// neighbour offset (four rows below, TX_CLASS_VERT) that is 32 bytes after the last row of the block, inside the
+// TX_PAD_2D - LEVELS_TAIL_OFFSET bytes that follow it in the levels buffer (see set_levels()).
+static inline uint8x16_t load_8bit_4x4_to_1_reg(const uint8_t* const src) {
+    const uint32x4_t rows01 = vreinterpretq_u32_u8(vld1q_u8(src));
+    const uint32x4_t rows23 = vreinterpretq_u32_u8(vld1q_u8(src + 2 * (4 + TX_PAD_HOR)));
 
-    return vreinterpretq_u8_u32(v_data);
+    return vreinterpretq_u8_u32(vuzp1q_u32(rows01, rows23));
 }
 
 static inline uint8x16_t load_8bit_8x2_to_1_reg(const uint8_t* const src, const int byte_stride) {
-    uint64x2_t v_data = vld1q_u64((uint64_t*)src);
-    v_data            = vld1q_lane_u64((uint64_t*)(src + 1 * byte_stride), v_data, 1);
-
-    return vreinterpretq_u8_u64(v_data);
+    return vcombine_u8(vld1_u8(src), vld1_u8(src + byte_stride));
 }
 
 static inline uint8x16_t load_8bit_16x1_to_1_reg(const uint8_t* const src) {
@@ -195,11 +187,11 @@ static inline uint8x16_t load_8bit_16x1_to_1_reg(const uint8_t* const src) {
 
 static inline void load_levels_4x4x5(const uint8_t* const src, const int stride, const ptrdiff_t* const offsets,
                                      uint8x16_t* const level) {
-    level[0] = load_8bit_4x4_to_1_reg(&src[1], stride);
-    level[1] = load_8bit_4x4_to_1_reg(&src[stride], stride);
-    level[2] = load_8bit_4x4_to_1_reg(&src[offsets[0]], stride);
-    level[3] = load_8bit_4x4_to_1_reg(&src[offsets[1]], stride);
-    level[4] = load_8bit_4x4_to_1_reg(&src[offsets[2]], stride);
+    level[0] = load_8bit_4x4_to_1_reg(&src[1]);
+    level[1] = load_8bit_4x4_to_1_reg(&src[stride]);
+    level[2] = load_8bit_4x4_to_1_reg(&src[offsets[0]]);
+    level[3] = load_8bit_4x4_to_1_reg(&src[offsets[1]]);
+    level[4] = load_8bit_4x4_to_1_reg(&src[offsets[2]]);
 }
 
 static inline void load_levels_8x2x5(const uint8_t* const src, const int stride, const ptrdiff_t* const offsets,
@@ -245,7 +237,7 @@ static inline void get_4_nz_map_contexts_2d(const uint8_t* levels, const int32_t
     const int32_t    stride              = 4 + TX_PAD_HOR;
     const uint8x16_t pos_to_offset_large = vdupq_n_u8(21);
 
-    uint8x16_t pos_to_offset = vld1q_u8((height == 4) ? c_4_po_2d[0] : c_4_po_2d[1]);
+    uint8x16_t pos_to_offset = vld1q_u8(c_4_po_2d[height != 4]);
 
     uint8x16_t count;
     uint8x16_t level[5];
@@ -279,16 +271,9 @@ static inline void get_8_coeff_contexts_2d(const uint8_t* levels, const int32_t 
 
     assert(!(height % 2));
 
-    if (height == 8) {
-        pos_to_offset[0] = vld1q_u8(c_8_po_2d_8[0]);
-        pos_to_offset[1] = vld1q_u8(c_8_po_2d_8[1]);
-    } else if (height < 8) {
-        pos_to_offset[0] = vld1q_u8(c_8_po_2d_l[0]);
-        pos_to_offset[1] = vld1q_u8(c_8_po_2d_l[1]);
-    } else {
-        pos_to_offset[0] = vld1q_u8(c_8_po_2d_g[0]);
-        pos_to_offset[1] = vld1q_u8(c_8_po_2d_g[1]);
-    }
+    const int shape  = (height < 8) + 2 * (height > 8);
+    pos_to_offset[0] = vld1q_u8(c_8_po_2d[shape][0]);
+    pos_to_offset[1] = vld1q_u8(c_8_po_2d[shape][1]);
     pos_to_offset[2] = vdupq_n_u8(21);
 
     do {
@@ -537,17 +522,20 @@ void svt_av1_get_nz_map_contexts_neon(const uint8_t* const levels, const int16_t
     }
     uint8_t* const coefficients = (uint8_t* const)coeff_contexts;
 
+    // The coded area of a 64-length transform is its first 32 coefficients in that direction (get_txb_wide(),
+    // get_txb_high() and get_txb_bwl() of the adjusted transform size).
     const int32_t real_width  = tx_size_wide[tx_size];
     const int32_t real_height = tx_size_high[tx_size];
-    const int32_t width       = get_txb_wide(tx_size);
-    const int32_t height      = get_txb_high(tx_size);
+    const int32_t width       = AOMMIN(real_width, 32);
+    const int32_t height      = AOMMIN(real_height, 32);
     const int32_t stride      = width + TX_PAD_HOR;
     ptrdiff_t     offsets[3];
 
     /* coeff_contexts must be 16 byte aligned. */
     assert(!((intptr_t)coeff_contexts & 0xf));
+    assert(width == get_txb_wide(tx_size) && height == get_txb_high(tx_size));
 
-    const int32_t bwl = get_txb_bwl(tx_size);
+    const int32_t bwl = AOMMIN(tx_size_wide_log2[tx_size], 5);
     const int32_t pos = scan[last_idx];
     if (tx_class == TX_CLASS_2D) {
         offsets[0] = 0 * stride + 2;
@@ -601,8 +589,8 @@ void svt_av1_get_nz_map_contexts_neon(const uint8_t* const levels, const int16_t
 // describe coefficient levels, so the same kernel serves 8- and 10-bit input.
 void svt_av1_get_nz_map_contexts_2d_rows_neon(const uint8_t* const levels, const TxSize tx_size, const int32_t rows,
                                               int8_t* const coeff_contexts) {
-    const int       width      = get_txb_wide(tx_size);
-    const int       height     = get_txb_high(tx_size);
+    const int       width      = AOMMIN(tx_size_wide[tx_size], 32);
+    const int       height     = AOMMIN(tx_size_high[tx_size], 32);
     const int       stride     = width + TX_PAD_HOR;
     const ptrdiff_t offsets[3] = {2, stride + 1, 2 * stride};
     uint8_t* const  contexts   = (uint8_t*)coeff_contexts;
