@@ -323,8 +323,10 @@ static int64_t get_pixel_proj_error(const uint8_t* src8, int32_t width, int32_t 
 }
 
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
-bool svt_av1_highbd_sgrproj_residual_neon(const uint8_t* dat8, int32_t width, int32_t height, int32_t dat_stride,
-                                          const int32_t* flt, int32_t flt_stride, int16_t* a, int32_t a_stride);
+bool svt_av1_highbd_sgrproj_residual_neon(const uint8_t* src8, const uint8_t* dat8, int32_t width, int32_t height,
+                                          int32_t src_stride, int32_t dat_stride, const int32_t* flt0,
+                                          const int32_t* flt1, int32_t flt_stride, int16_t* a0, int16_t* a1,
+                                          int32_t a_stride, int64_t sums[5]);
 
 void svt_av1_highbd_sgrproj_line_errors_neon(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
                                              const uint8_t* dat8, int32_t dat_stride, const int16_t* a0,
@@ -575,53 +577,14 @@ static int64_t finer_search_pixel_proj_error(SgrprojTrial* t, int32_t start_step
     return err;
 }
 
-void svt_get_proj_subspace_c(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
-                             const uint8_t* dat8, int32_t dat_stride, int32_t use_highbitdepth, int32_t* flt0,
-                             int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride, int32_t* xq,
-                             const SgrParamsType* params) {
-    int32_t       i, j;
-    double        H[2][2] = {{0, 0}, {0, 0}};
-    double        C[2]    = {0, 0};
-    double        det;
-    double        x[2];
-    const int32_t size = width * height;
+// Projection coefficients from the sums of the subspace over `size` samples: H holds sum(f0 * f0) and sum(f0 * f1)
+// in its first row and sum(f1 * f1) in H[1][1], C holds sum(f0 * s) and sum(f1 * s). xq is left alone if the
+// system is ill-posed.
+static void solve_proj_subspace(double H[2][2], double C[2], const int32_t size, const SgrParamsType* params,
+                                int32_t* xq) {
+    double det;
+    double x[2];
 
-    // Default
-    xq[0] = 0;
-    xq[1] = 0;
-    if (!use_highbitdepth) {
-        const uint8_t* src = src8;
-        const uint8_t* dat = dat8;
-        for (i = 0; i < height; ++i) {
-            for (j = 0; j < width; ++j) {
-                const double u  = (double)(dat[i * dat_stride + j] << SGRPROJ_RST_BITS);
-                const double s  = (double)(src[i * src_stride + j] << SGRPROJ_RST_BITS) - u;
-                const double f1 = (params->r[0] > 0) ? (double)flt0[i * flt0_stride + j] - u : 0;
-                const double f2 = (params->r[1] > 0) ? (double)flt1[i * flt1_stride + j] - u : 0;
-                H[0][0] += f1 * f1;
-                H[1][1] += f2 * f2;
-                H[0][1] += f1 * f2;
-                C[0] += f1 * s;
-                C[1] += f2 * s;
-            }
-        }
-    } else {
-        const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
-        const uint16_t* dat = CONVERT_TO_SHORTPTR(dat8);
-        for (i = 0; i < height; ++i) {
-            for (j = 0; j < width; ++j) {
-                const double u  = (double)(dat[i * dat_stride + j] << SGRPROJ_RST_BITS);
-                const double s  = (double)(src[i * src_stride + j] << SGRPROJ_RST_BITS) - u;
-                const double f1 = (params->r[0] > 0) ? (double)flt0[i * flt0_stride + j] - u : 0;
-                const double f2 = (params->r[1] > 0) ? (double)flt1[i * flt1_stride + j] - u : 0;
-                H[0][0] += f1 * f1;
-                H[1][1] += f2 * f2;
-                H[0][1] += f1 * f2;
-                C[0] += f1 * s;
-                C[1] += f2 * s;
-            }
-        }
-    }
     H[0][0] /= size;
     H[0][1] /= size;
     H[1][1] /= size;
@@ -663,6 +626,54 @@ void svt_get_proj_subspace_c(const uint8_t* src8, int32_t width, int32_t height,
         xq[0] = (int32_t)rint(x[0] * (1 << SGRPROJ_PRJ_BITS));
         xq[1] = (int32_t)rint(x[1] * (1 << SGRPROJ_PRJ_BITS));
     }
+}
+
+void svt_get_proj_subspace_c(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                             const uint8_t* dat8, int32_t dat_stride, int32_t use_highbitdepth, int32_t* flt0,
+                             int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride, int32_t* xq,
+                             const SgrParamsType* params) {
+    int32_t       i, j;
+    double        H[2][2] = {{0, 0}, {0, 0}};
+    double        C[2]    = {0, 0};
+    const int32_t size    = width * height;
+
+    // Default
+    xq[0] = 0;
+    xq[1] = 0;
+    if (!use_highbitdepth) {
+        const uint8_t* src = src8;
+        const uint8_t* dat = dat8;
+        for (i = 0; i < height; ++i) {
+            for (j = 0; j < width; ++j) {
+                const double u  = (double)(dat[i * dat_stride + j] << SGRPROJ_RST_BITS);
+                const double s  = (double)(src[i * src_stride + j] << SGRPROJ_RST_BITS) - u;
+                const double f1 = (params->r[0] > 0) ? (double)flt0[i * flt0_stride + j] - u : 0;
+                const double f2 = (params->r[1] > 0) ? (double)flt1[i * flt1_stride + j] - u : 0;
+                H[0][0] += f1 * f1;
+                H[1][1] += f2 * f2;
+                H[0][1] += f1 * f2;
+                C[0] += f1 * s;
+                C[1] += f2 * s;
+            }
+        }
+    } else {
+        const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
+        const uint16_t* dat = CONVERT_TO_SHORTPTR(dat8);
+        for (i = 0; i < height; ++i) {
+            for (j = 0; j < width; ++j) {
+                const double u  = (double)(dat[i * dat_stride + j] << SGRPROJ_RST_BITS);
+                const double s  = (double)(src[i * src_stride + j] << SGRPROJ_RST_BITS) - u;
+                const double f1 = (params->r[0] > 0) ? (double)flt0[i * flt0_stride + j] - u : 0;
+                const double f2 = (params->r[1] > 0) ? (double)flt1[i * flt1_stride + j] - u : 0;
+                H[0][0] += f1 * f1;
+                H[1][1] += f2 * f2;
+                H[0][1] += f1 * f2;
+                C[0] += f1 * s;
+                C[1] += f2 * s;
+            }
+        }
+    }
+    solve_proj_subspace(H, C, size, params, xq);
 }
 
 static INLINE void encode_xq(int32_t* xq, int32_t* xqd, const SgrParamsType* params) {
@@ -778,20 +789,29 @@ static bool search_selfguided_restoration_residual(const uint8_t* dat8, int32_t 
         apply_sgr(ep, dat8, width, height, dat_stride, 1, bit_depth, pu_width, pu_height, flt0, flt1, flt_stride);
 
         const SgrParamsType* const params = &svt_aom_eb_sgr_params[ep];
-        svt_get_proj_subspace(
-            src8, width, height, src_stride, dat8, dat_stride, 1, flt0, flt_stride, flt1, flt_stride, exq, params);
-        encode_xq(exq, exqd, params);
-
-        // The output of a radius that is not filtered is not written and its projection coefficient is 0
-        for (int32_t i = 0; i < 2; i++) {
-            int16_t* const a_i = a + i * RESTORATION_UNITPELS_MAX;
-            if (params->r[i] == 0) {
-                memset(a_i, 0, sizeof(*a_i) * flt_stride * height);
-            } else if (!svt_av1_highbd_sgrproj_residual_neon(
-                           dat8, width, height, dat_stride, i ? flt1 : flt0, flt_stride, a_i, flt_stride)) {
-                return false;
-            }
+        // The residual planes and, from the same pass, the sums of the projection subspace. The output of a
+        // radius that is not filtered is not written: its plane is zero and so is its projection coefficient.
+        int64_t sums[5];
+        if (!svt_av1_highbd_sgrproj_residual_neon(src8,
+                                                  dat8,
+                                                  width,
+                                                  height,
+                                                  src_stride,
+                                                  dat_stride,
+                                                  params->r[0] ? flt0 : NULL,
+                                                  params->r[1] ? flt1 : NULL,
+                                                  flt_stride,
+                                                  a,
+                                                  a + RESTORATION_UNITPELS_MAX,
+                                                  flt_stride,
+                                                  sums)) {
+            return false;
         }
+        double H[2][2] = {{(double)sums[0], (double)sums[1]}, {(double)sums[1], (double)sums[2]}};
+        double C[2]    = {(double)sums[3], (double)sums[4]};
+        exq[0] = exq[1] = 0;
+        solve_proj_subspace(H, C, width * height, params, exq);
+        encode_xq(exq, exqd, params);
 
         int64_t err = 0;
         if (need_err) {

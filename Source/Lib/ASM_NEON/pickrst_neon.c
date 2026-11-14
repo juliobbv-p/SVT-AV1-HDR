@@ -1660,38 +1660,84 @@ int64_t svt_av1_highbd_pixel_proj_error_neon(const uint8_t* src8, int32_t width,
     return vaddvq_s64(sse_s64);
 }
 
+// One block of 8 residuals a = flt - u, saturated to int16 (see svt_av1_highbd_sgrproj_residual_neon()).
+static AOM_FORCE_INLINE int16x8_t sgrproj_residual_block(const uint16x8_t u, const int32_t* flt) {
+    const uint32x4_t lo = vsubw_u16(vreinterpretq_u32_s32(vld1q_s32(flt)), vget_low_u16(u));
+    const uint32x4_t hi = vsubw_high_u16(vreinterpretq_u32_s32(vld1q_s32(flt + 4)), u);
+    return vqmovn_high_s32(vqmovn_s32(vreinterpretq_s32_u32(lo)), vreinterpretq_s32_u32(hi));
+}
+
+// Adds the 8 products of two vectors to a sum. Two products share a 32-bit lane before it is widened, which holds
+// them for factors of up to 32767 in magnitude: 2 * 32767^2 < 2^31.
+static AOM_FORCE_INLINE int64x2_t sgrproj_add_products(const int64x2_t sum, const int16x8_t a, const int16x8_t b) {
+    return vpadalq_s32(sum, vmlal_high_s16(vmull_s16(vget_low_s16(a), vget_low_s16(b)), a, b));
+}
+
 // What a projection needs from a self-guided filter output is its difference to the upscaled sample,
-// a = flt - (dat << SGRPROJ_RST_BITS). Stores it as int16 and returns whether every difference lies strictly inside
-// the int16 range, in which case the stored plane is exact. The subtraction is done modulo 2^32: a difference that
+// a = flt - (dat << SGRPROJ_RST_BITS). Stores it as int16 for both outputs (the plane of an output that is NULL,
+// because its radius is not filtered, is zeroed) and returns whether every difference lies strictly inside the
+// int16 range, in which case the stored planes are exact. The subtraction is done modulo 2^32: a difference that
 // wraps has a true value below -2^31, so its wrapped value is above 2^30 and saturates. A saturated lane holds
 // INT16_MIN or INT16_MAX, so tracking the extremes of the stored values detects every misfit (and rejects the two
 // limit values themselves). dat << 4 fits in 16 bits for bit depths up to 12. width must be at least 8: the last
 // block of a row is taken at width - 8 and may overlap the previous one.
-bool svt_av1_highbd_sgrproj_residual_neon(const uint8_t* dat8, int32_t width, int32_t height, int32_t dat_stride,
-                                          const int32_t* flt, int32_t flt_stride, int16_t* a, int32_t a_stride) {
+//
+// The same pass forms the sums of the projection subspace, which svt_get_proj_subspace() takes from the filter
+// outputs: with s = (src - dat) << SGRPROJ_RST_BITS,
+//   sums[] = {sum(a0 * a0), sum(a0 * a1), sum(a1 * a1), sum(a0 * s), sum(a1 * s)}.
+// They are exact when the residuals fit; src - dat is below 2^12 in magnitude.
+bool svt_av1_highbd_sgrproj_residual_neon(const uint8_t* src8, const uint8_t* dat8, int32_t width, int32_t height,
+                                          int32_t src_stride, int32_t dat_stride, const int32_t* flt0,
+                                          const int32_t* flt1, int32_t flt_stride, int16_t* a0, int16_t* a1,
+                                          int32_t a_stride, int64_t sums[5]) {
+    const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
     const uint16_t* dat = CONVERT_TO_SHORTPTR(dat8);
-    int16x8_t       max = vdupq_n_s16(0);
-    int16x8_t       min = vdupq_n_s16(0);
+    // keeps the samples of the last block of a row that the block before it has not counted
+    const int16x8_t last = vld1q_s16(mask_16x8[width % 8 ? width % 8 - 1 : 0]);
+    int16x8_t       max  = vdupq_n_s16(0);
+    int16x8_t       min  = vdupq_n_s16(0);
+    int64x2_t       h00 = vdupq_n_s64(0), h01 = vdupq_n_s64(0), h11 = vdupq_n_s64(0);
+    int64x2_t       c0 = vdupq_n_s64(0), c1 = vdupq_n_s64(0);
 
     do {
         for (int j = 0; j < width; j += 8) {
-            if (j > width - 8) {
+            const bool overlap = j > width - 8;
+            if (overlap) {
                 j = width - 8;
             }
-            const uint16x8_t u  = vshlq_n_u16(vld1q_u16(&dat[j]), SGRPROJ_RST_BITS);
-            const uint32x4_t lo = vsubw_u16(vreinterpretq_u32_s32(vld1q_s32(&flt[j])), vget_low_u16(u));
-            const uint32x4_t hi = vsubw_high_u16(vreinterpretq_u32_s32(vld1q_s32(&flt[j + 4])), u);
-            const int16x8_t  r  = vqmovn_high_s32(vqmovn_s32(vreinterpretq_s32_u32(lo)), vreinterpretq_s32_u32(hi));
+            const uint16x8_t d  = vld1q_u16(&dat[j]);
+            const uint16x8_t u  = vshlq_n_u16(d, SGRPROJ_RST_BITS);
+            int16x8_t        r0 = flt0 ? sgrproj_residual_block(u, &flt0[j]) : vdupq_n_s16(0);
+            int16x8_t        r1 = flt1 ? sgrproj_residual_block(u, &flt1[j]) : vdupq_n_s16(0);
+            const int16x8_t  e  = vreinterpretq_s16_u16(vsubq_u16(vld1q_u16(&src[j]), d));
 
-            max = vmaxq_s16(max, r);
-            min = vminq_s16(min, r);
-            vst1q_s16(&a[j], r);
+            max = vmaxq_s16(max, vmaxq_s16(r0, r1));
+            min = vminq_s16(min, vminq_s16(r0, r1));
+            vst1q_s16(&a0[j], r0);
+            vst1q_s16(&a1[j], r1);
+            if (overlap) {
+                r0 = vandq_s16(r0, last);
+                r1 = vandq_s16(r1, last);
+            }
+            h00 = sgrproj_add_products(h00, r0, r0);
+            h01 = sgrproj_add_products(h01, r0, r1);
+            h11 = sgrproj_add_products(h11, r1, r1);
+            c0  = sgrproj_add_products(c0, r0, e);
+            c1  = sgrproj_add_products(c1, r1, e);
         }
+        src += src_stride;
         dat += dat_stride;
-        flt += flt_stride;
-        a += a_stride;
+        flt0 += flt0 ? flt_stride : 0;
+        flt1 += flt1 ? flt_stride : 0;
+        a0 += a_stride;
+        a1 += a_stride;
     } while (--height != 0);
 
+    sums[0] = vaddvq_s64(h00);
+    sums[1] = vaddvq_s64(h01);
+    sums[2] = vaddvq_s64(h11);
+    sums[3] = vaddvq_s64(c0) * (1 << SGRPROJ_RST_BITS);
+    sums[4] = vaddvq_s64(c1) * (1 << SGRPROJ_RST_BITS);
     return vmaxvq_s16(max) < INT16_MAX && vminvq_s16(min) > INT16_MIN;
 }
 
