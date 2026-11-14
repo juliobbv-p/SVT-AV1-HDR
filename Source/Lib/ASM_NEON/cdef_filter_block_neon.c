@@ -698,9 +698,180 @@ static AOM_FORCE_INLINE void cdef_filter_hbd_single_neon(uint16_t* dst, int stri
     }
 }
 
+// The narrow path filters two rows of eight pixels with the tap differences in 8-bit lanes.
+// With m = |tap - center| and shift = max(0, damping - msb(threshold)), a constrained tap is
+// min(m, max(0, threshold - (m >> shift))). It never exceeds its threshold, which the path requires to be at
+// most 63, so min(m, 255) can replace the first m. The shifted m is taken from s = min(m >> pre, 255) as
+// s >> (shift - pre), with pre = 0 for damping <= 7 and pre = 1 for damping 8 (where shift >= 8 - msb(63) = 3).
+// In both cases shift - pre is 0 or at most 7 - msb(threshold), so
+// threshold <= 2^(msb + 1) - 1 = 255 >> (7 - msb) <= 255 >> (shift - pre): when s saturates, the saturated and
+// the exact shifted magnitude both reach the threshold and the tap constrains to zero either way. That covers
+// the 0x7f7f sentinel, whose difference to a pixel is over 31000.
+typedef struct {
+    int16x8_t  row_a, row_b; // the two rows being filtered
+    uint8x16_t rise, fall; // largest tap differences above and below them, saturated at 255
+} CdefRows8;
+
+// Adds one constrained tap of both rows to an 8-bit sum.
+static AOM_FORCE_INLINE int8x16_t cdef_tap8(int8x16_t sum, CdefRows8* rows, const int16_t* src, int row_stride,
+                                            uint8x16_t threshold, int8x16_t shift, bool bounds, bool halved) {
+    const int16x8_t  tap_a     = vld1q_s16(src);
+    const int16x8_t  tap_b     = vld1q_s16(src + row_stride);
+    const uint16x8_t wide_a    = vreinterpretq_u16_s16(vabdq_s16(tap_a, rows->row_a));
+    const uint16x8_t wide_b    = vreinterpretq_u16_s16(vabdq_s16(tap_b, rows->row_b));
+    const uint8x16_t magnitude = vqmovn_high_u16(vqmovn_u16(wide_a), wide_b);
+    const uint8x16_t scaled    = halved ? vqshrn_high_n_u16(vqshrn_n_u16(wide_a, 1), wide_b, 1) : magnitude;
+    const uint8x16_t below_a   = vreinterpretq_u8_u16(vcgtq_s16(rows->row_a, tap_a));
+    const uint8x16_t below_b   = vreinterpretq_u8_u16(vcgtq_s16(rows->row_b, tap_b));
+    const uint8x16_t below     = vuzp1q_u8(below_a, below_b);
+    const uint8x16_t limit     = vqsubq_u8(threshold, vshlq_u8(scaled, shift));
+    if (bounds) {
+        rows->rise = vmaxq_u8(rows->rise, vbicq_u8(magnitude, below));
+        rows->fall = vmaxq_u8(rows->fall, vandq_u8(magnitude, below));
+    }
+    // Multiply by -1 where the tap is below the center, by 1 elsewhere.
+    return vmlaq_s8(
+        sum, vreinterpretq_s8_u8(vminq_u8(magnitude, limit)), vreinterpretq_s8_u8(vorrq_u8(below, vdupq_n_u8(1))));
+}
+
+// True when a pixel of the rows 0..last_row or of their two-pixel border is not a 10-bit sample.
+static INLINE bool cdef_has_unavailable(const uint16_t* in, int last_row) {
+    uint16x8_t seen = vdupq_n_u16(0);
+    for (int row = -2; row <= last_row + 2; ++row) {
+        const uint16_t* src = in + row * CDEF_BSTRIDE - 2;
+        seen                = vorrq_u16(seen, vorrq_u16(vld1q_u16(src), vld1q_u16(src + 4)));
+    }
+    return vmaxvq_u16(seen) > 1023;
+}
+
+// The sums of two primary taps (at most 63 each) and of four secondary taps (at most 31 each) fit 8 bits.
+static AOM_FORCE_INLINE void cdef_filter_8xn_hbd_narrow_neon(uint16_t* dst, int stride, const uint16_t* in,
+                                                             int pri_strength, int sec_strength, int dir,
+                                                             int pri_damping, int sec_damping, int coeff_shift,
+                                                             int height, int sub, bool primary, bool secondary,
+                                                             bool halved) {
+    const bool       bounds      = primary && secondary;
+    const int        row_stride  = sub * CDEF_BSTRIDE;
+    const uint8x16_t pri_thr     = vdupq_n_u8(pri_strength);
+    const uint8x16_t sec_thr     = vdupq_n_u8(sec_strength);
+    const int8x16_t  pri_shift   = vdupq_n_s8(primary ? halved - AOMMAX(0, pri_damping - get_msb(pri_strength)) : 0);
+    const int8x16_t  sec_shift   = vdupq_n_s8(secondary ? halved - AOMMAX(0, sec_damping - get_msb(sec_strength)) : 0);
+    const int*       pri_taps    = svt_aom_eb_cdef_pri_taps[(pri_strength >> coeff_shift) & 1];
+    const int8x16_t  near_weight = vdupq_n_s8(pri_taps[0]);
+    const int8x16_t  far_weight  = vdupq_n_s8(pri_taps[1]);
+    const int*       po          = svt_aom_eb_cdef_directions[dir];
+    const int*       s1o         = svt_aom_eb_cdef_directions[dir + 2];
+    const int*       s2o         = svt_aom_eb_cdef_directions[dir - 2];
+    for (int y = 0; y < height; y += 2 * sub) {
+        const int16_t* src   = (const int16_t*)(in + y * CDEF_BSTRIDE);
+        CdefRows8      rows  = {vld1q_s16(src), vld1q_s16(src + row_stride), vdupq_n_u8(0), vdupq_n_u8(0)};
+        int16x8_t      sum_a = vdupq_n_s16(0), sum_b = vdupq_n_s16(0);
+        if (primary) {
+            int8x16_t near = vdupq_n_s8(0), far = vdupq_n_s8(0);
+            for (int sign = -1; sign <= 1; sign += 2) {
+                near = cdef_tap8(near, &rows, src + sign * po[0], row_stride, pri_thr, pri_shift, bounds, halved);
+                far  = cdef_tap8(far, &rows, src + sign * po[1], row_stride, pri_thr, pri_shift, bounds, halved);
+            }
+            sum_a = vmlal_s8(
+                vmull_s8(vget_low_s8(near), vget_low_s8(near_weight)), vget_low_s8(far), vget_low_s8(far_weight));
+            sum_b = vmlal_high_s8(vmull_high_s8(near, near_weight), far, far_weight);
+        }
+        if (secondary) {
+            int8x16_t near = vdupq_n_s8(0), far = vdupq_n_s8(0);
+            for (int sign = -1; sign <= 1; sign += 2) {
+                near = cdef_tap8(near, &rows, src + sign * s1o[0], row_stride, sec_thr, sec_shift, bounds, halved);
+                near = cdef_tap8(near, &rows, src + sign * s2o[0], row_stride, sec_thr, sec_shift, bounds, halved);
+                far  = cdef_tap8(far, &rows, src + sign * s1o[1], row_stride, sec_thr, sec_shift, bounds, halved);
+                far  = cdef_tap8(far, &rows, src + sign * s2o[1], row_stride, sec_thr, sec_shift, bounds, halved);
+            }
+            sum_a = vaddw_s8(vmlal_s8(sum_a, vget_low_s8(near), vdup_n_s8(2)), vget_low_s8(far));
+            sum_b = vaddw_high_s8(vmlal_high_s8(sum_b, near, vdupq_n_s8(2)), far);
+        }
+        // res = row + ((sum - (sum < 0) + 8) >> 4)
+        sum_a = vsraq_n_s16(sum_a, sum_a, 15);
+        sum_b = vsraq_n_s16(sum_b, sum_b, 15);
+        int16x8_t res_a, res_b;
+        if (bounds) {
+            // The rounded sum is at most (12 * 63 + 12 * 31 + 8) >> 4 = 71 in magnitude, so bounds saturated
+            // at 127 clamp it like the neighbor range itself.
+            const int8x16_t upper = vreinterpretq_s8_u8(vminq_u8(rows.rise, vdupq_n_u8(127)));
+            const int8x16_t lower = vnegq_s8(vreinterpretq_s8_u8(vminq_u8(rows.fall, vdupq_n_u8(127))));
+            int8x16_t       step  = vrshrn_high_n_s16(vrshrn_n_s16(sum_a, 4), sum_b, 4);
+            step                  = vminq_s8(vmaxq_s8(step, lower), upper);
+            res_a                 = vaddw_s8(rows.row_a, vget_low_s8(step));
+            res_b                 = vaddw_high_s8(rows.row_b, step);
+        } else {
+            // With only one filter active the result stays inside the neighbors' range without a clamp.
+            res_a = vrsraq_n_s16(rows.row_a, sum_a, 4);
+            res_b = vrsraq_n_s16(rows.row_b, sum_b, 4);
+        }
+        vst1q_s16((int16_t*)(dst + y * stride), res_a);
+        vst1q_s16((int16_t*)(dst + (y + sub) * stride), res_b);
+    }
+}
+
+// Runs the narrow variant for the active filters; false when the block has to take the wide path.
+static AOM_FORCE_INLINE bool cdef_filter_8xn_hbd_narrow_select(uint16_t* dst, int stride, const uint16_t* in, int pri,
+                                                               int sec, int dir, int pri_damping, int sec_damping,
+                                                               int coeff_shift, int height, int sub, bool halved) {
+    if (pri && !sec) {
+        cdef_filter_8xn_hbd_narrow_neon(
+            dst, stride, in, pri, 0, dir, pri_damping, sec_damping, coeff_shift, height, sub, true, false, halved);
+        return true;
+    }
+    if (sec && !pri) {
+        cdef_filter_8xn_hbd_narrow_neon(
+            dst, stride, in, 0, sec, dir, pri_damping, sec_damping, coeff_shift, height, sub, false, true, halved);
+        return true;
+    }
+    // The clamp of the mixed filter needs the largest available neighbor. The saturated magnitudes cannot
+    // tell an unavailable tap from a large difference, so those blocks take the wide path.
+    if (pri && sec && !cdef_has_unavailable(in, height - sub)) {
+        cdef_filter_8xn_hbd_narrow_neon(
+            dst, stride, in, pri, sec, dir, pri_damping, sec_damping, coeff_shift, height, sub, true, true, halved);
+        return true;
+    }
+    return false;
+}
+
 void svt_av1_cdef_filter_block_8xn_16_neon(uint16_t* dst, int dstride, const uint16_t* in, int pri_strength,
                                            int sec_strength, int dir, int pri_damping, int sec_damping, int coeff_shift,
                                            uint8_t height, uint8_t subsampling_factor) {
+    const int sub = subsampling_factor;
+    // The narrow path takes rows in pairs, strengths up to 63 and 31, and damping up to 7 or exactly 8.
+    if (pri_strength <= 63 && sec_strength <= 31 && (2 * sub == height || 4 * sub == height || 8 * sub == height)) {
+        if (pri_damping <= 7 && sec_damping <= 7) {
+            if (cdef_filter_8xn_hbd_narrow_select(dst,
+                                                  dstride,
+                                                  in,
+                                                  pri_strength,
+                                                  sec_strength,
+                                                  dir,
+                                                  pri_damping,
+                                                  sec_damping,
+                                                  coeff_shift,
+                                                  height,
+                                                  sub,
+                                                  false)) {
+                return;
+            }
+        } else if (pri_damping == 8 && sec_damping == 8) {
+            if (cdef_filter_8xn_hbd_narrow_select(dst,
+                                                  dstride,
+                                                  in,
+                                                  pri_strength,
+                                                  sec_strength,
+                                                  dir,
+                                                  pri_damping,
+                                                  sec_damping,
+                                                  coeff_shift,
+                                                  height,
+                                                  sub,
+                                                  true)) {
+                return;
+            }
+        }
+    }
     if (!pri_strength || !sec_strength) {
         cdef_filter_hbd_single_neon(dst,
                                     dstride,
