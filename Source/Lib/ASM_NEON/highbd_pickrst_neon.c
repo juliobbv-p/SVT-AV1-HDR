@@ -25,37 +25,6 @@
 // Number of squares of the 7-tap window whose left edges are accumulated in one pass over the unit.
 #define WIN7_LEFT_COLS ((WIENER_WIN - 1) / 2)
 
-// Products of 16 source samples and 16 reconstructed samples with five rows of the reconstruction. The two halves
-// of the 16 samples go to separate accumulators (sum_m[2 * k], sum_m[2 * k + 1]), so that an accumulator takes two
-// multiply-accumulates per call instead of four.
-static inline void stats_top_win5_highbd_neon(const int16x8_t src[2], const int16x8_t dgd[2], const int16_t* const d,
-                                              const int32_t d_stride, int32x4_t* sum_m, int32x4_t* sum_h) {
-    for (int32_t k = 0; k < WIENER_WIN_CHROMA; k++) {
-        const int16x8_t row0 = vld1q_s16(d + k * d_stride + 0);
-        const int16x8_t row1 = vld1q_s16(d + k * d_stride + 8);
-
-        madd_neon(&sum_m[2 * k + 0], src[0], row0);
-        madd_neon(&sum_m[2 * k + 1], src[1], row1);
-        madd_neon(&sum_h[2 * k + 0], dgd[0], row0);
-        madd_neon(&sum_h[2 * k + 1], dgd[1], row1);
-    }
-}
-
-// Products of the reconstruction at four horizontal offsets (dgd[j]) with the four rows below the current one.
-static inline void stats_left_win5_highbd_neon(int16x8_t dgd[WIENER_WIN_CHROMA - 1][2], const int16_t* const d,
-                                               const int32_t d_stride,
-                                               int32x4_t     sum[WIENER_WIN_CHROMA - 1][WIENER_WIN_CHROMA - 1]) {
-    for (int32_t k = 0; k < WIENER_WIN_CHROMA - 1; k++) {
-        const int16x8_t row0 = vld1q_s16(d + (k + 1) * d_stride + 0);
-        const int16x8_t row1 = vld1q_s16(d + (k + 1) * d_stride + 8);
-
-        for (int32_t j = 0; j < WIENER_WIN_CHROMA - 1; j++) {
-            madd_neon(&sum[j][k], dgd[j][0], row0);
-            madd_neon(&sum[j][k], dgd[j][1], row1);
-        }
-    }
-}
-
 // Step 5 of the 5-tap window for 16 columns of one square: subtracts the products of the four rows above the unit
 // (taken at the two horizontal offsets of the square) and adds the products of the last four rows of the unit.
 // mask0 and mask1 clear the columns beyond the width of the unit. A 32-bit lane of deltas takes 8 products per call
@@ -112,14 +81,13 @@ static inline void stats_left_win7_highbd_neon(int16x8_t dgd[WIN7_LEFT_COLS][2],
     }
 }
 
-static inline void compute_stats_win5_highbd_neon(const int16_t* const d, const int32_t d_stride,
-                                                  const int16_t* const s, const int32_t s_stride, const int32_t width,
-                                                  const int32_t height, int64_t* const M, int64_t* const H,
-                                                  EbBitDepth bit_depth) {
+// Steps 1 and 2 of the 5-tap window: the sums over the whole unit that the later steps derive the rest from.
+static void stats_edges_win5_highbd_neon(const int16_t* const d, const int32_t d_stride, const int16_t* const s,
+                                         const int32_t s_stride, const int32_t width, const int32_t height,
+                                         int64_t* const M, int64_t* const H, EbBitDepth bit_depth) {
     const int32_t     wiener_win  = WIENER_WIN_CHROMA;
     const int32_t     wiener_win2 = wiener_win * wiener_win;
     const int32_t     w16         = width & ~15;
-    const int32_t     h8          = height & ~7;
     const int16x8x2_t mask        = vld1q_s16_x2(&(mask_16bit[16]) - width % 16);
     int32_t           i, j, x, y;
 
@@ -247,6 +215,22 @@ static inline void compute_stats_win5_highbd_neon(const int16_t* const d, const 
             }
         }
     }
+}
+
+static inline void compute_stats_win5_highbd_neon(const int16_t* const d, const int32_t d_stride,
+                                                  const int16_t* const s, const int32_t s_stride, const int32_t width,
+                                                  const int32_t height, int64_t* const M, int64_t* const H,
+                                                  EbBitDepth bit_depth, const StatsEdgesWin5HighbdFn edges) {
+    const int32_t     wiener_win  = WIENER_WIN_CHROMA;
+    const int32_t     wiener_win2 = wiener_win * wiener_win;
+    const int32_t     w16         = width & ~15;
+    const int32_t     h8          = height & ~7;
+    const int16x8x2_t mask        = vld1q_s16_x2(&(mask_16bit[16]) - width % 16);
+    int32_t           i, j, x, y;
+
+    // Steps 1 and 2: the top edge of the whole matrix and the left edge of each square on the top row.
+    edges(d, d_stride, s, s_stride, width, height, M, H, bit_depth);
+
     // Step 3: Derive the top edge of each triangle along the diagonal. No
     // triangle in top row.
     {
@@ -1316,9 +1300,10 @@ static inline uint16_t highbd_find_average_neon(const uint16_t* src, int src_str
     return (uint16_t)((vaddvq_u64(sum_u64) + sum) / (height * width));
 }
 
-void svt_av1_compute_stats_highbd_neon(int32_t wiener_win, const uint8_t* dgd8, const uint8_t* src8, int32_t h_start,
-                                       int32_t h_end, int32_t v_start, int32_t v_end, int32_t dgd_stride,
-                                       int32_t src_stride, int64_t* M, int64_t* H, EbBitDepth bit_depth) {
+void svt_av1_compute_stats_highbd_edges_neon(int32_t wiener_win, const uint8_t* dgd8, const uint8_t* src8,
+                                             int32_t h_start, int32_t h_end, int32_t v_start, int32_t v_end,
+                                             int32_t dgd_stride, int32_t src_stride, int64_t* M, int64_t* H,
+                                             EbBitDepth bit_depth, const StatsEdgesWin5HighbdFn edges_win5) {
     if (bit_depth == EB_TWELVE_BIT) {
         svt_av1_compute_stats_highbd_c(
             wiener_win, dgd8, src8, h_start, h_end, v_start, v_end, dgd_stride, src_stride, M, H, bit_depth);
@@ -1359,7 +1344,7 @@ void svt_av1_compute_stats_highbd_neon(int32_t wiener_win, const uint8_t* dgd8, 
         compute_stats_win7_highbd_neon(d, d_stride, s, s_stride, width, height, M, H, bit_depth);
     } else {
         assert(wiener_win == WIENER_WIN_CHROMA);
-        compute_stats_win5_highbd_neon(d, d_stride, s, s_stride, width, height, M, H, bit_depth);
+        compute_stats_win5_highbd_neon(d, d_stride, s, s_stride, width, height, M, H, bit_depth, edges_win5);
     }
 
     // H is a symmetric matrix, so we only need to fill out the upper triangle.
@@ -1389,5 +1374,23 @@ void svt_av1_compute_stats_highbd_neon(int32_t wiener_win, const uint8_t* dgd8, 
     }
 
     svt_aom_free(d);
+}
+
+void svt_av1_compute_stats_highbd_neon(int32_t wiener_win, const uint8_t* dgd8, const uint8_t* src8, int32_t h_start,
+                                       int32_t h_end, int32_t v_start, int32_t v_end, int32_t dgd_stride,
+                                       int32_t src_stride, int64_t* M, int64_t* H, EbBitDepth bit_depth) {
+    svt_av1_compute_stats_highbd_edges_neon(wiener_win,
+                                            dgd8,
+                                            src8,
+                                            h_start,
+                                            h_end,
+                                            v_start,
+                                            v_end,
+                                            dgd_stride,
+                                            src_stride,
+                                            M,
+                                            H,
+                                            bit_depth,
+                                            stats_edges_win5_highbd_neon);
 }
 #endif // CONFIG_ENABLE_HIGH_BIT_DEPTH

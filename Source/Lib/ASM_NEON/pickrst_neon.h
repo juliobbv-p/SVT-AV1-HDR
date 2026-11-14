@@ -53,6 +53,51 @@ static inline void msub_neon(int32x4_t* sum, const int16x8_t src, const int16x8_
     *sum = vmlsl_s16(*sum, vget_high_s16(src), vget_high_s16(dgd));
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Products of 16 source samples and 16 reconstructed samples with five rows of the reconstruction. The two halves
+// of the 16 samples go to separate accumulators (sum_m[2 * k], sum_m[2 * k + 1]), so that an accumulator takes two
+// multiply-accumulates per call instead of four.
+static inline void stats_top_win5_highbd_neon(const int16x8_t src[2], const int16x8_t dgd[2], const int16_t* const d,
+                                              const int32_t d_stride, int32x4_t* sum_m, int32x4_t* sum_h) {
+    for (int32_t k = 0; k < WIENER_WIN_CHROMA; k++) {
+        const int16x8_t row0 = vld1q_s16(d + k * d_stride + 0);
+        const int16x8_t row1 = vld1q_s16(d + k * d_stride + 8);
+
+        madd_neon(&sum_m[2 * k + 0], src[0], row0);
+        madd_neon(&sum_m[2 * k + 1], src[1], row1);
+        madd_neon(&sum_h[2 * k + 0], dgd[0], row0);
+        madd_neon(&sum_h[2 * k + 1], dgd[1], row1);
+    }
+}
+
+// Products of the reconstruction at four horizontal offsets (dgd[j]) with the four rows below the current one.
+static inline void stats_left_win5_highbd_neon(int16x8_t dgd[WIENER_WIN_CHROMA - 1][2], const int16_t* const d,
+                                               const int32_t d_stride,
+                                               int32x4_t     sum[WIENER_WIN_CHROMA - 1][WIENER_WIN_CHROMA - 1]) {
+    for (int32_t k = 0; k < WIENER_WIN_CHROMA - 1; k++) {
+        const int16x8_t row0 = vld1q_s16(d + (k + 1) * d_stride + 0);
+        const int16x8_t row1 = vld1q_s16(d + (k + 1) * d_stride + 8);
+
+        for (int32_t j = 0; j < WIENER_WIN_CHROMA - 1; j++) {
+            madd_neon(&sum[j][k], dgd[j][0], row0);
+            madd_neon(&sum[j][k], dgd[j][1], row1);
+        }
+    }
+}
+
+// Steps 1 and 2 of the 5-tap window of high bit depth samples: the sums over the whole unit that the later steps
+// derive the rest of the statistics from. d and s hold the reconstruction (with its margin of two samples) and the
+// source, both minus the average of the reconstruction.
+typedef void (*StatsEdgesWin5HighbdFn)(const int16_t* d, int32_t d_stride, const int16_t* s, int32_t s_stride,
+                                       int32_t width, int32_t height, int64_t* M, int64_t* H, EbBitDepth bit_depth);
+
+// svt_av1_compute_stats_highbd_neon() with the given function for steps 1 and 2 of the 5-tap window.
+void svt_av1_compute_stats_highbd_edges_neon(int32_t wiener_win, const uint8_t* dgd8, const uint8_t* src8,
+                                             int32_t h_start, int32_t h_end, int32_t v_start, int32_t v_end,
+                                             int32_t dgd_stride, int32_t src_stride, int64_t* M, int64_t* H,
+                                             EbBitDepth bit_depth, StatsEdgesWin5HighbdFn edges_win5);
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
 static inline void compute_delta_step3_win7(int32x4_t* sum, const int16x8_t src0, const int16x8_t src1,
                                             const int16x8_t dgd0, const int16x8_t dgd1) {
     sum[0] = vmlsl_s16(sum[0], vget_low_s16(src0), vget_low_s16(dgd0));

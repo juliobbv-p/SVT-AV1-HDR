@@ -680,7 +680,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #if CONFIG_ENABLE_RESTORATION
     SET_NEON_SVE(svt_av1_compute_stats, svt_av1_compute_stats_c, svt_av1_compute_stats_neon, svt_av1_compute_stats_sve);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_NEON_SVE(svt_av1_compute_stats_highbd, svt_av1_compute_stats_highbd_c, svt_av1_compute_stats_highbd_neon, svt_av1_compute_stats_highbd_sve);
+    SET_NEON_NEON_DOTPROD_SVE(svt_av1_compute_stats_highbd, svt_av1_compute_stats_highbd_c, svt_av1_compute_stats_highbd_neon, svt_av1_compute_stats_highbd_neon_dotprod, svt_av1_compute_stats_highbd_sve);
 #endif
 #if CONFIG_ENABLE_SGRPROJ
     SET_NEON_SVE(svt_av1_lowbd_pixel_proj_error, svt_av1_lowbd_pixel_proj_error_c, svt_av1_lowbd_pixel_proj_error_neon, svt_av1_lowbd_pixel_proj_error_sve);

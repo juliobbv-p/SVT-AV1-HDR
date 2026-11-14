@@ -613,6 +613,17 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(WIENER_WIN_CHROMA, WIENER_WIN),
         ::testing::Values(EB_EIGHT_BIT, EB_TEN_BIT, EB_TWELVE_BIT)));
 
+#if HAVE_NEON_DOTPROD
+INSTANTIATE_TEST_SUITE_P(
+    NEON_DOTPROD, av1_compute_stats_test_hbd,
+    ::testing::Combine(
+        ::testing::Range(BLOCK_4X4, (BlockSize)(BLOCK_SIZES_ALL + 2)),
+        ::testing::Values(svt_av1_compute_stats_highbd_neon_dotprod),
+        ::testing::Range(0, 8),
+        ::testing::Values(WIENER_WIN_CHROMA, WIENER_WIN),
+        ::testing::Values(EB_EIGHT_BIT, EB_TEN_BIT, EB_TWELVE_BIT)));
+#endif  // HAVE_NEON_DOTPROD
+
 #if HAVE_SVE
 INSTANTIATE_TEST_SUITE_P(
     SVE, av1_compute_stats_test_hbd,

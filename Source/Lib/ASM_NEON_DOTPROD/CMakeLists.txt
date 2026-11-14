@@ -25,6 +25,7 @@ target_sources(
   PUBLIC convolve_neon_dotprod.c
   PUBLIC convolve_scale_neon_dotprod.c
   PUBLIC corner_match_neon_dotprod.c
+  PUBLIC highbd_pickrst_neon_dotprod.c
   PUBLIC jnt_convolve_neon_dotprod.c
   PUBLIC pic_analysis_neon_dotprod.c
   PUBLIC sad_neon_dotprod.c
