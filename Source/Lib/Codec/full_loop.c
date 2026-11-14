@@ -967,6 +967,96 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
     }
 }
 
+// The scan positions of the next nonzero coefficients from si down, at most max_n of them, found without a branch
+// on the coefficients: nz_si[k] is the position of the k-th one, zero_rate[k] the rate of all zero coefficients
+// passed before it, zero_rate[n] that of all zero coefficients passed, *end the position after the last one
+// visited. zero_cost[ctx] is the rate of a zero coefficient. Returns n.
+static NOINLINE int find_nonzero_coeffs_2d(int si, int max_n, const int16_t* scan, const TranLow* qcoeff,
+                                           const int8_t* nz_ctx, const int16_t* zero_cost, int* nz_si, int* zero_rate,
+                                           int* end) {
+    int n    = 0;
+    int rate = 0;
+    for (; si >= 0 && n < max_n; --si) {
+        const int ci      = scan[si];
+        const int nonzero = qcoeff[ci] != 0;
+        nz_si[n]          = si;
+        zero_rate[n]      = rate;
+        // masked rather than selected, which keeps the loop free of a branch on the coefficient
+        rate += zero_cost[nz_ctx[ci]] & (nonzero - 1);
+        n += nonzero;
+    }
+    zero_rate[n] = rate;
+    *end         = si;
+    return n;
+}
+
+// The eob loop of a TX_CLASS_2D block with cached contexts (update_coeff_eob() from scan position si down while at
+// most max_nz_num nonzero coefficients are kept) for as long as it changes nothing; returns the scan position at
+// which the loop goes on, with all its state as the loop has it there.
+//
+// Until a coefficient is lowered or the eob is moved, no level and no context changes. The positions of the next
+// nonzero coefficients, as many as the loop can still keep, and the rates of the zero coefficients before each of
+// them (base_cost16[0], valid under base_cost16_ok) can therefore be collected up front and stay valid until
+// update_coeff_eob() changes something: it then has moved the eob or changed the coefficient it was called for.
+static AOM_FORCE_INLINE int update_coeffs_eob_unchanged_2d(
+    int* accu_rate, int64_t* accu_dist, uint16_t* eob, int* nz_num, int* nz_ci, int si, int max_nz_num, TxSize tx_size,
+    int bwl, int height, int dc_sign_ctx, int64_t rdmult, int shift, const int16_t* dequant, const int16_t* scan,
+    const LvMapEobCost* txb_eob_costs, const LvMapCoeffCost* txb_costs, const TranLow* tcoeff, TranLow* qcoeff,
+    TranLow* dqcoeff, uint8_t* levels, int sharpness, const QmVal* iqm_ptr, int8_t* nz_ctx, const QmVal* qm) {
+    int       nz_si[4];
+    int       zero_rate[4 + 1];
+    int       end;
+    const int n = find_nonzero_coeffs_2d(si,
+                                         AOMMIN(max_nz_num + 1 - *nz_num, 4),
+                                         scan,
+                                         qcoeff,
+                                         nz_ctx,
+                                         txb_costs->base_cost16[0],
+                                         nz_si,
+                                         zero_rate,
+                                         &end);
+
+    // the zero rates are added as the loop adds them: before the nonzero coefficient they precede
+    int added = 0;
+    for (int k = 0; k < n; ++k) {
+        const int      ci         = scan[nz_si[k]];
+        const TranLow  qc         = qcoeff[ci];
+        const uint16_t eob_before = *eob;
+        *accu_rate += zero_rate[k] - added;
+        added = zero_rate[k];
+        update_coeff_eob(accu_rate,
+                         accu_dist,
+                         eob,
+                         nz_num,
+                         nz_ci,
+                         nz_si[k],
+                         tx_size,
+                         TX_CLASS_2D,
+                         bwl,
+                         height,
+                         dc_sign_ctx,
+                         rdmult,
+                         shift,
+                         dequant,
+                         scan,
+                         txb_eob_costs,
+                         txb_costs,
+                         tcoeff,
+                         qcoeff,
+                         dqcoeff,
+                         levels,
+                         sharpness,
+                         iqm_ptr,
+                         nz_ctx,
+                         qm);
+        if (*eob != eob_before || qcoeff[ci] != qc) {
+            return nz_si[k] - 1;
+        }
+    }
+    *accu_rate += zero_rate[n] - added;
+    return end;
+}
+
 static INLINE void update_coeff_general(int* accu_rate, int64_t* accu_dist, int si, int eob, TxSize tx_size,
                                         TxClass tx_class, int bwl, int height, int64_t rdmult, int shift,
                                         int dc_sign_ctx, const int16_t* dequant, const int16_t* scan,
@@ -1568,6 +1658,34 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
     switch (tx_class) {
     case TX_CLASS_2D:
         if (nz_ctx) {
+            // the positions up to the first change, if there is one; the loop below goes on from there
+            if (txb_costs->base_cost16_ok) {
+                si = update_coeffs_eob_unchanged_2d(&accu_rate,
+                                                    &accu_dist,
+                                                    eob,
+                                                    &nz_num,
+                                                    nz_ci,
+                                                    si,
+                                                    max_nz_num,
+                                                    tx_size,
+                                                    bwl,
+                                                    height,
+                                                    dc_sign_context,
+                                                    rdmult,
+                                                    shift,
+                                                    p->dequant_qtx,
+                                                    scan,
+                                                    txb_eob_costs,
+                                                    txb_costs,
+                                                    coeff_ptr,
+                                                    qcoeff_ptr,
+                                                    dqcoeff_ptr,
+                                                    levels,
+                                                    sharpness,
+                                                    qparam->iqmatrix,
+                                                    nz_ctx,
+                                                    qm);
+            }
             UPDATE_COEFF_EOB_LOOP(TX_CLASS_2D, nz_ctx);
         } else {
             UPDATE_COEFF_EOB_LOOP(TX_CLASS_2D, NULL);
