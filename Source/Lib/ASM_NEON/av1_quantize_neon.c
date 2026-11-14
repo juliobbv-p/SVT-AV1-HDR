@@ -461,6 +461,466 @@ static AOM_FORCE_INLINE void quantize_fp_qm_neon_impl(const TranLow* coeff_ptr, 
     *eob_ptr = get_max_eob(v_eobmax);
 }
 
+// Largest magnitudes of the first and of the last eight of sixteen coefficients (given as four vectors of
+// magnitudes), in the low and the high half of the result.
+static AOM_FORCE_INLINE uint64_t qm_max_abs_halves(int32x4_t a0, int32x4_t a1, int32x4_t a2, int32x4_t a3) {
+    const uint32x4_t m01 = vmaxq_u32(vreinterpretq_u32_s32(a0), vreinterpretq_u32_s32(a1));
+    const uint32x4_t m23 = vmaxq_u32(vreinterpretq_u32_s32(a2), vreinterpretq_u32_s32(a3));
+    const uint32x4_t m   = vpmaxq_u32(m01, m23);
+    return vgetq_lane_u64(vreinterpretq_u64_u32(vpmaxq_u32(m, m)), 0);
+}
+
+static AOM_FORCE_INLINE void qm_zero_8(TranLow* qcoeff, TranLow* dqcoeff) {
+    const int32x4_t zero = vdupq_n_s32(0);
+    vst1q_s32(qcoeff, zero);
+    vst1q_s32(qcoeff + 4, zero);
+    vst1q_s32(dqcoeff, zero);
+    vst1q_s32(dqcoeff + 4, zero);
+}
+
+// dequant_qm = (dequant * iqm + 16) >> 5 of eight positions in 16-bit lanes, for dequant = 32 * deq_hi + deq_lo with
+// deq_hi <= 255 and deq_lo <= 31 (dequant <= 8191): the product splits into 32 * deq_hi * iqm, a multiple of 32, and
+// deq_lo * iqm <= 31 * 255, so the result is deq_hi * iqm + ((deq_lo * iqm + 16) >> 5) <= 255 * 255 + 247 = 65272.
+// For dequant <= 4095 (deq_hi <= 127) it is at most 127 * 255 + 247 = 32632.
+static AOM_FORCE_INLINE uint16x8_t qm_dequant_8(const QmVal* iqm, uint8x8_t deq_hi, uint8x8_t deq_lo) {
+    const uint8x8_t v_iqm = vld1_u8(iqm);
+    return vmlal_u8(vrshrq_n_u16(vmull_u8(v_iqm, deq_lo), AOM_QM_BITS), v_iqm, deq_hi);
+}
+
+// Signs, stores and scan tracking shared by the 16-bit-lane quantizers: q_lo / q_hi hold eight levels 0..32767 (zero
+// where the coefficient is below its threshold), c_lo / c_hi the coefficients, v_dqf the output of qm_dequant_8().
+// level * dequant_qm <= 32767 * 65272 < 2^31 is the 32-bit product of the reference. `direct` (log_scale 0 and
+// dequant <= 4095, so dequant_qm <= 32632 is a positive 16-bit value) multiplies the signed level instead of giving
+// the product its sign afterwards.
+static AOM_FORCE_INLINE int16x8_t qm_finish_8(int32x4_t q_lo, int32x4_t q_hi, int32x4_t c_lo, int32x4_t c_hi,
+                                              uint16x8_t v_dqf, TranLow* qcoeff, TranLow* dqcoeff, const int16_t* iscan,
+                                              int16x8_t v_eobmax, int log_scale, const int direct) {
+    const int16x8_t v_q = vuzp1q_s16(vreinterpretq_s16_s32(q_lo), vreinterpretq_s16_s32(q_hi));
+    // the upper half of a 32-bit coefficient carries its sign
+    const int16x8_t v_sign = vshrq_n_s16(vuzp2q_s16(vreinterpretq_s16_s32(c_lo), vreinterpretq_s16_s32(c_hi)), 15);
+    const int16x8_t v_qs   = vsubq_s16(veorq_s16(v_q, v_sign), v_sign);
+    vst1q_s32(qcoeff, vmovl_s16(vget_low_s16(v_qs)));
+    vst1q_s32(qcoeff + 4, vmovl_high_s16(v_qs));
+    if (direct) {
+        const int16x8_t v_dqf_s = vreinterpretq_s16_u16(v_dqf);
+        vst1q_s32(dqcoeff, vmull_s16(vget_low_s16(v_qs), vget_low_s16(v_dqf_s)));
+        vst1q_s32(dqcoeff + 4, vmull_high_s16(v_qs, v_dqf_s));
+    } else {
+        // the shift applies to the magnitude
+        const uint16x8_t v_qu    = vreinterpretq_u16_s16(v_q);
+        const int32x4_t  v_shift = vdupq_n_s32(-log_scale);
+        const int32x4_t  s_lo    = vmovl_s16(vget_low_s16(v_sign));
+        const int32x4_t  s_hi    = vmovl_high_s16(v_sign);
+        const uint32x4_t d_lo    = vshlq_u32(vmull_u16(vget_low_u16(v_qu), vget_low_u16(v_dqf)), v_shift);
+        const uint32x4_t d_hi    = vshlq_u32(vmull_high_u16(v_qu, v_dqf), v_shift);
+        vst1q_s32(dqcoeff, vsubq_s32(veorq_s32(vreinterpretq_s32_u32(d_lo), s_lo), s_lo));
+        vst1q_s32(dqcoeff + 4, vsubq_s32(veorq_s32(vreinterpretq_s32_u32(d_hi), s_hi), s_hi));
+    }
+    return get_max_lane_eob(iscan, v_eobmax, vtstq_s16(v_q, v_q));
+}
+
+// Constants of the 16-bit-lane fast-quantize path for eight positions: rounding offset, threshold on magnitude *
+// weight, quant << (31 - shift), and dequant split as 32 * deq_hi + deq_lo.
+typedef struct {
+    uint16x8_t round;
+    uint32x4_t thr;
+    int32x4_t  qscale;
+    uint8x8_t  deq_hi;
+    uint8x8_t  deq_lo;
+} QmFpVectors;
+
+// Eight coefficients with magnitude + round <= 65535 (c_lo / c_hi, magnitudes a_lo / a_hi): the magnitudes and the
+// weights are narrowed to 16-bit lanes, so that each product with a weight comes from one widening multiply of
+// 16-bit halves instead of widened operands. The caller guarantees levels of at most 32767 (see
+// quantize_fp_qm_fast_neon()); `lo` holds the constants of the first four positions (DC or AC) and of the 16-bit and
+// 8-bit lanes, `ac` those of the last four.
+//   magnitude * weight <= 65535 * 255 < 2^24 and (magnitude + round) * weight < 2^24: exact in unsigned 32 bits, and
+//   positive as the signed operand of the multiply-high, which is the one of quantize_fp_qm_4().
+static AOM_FORCE_INLINE int16x8_t quantize_fp_qm_narrow_8(int32x4_t c_lo, int32x4_t c_hi, int32x4_t a_lo,
+                                                          int32x4_t a_hi, const QmVal* qm, const QmVal* iqm,
+                                                          const int16_t* iscan, TranLow* qcoeff, TranLow* dqcoeff,
+                                                          const QmFpVectors* lo, const QmFpVectors* ac,
+                                                          int16x8_t v_eobmax, int log_scale, const int direct) {
+    const uint16x8_t v_abs    = vuzp1q_u16(vreinterpretq_u16_s32(a_lo), vreinterpretq_u16_s32(a_hi));
+    const uint16x8_t v_qm     = vmovl_u8(vld1_u8(qm));
+    const uint32x4_t below_lo = vcgtq_u32(lo->thr, vmull_u16(vget_low_u16(v_abs), vget_low_u16(v_qm)));
+    const uint32x4_t below_hi = vcgtq_u32(ac->thr, vmull_high_u16(v_abs, v_qm));
+    const uint16x8_t v_x      = vaddq_u16(v_abs, lo->round);
+    const int32x4_t  p_lo     = vreinterpretq_s32_u32(vmull_u16(vget_low_u16(v_x), vget_low_u16(v_qm)));
+    const int32x4_t  p_hi     = vreinterpretq_s32_u32(vmull_high_u16(v_x, v_qm));
+    const int32x4_t  q_lo     = vbicq_s32(vqdmulhq_s32(p_lo, lo->qscale), vreinterpretq_s32_u32(below_lo));
+    const int32x4_t  q_hi     = vbicq_s32(vqdmulhq_s32(p_hi, ac->qscale), vreinterpretq_s32_u32(below_hi));
+    return qm_finish_8(q_lo,
+                       q_hi,
+                       c_lo,
+                       c_hi,
+                       qm_dequant_8(iqm, lo->deq_hi, lo->deq_lo),
+                       qcoeff,
+                       dqcoeff,
+                       iscan,
+                       v_eobmax,
+                       log_scale,
+                       direct);
+}
+
+// Sixteen coefficients, each half by its largest magnitude: all below the threshold for every weight (zeroed) or the
+// 16-bit-lane path. A group with a magnitude above narrow_max is left to quantize_fp_qm_pending() by setting
+// `group_bit` in *pending. skip_add holds 2^31 - 1 - (largest magnitude that is below the threshold for every
+// weight) for the first half in its low and for the second half in its high 32 bits, so that bit 31 of a half of the
+// sum with the two largest magnitudes (at most 2^31 each) is set exactly when that half has a larger magnitude.
+static AOM_FORCE_INLINE int16x8_t quantize_fp_qm_16(const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff,
+                                                    const int16_t* iscan, const QmVal* qm, const QmVal* iqm,
+                                                    const QmFpVectors* lo, const QmFpVectors* ac, uint64_t skip_add,
+                                                    int64_t narrow_max, int16x8_t v_eobmax, uint64_t* pending,
+                                                    uint64_t group_bit, int log_scale, const int direct) {
+    const int32x4_t c0 = vld1q_s32(coeff), c1 = vld1q_s32(coeff + 4);
+    const int32x4_t c2 = vld1q_s32(coeff + 8), c3 = vld1q_s32(coeff + 12);
+    const int32x4_t a0 = vabsq_s32(c0), a1 = vabsq_s32(c1), a2 = vabsq_s32(c2), a3 = vabsq_s32(c3);
+    const uint64_t  max_abs = qm_max_abs_halves(a0, a1, a2, a3);
+    const uint64_t  over    = (max_abs + skip_add) & 0x8000000080000000ull;
+    if (!over) {
+        qm_zero_8(qcoeff, dqcoeff);
+        qm_zero_8(qcoeff + 8, dqcoeff + 8);
+        return v_eobmax;
+    }
+    if ((int64_t)(uint32_t)max_abs > narrow_max || (int64_t)(max_abs >> 32) > narrow_max) {
+        *pending |= group_bit;
+        return v_eobmax;
+    }
+    if (!(uint32_t)over) {
+        qm_zero_8(qcoeff, dqcoeff);
+    } else {
+        v_eobmax = quantize_fp_qm_narrow_8(
+            c0, c1, a0, a1, qm, iqm, iscan, qcoeff, dqcoeff, lo, ac, v_eobmax, log_scale, direct);
+    }
+    if (!(over >> 32)) {
+        qm_zero_8(qcoeff + 8, dqcoeff + 8);
+    } else {
+        v_eobmax = quantize_fp_qm_narrow_8(
+            c2, c3, a2, a3, qm + 8, iqm + 8, iscan + 8, qcoeff + 8, dqcoeff + 8, ac, ac, v_eobmax, log_scale, direct);
+    }
+    return v_eobmax;
+}
+
+// The groups of sixteen coefficients whose bit is set in `pending` (bit g: coefficients 16 * g onwards, as far as
+// the block goes), in 32-bit lanes for any magnitude, eight at a time as quantize_fp_qm_neon_impl() handles them.
+// Returns the largest scan index of a nonzero level among them, -1 without one.
+static AOM_FORCE_INLINE int quantize_fp_qm_pending(const TranLow* coeff_ptr, intptr_t n_coeffs,
+                                                   const int16_t* round_ptr, const int16_t* quant_ptr,
+                                                   TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                                   const int16_t* dequant_ptr, const int16_t* iscan,
+                                                   const QmVal* qm_ptr, const QmVal* iqm_ptr, int log_scale,
+                                                   uint64_t pending, const int highbd) {
+    const int       qsh          = 31 - (16 - log_scale + AOM_QM_BITS);
+    const int32x4_t v_thr_sh     = vdupq_n_s32(AOM_QM_BITS - (1 + log_scale));
+    const int32_t   rnd_dc       = ROUND_POWER_OF_TWO(round_ptr[0], log_scale);
+    const int32_t   rnd_ac       = ROUND_POWER_OF_TWO(round_ptr[1], log_scale);
+    const int32x4_t v_round_ac   = vdupq_n_s32(rnd_ac);
+    const int32x4_t v_dequant_ac = vdupq_n_s32(dequant_ptr[1]);
+    const int32x4_t v_thr_ac     = vshlq_s32(v_dequant_ac, v_thr_sh);
+    const int32x4_t v_qscale_ac  = vshlq_s32(vdupq_n_s32(quant_ptr[1]), vdupq_n_s32(qsh));
+    int16x8_t       v_eobmax     = vdupq_n_s16(-1);
+    for (; pending; pending &= pending - 1) {
+        const intptr_t first = 16 * (intptr_t)svt_ctzll(pending);
+        const intptr_t last  = AOMMIN(first + 16, n_coeffs);
+        for (intptr_t i = first; i < last; i += 8) {
+            // the first group carries the DC constants in lane 0
+            const int32x4_t v_round_lo   = i ? v_round_ac : dc_ac_s32(rnd_dc, rnd_ac);
+            const int32x4_t v_dequant_lo = i ? v_dequant_ac : dc_ac_s32(dequant_ptr[0], dequant_ptr[1]);
+            const int32x4_t v_thr_lo     = vshlq_s32(v_dequant_lo, v_thr_sh);
+            const int32x4_t v_qscale_lo  = i ? v_qscale_ac
+                                             : vshlq_s32(dc_ac_s32(quant_ptr[0], quant_ptr[1]), vdupq_n_s32(qsh));
+
+            const int32x4_t  coeff_lo = vld1q_s32(coeff_ptr + i);
+            const int32x4_t  coeff_hi = vld1q_s32(coeff_ptr + i + 4);
+            const int32x4_t  abs_lo = vabsq_s32(coeff_lo), abs_hi = vabsq_s32(coeff_hi);
+            const uint16x8_t v_qm     = vmovl_u8(vld1_u8(qm_ptr + i));
+            const int32x4_t  v_qm_lo  = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(v_qm)));
+            const int32x4_t  v_qm_hi  = vreinterpretq_s32_u32(vmovl_high_u16(v_qm));
+            const uint32x4_t below_lo = vcgtq_s32(v_thr_lo, vmulq_s32(abs_lo, v_qm_lo));
+            const uint32x4_t below_hi = vcgtq_s32(v_thr_ac, vmulq_s32(abs_hi, v_qm_hi));
+            const uint16x8_t v_iqm    = vmovl_u8(vld1_u8(iqm_ptr + i));
+            const int32x4_t  v_iqm_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(v_iqm)));
+            const int32x4_t  v_iqm_hi = vreinterpretq_s32_u32(vmovl_high_u16(v_iqm));
+            const uint32x4_t nz_lo    = quantize_fp_qm_4(coeff_lo,
+                                                      abs_lo,
+                                                      below_lo,
+                                                      v_qm_lo,
+                                                      v_iqm_lo,
+                                                      v_round_lo,
+                                                      v_qscale_lo,
+                                                      v_dequant_lo,
+                                                      qcoeff_ptr + i,
+                                                      dqcoeff_ptr + i,
+                                                      log_scale,
+                                                      highbd);
+            const uint32x4_t nz_hi    = quantize_fp_qm_4(coeff_hi,
+                                                      abs_hi,
+                                                      below_hi,
+                                                      v_qm_hi,
+                                                      v_iqm_hi,
+                                                      v_round_ac,
+                                                      v_qscale_ac,
+                                                      v_dequant_ac,
+                                                      qcoeff_ptr + i + 4,
+                                                      dqcoeff_ptr + i + 4,
+                                                      log_scale,
+                                                      highbd);
+            v_eobmax = get_max_lane_eob(iscan + i, v_eobmax, vcombine_u16(vmovn_u32(nz_lo), vmovn_u32(nz_hi)));
+        }
+    }
+    return vmaxvq_s16(v_eobmax);
+}
+
+static NOINLINE int quantize_fp_qm_pending_lbd(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* round_ptr,
+                                               const int16_t* quant_ptr, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                               const int16_t* dequant_ptr, const int16_t* iscan, const QmVal* qm_ptr,
+                                               const QmVal* iqm_ptr, int log_scale, uint64_t pending) {
+    return quantize_fp_qm_pending(coeff_ptr,
+                                  n_coeffs,
+                                  round_ptr,
+                                  quant_ptr,
+                                  qcoeff_ptr,
+                                  dqcoeff_ptr,
+                                  dequant_ptr,
+                                  iscan,
+                                  qm_ptr,
+                                  iqm_ptr,
+                                  log_scale,
+                                  pending,
+                                  /*highbd=*/0);
+}
+
+static NOINLINE int quantize_fp_qm_pending_hbd(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* round_ptr,
+                                               const int16_t* quant_ptr, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                               const int16_t* dequant_ptr, const int16_t* iscan, const QmVal* qm_ptr,
+                                               const QmVal* iqm_ptr, int log_scale, uint64_t pending) {
+    return quantize_fp_qm_pending(coeff_ptr,
+                                  n_coeffs,
+                                  round_ptr,
+                                  quant_ptr,
+                                  qcoeff_ptr,
+                                  dqcoeff_ptr,
+                                  dequant_ptr,
+                                  iscan,
+                                  qm_ptr,
+                                  iqm_ptr,
+                                  log_scale,
+                                  pending,
+                                  /*highbd=*/1);
+}
+
+// Groups of sixteen aligned to the block; the result holds the scan indices of the nonzero levels found.
+static AOM_FORCE_INLINE int16x8_t quantize_fp_qm_groups_neon(
+    const TranLow* coeff_ptr, intptr_t n_coeffs, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr, const int16_t* iscan,
+    const QmVal* qm_ptr, const QmVal* iqm_ptr, const QmFpVectors* dc, const QmFpVectors* ac, uint64_t skip_add_dc,
+    uint64_t skip_add_ac, int64_t narrow_max, uint64_t* pending, int log_scale, const int direct) {
+    int16x8_t v_eobmax = quantize_fp_qm_16(coeff_ptr,
+                                           qcoeff_ptr,
+                                           dqcoeff_ptr,
+                                           iscan,
+                                           qm_ptr,
+                                           iqm_ptr,
+                                           dc,
+                                           ac,
+                                           skip_add_dc,
+                                           narrow_max,
+                                           vdupq_n_s16(-1),
+                                           pending,
+                                           1,
+                                           log_scale,
+                                           direct);
+    // the zero test of a group needs the coefficients and the outputs only, so these pointers carry the loop
+    const TranLow* const end = coeff_ptr + (n_coeffs & ~(intptr_t)15);
+    const TranLow*       c   = coeff_ptr + 16;
+    TranLow*             q   = qcoeff_ptr + 16;
+    TranLow*             dq  = dqcoeff_ptr + 16;
+    for (; c != end; c += 16, q += 16, dq += 16) {
+        const intptr_t i = c - coeff_ptr;
+        v_eobmax         = quantize_fp_qm_16(c,
+                                     q,
+                                     dq,
+                                     iscan + i,
+                                     qm_ptr + i,
+                                     iqm_ptr + i,
+                                     ac,
+                                     ac,
+                                     skip_add_ac,
+                                     narrow_max,
+                                     v_eobmax,
+                                     pending,
+                                     (uint64_t)1 << (i >> 4),
+                                     log_scale,
+                                     direct);
+    }
+    return v_eobmax;
+}
+
+// Fast-quantize path with a quantization matrix for the parameters of 8-bit and 10-bit video: coefficients are
+// handled in groups of sixteen aligned to the block (see quantize_fp_qm_16()). Returns false, without writing
+// anything, for parameters outside the conditions below; the caller then runs quantize_fp_qm_neon_impl().
+//   n_coeffs <= 1024, log_scale in 0..2, round >= 0, quant >= 0,
+//   dequant in 1..8191 (every quantizer of 8-bit and 10-bit video, whose largest step is 7312).
+// With these every threshold is at least 4, so a coefficient of magnitude 0 is below it, and each path computes the
+// same function of a coefficient and its position as quantize_fp_qm_neon_impl(), whose result then does not depend
+// on how it groups the coefficients either; the paths differ in the lane width only.
+//   All below the threshold: magnitude * weight <= (thr - 1) / max_weight * max_weight < thr.
+//   16-bit lanes, level <= 32767: level = ((magnitude + round) * weight * quant) >> shift with magnitude + round <=
+//   65535 and weight <= max_weight, so it is enough that 65535 * max_weight * quant < 32768 << shift. That is checked
+//   here; at log_scale 0 it holds for every quantizer of 8-bit and 10-bit video (quant <= 16384 and max_weight <= 34
+//   give 2^35.1 < 2^36), at log_scale 1 and 2 for all but the smallest steps (4, and 4 to 8). Otherwise no group
+//   takes that path (narrow_max = -1). The 8-bit kernel also clamps magnitude + round to 32767, which a limit of
+//   32767 - round on the magnitude makes a no-op.
+static AOM_FORCE_INLINE bool quantize_fp_qm_fast_neon(const TranLow* coeff_ptr, intptr_t n_coeffs,
+                                                      const int16_t* round_ptr, const int16_t* quant_ptr,
+                                                      TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                                      const int16_t* dequant_ptr, uint16_t* eob_ptr,
+                                                      const int16_t* iscan, const QmVal* qm_ptr, const QmVal* iqm_ptr,
+                                                      int log_scale, const int highbd) {
+    assert(qm_ptr != NULL && iqm_ptr != NULL);
+    assert(n_coeffs >= 16 && (n_coeffs & 7) == 0);
+
+    const int32_t dequant_dc = dequant_ptr[0], dequant_ac = dequant_ptr[1];
+    const int32_t quant_dc = quant_ptr[0], quant_ac = quant_ptr[1];
+    if (n_coeffs > 1024 || (uint32_t)log_scale > 2 || (uint32_t)(dequant_dc - 1) >= 8191 ||
+        (uint32_t)(dequant_ac - 1) >= 8191 || (round_ptr[0] | round_ptr[1] | quant_dc | quant_ac) < 0) {
+        return false;
+    }
+    const int      shift_q    = 16 - log_scale + AOM_QM_BITS;
+    const int      thr_sh     = AOM_QM_BITS - (1 + log_scale);
+    const int32_t  round_dc   = ROUND_POWER_OF_TWO(round_ptr[0], log_scale);
+    const int32_t  round_ac   = ROUND_POWER_OF_TWO(round_ptr[1], log_scale);
+    const uint32_t thr_dc     = (uint32_t)dequant_dc << thr_sh;
+    const uint32_t thr_ac     = (uint32_t)dequant_ac << thr_sh;
+    const uint32_t max_weight = (uint32_t)qm_max_weight_cached_neon(qm_ptr, n_coeffs);
+    const uint32_t weight_div = AOMMAX(max_weight, 1);
+    // largest magnitudes that are below the threshold for every weight, as the addends of quantize_fp_qm_16(); the
+    // first half of the first group holds the DC coefficient and takes the smaller of the two thresholds
+    const uint64_t skip_ac     = 0x7fffffff - (thr_ac - 1) / weight_div;
+    const uint64_t skip_dc     = 0x7fffffff - (AOMMIN(thr_dc, thr_ac) - 1) / weight_div;
+    const uint64_t skip_add_ac = skip_ac << 32 | skip_ac;
+    const uint64_t skip_add_dc = skip_ac << 32 | skip_dc;
+    int64_t        narrow_max  = -1;
+    if ((uint64_t)65535 * max_weight * (uint32_t)AOMMAX(quant_dc, quant_ac) < ((uint64_t)32768 << shift_q)) {
+        narrow_max = (highbd ? 65535 : 32767) - AOMMAX(round_dc, round_ac);
+    }
+
+    QmFpVectors ac, dc;
+    ac.round  = vdupq_n_u16((uint16_t)round_ac);
+    ac.thr    = vdupq_n_u32(thr_ac);
+    ac.qscale = vdupq_n_s32(quant_ac << (31 - shift_q));
+    ac.deq_hi = vdup_n_u8((uint8_t)(dequant_ac >> AOM_QM_BITS));
+    ac.deq_lo = vdup_n_u8((uint8_t)(dequant_ac & ((1 << AOM_QM_BITS) - 1)));
+    dc.round  = vsetq_lane_u16((uint16_t)round_dc, ac.round, 0);
+    dc.thr    = vsetq_lane_u32(thr_dc, ac.thr, 0);
+    dc.qscale = vsetq_lane_s32(quant_dc << (31 - shift_q), ac.qscale, 0);
+    dc.deq_hi = vset_lane_u8((uint8_t)(dequant_dc >> AOM_QM_BITS), ac.deq_hi, 0);
+    dc.deq_lo = vset_lane_u8((uint8_t)(dequant_dc & ((1 << AOM_QM_BITS) - 1)), ac.deq_lo, 0);
+
+    // a last group of eight (n_coeffs is not a multiple of 16) goes to the 32-bit lanes
+    uint64_t  pending = (n_coeffs & 8) ? (uint64_t)1 << (n_coeffs >> 4) : 0;
+    int16x8_t v_eobmax;
+    if (log_scale == 0 && AOMMAX(dequant_dc, dequant_ac) <= 4095) {
+        v_eobmax = quantize_fp_qm_groups_neon(coeff_ptr,
+                                              n_coeffs,
+                                              qcoeff_ptr,
+                                              dqcoeff_ptr,
+                                              iscan,
+                                              qm_ptr,
+                                              iqm_ptr,
+                                              &dc,
+                                              &ac,
+                                              skip_add_dc,
+                                              skip_add_ac,
+                                              narrow_max,
+                                              &pending,
+                                              0,
+                                              1);
+    } else {
+        v_eobmax = quantize_fp_qm_groups_neon(coeff_ptr,
+                                              n_coeffs,
+                                              qcoeff_ptr,
+                                              dqcoeff_ptr,
+                                              iscan,
+                                              qm_ptr,
+                                              iqm_ptr,
+                                              &dc,
+                                              &ac,
+                                              skip_add_dc,
+                                              skip_add_ac,
+                                              narrow_max,
+                                              &pending,
+                                              log_scale,
+                                              0);
+    }
+    int eob = vmaxvq_s16(v_eobmax);
+    if (pending) {
+        const int eob_32 = highbd ? quantize_fp_qm_pending_hbd(coeff_ptr,
+                                                               n_coeffs,
+                                                               round_ptr,
+                                                               quant_ptr,
+                                                               qcoeff_ptr,
+                                                               dqcoeff_ptr,
+                                                               dequant_ptr,
+                                                               iscan,
+                                                               qm_ptr,
+                                                               iqm_ptr,
+                                                               log_scale,
+                                                               pending)
+                                  : quantize_fp_qm_pending_lbd(coeff_ptr,
+                                                               n_coeffs,
+                                                               round_ptr,
+                                                               quant_ptr,
+                                                               qcoeff_ptr,
+                                                               dqcoeff_ptr,
+                                                               dequant_ptr,
+                                                               iscan,
+                                                               qm_ptr,
+                                                               iqm_ptr,
+                                                               log_scale,
+                                                               pending);
+        eob              = AOMMAX(eob, eob_32);
+    }
+    *eob_ptr = (uint16_t)(eob + 1);
+    return true;
+}
+
+// quantize_fp_qm_neon_impl() out of line, for the parameters quantize_fp_qm_fast_neon() leaves to it.
+static NOINLINE void quantize_fp_qm_general_neon(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* round_ptr,
+                                                 const int16_t* quant_ptr, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                                 const int16_t* dequant_ptr, uint16_t* eob_ptr, const int16_t* iscan,
+                                                 const QmVal* qm_ptr, const QmVal* iqm_ptr, int log_scale, int highbd) {
+    if (highbd) {
+        quantize_fp_qm_neon_impl(coeff_ptr,
+                                 n_coeffs,
+                                 round_ptr,
+                                 quant_ptr,
+                                 qcoeff_ptr,
+                                 dqcoeff_ptr,
+                                 dequant_ptr,
+                                 eob_ptr,
+                                 iscan,
+                                 qm_ptr,
+                                 iqm_ptr,
+                                 log_scale,
+                                 /*highbd=*/1);
+    } else {
+        quantize_fp_qm_neon_impl(coeff_ptr,
+                                 n_coeffs,
+                                 round_ptr,
+                                 quant_ptr,
+                                 qcoeff_ptr,
+                                 dqcoeff_ptr,
+                                 dequant_ptr,
+                                 eob_ptr,
+                                 iscan,
+                                 qm_ptr,
+                                 iqm_ptr,
+                                 log_scale,
+                                 /*highbd=*/0);
+    }
+}
+
 void svt_av1_quantize_fp_qm_neon(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
                                  const int16_t* round_ptr, const int16_t* quant_ptr, const int16_t* quant_shift_ptr,
                                  TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr, const int16_t* dequant_ptr,
@@ -469,19 +929,33 @@ void svt_av1_quantize_fp_qm_neon(const TranLow* coeff_ptr, intptr_t n_coeffs, co
     (void)zbin_ptr;
     (void)quant_shift_ptr;
     (void)scan;
-    quantize_fp_qm_neon_impl(coeff_ptr,
-                             n_coeffs,
-                             round_ptr,
-                             quant_ptr,
-                             qcoeff_ptr,
-                             dqcoeff_ptr,
-                             dequant_ptr,
-                             eob_ptr,
-                             iscan,
-                             qm_ptr,
-                             iqm_ptr,
-                             log_scale,
-                             /*highbd=*/0);
+    if (!quantize_fp_qm_fast_neon(coeff_ptr,
+                                  n_coeffs,
+                                  round_ptr,
+                                  quant_ptr,
+                                  qcoeff_ptr,
+                                  dqcoeff_ptr,
+                                  dequant_ptr,
+                                  eob_ptr,
+                                  iscan,
+                                  qm_ptr,
+                                  iqm_ptr,
+                                  log_scale,
+                                  /*highbd=*/0)) {
+        quantize_fp_qm_general_neon(coeff_ptr,
+                                    n_coeffs,
+                                    round_ptr,
+                                    quant_ptr,
+                                    qcoeff_ptr,
+                                    dqcoeff_ptr,
+                                    dequant_ptr,
+                                    eob_ptr,
+                                    iscan,
+                                    qm_ptr,
+                                    iqm_ptr,
+                                    log_scale,
+                                    /*highbd=*/0);
+    }
 }
 
 void svt_av1_highbd_quantize_fp_qm_neon(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
@@ -493,19 +967,33 @@ void svt_av1_highbd_quantize_fp_qm_neon(const TranLow* coeff_ptr, intptr_t n_coe
     (void)zbin_ptr;
     (void)quant_shift_ptr;
     (void)scan;
-    quantize_fp_qm_neon_impl(coeff_ptr,
-                             n_coeffs,
-                             round_ptr,
-                             quant_ptr,
-                             qcoeff_ptr,
-                             dqcoeff_ptr,
-                             dequant_ptr,
-                             eob_ptr,
-                             iscan,
-                             qm_ptr,
-                             iqm_ptr,
-                             log_scale,
-                             /*highbd=*/1);
+    if (!quantize_fp_qm_fast_neon(coeff_ptr,
+                                  n_coeffs,
+                                  round_ptr,
+                                  quant_ptr,
+                                  qcoeff_ptr,
+                                  dqcoeff_ptr,
+                                  dequant_ptr,
+                                  eob_ptr,
+                                  iscan,
+                                  qm_ptr,
+                                  iqm_ptr,
+                                  log_scale,
+                                  /*highbd=*/1)) {
+        quantize_fp_qm_general_neon(coeff_ptr,
+                                    n_coeffs,
+                                    round_ptr,
+                                    quant_ptr,
+                                    qcoeff_ptr,
+                                    dqcoeff_ptr,
+                                    dequant_ptr,
+                                    eob_ptr,
+                                    iscan,
+                                    qm_ptr,
+                                    iqm_ptr,
+                                    log_scale,
+                                    /*highbd=*/1);
+    }
 }
 
 // Quantize 4 coefficients (one int32x4 lane group) for the quantize_b qm path.
@@ -668,27 +1156,468 @@ static AOM_FORCE_INLINE void quantize_b_qm_neon_impl(const TranLow* coeff_ptr, i
     *eob_ptr = get_max_eob(v_eobmax);
 }
 
+// Constants of the 16-bit-lane quantize_b path for eight positions: rounding offset, zbin threshold on magnitude *
+// weight, quant << 15, quant_shift << (31 - shift), and dequant split as 32 * deq_hi + deq_lo.
+typedef struct {
+    uint16x8_t round;
+    uint32x4_t zbin;
+    int32x4_t  quant_scl;
+    int32x4_t  qshift_scl;
+    uint8x8_t  deq_hi;
+    uint8x8_t  deq_lo;
+} QmBVectors;
+
+// Eight coefficients with magnitude + round <= 65535, as quantize_fp_qm_narrow_8() but with the two-step quantizer of
+// quantize_b_qm_4(): (magnitude + round) * weight < 2^24 is its 32-bit operand, the multiply-highs are the same.
+static AOM_FORCE_INLINE int16x8_t quantize_b_qm_narrow_8(int32x4_t c_lo, int32x4_t c_hi, int32x4_t a_lo, int32x4_t a_hi,
+                                                         const QmVal* qm, const QmVal* iqm, const int16_t* iscan,
+                                                         TranLow* qcoeff, TranLow* dqcoeff, const QmBVectors* lo,
+                                                         const QmBVectors* ac, int16x8_t v_eobmax, int log_scale,
+                                                         const int direct) {
+    const uint16x8_t v_abs    = vuzp1q_u16(vreinterpretq_u16_s32(a_lo), vreinterpretq_u16_s32(a_hi));
+    const uint16x8_t v_qm     = vmovl_u8(vld1_u8(qm));
+    const uint32x4_t below_lo = vcgtq_u32(lo->zbin, vmull_u16(vget_low_u16(v_abs), vget_low_u16(v_qm)));
+    const uint32x4_t below_hi = vcgtq_u32(ac->zbin, vmull_high_u16(v_abs, v_qm));
+    const uint16x8_t v_x      = vaddq_u16(v_abs, lo->round);
+    const int32x4_t  p_lo     = vreinterpretq_s32_u32(vmull_u16(vget_low_u16(v_x), vget_low_u16(v_qm)));
+    const int32x4_t  p_hi     = vreinterpretq_s32_u32(vmull_high_u16(v_x, v_qm));
+    const int32x4_t  q2_lo    = vaddq_s32(vqdmulhq_s32(p_lo, lo->quant_scl), p_lo);
+    const int32x4_t  q2_hi    = vaddq_s32(vqdmulhq_s32(p_hi, ac->quant_scl), p_hi);
+    const int32x4_t  q_lo     = vbicq_s32(vqdmulhq_s32(q2_lo, lo->qshift_scl), vreinterpretq_s32_u32(below_lo));
+    const int32x4_t  q_hi     = vbicq_s32(vqdmulhq_s32(q2_hi, ac->qshift_scl), vreinterpretq_s32_u32(below_hi));
+    return qm_finish_8(q_lo,
+                       q_hi,
+                       c_lo,
+                       c_hi,
+                       qm_dequant_8(iqm, lo->deq_hi, lo->deq_lo),
+                       qcoeff,
+                       dqcoeff,
+                       iscan,
+                       v_eobmax,
+                       log_scale,
+                       direct);
+}
+
+// Sixteen coefficients, as quantize_fp_qm_16().
+static AOM_FORCE_INLINE int16x8_t quantize_b_qm_16(const TranLow* coeff, TranLow* qcoeff, TranLow* dqcoeff,
+                                                   const int16_t* iscan, const QmVal* qm, const QmVal* iqm,
+                                                   const QmBVectors* lo, const QmBVectors* ac, uint64_t skip_add,
+                                                   int64_t narrow_max, int16x8_t v_eobmax, uint64_t* pending,
+                                                   uint64_t group_bit, int log_scale, const int direct) {
+    const int32x4_t c0 = vld1q_s32(coeff), c1 = vld1q_s32(coeff + 4);
+    const int32x4_t c2 = vld1q_s32(coeff + 8), c3 = vld1q_s32(coeff + 12);
+    const int32x4_t a0 = vabsq_s32(c0), a1 = vabsq_s32(c1), a2 = vabsq_s32(c2), a3 = vabsq_s32(c3);
+    const uint64_t  max_abs = qm_max_abs_halves(a0, a1, a2, a3);
+    const uint64_t  over    = (max_abs + skip_add) & 0x8000000080000000ull;
+    if (!over) {
+        qm_zero_8(qcoeff, dqcoeff);
+        qm_zero_8(qcoeff + 8, dqcoeff + 8);
+        return v_eobmax;
+    }
+    if ((int64_t)(uint32_t)max_abs > narrow_max || (int64_t)(max_abs >> 32) > narrow_max) {
+        *pending |= group_bit;
+        return v_eobmax;
+    }
+    if (!(uint32_t)over) {
+        qm_zero_8(qcoeff, dqcoeff);
+    } else {
+        v_eobmax = quantize_b_qm_narrow_8(
+            c0, c1, a0, a1, qm, iqm, iscan, qcoeff, dqcoeff, lo, ac, v_eobmax, log_scale, direct);
+    }
+    if (!(over >> 32)) {
+        qm_zero_8(qcoeff + 8, dqcoeff + 8);
+    } else {
+        v_eobmax = quantize_b_qm_narrow_8(
+            c2, c3, a2, a3, qm + 8, iqm + 8, iscan + 8, qcoeff + 8, dqcoeff + 8, ac, ac, v_eobmax, log_scale, direct);
+    }
+    return v_eobmax;
+}
+
+// The groups of sixteen coefficients whose bit is set in `pending`, as quantize_fp_qm_pending(): 32-bit lanes for
+// any magnitude, eight at a time as quantize_b_qm_neon_impl() handles them.
+static AOM_FORCE_INLINE int quantize_b_qm_pending(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
+                                                  const int16_t* round_ptr, const int16_t* quant_ptr,
+                                                  const int16_t* quant_shift_ptr, TranLow* qcoeff_ptr,
+                                                  TranLow* dqcoeff_ptr, const int16_t* dequant_ptr,
+                                                  const int16_t* iscan, const QmVal* qm_ptr, const QmVal* iqm_ptr,
+                                                  int log_scale, uint64_t pending, const int highbd) {
+    const int32x4_t v_qsh           = vdupq_n_s32(31 - (16 - log_scale + AOM_QM_BITS));
+    const int32_t   rnd_dc          = ROUND_POWER_OF_TWO(round_ptr[0], log_scale);
+    const int32_t   rnd_ac          = ROUND_POWER_OF_TWO(round_ptr[1], log_scale);
+    const int32_t   zbn_dc          = ROUND_POWER_OF_TWO(zbin_ptr[0], log_scale) << AOM_QM_BITS;
+    const int32_t   zbn_ac          = ROUND_POWER_OF_TWO(zbin_ptr[1], log_scale) << AOM_QM_BITS;
+    const int32x4_t v_round_ac      = vdupq_n_s32(rnd_ac);
+    const int32x4_t v_dequant_ac    = vdupq_n_s32(dequant_ptr[1]);
+    const int32x4_t v_zbin_ac       = vdupq_n_s32(zbn_ac);
+    const int32x4_t v_quant_scl_ac  = vshlq_n_s32(vdupq_n_s32(quant_ptr[1]), 15);
+    const int32x4_t v_qshift_scl_ac = vshlq_s32(vdupq_n_s32(quant_shift_ptr[1]), v_qsh);
+    int16x8_t       v_eobmax        = vdupq_n_s16(-1);
+    for (; pending; pending &= pending - 1) {
+        const intptr_t first = 16 * (intptr_t)svt_ctzll(pending);
+        const intptr_t last  = AOMMIN(first + 16, n_coeffs);
+        for (intptr_t i = first; i < last; i += 8) {
+            // the first group carries the DC constants in lane 0
+            const int32x4_t v_round_lo      = i ? v_round_ac : dc_ac_s32(rnd_dc, rnd_ac);
+            const int32x4_t v_dequant_lo    = i ? v_dequant_ac : dc_ac_s32(dequant_ptr[0], dequant_ptr[1]);
+            const int32x4_t v_zbin_lo       = i ? v_zbin_ac : dc_ac_s32(zbn_dc, zbn_ac);
+            const int32x4_t v_quant_scl_lo  = i ? v_quant_scl_ac
+                                                : vshlq_n_s32(dc_ac_s32(quant_ptr[0], quant_ptr[1]), 15);
+            const int32x4_t v_qshift_scl_lo = i ? v_qshift_scl_ac
+                                                : vshlq_s32(dc_ac_s32(quant_shift_ptr[0], quant_shift_ptr[1]), v_qsh);
+
+            const int32x4_t  coeff_lo = vld1q_s32(coeff_ptr + i);
+            const int32x4_t  coeff_hi = vld1q_s32(coeff_ptr + i + 4);
+            const int32x4_t  abs_lo = vabsq_s32(coeff_lo), abs_hi = vabsq_s32(coeff_hi);
+            const uint16x8_t v_qm     = vmovl_u8(vld1_u8(qm_ptr + i));
+            const int32x4_t  v_qm_lo  = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(v_qm)));
+            const int32x4_t  v_qm_hi  = vreinterpretq_s32_u32(vmovl_high_u16(v_qm));
+            const uint32x4_t below_lo = vcgtq_s32(v_zbin_lo, vmulq_s32(abs_lo, v_qm_lo));
+            const uint32x4_t below_hi = vcgtq_s32(v_zbin_ac, vmulq_s32(abs_hi, v_qm_hi));
+            const uint16x8_t v_iqm    = vmovl_u8(vld1_u8(iqm_ptr + i));
+            const int32x4_t  v_iqm_lo = vreinterpretq_s32_u32(vmovl_u16(vget_low_u16(v_iqm)));
+            const int32x4_t  v_iqm_hi = vreinterpretq_s32_u32(vmovl_high_u16(v_iqm));
+            const uint32x4_t nz_lo    = quantize_b_qm_4(coeff_lo,
+                                                     abs_lo,
+                                                     below_lo,
+                                                     v_qm_lo,
+                                                     v_iqm_lo,
+                                                     v_round_lo,
+                                                     v_quant_scl_lo,
+                                                     v_qshift_scl_lo,
+                                                     v_dequant_lo,
+                                                     qcoeff_ptr + i,
+                                                     dqcoeff_ptr + i,
+                                                     log_scale,
+                                                     highbd);
+            const uint32x4_t nz_hi    = quantize_b_qm_4(coeff_hi,
+                                                     abs_hi,
+                                                     below_hi,
+                                                     v_qm_hi,
+                                                     v_iqm_hi,
+                                                     v_round_ac,
+                                                     v_quant_scl_ac,
+                                                     v_qshift_scl_ac,
+                                                     v_dequant_ac,
+                                                     qcoeff_ptr + i + 4,
+                                                     dqcoeff_ptr + i + 4,
+                                                     log_scale,
+                                                     highbd);
+            v_eobmax = get_max_lane_eob(iscan + i, v_eobmax, vcombine_u16(vmovn_u32(nz_lo), vmovn_u32(nz_hi)));
+        }
+    }
+    return vmaxvq_s16(v_eobmax);
+}
+
+static NOINLINE int quantize_b_qm_pending_lbd(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
+                                              const int16_t* round_ptr, const int16_t* quant_ptr,
+                                              const int16_t* quant_shift_ptr, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                              const int16_t* dequant_ptr, const int16_t* iscan, const QmVal* qm_ptr,
+                                              const QmVal* iqm_ptr, int log_scale, uint64_t pending) {
+    return quantize_b_qm_pending(coeff_ptr,
+                                 n_coeffs,
+                                 zbin_ptr,
+                                 round_ptr,
+                                 quant_ptr,
+                                 quant_shift_ptr,
+                                 qcoeff_ptr,
+                                 dqcoeff_ptr,
+                                 dequant_ptr,
+                                 iscan,
+                                 qm_ptr,
+                                 iqm_ptr,
+                                 log_scale,
+                                 pending,
+                                 /*highbd=*/0);
+}
+
+static NOINLINE int quantize_b_qm_pending_hbd(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
+                                              const int16_t* round_ptr, const int16_t* quant_ptr,
+                                              const int16_t* quant_shift_ptr, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                              const int16_t* dequant_ptr, const int16_t* iscan, const QmVal* qm_ptr,
+                                              const QmVal* iqm_ptr, int log_scale, uint64_t pending) {
+    return quantize_b_qm_pending(coeff_ptr,
+                                 n_coeffs,
+                                 zbin_ptr,
+                                 round_ptr,
+                                 quant_ptr,
+                                 quant_shift_ptr,
+                                 qcoeff_ptr,
+                                 dqcoeff_ptr,
+                                 dequant_ptr,
+                                 iscan,
+                                 qm_ptr,
+                                 iqm_ptr,
+                                 log_scale,
+                                 pending,
+                                 /*highbd=*/1);
+}
+
+// Groups of sixteen aligned to the block; the result holds the scan indices of the nonzero levels found.
+static AOM_FORCE_INLINE int16x8_t quantize_b_qm_groups_neon(
+    const TranLow* coeff_ptr, intptr_t n_coeffs, TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr, const int16_t* iscan,
+    const QmVal* qm_ptr, const QmVal* iqm_ptr, const QmBVectors* dc, const QmBVectors* ac, uint64_t skip_add_dc,
+    uint64_t skip_add_ac, int64_t narrow_max, uint64_t* pending, int log_scale, const int direct) {
+    int16x8_t v_eobmax = quantize_b_qm_16(coeff_ptr,
+                                          qcoeff_ptr,
+                                          dqcoeff_ptr,
+                                          iscan,
+                                          qm_ptr,
+                                          iqm_ptr,
+                                          dc,
+                                          ac,
+                                          skip_add_dc,
+                                          narrow_max,
+                                          vdupq_n_s16(-1),
+                                          pending,
+                                          1,
+                                          log_scale,
+                                          direct);
+    // the zero test of a group needs the coefficients and the outputs only, so these pointers carry the loop
+    const TranLow* const end = coeff_ptr + (n_coeffs & ~(intptr_t)15);
+    const TranLow*       c   = coeff_ptr + 16;
+    TranLow*             q   = qcoeff_ptr + 16;
+    TranLow*             dq  = dqcoeff_ptr + 16;
+    for (; c != end; c += 16, q += 16, dq += 16) {
+        const intptr_t i = c - coeff_ptr;
+        v_eobmax         = quantize_b_qm_16(c,
+                                    q,
+                                    dq,
+                                    iscan + i,
+                                    qm_ptr + i,
+                                    iqm_ptr + i,
+                                    ac,
+                                    ac,
+                                    skip_add_ac,
+                                    narrow_max,
+                                    v_eobmax,
+                                    pending,
+                                    (uint64_t)1 << (i >> 4),
+                                    log_scale,
+                                    direct);
+    }
+    return v_eobmax;
+}
+
+// quantize_b path with a quantization matrix for the parameters of 8-bit and 10-bit video: coefficients are handled
+// in groups of sixteen aligned to the block (see quantize_fp_qm_16()). Returns false, without writing anything, for
+// parameters outside the conditions below; the caller then runs quantize_b_qm_neon_impl().
+//   n_coeffs <= 1024, log_scale in 0..2, round >= 0, quant_shift >= 0, zbin (after the log_scale rounding) >= 1,
+//   dequant in 1..8191 (every quantizer of 8-bit and 10-bit video, whose largest step is 7312).
+// With a positive zbin a coefficient of magnitude 0 is below its threshold, and each path computes the same function
+// of a coefficient and its position as quantize_b_qm_neon_impl(), whose result then does not depend on how it groups
+// the coefficients either; the paths differ in the lane width only.
+//   All below the threshold: magnitude * weight <= (zbin - 1) / max_weight * max_weight < zbin.
+//   16-bit lanes, level <= 32767: with p = (magnitude + round) * weight <= 65535 * max_weight, the first step gives
+//   0 <= p + ((p * quant) >> 16) < 3 * p / 2 for any 16-bit quant, and the level is that times quant_shift >> shift,
+//   so it is enough that 3 * 65535 * max_weight * quant_shift <= 65536 << shift. That is checked here; at log_scale 0
+//   it holds for every quantizer of 8-bit and 10-bit video (quant_shift <= 16384 and max_weight <= 34 give 2^36.67 <
+//   2^37), at log_scale 1 and 2 for all but the smallest steps (below 8, and below 16). Otherwise no group takes that
+//   path (narrow_max = -1). The 8-bit kernel also clamps magnitude + round to 32767, which a limit of 32767 - round
+//   on the magnitude makes a no-op.
+static AOM_FORCE_INLINE bool quantize_b_qm_fast_neon(const TranLow* coeff_ptr, intptr_t n_coeffs,
+                                                     const int16_t* zbin_ptr, const int16_t* round_ptr,
+                                                     const int16_t* quant_ptr, const int16_t* quant_shift_ptr,
+                                                     TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr,
+                                                     const int16_t* dequant_ptr, uint16_t* eob_ptr,
+                                                     const int16_t* iscan, const QmVal* qm_ptr, const QmVal* iqm_ptr,
+                                                     int log_scale, const int highbd) {
+    assert(qm_ptr != NULL && iqm_ptr != NULL);
+    assert(n_coeffs >= 16 && (n_coeffs & 7) == 0);
+
+    const int32_t dequant_dc = dequant_ptr[0], dequant_ac = dequant_ptr[1];
+    const int32_t qshift_dc = quant_shift_ptr[0], qshift_ac = quant_shift_ptr[1];
+    if (n_coeffs > 1024 || (uint32_t)log_scale > 2 || (uint32_t)(dequant_dc - 1) >= 8191 ||
+        (uint32_t)(dequant_ac - 1) >= 8191 || (round_ptr[0] | round_ptr[1] | qshift_dc | qshift_ac) < 0) {
+        return false;
+    }
+    const int32_t zbin_dc = ROUND_POWER_OF_TWO(zbin_ptr[0], log_scale);
+    const int32_t zbin_ac = ROUND_POWER_OF_TWO(zbin_ptr[1], log_scale);
+    if (zbin_dc < 1 || zbin_ac < 1) {
+        return false;
+    }
+    const int      shift_q    = 16 - log_scale + AOM_QM_BITS;
+    const int32_t  round_dc   = ROUND_POWER_OF_TWO(round_ptr[0], log_scale);
+    const int32_t  round_ac   = ROUND_POWER_OF_TWO(round_ptr[1], log_scale);
+    const uint32_t thr_dc     = (uint32_t)zbin_dc << AOM_QM_BITS;
+    const uint32_t thr_ac     = (uint32_t)zbin_ac << AOM_QM_BITS;
+    const uint32_t max_weight = (uint32_t)qm_max_weight_cached_neon(qm_ptr, n_coeffs);
+    const uint32_t weight_div = AOMMAX(max_weight, 1);
+    // largest magnitudes that are below the threshold for every weight, as the addends of quantize_b_qm_16(); the
+    // first half of the first group holds the DC coefficient and takes the smaller of the two thresholds
+    const uint64_t skip_ac     = 0x7fffffff - (thr_ac - 1) / weight_div;
+    const uint64_t skip_dc     = 0x7fffffff - (AOMMIN(thr_dc, thr_ac) - 1) / weight_div;
+    const uint64_t skip_add_ac = skip_ac << 32 | skip_ac;
+    const uint64_t skip_add_dc = skip_ac << 32 | skip_dc;
+    int64_t        narrow_max  = -1;
+    if ((uint64_t)(3 * 65535) * max_weight * (uint32_t)AOMMAX(qshift_dc, qshift_ac) <= ((uint64_t)65536 << shift_q)) {
+        narrow_max = (highbd ? 65535 : 32767) - AOMMAX(round_dc, round_ac);
+    }
+
+    QmBVectors ac, dc;
+    ac.round      = vdupq_n_u16((uint16_t)round_ac);
+    ac.zbin       = vdupq_n_u32(thr_ac);
+    ac.quant_scl  = vdupq_n_s32(quant_ptr[1] * (1 << 15));
+    ac.qshift_scl = vdupq_n_s32(qshift_ac << (31 - shift_q));
+    ac.deq_hi     = vdup_n_u8((uint8_t)(dequant_ac >> AOM_QM_BITS));
+    ac.deq_lo     = vdup_n_u8((uint8_t)(dequant_ac & ((1 << AOM_QM_BITS) - 1)));
+    dc.round      = vsetq_lane_u16((uint16_t)round_dc, ac.round, 0);
+    dc.zbin       = vsetq_lane_u32(thr_dc, ac.zbin, 0);
+    dc.quant_scl  = vsetq_lane_s32(quant_ptr[0] * (1 << 15), ac.quant_scl, 0);
+    dc.qshift_scl = vsetq_lane_s32(qshift_dc << (31 - shift_q), ac.qshift_scl, 0);
+    dc.deq_hi     = vset_lane_u8((uint8_t)(dequant_dc >> AOM_QM_BITS), ac.deq_hi, 0);
+    dc.deq_lo     = vset_lane_u8((uint8_t)(dequant_dc & ((1 << AOM_QM_BITS) - 1)), ac.deq_lo, 0);
+
+    // a last group of eight (n_coeffs is not a multiple of 16) goes to the 32-bit lanes
+    uint64_t  pending = (n_coeffs & 8) ? (uint64_t)1 << (n_coeffs >> 4) : 0;
+    int16x8_t v_eobmax;
+    if (log_scale == 0 && AOMMAX(dequant_dc, dequant_ac) <= 4095) {
+        v_eobmax = quantize_b_qm_groups_neon(coeff_ptr,
+                                             n_coeffs,
+                                             qcoeff_ptr,
+                                             dqcoeff_ptr,
+                                             iscan,
+                                             qm_ptr,
+                                             iqm_ptr,
+                                             &dc,
+                                             &ac,
+                                             skip_add_dc,
+                                             skip_add_ac,
+                                             narrow_max,
+                                             &pending,
+                                             0,
+                                             1);
+    } else {
+        v_eobmax = quantize_b_qm_groups_neon(coeff_ptr,
+                                             n_coeffs,
+                                             qcoeff_ptr,
+                                             dqcoeff_ptr,
+                                             iscan,
+                                             qm_ptr,
+                                             iqm_ptr,
+                                             &dc,
+                                             &ac,
+                                             skip_add_dc,
+                                             skip_add_ac,
+                                             narrow_max,
+                                             &pending,
+                                             log_scale,
+                                             0);
+    }
+    int eob = vmaxvq_s16(v_eobmax);
+    if (pending) {
+        const int eob_32 = highbd ? quantize_b_qm_pending_hbd(coeff_ptr,
+                                                              n_coeffs,
+                                                              zbin_ptr,
+                                                              round_ptr,
+                                                              quant_ptr,
+                                                              quant_shift_ptr,
+                                                              qcoeff_ptr,
+                                                              dqcoeff_ptr,
+                                                              dequant_ptr,
+                                                              iscan,
+                                                              qm_ptr,
+                                                              iqm_ptr,
+                                                              log_scale,
+                                                              pending)
+                                  : quantize_b_qm_pending_lbd(coeff_ptr,
+                                                              n_coeffs,
+                                                              zbin_ptr,
+                                                              round_ptr,
+                                                              quant_ptr,
+                                                              quant_shift_ptr,
+                                                              qcoeff_ptr,
+                                                              dqcoeff_ptr,
+                                                              dequant_ptr,
+                                                              iscan,
+                                                              qm_ptr,
+                                                              iqm_ptr,
+                                                              log_scale,
+                                                              pending);
+        eob              = AOMMAX(eob, eob_32);
+    }
+    *eob_ptr = (uint16_t)(eob + 1);
+    return true;
+}
+
+// quantize_b_qm_neon_impl() out of line, for the parameters quantize_b_qm_fast_neon() leaves to it.
+static NOINLINE void quantize_b_qm_general_neon(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
+                                                const int16_t* round_ptr, const int16_t* quant_ptr,
+                                                const int16_t* quant_shift_ptr, TranLow* qcoeff_ptr,
+                                                TranLow* dqcoeff_ptr, const int16_t* dequant_ptr, uint16_t* eob_ptr,
+                                                const int16_t* iscan, const QmVal* qm_ptr, const QmVal* iqm_ptr,
+                                                int log_scale, int highbd) {
+    if (highbd) {
+        quantize_b_qm_neon_impl(coeff_ptr,
+                                n_coeffs,
+                                zbin_ptr,
+                                round_ptr,
+                                quant_ptr,
+                                quant_shift_ptr,
+                                qcoeff_ptr,
+                                dqcoeff_ptr,
+                                dequant_ptr,
+                                eob_ptr,
+                                iscan,
+                                qm_ptr,
+                                iqm_ptr,
+                                log_scale,
+                                /*highbd=*/1);
+    } else {
+        quantize_b_qm_neon_impl(coeff_ptr,
+                                n_coeffs,
+                                zbin_ptr,
+                                round_ptr,
+                                quant_ptr,
+                                quant_shift_ptr,
+                                qcoeff_ptr,
+                                dqcoeff_ptr,
+                                dequant_ptr,
+                                eob_ptr,
+                                iscan,
+                                qm_ptr,
+                                iqm_ptr,
+                                log_scale,
+                                /*highbd=*/0);
+    }
+}
+
 void svt_av1_quantize_b_qm_neon(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
                                 const int16_t* round_ptr, const int16_t* quant_ptr, const int16_t* quant_shift_ptr,
                                 TranLow* qcoeff_ptr, TranLow* dqcoeff_ptr, const int16_t* dequant_ptr,
                                 uint16_t* eob_ptr, const int16_t* scan, const int16_t* iscan, const QmVal* qm_ptr,
                                 const QmVal* iqm_ptr, const int32_t log_scale) {
     (void)scan;
-    quantize_b_qm_neon_impl(coeff_ptr,
-                            n_coeffs,
-                            zbin_ptr,
-                            round_ptr,
-                            quant_ptr,
-                            quant_shift_ptr,
-                            qcoeff_ptr,
-                            dqcoeff_ptr,
-                            dequant_ptr,
-                            eob_ptr,
-                            iscan,
-                            qm_ptr,
-                            iqm_ptr,
-                            log_scale,
-                            /*highbd=*/0);
+    if (!quantize_b_qm_fast_neon(coeff_ptr,
+                                 n_coeffs,
+                                 zbin_ptr,
+                                 round_ptr,
+                                 quant_ptr,
+                                 quant_shift_ptr,
+                                 qcoeff_ptr,
+                                 dqcoeff_ptr,
+                                 dequant_ptr,
+                                 eob_ptr,
+                                 iscan,
+                                 qm_ptr,
+                                 iqm_ptr,
+                                 log_scale,
+                                 /*highbd=*/0)) {
+        quantize_b_qm_general_neon(coeff_ptr,
+                                   n_coeffs,
+                                   zbin_ptr,
+                                   round_ptr,
+                                   quant_ptr,
+                                   quant_shift_ptr,
+                                   qcoeff_ptr,
+                                   dqcoeff_ptr,
+                                   dequant_ptr,
+                                   eob_ptr,
+                                   iscan,
+                                   qm_ptr,
+                                   iqm_ptr,
+                                   log_scale,
+                                   /*highbd=*/0);
+    }
 }
 
 void svt_av1_highbd_quantize_b_qm_neon(const TranLow* coeff_ptr, intptr_t n_coeffs, const int16_t* zbin_ptr,
@@ -698,21 +1627,37 @@ void svt_av1_highbd_quantize_b_qm_neon(const TranLow* coeff_ptr, intptr_t n_coef
                                        const int16_t* iscan, const QmVal* qm_ptr, const QmVal* iqm_ptr,
                                        const int32_t log_scale) {
     (void)scan;
-    quantize_b_qm_neon_impl(coeff_ptr,
-                            n_coeffs,
-                            zbin_ptr,
-                            round_ptr,
-                            quant_ptr,
-                            quant_shift_ptr,
-                            qcoeff_ptr,
-                            dqcoeff_ptr,
-                            dequant_ptr,
-                            eob_ptr,
-                            iscan,
-                            qm_ptr,
-                            iqm_ptr,
-                            log_scale,
-                            /*highbd=*/1);
+    if (!quantize_b_qm_fast_neon(coeff_ptr,
+                                 n_coeffs,
+                                 zbin_ptr,
+                                 round_ptr,
+                                 quant_ptr,
+                                 quant_shift_ptr,
+                                 qcoeff_ptr,
+                                 dqcoeff_ptr,
+                                 dequant_ptr,
+                                 eob_ptr,
+                                 iscan,
+                                 qm_ptr,
+                                 iqm_ptr,
+                                 log_scale,
+                                 /*highbd=*/1)) {
+        quantize_b_qm_general_neon(coeff_ptr,
+                                   n_coeffs,
+                                   zbin_ptr,
+                                   round_ptr,
+                                   quant_ptr,
+                                   quant_shift_ptr,
+                                   qcoeff_ptr,
+                                   dqcoeff_ptr,
+                                   dequant_ptr,
+                                   eob_ptr,
+                                   iscan,
+                                   qm_ptr,
+                                   iqm_ptr,
+                                   log_scale,
+                                   /*highbd=*/1);
+    }
 }
 
 // Quantizes 8 coefficients whose zbin test is in cond (a lane failing it quantizes to 0); returns the nonzero mask.
