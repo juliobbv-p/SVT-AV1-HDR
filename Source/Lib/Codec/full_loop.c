@@ -20,6 +20,9 @@
 #include "sequence_control_set.h"
 #include "utility.h"
 #include "ac_bias.h"
+#if defined(ARCH_AARCH64)
+#include <arm_neon.h>
+#endif
 
 const int av1_get_tx_scale_tab[TX_SIZES_ALL] = {0, 0, 0, 1, 2, 0, 0, 0, 0, 1, 1, 2, 2, 0, 0, 0, 0, 1, 1};
 
@@ -1167,6 +1170,182 @@ static int update_simple_2d_batch(int* accu_rate, int si, int si_end, int count,
 }
 #endif
 
+#if defined(ARCH_AARCH64)
+// Levels of the sixteen raster positions from pos on (pos a multiple of 16), which lie in one, two or four rows of
+// the padded levels buffer.
+static AOM_FORCE_INLINE uint8x16_t load_levels_16(const uint8_t* levels, int pos, int bwl) {
+    const uint8_t* const l = levels + get_padded_idx(pos, bwl);
+    if (bwl >= 4) {
+        return vld1q_u8(l);
+    }
+    if (bwl == 3) {
+        return vcombine_u8(vld1_u8(l), vld1_u8(l + 8 + TX_PAD_HOR));
+    }
+    // four rows of four levels, each followed by TX_PAD_HOR == 4 bytes of padding
+    return vreinterpretq_u8_u32(
+        vuzp1q_u32(vreinterpretq_u32_u8(vld1q_u8(l)), vreinterpretq_u32_u8(vld1q_u8(l + 2 * (4 + TX_PAD_HOR)))));
+}
+
+// Rate of the coefficients with a level of 2 or less at the scan positions [si_end, si_start] (1 <= si_end <=
+// si_start) of a TX_CLASS_2D block: base_cost[ctx][level], plus the sign bit of a nonzero one.
+//
+// The positions are visited in raster order, sixteen at a time; a position is in the scan range iff its iscan
+// value is. No scan position up to si_start lies on a later anti-diagonal than scan[si_start], so the rows past
+// that anti-diagonal, and a group that starts beyond it, hold no position of the range. A group of a block
+// narrower than 16 is two or four whole rows (the height of such a block is a multiple of 16 / width); the contexts
+// it reads past the cached rows of nz_ctx belong to positions outside the range and are masked out.
+//
+// The costs come from the byte planes of base_cost8 (valid under base_cost16_ok), indexed with 32 * level + ctx;
+// the contexts of this class are below 32. A group adds at most 2 * 255 to a 16-bit lane of the low-byte sums,
+// 2 * 127 to one of the high-byte sums and 1 to a lane of the nonzero count, and a block has at most 64 groups.
+static AOM_FORCE_INLINE int cost_low_levels_2d(int si_start, int si_end, int bwl, int height, const int16_t* scan,
+                                               const int16_t* iscan, const LvMapCoeffCost* txb_costs,
+                                               const uint8_t* levels, const int8_t* nz_ctx) {
+    const uint8_t* const base_cost8 = txb_costs->base_cost8;
+    const uint8x16x4_t   tbl_lo     = {
+        {vld1q_u8(base_cost8), vld1q_u8(base_cost8 + 16), vld1q_u8(base_cost8 + 32), vld1q_u8(base_cost8 + 48)}};
+    const uint8x16x2_t tbl_lo2 = {{vld1q_u8(base_cost8 + 64), vld1q_u8(base_cost8 + 80)}};
+    const uint8x16x4_t tbl_hi  = {{vld1q_u8(base_cost8 + 128),
+                                   vld1q_u8(base_cost8 + 144),
+                                   vld1q_u8(base_cost8 + 160),
+                                   vld1q_u8(base_cost8 + 176)}};
+    const uint8x16x2_t tbl_hi2 = {{vld1q_u8(base_cost8 + 192), vld1q_u8(base_cost8 + 208)}};
+    const uint16x8_t   first   = vdupq_n_u16((uint16_t)si_end);
+    const uint16x8_t   span    = vdupq_n_u16((uint16_t)(si_start - si_end));
+    uint16x8_t         acc_lo  = vdupq_n_u16(0);
+    uint16x8_t         acc_hi  = vdupq_n_u16(0);
+    uint8x16_t         nz      = vdupq_n_u8(0);
+
+    const int width = 1 << bwl;
+    const int last  = scan[si_start];
+    const int diag  = (last >> bwl) + (last & (width - 1));
+    const int end   = ((AOMMIN(height, diag + 1) << bwl) + 15) & ~15;
+
+    for (int pos = 0; pos < end; pos += 16) {
+        // the group's first position is the one on its earliest anti-diagonal
+        if ((pos >> bwl) + (pos & (width - 1)) > diag) {
+            continue;
+        }
+        const uint8x16_t lv  = load_levels_16(levels, pos, bwl);
+        const uint16x8_t in0 = vcleq_u16(vsubq_u16(vld1q_u16((const uint16_t*)iscan + pos), first), span);
+        const uint16x8_t in1 = vcleq_u16(vsubq_u16(vld1q_u16((const uint16_t*)iscan + pos + 8), first), span);
+        const uint8x16_t in  = vuzp1q_u8(vreinterpretq_u8_u16(in0), vreinterpretq_u8_u16(in1));
+        const uint8x16_t low = vandq_u8(vcleq_u8(lv, vdupq_n_u8(2)), in);
+
+        // 32 * level + ctx for the levels up to 2; whatever a higher level looks up is masked out
+        const uint8x16_t idx  = vsliq_n_u8(vreinterpretq_u8_s8(vld1q_s8(nz_ctx + pos)), lv, 5);
+        const uint8x16_t idx2 = vsubq_u8(idx, vdupq_n_u8(64));
+        const uint8x16_t lo   = vqtbx2q_u8(vqtbl4q_u8(tbl_lo, idx), tbl_lo2, idx2);
+        const uint8x16_t hi   = vqtbx2q_u8(vqtbl4q_u8(tbl_hi, idx), tbl_hi2, idx2);
+
+        acc_lo = vpadalq_u8(acc_lo, vandq_u8(lo, low));
+        acc_hi = vpadalq_u8(acc_hi, vandq_u8(hi, low));
+        // each nonzero level adds 0xff, i.e. -1
+        nz = vaddq_u8(nz, vandq_u8(vtstq_u8(lv, lv), low));
+    }
+    const int nz_count = vaddlvq_u8(vreinterpretq_u8_s8(vnegq_s8(vreinterpretq_s8_u8(nz))));
+    return (int)(vaddlvq_u16(acc_lo) + ((uint32_t)vaddlvq_u16(acc_hi) << 8)) + nz_count * av1_cost_literal(1);
+}
+
+// update_coeff_simple() over the scan positions [si_end, si_start] (1 <= si_end <= si_start) of a TX_CLASS_2D block
+// with cached contexts, for the usual case that it lowers no coefficient. In that case the rate of those positions
+// is added to *accu_rate and true is returned. When some coefficient would be lowered, false is returned with
+// nothing changed, and the caller runs the loop itself.
+//
+// Until a coefficient is lowered no level and no context changes, so every position is decided from the state the
+// block has on entry. A coefficient is lowered iff |dqc| >= |tqc| and the lower level has the smaller RD cost.
+// When that holds for no position against the entry state, the loop changes nothing, and its rate is the sum of
+// the rates of the levels as they are. The order of the tests is then free, which splits the pass into loops
+// without data-dependent branches:
+//  - one that collects the positions that need the comparison (levels 1 and 2 with |dqc| >= |tqc|) or a range
+//    rate (levels 3 and more). The two lists are disjoint and share one buffer, filled from both ends: the range
+//    has fewer than 32 * 32 - 1 positions, so the slot written unconditionally at the end of one list is never a
+//    kept slot of the other;
+//  - one comparison loop per list;
+//  - the sum of the rates of the levels up to 2, taken in raster order.
+static NOINLINE bool cost_coeffs_if_unchanged_2d(int* accu_rate, int si_start, int si_end, int bwl, int height,
+                                                 int64_t rdmult, int shift, const int16_t* dequant, const int16_t* scan,
+                                                 const int16_t* iscan, const LvMapCoeffCost* txb_costs,
+                                                 const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff,
+                                                 const uint8_t* levels, const QmVal* iqm_ptr, const int8_t* nz_ctx,
+                                                 const QmVal* qm) {
+    uint16_t list[32 * 32];
+    int      n_low  = 0;
+    int      n_high = 0;
+    for (int si = si_start; si >= si_end; --si) {
+        const int      ci      = scan[si];
+        const uint32_t abs_qc  = abs(qcoeff[ci]);
+        const TranLow  abs_tqc = abs(tcoeff[ci]);
+        const TranLow  abs_dqc = abs(dqcoeff[ci]);
+        list[n_low]            = (uint16_t)ci;
+        n_low += (abs_qc - 1 <= 1) & (abs_dqc >= abs_tqc);
+        list[32 * 32 - 1 - n_high] = (uint16_t)ci;
+        n_high += abs_qc > NUM_BASE_LEVELS;
+    }
+
+    // Levels 1 and 2. For level 1 update_coeff_simple() compares the two costs with the distortion of the zero
+    // level subtracted from both; RDCOST() is affine in the distortion, so this comparison decides the same. With
+    // a matrix that distortion is a term get_coeff_dist_diff0() forms as well; without one it is
+    // (|tqc| << shift)^2, and 128 times it fits 64 bits for any |tqc| below 2^26, far above what the transforms
+    // produce.
+    int lower = 0;
+    for (int k = 0; k < n_low; ++k) {
+        const int            ci          = list[k];
+        const TranLow        abs_qc      = abs(qcoeff[ci]);
+        const TranLow        abs_tqc     = abs(tcoeff[ci]);
+        const TranLow        abs_dqc     = abs(dqcoeff[ci]);
+        const int32_t* const base_cost   = txb_costs->base_cost[nz_ctx[ci]];
+        const int            rate        = base_cost[abs_qc] + av1_cost_literal(1);
+        const int            rate_low    = rate - base_cost[abs_qc + 4];
+        const int            dqv         = get_dqv(dequant, ci, iqm_ptr);
+        const TranLow        abs_dqc_low = ((abs_qc - 1) * dqv) >> shift;
+        const int64_t        rd          = RDCOST(rdmult, rate, svt_qm_coeff_dist(abs_tqc, abs_dqc, shift, qm, ci));
+        const int64_t        rd_low = RDCOST(rdmult, rate_low, svt_qm_coeff_dist(abs_tqc, abs_dqc_low, shift, qm, ci));
+        lower |= rd_low < rd;
+    }
+    if (lower) {
+        return false;
+    }
+
+    // Levels 3 and more. Up to level 14 + 31, the last one of the Golomb tables, the two rates are those of
+    // get_two_coeff_cost_simple() written without its branches on the level: golomb_bits_cost[0] and
+    // golomb_cost_diff[0] are 0.
+    int rate_high = 0;
+    for (int k = 0; k < n_high; ++k) {
+        const int            ci        = list[32 * 32 - 1 - k];
+        const TranLow        abs_qc    = abs(qcoeff[ci]);
+        const TranLow        abs_tqc   = abs(tcoeff[ci]);
+        const TranLow        abs_dqc   = abs(dqcoeff[ci]);
+        const int            coeff_ctx = nz_ctx[ci];
+        const int32_t* const base_cost = txb_costs->base_cost[coeff_ctx];
+        int                  rate, rate_low;
+        if (abs_qc > COEFF_BASE_RANGE + NUM_BASE_LEVELS + 31) {
+            rate = get_two_coeff_cost_simple(ci, abs_qc, coeff_ctx, txb_costs, bwl, TX_CLASS_2D, levels, &rate_low);
+        } else {
+            const int32_t* const lps        = txb_costs->lps_cost[get_br_ctx(levels, ci, bwl, TX_CLASS_2D)];
+            const int            base_range = AOMMIN(abs_qc - 1 - NUM_BASE_LEVELS, COEFF_BASE_RANGE);
+            const int            r          = AOMMAX(abs_qc - COEFF_BASE_RANGE - NUM_BASE_LEVELS, 0);
+            rate     = base_cost[3] + av1_cost_literal(1) + lps[base_range] + golomb_bits_cost[r];
+            rate_low = rate - (abs_qc == 3 ? base_cost[7] : 0) -
+                (abs_qc <= COEFF_BASE_RANGE + 1 + NUM_BASE_LEVELS ? lps[base_range + COEFF_BASE_RANGE + 1] : 0) -
+                golomb_cost_diff[r];
+        }
+        rate_high += rate;
+        const int     dqv         = get_dqv(dequant, ci, iqm_ptr);
+        const TranLow abs_dqc_low = ((abs_qc - 1) * dqv) >> shift;
+        const int64_t rd          = RDCOST(rdmult, rate, svt_qm_coeff_dist(abs_tqc, abs_dqc, shift, qm, ci));
+        const int64_t rd_low      = RDCOST(rdmult, rate_low, svt_qm_coeff_dist(abs_tqc, abs_dqc_low, shift, qm, ci));
+        lower |= (abs_dqc >= abs_tqc) & (rd_low < rd);
+    }
+    if (lower) {
+        return false;
+    }
+
+    *accu_rate += rate_high + cost_low_levels_2d(si_start, si_end, bwl, height, scan, iscan, txb_costs, levels, nz_ctx);
+    return true;
+}
+#endif // ARCH_AARCH64
+
 static INLINE void update_skip(int* accu_rate, int64_t accu_dist, uint16_t* eob, int nz_num, int* nz_ci, int64_t rdmult,
                                int skip_cost, int non_skip_cost, TranLow* qcoeff, TranLow* dqcoeff, int sharpness) {
     const int64_t rd         = RDCOST(rdmult, *accu_rate + non_skip_cost, accu_dist);
@@ -1471,6 +1650,31 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
             }
 #endif
             if (nz_ctx) {
+#if defined(ARCH_AARCH64)
+                // most blocks keep all their coefficients here, and then only the rate is needed
+                if (si >= si_end && txb_costs->base_cost16_ok &&
+                    cost_coeffs_if_unchanged_2d(&accu_rate,
+                                                si,
+                                                si_end,
+                                                bwl,
+                                                height,
+                                                rdmult,
+                                                shift,
+                                                p->dequant_qtx,
+                                                scan,
+                                                scan_order->iscan,
+                                                txb_costs,
+                                                coeff_ptr,
+                                                qcoeff_ptr,
+                                                dqcoeff_ptr,
+                                                levels,
+                                                qparam->iqmatrix,
+                                                nz_ctx,
+                                                qm)) {
+                    si = si_end - 1;
+                    break;
+                }
+#endif
                 UPDATE_COEFF_SIMPLE_LOOP(TX_CLASS_2D, nz_ctx);
             } else {
                 UPDATE_COEFF_SIMPLE_LOOP(TX_CLASS_2D, NULL);
