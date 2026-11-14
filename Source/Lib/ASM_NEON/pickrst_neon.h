@@ -259,7 +259,7 @@ static inline void compute_delta_step3_win5(int32x4_t* sum, const int16x8_t src,
 static inline void step3_win5_neon(const int16_t* d, const int32_t d_stride, const int32_t width, const int32_t height,
                                    int16x8_t* ds, int32x4_t* deltas) {
     int32_t y = height;
-    do {
+    while (y > 1) {
         ds[4] = load_s16_4x2(d + 0 * d_stride, width);
         ds[5] = load_s16_4x2(d + 1 * d_stride, width);
 
@@ -282,7 +282,7 @@ static inline void step3_win5_neon(const int16_t* d, const int32_t d_stride, con
 
         d += 2 * d_stride;
         y -= 2;
-    } while (y > 1);
+    }
 
     if (y) {
         ds[4] = load_s16_4x2(d + 0 * d_stride, width);

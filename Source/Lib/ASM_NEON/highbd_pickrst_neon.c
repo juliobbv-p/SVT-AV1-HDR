@@ -123,18 +123,30 @@ static inline void compute_stats_win5_highbd_neon(const int16_t* const d, const 
     const int16x8x2_t mask        = vld1q_s16_x2(&(mask_16bit[16]) - width % 16);
     int32_t           i, j, x, y;
 
-    if (bit_depth == EB_EIGHT_BIT) {
-        // Step 1: Calculate the top edge of the whole matrix, i.e., the top
-        // edge of each triangle and square on the top row.
-        j = 0;
-        do {
-            const int16_t* s_t                      = s;
-            const int16_t* d_t                      = d;
-            int32x4_t      sum_m[WIENER_WIN_CHROMA] = {vdupq_n_s32(0)};
-            int32x4_t      sum_h[WIENER_WIN_CHROMA] = {vdupq_n_s32(0)};
-            int16x8_t      src[2], dgd[2];
+    // Samples minus their average are smaller than 2^bit_depth in magnitude, so a product is below
+    // 2^(2 * bit_depth). A 32-bit lane of a row accumulator takes at most 4 products per 16 columns, i.e. at most
+    // h_allowed * (w16 + 16) / 4 <= 2^(31 - 2 * bit_depth) products before it is widened to 64 bits: its magnitude
+    // stays below 2^31 for 8-bit and for 10-bit samples.
+    const int32_t num_bit_left = 32 - 1 /* sign */ - 2 * bit_depth /* energy */ + 2 /* SIMD */;
+    const int32_t h_allowed    = (1 << num_bit_left) / (w16 + ((w16 != width) ? 16 : 0));
 
-            y = height;
+    // Step 1: Calculate the top edge of the whole matrix, i.e., the top
+    // edge of each triangle and square on the top row.
+    j = 0;
+    do {
+        const int16_t* s_t                      = s;
+        const int16_t* d_t                      = d;
+        int32_t        height_t                 = 0;
+        int64x2_t      sum_m[WIENER_WIN_CHROMA] = {vdupq_n_s64(0)};
+        int64x2_t      sum_h[WIENER_WIN_CHROMA] = {vdupq_n_s64(0)};
+        int16x8_t      src[2], dgd[2];
+
+        do {
+            const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
+            int32x4_t     row_m[2 * WIENER_WIN_CHROMA] = {vdupq_n_s32(0)};
+            int32x4_t     row_h[2 * WIENER_WIN_CHROMA] = {vdupq_n_s32(0)};
+
+            y = h_t;
             do {
                 x = 0;
                 while (x < w16) {
@@ -142,7 +154,7 @@ static inline void compute_stats_win5_highbd_neon(const int16_t* const d, const 
                     src[1] = vld1q_s16(s_t + x + 8);
                     dgd[0] = vld1q_s16(d_t + x + 0);
                     dgd[1] = vld1q_s16(d_t + x + 8);
-                    stats_top_win5_neon(src, dgd, d_t + j + x, d_stride, sum_m, sum_h);
+                    stats_top_win5_highbd_neon(src, dgd, d_t + j + x, d_stride, row_m, row_h);
                     x += 16;
                 }
 
@@ -155,189 +167,86 @@ static inline void compute_stats_win5_highbd_neon(const int16_t* const d, const 
                     src[1] = vandq_s16(src[1], mask.val[1]);
                     dgd[0] = vandq_s16(dgd[0], mask.val[0]);
                     dgd[1] = vandq_s16(dgd[1], mask.val[1]);
-                    stats_top_win5_neon(src, dgd, d_t + j + w16, d_stride, sum_m, sum_h);
+                    stats_top_win5_highbd_neon(src, dgd, d_t + j + w16, d_stride, row_m, row_h);
                 }
 
                 s_t += s_stride;
                 d_t += d_stride;
             } while (--y);
 
-            int32x4_t sum_m_s64 = horizontal_add_4d_s32x4(sum_m);
-            vst1q_s64(&M[wiener_win * j + 0], vmovl_s32(vget_low_s32(sum_m_s64)));
-            vst1q_s64(&M[wiener_win * j + 2], vmovl_s32(vget_high_s32(sum_m_s64)));
-            M[wiener_win * j + 4] = vaddlvq_s32(sum_m[4]);
+            for (i = 0; i < wiener_win; i++) {
+                sum_m[i] = vpadalq_s32(sum_m[i], row_m[2 * i + 0]);
+                sum_m[i] = vpadalq_s32(sum_m[i], row_m[2 * i + 1]);
+                sum_h[i] = vpadalq_s32(sum_h[i], row_h[2 * i + 0]);
+                sum_h[i] = vpadalq_s32(sum_h[i], row_h[2 * i + 1]);
+            }
 
-            int32x4_t sum_h_s64 = horizontal_add_4d_s32x4(sum_h);
-            vst1q_s64(&H[wiener_win * j + 0], vmovl_s32(vget_low_s32(sum_h_s64)));
-            vst1q_s64(&H[wiener_win * j + 2], vmovl_s32(vget_high_s32(sum_h_s64)));
-            H[wiener_win * j + 4] = vaddlvq_s32(sum_h[4]);
-        } while (++j < wiener_win);
+            height_t += h_t;
+        } while (height_t < height);
 
-        // Step 2: Calculate the left edge of each square on the top row.
-        j = 1;
+        int64x2_t sum_m0 = vpaddq_s64(sum_m[0], sum_m[1]);
+        int64x2_t sum_m2 = vpaddq_s64(sum_m[2], sum_m[3]);
+        vst1q_s64(&M[wiener_win * j + 0], sum_m0);
+        vst1q_s64(&M[wiener_win * j + 2], sum_m2);
+        M[wiener_win * j + 4] = vaddvq_s64(sum_m[4]);
+
+        int64x2_t sum_h0 = vpaddq_s64(sum_h[0], sum_h[1]);
+        int64x2_t sum_h2 = vpaddq_s64(sum_h[2], sum_h[3]);
+        vst1q_s64(&H[wiener_win * j + 0], sum_h0);
+        vst1q_s64(&H[wiener_win * j + 2], sum_h2);
+        H[wiener_win * j + 4] = vaddvq_s64(sum_h[4]);
+    } while (++j < wiener_win);
+
+    // Step 2: Calculate the left edge of each square on the top row, for all four squares in one pass over the
+    // unit.
+    {
+        const int16_t* d_t                                                 = d;
+        int32_t        height_t                                            = 0;
+        int64x2_t      sum_h[WIENER_WIN_CHROMA - 1][WIENER_WIN_CHROMA - 1] = {{vdupq_n_s64(0)}};
+        int16x8_t      dgd[WIENER_WIN_CHROMA - 1][2];
+
         do {
-            const int16_t* d_t                          = d;
-            int32x4_t      sum_h[WIENER_WIN_CHROMA - 1] = {vdupq_n_s32(0)};
-            int16x8_t      dgd[2];
+            const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
+            int32x4_t     row_h[WIENER_WIN_CHROMA - 1][WIENER_WIN_CHROMA - 1] = {{vdupq_n_s32(0)}};
 
-            y = height;
+            y = h_t;
             do {
                 x = 0;
                 while (x < w16) {
-                    dgd[0] = vld1q_s16(d_t + j + x + 0);
-                    dgd[1] = vld1q_s16(d_t + j + x + 8);
-                    stats_left_win5_neon(dgd, d_t + x, d_stride, sum_h);
+                    for (j = 1; j < wiener_win; j++) {
+                        dgd[j - 1][0] = vld1q_s16(d_t + j + x + 0);
+                        dgd[j - 1][1] = vld1q_s16(d_t + j + x + 8);
+                    }
+                    stats_left_win5_highbd_neon(dgd, d_t + x, d_stride, row_h);
                     x += 16;
                 }
 
                 if (w16 != width) {
-                    dgd[0] = vld1q_s16(d_t + j + x + 0);
-                    dgd[1] = vld1q_s16(d_t + j + x + 8);
-                    dgd[0] = vandq_s16(dgd[0], mask.val[0]);
-                    dgd[1] = vandq_s16(dgd[1], mask.val[1]);
-                    stats_left_win5_neon(dgd, d_t + x, d_stride, sum_h);
+                    for (j = 1; j < wiener_win; j++) {
+                        dgd[j - 1][0] = vandq_s16(vld1q_s16(d_t + j + x + 0), mask.val[0]);
+                        dgd[j - 1][1] = vandq_s16(vld1q_s16(d_t + j + x + 8), mask.val[1]);
+                    }
+                    stats_left_win5_highbd_neon(dgd, d_t + x, d_stride, row_h);
                 }
 
                 d_t += d_stride;
             } while (--y);
 
-            sum_h[0]             = vpaddq_s32(sum_h[0], sum_h[1]);
-            sum_h[2]             = vpaddq_s32(sum_h[2], sum_h[3]);
-            int64x2_t sum_h0_s64 = vpaddlq_s32(sum_h[0]);
-            int64x2_t sum_h1_s64 = vpaddlq_s32(sum_h[2]);
-            vst1_s64(&H[1 * wiener_win2 + j * wiener_win], vget_low_s64(sum_h0_s64));
-            vst1_s64(&H[2 * wiener_win2 + j * wiener_win], vget_high_s64(sum_h0_s64));
-            vst1_s64(&H[3 * wiener_win2 + j * wiener_win], vget_low_s64(sum_h1_s64));
-            vst1_s64(&H[4 * wiener_win2 + j * wiener_win], vget_high_s64(sum_h1_s64));
-
-        } while (++j < wiener_win);
-    } else {
-        // 10-bit samples minus their average are within [-1023, 1023], so a product has a magnitude of at most
-        // 1023^2 < 2^20. A 32-bit lane of a row accumulator takes at most 4 products per 16 columns, i.e. at most
-        // h_allowed * (w16 + 16) / 4 <= 2^13 / 4 = 2^11 products before it is widened to 64 bits: its magnitude stays
-        // below 2^11 * 1023^2 < 2^31.
-        const int32_t num_bit_left = 32 - 1 /* sign */ - 2 * bit_depth /* energy */ + 2 /* SIMD */;
-        const int32_t h_allowed    = (1 << num_bit_left) / (w16 + ((w16 != width) ? 16 : 0));
-
-        // Step 1: Calculate the top edge of the whole matrix, i.e., the top
-        // edge of each triangle and square on the top row.
-        j = 0;
-        do {
-            const int16_t* s_t                      = s;
-            const int16_t* d_t                      = d;
-            int32_t        height_t                 = 0;
-            int64x2_t      sum_m[WIENER_WIN_CHROMA] = {vdupq_n_s64(0)};
-            int64x2_t      sum_h[WIENER_WIN_CHROMA] = {vdupq_n_s64(0)};
-            int16x8_t      src[2], dgd[2];
-
-            do {
-                const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
-                int32x4_t     row_m[2 * WIENER_WIN_CHROMA] = {vdupq_n_s32(0)};
-                int32x4_t     row_h[2 * WIENER_WIN_CHROMA] = {vdupq_n_s32(0)};
-
-                y = h_t;
-                do {
-                    x = 0;
-                    while (x < w16) {
-                        src[0] = vld1q_s16(s_t + x + 0);
-                        src[1] = vld1q_s16(s_t + x + 8);
-                        dgd[0] = vld1q_s16(d_t + x + 0);
-                        dgd[1] = vld1q_s16(d_t + x + 8);
-                        stats_top_win5_highbd_neon(src, dgd, d_t + j + x, d_stride, row_m, row_h);
-                        x += 16;
-                    }
-
-                    if (w16 != width) {
-                        src[0] = vld1q_s16(s_t + w16 + 0);
-                        src[1] = vld1q_s16(s_t + w16 + 8);
-                        dgd[0] = vld1q_s16(d_t + w16 + 0);
-                        dgd[1] = vld1q_s16(d_t + w16 + 8);
-                        src[0] = vandq_s16(src[0], mask.val[0]);
-                        src[1] = vandq_s16(src[1], mask.val[1]);
-                        dgd[0] = vandq_s16(dgd[0], mask.val[0]);
-                        dgd[1] = vandq_s16(dgd[1], mask.val[1]);
-                        stats_top_win5_highbd_neon(src, dgd, d_t + j + w16, d_stride, row_m, row_h);
-                    }
-
-                    s_t += s_stride;
-                    d_t += d_stride;
-                } while (--y);
-
-                for (i = 0; i < wiener_win; i++) {
-                    sum_m[i] = vpadalq_s32(sum_m[i], row_m[2 * i + 0]);
-                    sum_m[i] = vpadalq_s32(sum_m[i], row_m[2 * i + 1]);
-                    sum_h[i] = vpadalq_s32(sum_h[i], row_h[2 * i + 0]);
-                    sum_h[i] = vpadalq_s32(sum_h[i], row_h[2 * i + 1]);
+            for (j = 0; j < wiener_win - 1; j++) {
+                for (int32_t k = 0; k < wiener_win - 1; k++) {
+                    sum_h[j][k] = vpadalq_s32(sum_h[j][k], row_h[j][k]);
                 }
+            }
 
-                height_t += h_t;
-            } while (height_t < height);
+            height_t += h_t;
+        } while (height_t < height);
 
-            int64x2_t sum_m0 = vpaddq_s64(sum_m[0], sum_m[1]);
-            int64x2_t sum_m2 = vpaddq_s64(sum_m[2], sum_m[3]);
-            vst1q_s64(&M[wiener_win * j + 0], sum_m0);
-            vst1q_s64(&M[wiener_win * j + 2], sum_m2);
-            M[wiener_win * j + 4] = vaddvq_s64(sum_m[4]);
-
-            int64x2_t sum_h0 = vpaddq_s64(sum_h[0], sum_h[1]);
-            int64x2_t sum_h2 = vpaddq_s64(sum_h[2], sum_h[3]);
-            vst1q_s64(&H[wiener_win * j + 0], sum_h0);
-            vst1q_s64(&H[wiener_win * j + 2], sum_h2);
-            H[wiener_win * j + 4] = vaddvq_s64(sum_h[4]);
-        } while (++j < wiener_win);
-
-        // Step 2: Calculate the left edge of each square on the top row, for all four squares in one pass over the
-        // unit.
-        {
-            const int16_t* d_t                                                 = d;
-            int32_t        height_t                                            = 0;
-            int64x2_t      sum_h[WIENER_WIN_CHROMA - 1][WIENER_WIN_CHROMA - 1] = {{vdupq_n_s64(0)}};
-            int16x8_t      dgd[WIENER_WIN_CHROMA - 1][2];
-
-            do {
-                const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
-                int32x4_t     row_h[WIENER_WIN_CHROMA - 1][WIENER_WIN_CHROMA - 1] = {{vdupq_n_s32(0)}};
-
-                y = h_t;
-                do {
-                    x = 0;
-                    while (x < w16) {
-                        for (j = 1; j < wiener_win; j++) {
-                            dgd[j - 1][0] = vld1q_s16(d_t + j + x + 0);
-                            dgd[j - 1][1] = vld1q_s16(d_t + j + x + 8);
-                        }
-                        stats_left_win5_highbd_neon(dgd, d_t + x, d_stride, row_h);
-                        x += 16;
-                    }
-
-                    if (w16 != width) {
-                        for (j = 1; j < wiener_win; j++) {
-                            dgd[j - 1][0] = vandq_s16(vld1q_s16(d_t + j + x + 0), mask.val[0]);
-                            dgd[j - 1][1] = vandq_s16(vld1q_s16(d_t + j + x + 8), mask.val[1]);
-                        }
-                        stats_left_win5_highbd_neon(dgd, d_t + x, d_stride, row_h);
-                    }
-
-                    d_t += d_stride;
-                } while (--y);
-
-                for (j = 0; j < wiener_win - 1; j++) {
-                    for (int32_t k = 0; k < wiener_win - 1; k++) {
-                        sum_h[j][k] = vpadalq_s32(sum_h[j][k], row_h[j][k]);
-                    }
-                }
-
-                height_t += h_t;
-            } while (height_t < height);
-
-            for (j = 1; j < wiener_win; j++) {
-                for (int32_t k = 1; k < wiener_win; k++) {
-                    H[k * wiener_win2 + j * wiener_win] = vaddvq_s64(sum_h[j - 1][k - 1]);
-                }
+        for (j = 1; j < wiener_win; j++) {
+            for (int32_t k = 1; k < wiener_win; k++) {
+                H[k * wiener_win2 + j * wiener_win] = vaddvq_s64(sum_h[j - 1][k - 1]);
             }
         }
     }
-
     // Step 3: Derive the top edge of each triangle along the diagonal. No
     // triangle in top row.
     {
@@ -784,19 +693,31 @@ static inline void compute_stats_win7_highbd_neon(const int16_t* const d, const 
     const int16x8x2_t mask        = vld1q_s16_x2(&(mask_16bit[16]) - width % 16);
     int32_t           i, j, x, y;
 
-    if (bit_depth == EB_EIGHT_BIT) {
-        // Step 1: Calculate the top edge of the whole matrix, i.e., the top
-        // edge of each triangle and square on the top row.
-        j = 0;
-        do {
-            const int16_t* s_t = s;
-            const int16_t* d_t = d;
-            // Allocate an extra 0 register to allow reduction as 2x4 rather than 4 + 3.
-            int32x4_t sum_m[WIENER_WIN + 1] = {vdupq_n_s32(0)};
-            int32x4_t sum_h[WIENER_WIN + 1] = {vdupq_n_s32(0)};
-            int16x8_t src[2], dgd[2];
+    // Samples minus their average are smaller than 2^bit_depth in magnitude, so a product is below
+    // 2^(2 * bit_depth). A 32-bit lane of a row accumulator takes at most 4 products per 16 columns, i.e. at most
+    // h_allowed * (w16 + 16) / 4 <= 2^(31 - 2 * bit_depth) products before it is widened to 64 bits: its magnitude
+    // stays below 2^31 for 8-bit and for 10-bit samples.
+    const int32_t num_bit_left = 32 - 1 /* sign */ - 2 * bit_depth /* energy */ + 2 /* SIMD */;
+    const int32_t h_allowed    = (1 << num_bit_left) / (w16 + ((w16 != width) ? 16 : 0));
 
-            y = height;
+    // Step 1: Calculate the top edge of the whole matrix, i.e., the top
+    // edge of each triangle and square on the top row.
+    j = 0;
+    do {
+        const int16_t* s_t               = s;
+        const int16_t* d_t               = d;
+        int32_t        height_t          = 0;
+        int64x2_t      sum_m[WIENER_WIN] = {vdupq_n_s64(0)};
+        int64x2_t      sum_h[WIENER_WIN] = {vdupq_n_s64(0)};
+        int16x8_t      src[2], dgd[2];
+
+        do {
+            const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
+
+            int32x4_t row_m[WIENER_WIN * 2] = {vdupq_n_s32(0)};
+            int32x4_t row_h[WIENER_WIN * 2] = {vdupq_n_s32(0)};
+
+            y = h_t;
             do {
                 x = 0;
                 while (x < w16) {
@@ -804,7 +725,7 @@ static inline void compute_stats_win7_highbd_neon(const int16_t* const d, const 
                     src[1] = vld1q_s16(s_t + x + 8);
                     dgd[0] = vld1q_s16(d_t + x + 0);
                     dgd[1] = vld1q_s16(d_t + x + 8);
-                    stats_top_win7_neon(src, dgd, d_t + j + x, d_stride, sum_m, sum_h);
+                    stats_top_win7_neon(src, dgd, d_t + j + x, d_stride, row_m, row_h);
                     x += 16;
                 }
 
@@ -817,208 +738,101 @@ static inline void compute_stats_win7_highbd_neon(const int16_t* const d, const 
                     src[1] = vandq_s16(src[1], mask.val[1]);
                     dgd[0] = vandq_s16(dgd[0], mask.val[0]);
                     dgd[1] = vandq_s16(dgd[1], mask.val[1]);
-                    stats_top_win7_neon(src, dgd, d_t + j + w16, d_stride, sum_m, sum_h);
+                    stats_top_win7_neon(src, dgd, d_t + j + w16, d_stride, row_m, row_h);
                 }
 
                 s_t += s_stride;
                 d_t += d_stride;
             } while (--y);
 
-            int32x4_t m0123 = horizontal_add_4d_s32x4(&sum_m[0]);
-            vst1q_s64(M + wiener_win * j + 0, vmovl_s32(vget_low_s32(m0123)));
-            vst1q_s64(M + wiener_win * j + 2, vmovl_s32(vget_high_s32(m0123)));
-            int32x4_t m456 = horizontal_add_4d_s32x4(&sum_m[4]);
-            vst1q_s64(M + wiener_win * j + 4, vmovl_s32(vget_low_s32(m456)));
-            vst1_s64(M + wiener_win * j + 6, vget_low_s64(vmovl_s32(vget_high_s32(m456))));
+            sum_m[0] = vpadalq_s32(sum_m[0], row_m[0]);
+            sum_m[1] = vpadalq_s32(sum_m[1], row_m[1]);
+            sum_m[2] = vpadalq_s32(sum_m[2], row_m[2]);
+            sum_m[3] = vpadalq_s32(sum_m[3], row_m[3]);
+            sum_m[4] = vpadalq_s32(sum_m[4], row_m[4]);
+            sum_m[5] = vpadalq_s32(sum_m[5], row_m[5]);
+            sum_m[6] = vpadalq_s32(sum_m[6], row_m[6]);
 
-            int32x4_t h0123 = horizontal_add_4d_s32x4(&sum_h[0]);
-            vst1q_s64(H + wiener_win * j + 0, vmovl_s32(vget_low_s32(h0123)));
-            vst1q_s64(H + wiener_win * j + 2, vmovl_s32(vget_high_s32(h0123)));
-            int32x4_t h456 = horizontal_add_4d_s32x4(&sum_h[4]);
-            vst1q_s64(H + wiener_win * j + 4, vmovl_s32(vget_low_s32(h456)));
-            vst1_s64(H + wiener_win * j + 6, vget_low_s64(vmovl_s32(vget_high_s32(h456))));
-        } while (++j < wiener_win);
+            sum_h[0] = vpadalq_s32(sum_h[0], row_h[0]);
+            sum_h[1] = vpadalq_s32(sum_h[1], row_h[1]);
+            sum_h[2] = vpadalq_s32(sum_h[2], row_h[2]);
+            sum_h[3] = vpadalq_s32(sum_h[3], row_h[3]);
+            sum_h[4] = vpadalq_s32(sum_h[4], row_h[4]);
+            sum_h[5] = vpadalq_s32(sum_h[5], row_h[5]);
+            sum_h[6] = vpadalq_s32(sum_h[6], row_h[6]);
 
-        // Step 2: Calculate the left edge of each square on the top row.
-        j = 1;
+            height_t += h_t;
+        } while (height_t < height);
+
+        int64x2_t m01 = vpaddq_s64(sum_m[0], sum_m[1]);
+        int64x2_t m23 = vpaddq_s64(sum_m[2], sum_m[3]);
+        int64x2_t m45 = vpaddq_s64(sum_m[4], sum_m[5]);
+        vst1q_s64(M + wiener_win * j + 0, m01);
+        vst1q_s64(M + wiener_win * j + 2, m23);
+        vst1q_s64(M + wiener_win * j + 4, m45);
+        M[wiener_win * j + 6] = vaddvq_s64(sum_m[6]);
+
+        int64x2_t h01 = vpaddq_s64(sum_h[0], sum_h[1]);
+        int64x2_t h23 = vpaddq_s64(sum_h[2], sum_h[3]);
+        int64x2_t h45 = vpaddq_s64(sum_h[4], sum_h[5]);
+        vst1q_s64(H + wiener_win * j + 0, h01);
+        vst1q_s64(H + wiener_win * j + 2, h23);
+        vst1q_s64(H + wiener_win * j + 4, h45);
+        H[wiener_win * j + 6] = vaddvq_s64(sum_h[6]);
+    } while (++j < wiener_win);
+
+    // Step 2: Calculate the left edge of each square on the top row, three squares per pass over the unit.
+    j = 1;
+    do {
+        const int16_t* d_t                                   = d;
+        int32_t        height_t                              = 0;
+        int64x2_t      sum_h[WIN7_LEFT_COLS][WIENER_WIN - 1] = {{vdupq_n_s64(0)}};
+        int16x8_t      dgd[WIN7_LEFT_COLS][2];
+
         do {
-            const int16_t* d_t                   = d;
-            int32x4_t      sum_h[WIENER_WIN - 1] = {vdupq_n_s32(0)};
-            int16x8_t      dgd[2];
+            const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
+            int32x4_t     row_h[WIN7_LEFT_COLS][WIENER_WIN - 1] = {{vdupq_n_s32(0)}};
 
-            y = height;
+            y = h_t;
             do {
                 x = 0;
                 while (x < w16) {
-                    dgd[0] = vld1q_s16(d_t + j + x + 0);
-                    dgd[1] = vld1q_s16(d_t + j + x + 8);
-                    stats_left_win7_neon(dgd, d_t + x, d_stride, sum_h);
+                    for (i = 0; i < WIN7_LEFT_COLS; i++) {
+                        dgd[i][0] = vld1q_s16(d_t + j + i + x + 0);
+                        dgd[i][1] = vld1q_s16(d_t + j + i + x + 8);
+                    }
+                    stats_left_win7_highbd_neon(dgd, d_t + x, d_stride, row_h);
                     x += 16;
                 }
 
                 if (w16 != width) {
-                    dgd[0] = vld1q_s16(d_t + j + x + 0);
-                    dgd[1] = vld1q_s16(d_t + j + x + 8);
-                    dgd[0] = vandq_s16(dgd[0], mask.val[0]);
-                    dgd[1] = vandq_s16(dgd[1], mask.val[1]);
-                    stats_left_win7_neon(dgd, d_t + x, d_stride, sum_h);
+                    for (i = 0; i < WIN7_LEFT_COLS; i++) {
+                        dgd[i][0] = vandq_s16(vld1q_s16(d_t + j + i + x + 0), mask.val[0]);
+                        dgd[i][1] = vandq_s16(vld1q_s16(d_t + j + i + x + 8), mask.val[1]);
+                    }
+                    stats_left_win7_highbd_neon(dgd, d_t + x, d_stride, row_h);
                 }
 
                 d_t += d_stride;
             } while (--y);
 
-            int64x2_t sum_h0_s64 = vpaddlq_s32(vpaddq_s32(sum_h[0], sum_h[1]));
-            int64x2_t sum_h2_s64 = vpaddlq_s32(vpaddq_s32(sum_h[2], sum_h[3]));
-            int64x2_t sum_h4_s64 = vpaddlq_s32(vpaddq_s32(sum_h[4], sum_h[5]));
-            vst1_s64(&H[1 * wiener_win2 + j * wiener_win], vget_low_s64(sum_h0_s64));
-            vst1_s64(&H[2 * wiener_win2 + j * wiener_win], vget_high_s64(sum_h0_s64));
-            vst1_s64(&H[3 * wiener_win2 + j * wiener_win], vget_low_s64(sum_h2_s64));
-            vst1_s64(&H[4 * wiener_win2 + j * wiener_win], vget_high_s64(sum_h2_s64));
-            vst1_s64(&H[5 * wiener_win2 + j * wiener_win], vget_low_s64(sum_h4_s64));
-            vst1_s64(&H[6 * wiener_win2 + j * wiener_win], vget_high_s64(sum_h4_s64));
-        } while (++j < wiener_win);
-    } else {
-        // 10-bit samples minus their average are within [-1023, 1023], so a product has a magnitude of at most
-        // 1023^2 < 2^20. A 32-bit lane of a row accumulator takes at most 4 products per 16 columns, i.e. at most
-        // h_allowed * (w16 + 16) / 4 <= 2^13 / 4 = 2^11 products before it is widened to 64 bits: its magnitude stays
-        // below 2^11 * 1023^2 < 2^31.
-        const int32_t num_bit_left = 32 - 1 /* sign */ - 2 * bit_depth /* energy */ + 2 /* SIMD */;
-        const int32_t h_allowed    = (1 << num_bit_left) / (w16 + ((w16 != width) ? 16 : 0));
-
-        // Step 1: Calculate the top edge of the whole matrix, i.e., the top
-        // edge of each triangle and square on the top row.
-        j = 0;
-        do {
-            const int16_t* s_t               = s;
-            const int16_t* d_t               = d;
-            int32_t        height_t          = 0;
-            int64x2_t      sum_m[WIENER_WIN] = {vdupq_n_s64(0)};
-            int64x2_t      sum_h[WIENER_WIN] = {vdupq_n_s64(0)};
-            int16x8_t      src[2], dgd[2];
-
-            do {
-                const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
-                int32x4_t     row_m[WIENER_WIN * 2] = {vdupq_n_s32(0)};
-                int32x4_t     row_h[WIENER_WIN * 2] = {vdupq_n_s32(0)};
-
-                y = h_t;
-                do {
-                    x = 0;
-                    while (x < w16) {
-                        src[0] = vld1q_s16(s_t + x + 0);
-                        src[1] = vld1q_s16(s_t + x + 8);
-                        dgd[0] = vld1q_s16(d_t + x + 0);
-                        dgd[1] = vld1q_s16(d_t + x + 8);
-                        stats_top_win7_neon(src, dgd, d_t + j + x, d_stride, row_m, row_h);
-                        x += 16;
-                    }
-
-                    if (w16 != width) {
-                        src[0] = vld1q_s16(s_t + w16 + 0);
-                        src[1] = vld1q_s16(s_t + w16 + 8);
-                        dgd[0] = vld1q_s16(d_t + w16 + 0);
-                        dgd[1] = vld1q_s16(d_t + w16 + 8);
-                        src[0] = vandq_s16(src[0], mask.val[0]);
-                        src[1] = vandq_s16(src[1], mask.val[1]);
-                        dgd[0] = vandq_s16(dgd[0], mask.val[0]);
-                        dgd[1] = vandq_s16(dgd[1], mask.val[1]);
-                        stats_top_win7_neon(src, dgd, d_t + j + w16, d_stride, row_m, row_h);
-                    }
-
-                    s_t += s_stride;
-                    d_t += d_stride;
-                } while (--y);
-
-                sum_m[0] = vpadalq_s32(sum_m[0], row_m[0]);
-                sum_m[1] = vpadalq_s32(sum_m[1], row_m[1]);
-                sum_m[2] = vpadalq_s32(sum_m[2], row_m[2]);
-                sum_m[3] = vpadalq_s32(sum_m[3], row_m[3]);
-                sum_m[4] = vpadalq_s32(sum_m[4], row_m[4]);
-                sum_m[5] = vpadalq_s32(sum_m[5], row_m[5]);
-                sum_m[6] = vpadalq_s32(sum_m[6], row_m[6]);
-
-                sum_h[0] = vpadalq_s32(sum_h[0], row_h[0]);
-                sum_h[1] = vpadalq_s32(sum_h[1], row_h[1]);
-                sum_h[2] = vpadalq_s32(sum_h[2], row_h[2]);
-                sum_h[3] = vpadalq_s32(sum_h[3], row_h[3]);
-                sum_h[4] = vpadalq_s32(sum_h[4], row_h[4]);
-                sum_h[5] = vpadalq_s32(sum_h[5], row_h[5]);
-                sum_h[6] = vpadalq_s32(sum_h[6], row_h[6]);
-
-                height_t += h_t;
-            } while (height_t < height);
-
-            int64x2_t m01 = vpaddq_s64(sum_m[0], sum_m[1]);
-            int64x2_t m23 = vpaddq_s64(sum_m[2], sum_m[3]);
-            int64x2_t m45 = vpaddq_s64(sum_m[4], sum_m[5]);
-            vst1q_s64(M + wiener_win * j + 0, m01);
-            vst1q_s64(M + wiener_win * j + 2, m23);
-            vst1q_s64(M + wiener_win * j + 4, m45);
-            M[wiener_win * j + 6] = vaddvq_s64(sum_m[6]);
-
-            int64x2_t h01 = vpaddq_s64(sum_h[0], sum_h[1]);
-            int64x2_t h23 = vpaddq_s64(sum_h[2], sum_h[3]);
-            int64x2_t h45 = vpaddq_s64(sum_h[4], sum_h[5]);
-            vst1q_s64(H + wiener_win * j + 0, h01);
-            vst1q_s64(H + wiener_win * j + 2, h23);
-            vst1q_s64(H + wiener_win * j + 4, h45);
-            H[wiener_win * j + 6] = vaddvq_s64(sum_h[6]);
-        } while (++j < wiener_win);
-
-        // Step 2: Calculate the left edge of each square on the top row, three squares per pass over the unit.
-        j = 1;
-        do {
-            const int16_t* d_t                                   = d;
-            int32_t        height_t                              = 0;
-            int64x2_t      sum_h[WIN7_LEFT_COLS][WIENER_WIN - 1] = {{vdupq_n_s64(0)}};
-            int16x8_t      dgd[WIN7_LEFT_COLS][2];
-
-            do {
-                const int32_t h_t = ((height - height_t) < h_allowed) ? (height - height_t) : h_allowed;
-                int32x4_t     row_h[WIN7_LEFT_COLS][WIENER_WIN - 1] = {{vdupq_n_s32(0)}};
-
-                y = h_t;
-                do {
-                    x = 0;
-                    while (x < w16) {
-                        for (i = 0; i < WIN7_LEFT_COLS; i++) {
-                            dgd[i][0] = vld1q_s16(d_t + j + i + x + 0);
-                            dgd[i][1] = vld1q_s16(d_t + j + i + x + 8);
-                        }
-                        stats_left_win7_highbd_neon(dgd, d_t + x, d_stride, row_h);
-                        x += 16;
-                    }
-
-                    if (w16 != width) {
-                        for (i = 0; i < WIN7_LEFT_COLS; i++) {
-                            dgd[i][0] = vandq_s16(vld1q_s16(d_t + j + i + x + 0), mask.val[0]);
-                            dgd[i][1] = vandq_s16(vld1q_s16(d_t + j + i + x + 8), mask.val[1]);
-                        }
-                        stats_left_win7_highbd_neon(dgd, d_t + x, d_stride, row_h);
-                    }
-
-                    d_t += d_stride;
-                } while (--y);
-
-                for (i = 0; i < WIN7_LEFT_COLS; i++) {
-                    for (int32_t k = 0; k < wiener_win - 1; k++) {
-                        sum_h[i][k] = vpadalq_s32(sum_h[i][k], row_h[i][k]);
-                    }
-                }
-
-                height_t += h_t;
-            } while (height_t < height);
-
             for (i = 0; i < WIN7_LEFT_COLS; i++) {
-                for (int32_t k = 1; k < wiener_win; k++) {
-                    H[k * wiener_win2 + (j + i) * wiener_win] = vaddvq_s64(sum_h[i][k - 1]);
+                for (int32_t k = 0; k < wiener_win - 1; k++) {
+                    sum_h[i][k] = vpadalq_s32(sum_h[i][k], row_h[i][k]);
                 }
             }
 
-            j += WIN7_LEFT_COLS;
-        } while (j < wiener_win);
-    }
+            height_t += h_t;
+        } while (height_t < height);
 
+        for (i = 0; i < WIN7_LEFT_COLS; i++) {
+            for (int32_t k = 1; k < wiener_win; k++) {
+                H[k * wiener_win2 + (j + i) * wiener_win] = vaddvq_s64(sum_h[i][k - 1]);
+            }
+        }
+
+        j += WIN7_LEFT_COLS;
+    } while (j < wiener_win);
     // Step 3: Derive the top edge of each triangle along the diagonal. No
     // triangle in top row.
     {
