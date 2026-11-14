@@ -900,23 +900,28 @@ static AOM_FORCE_INLINE void update_coeff_eob(int* accu_rate, int64_t* accu_dist
 
         int       lower_level_new_eob = 0;
         const int new_eob             = si + 1;
-        const int coeff_ctx_new_eob   = get_lower_levels_ctx_eob(bwl, height, si);
-        const int new_eob_cost        = get_eob_cost(new_eob, txb_eob_costs, txb_costs, tx_class);
-        int       rate_coeff_eob      = new_eob_cost +
-            get_coeff_cost_eob(ci, abs_qc, sign, coeff_ctx_new_eob, dc_sign_ctx, txb_costs, bwl, tx_class);
-        int64_t dist_new_eob = dist;
-        int64_t rd_new_eob   = RDCOST(rdmult, rate_coeff_eob, dist_new_eob);
+        int       rate_coeff_eob      = 0;
+        int64_t   dist_new_eob        = dist;
+        int64_t   rd_new_eob          = INT64_MAX;
+        // the eob only moves without sharpness, so only then is the cost of moving it here needed
+        if (sharpness == 0) {
+            const int coeff_ctx_new_eob = get_lower_levels_ctx_eob(bwl, height, si);
+            const int new_eob_cost      = get_eob_cost(new_eob, txb_eob_costs, txb_costs, tx_class);
+            rate_coeff_eob              = new_eob_cost +
+                get_coeff_cost_eob(ci, abs_qc, sign, coeff_ctx_new_eob, dc_sign_ctx, txb_costs, bwl, tx_class);
+            rd_new_eob = RDCOST(rdmult, rate_coeff_eob, dist_new_eob);
 
-        if (abs_qc_low > 0) {
-            const int rate_coeff_eob_low = new_eob_cost +
-                get_coeff_cost_eob(ci, abs_qc_low, sign, coeff_ctx_new_eob, dc_sign_ctx, txb_costs, bwl, tx_class);
-            const int64_t dist_new_eob_low = dist_low;
-            const int64_t rd_new_eob_low   = RDCOST(rdmult, rate_coeff_eob_low, dist_new_eob_low);
-            if (rd_new_eob_low < rd_new_eob) {
-                lower_level_new_eob = 1;
-                rd_new_eob          = rd_new_eob_low;
-                rate_coeff_eob      = rate_coeff_eob_low;
-                dist_new_eob        = dist_new_eob_low;
+            if (abs_qc_low > 0) {
+                const int rate_coeff_eob_low = new_eob_cost +
+                    get_coeff_cost_eob(ci, abs_qc_low, sign, coeff_ctx_new_eob, dc_sign_ctx, txb_costs, bwl, tx_class);
+                const int64_t dist_new_eob_low = dist_low;
+                const int64_t rd_new_eob_low   = RDCOST(rdmult, rate_coeff_eob_low, dist_new_eob_low);
+                if (rd_new_eob_low < rd_new_eob) {
+                    lower_level_new_eob = 1;
+                    rd_new_eob          = rd_new_eob_low;
+                    rate_coeff_eob      = rate_coeff_eob_low;
+                    dist_new_eob        = dist_new_eob_low;
+                }
             }
         }
 
