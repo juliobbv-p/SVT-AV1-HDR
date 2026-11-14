@@ -1266,6 +1266,17 @@ static int update_simple_2d_batch(int* accu_rate, int si, int si_end, int count,
 #endif
 
 #if defined(ARCH_AARCH64)
+// get_br_ctx() of a TX_CLASS_2D position other than DC, with the offset of the position's context set computed
+// instead of branched on: the positions with a high level are the ones where it varies.
+static AOM_FORCE_INLINE int get_br_ctx_2d_ac(const uint8_t* levels, int ci, int bwl) {
+    const int row    = ci >> bwl;
+    const int col    = ci - (row << bwl);
+    const int stride = (1 << bwl) + TX_PAD_HOR;
+    const int pos    = row * stride + col;
+    const int mag    = levels[pos + 1] + levels[pos + stride] + levels[pos + stride + 1];
+    return AOMMIN((mag + 1) >> 1, 6) + 14 - 7 * ((row < 2) & (col < 2));
+}
+
 // Levels of the sixteen raster positions from pos on (pos a multiple of 16), which lie in one, two or four rows of
 // the padded levels buffer.
 static AOM_FORCE_INLINE uint8x16_t load_levels_16(const uint8_t* levels, int pos, int bwl) {
@@ -1281,6 +1292,41 @@ static AOM_FORCE_INLINE uint8x16_t load_levels_16(const uint8_t* levels, int pos
         vuzp1q_u32(vreinterpretq_u32_u8(vld1q_u8(l)), vreinterpretq_u32_u8(vld1q_u8(l + 2 * (4 + TX_PAD_HOR)))));
 }
 
+// get_dqv() of eight AC positions with the inverse matrix weights w: (w * dqv + 16) >> 5. The caller ensures that
+// the result fits 16 bits.
+static AOM_FORCE_INLINE uint16x8_t weighted_dqv_8(uint8x8_t w, uint16_t dqv) {
+    const uint16x8_t w16 = vmovl_u8(w);
+    return vcombine_u16(vrshrn_n_u32(vmull_n_u16(vget_low_u16(w16), dqv), AOM_QM_BITS),
+                        vrshrn_n_u32(vmull_high_n_u16(w16, dqv), AOM_QM_BITS));
+}
+
+// Flags, among eight coefficients with levels level_low + 1 and dequantizers dqv, those whose next lower level can
+// have the smaller distortion. The levels come from the levels buffer, so one at its cap INT8_MAX may stand for a
+// higher level; the caller treats those separately.
+//
+// svt_qm_coeff_dist(coeff, recon) is a non-decreasing function of |coeff - recon|: the square of that difference,
+// scaled by 2^shift and the matrix weight, then rounded (nothing in it overflows while the difference is below
+// 2^21, which 8- and 10-bit coefficients stay far below). A coefficient is only lowered if |dqc| >= |tqc|, and then
+// only if the distortion of |dqc_low| = (level_low * dqv) >> shift, as update_coeff_simple() forms it, is the
+// smaller one, which requires ||tqc| - |dqc_low|| < |dqc| - |tqc|. That comparison is the flag; it is false
+// whenever |dqc| < |tqc|, its right side being negative then.
+//
+// All lanes are exact for any coefficient: level_low * dqv is below 2^8 * 2^16, and the differences of two
+// magnitudes below 2^31 fit a signed 32-bit lane.
+static AOM_FORCE_INLINE uint16x8_t lower_may_gain_8(const TranLow* tcoeff, const TranLow* dqcoeff, uint16x8_t level_low,
+                                                    uint16x8_t dqv, int32x4_t neg_shift) {
+    const int32x4_t dqc_low0 = vreinterpretq_s32_u32(
+        vshlq_u32(vmull_u16(vget_low_u16(level_low), vget_low_u16(dqv)), neg_shift));
+    const int32x4_t  dqc_low1 = vreinterpretq_s32_u32(vshlq_u32(vmull_high_u16(level_low, dqv), neg_shift));
+    const int32x4_t  tqc0     = vabsq_s32(vld1q_s32(tcoeff));
+    const int32x4_t  tqc1     = vabsq_s32(vld1q_s32(tcoeff + 4));
+    const int32x4_t  dqc0     = vabsq_s32(vld1q_s32(dqcoeff));
+    const int32x4_t  dqc1     = vabsq_s32(vld1q_s32(dqcoeff + 4));
+    const uint32x4_t gain0    = vcgtq_s32(vsubq_s32(dqc0, tqc0), vabdq_s32(tqc0, dqc_low0));
+    const uint32x4_t gain1    = vcgtq_s32(vsubq_s32(dqc1, tqc1), vabdq_s32(tqc1, dqc_low1));
+    return vuzp1q_u16(vreinterpretq_u16_u32(gain0), vreinterpretq_u16_u32(gain1));
+}
+
 // Rate of the coefficients with a level of 2 or less at the scan positions [si_end, si_start] (1 <= si_end <=
 // si_start) of a TX_CLASS_2D block: base_cost[ctx][level], plus the sign bit of a nonzero one.
 //
@@ -1293,9 +1339,23 @@ static AOM_FORCE_INLINE uint8x16_t load_levels_16(const uint8_t* levels, int pos
 // The costs come from the byte planes of base_cost8 (valid under base_cost16_ok), indexed with 32 * level + ctx;
 // the contexts of this class are below 32. A group adds at most 2 * 255 to a 16-bit lane of the low-byte sums,
 // 2 * 127 to one of the high-byte sums and 1 to a lane of the nonzero count, and a block has at most 64 groups.
+//
+// With dist_only the pass also examines the nonzero positions of the range for a block whose RD multiplier is 0,
+// where a coefficient is lowered iff |dqc| >= |tqc| and the distortion of the lower level is the smaller one:
+//  - high_bits (zeroed by the caller) receives one bit per raster position for the positions with a level of 3 or
+//    more, whose rate is not summed here;
+//  - *suspect tells whether there is a position where the lower level may have the smaller distortion (see
+//    lower_may_gain_8()) or whose level is at the cap of the levels buffer. Without one, no coefficient of the
+//    range is lowered.
+// dqv_ac is the AC dequantizer, weighted per position by iqm_ptr if that is set; the DC position is never in the
+// range. The weighted value is kept in 16 bits, which the caller ensures: (255 * dqv_ac + 16) >> 5 <= 65535.
 static AOM_FORCE_INLINE int cost_low_levels_2d(int si_start, int si_end, int bwl, int height, const int16_t* scan,
                                                const int16_t* iscan, const LvMapCoeffCost* txb_costs,
-                                               const uint8_t* levels, const int8_t* nz_ctx) {
+                                               const uint8_t* levels, const int8_t* nz_ctx, const bool dist_only,
+                                               const TranLow* tcoeff, const TranLow* dqcoeff, const QmVal* iqm_ptr,
+                                               int dqv_ac, int shift, uint64_t* high_bits, bool* suspect) {
+    static const uint8_t lane_bit[16] = {1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+
     const uint8_t* const base_cost8 = txb_costs->base_cost8;
     const uint8x16x4_t   tbl_lo     = {
         {vld1q_u8(base_cost8), vld1q_u8(base_cost8 + 16), vld1q_u8(base_cost8 + 32), vld1q_u8(base_cost8 + 48)}};
@@ -1310,6 +1370,10 @@ static AOM_FORCE_INLINE int cost_low_levels_2d(int si_start, int si_end, int bwl
     uint16x8_t         acc_lo  = vdupq_n_u16(0);
     uint16x8_t         acc_hi  = vdupq_n_u16(0);
     uint8x16_t         nz      = vdupq_n_u8(0);
+
+    const int32x4_t  neg_shift = vdupq_n_s32(-shift);
+    const uint8x16_t lane_bits = vld1q_u8(lane_bit);
+    uint8x16_t       suspects  = vdupq_n_u8(0);
 
     const int width = 1 << bwl;
     const int last  = scan[si_start];
@@ -1336,10 +1400,100 @@ static AOM_FORCE_INLINE int cost_low_levels_2d(int si_start, int si_end, int bwl
         acc_lo = vpadalq_u8(acc_lo, vandq_u8(lo, low));
         acc_hi = vpadalq_u8(acc_hi, vandq_u8(hi, low));
         // each nonzero level adds 0xff, i.e. -1
-        nz = vaddq_u8(nz, vandq_u8(vtstq_u8(lv, lv), low));
+        const uint8x16_t nonzero = vtstq_u8(lv, lv);
+        nz                       = vaddq_u8(nz, vandq_u8(nonzero, low));
+
+        if (dist_only) {
+            const uint8x16_t level_low = vsubq_u8(lv, vdupq_n_u8(1));
+            uint16x8_t       dqv0      = vdupq_n_u16((uint16_t)dqv_ac);
+            uint16x8_t       dqv1      = dqv0;
+            if (iqm_ptr) {
+                const uint8x16_t weight = vld1q_u8(iqm_ptr + pos);
+                dqv0                    = weighted_dqv_8(vget_low_u8(weight), (uint16_t)dqv_ac);
+                dqv1                    = weighted_dqv_8(vget_high_u8(weight), (uint16_t)dqv_ac);
+            }
+            const uint16x8_t gain0 = lower_may_gain_8(
+                tcoeff + pos, dqcoeff + pos, vmovl_u8(vget_low_u8(level_low)), dqv0, neg_shift);
+            const uint16x8_t gain1 = lower_may_gain_8(
+                tcoeff + pos + 8, dqcoeff + pos + 8, vmovl_high_u8(level_low), dqv1, neg_shift);
+            const uint8x16_t gain = vuzp1q_u8(vreinterpretq_u8_u16(gain0), vreinterpretq_u8_u16(gain1));
+            // the buffer caps the levels at INT8_MAX, and the level of a zero coefficient was not a level
+            const uint8x16_t capped = vceqq_u8(lv, vdupq_n_u8(INT8_MAX));
+            suspects                = vorrq_u8(suspects, vandq_u8(vorrq_u8(gain, capped), vandq_u8(nonzero, in)));
+            // the positions with a level of 3 or more as a 16-bit mask: each half of the lanes sums to a byte
+            const uint8x16_t b1 = vandq_u8(veorq_u8(in, low), lane_bits);
+            const uint8x16_t b2 = vpaddq_u8(b1, b1);
+            const uint8x16_t b4 = vpaddq_u8(b2, b2);
+            const uint64_t   m  = vgetq_lane_u16(vreinterpretq_u16_u8(vpaddq_u8(b4, b4)), 0);
+            high_bits[pos >> 6] |= m << (pos & 48);
+        }
+    }
+    if (dist_only) {
+        *suspect = vmaxvq_u8(suspects) != 0;
     }
     const int nz_count = vaddlvq_u8(vreinterpretq_u8_s8(vnegq_s8(vreinterpretq_s8_u8(nz))));
     return (int)(vaddlvq_u16(acc_lo) + ((uint32_t)vaddlvq_u16(acc_hi) << 8)) + nz_count * av1_cost_literal(1);
+}
+
+// cost_coeffs_if_unchanged_2d() for a block whose RD multiplier is 0, as far as a pass in raster order can tell:
+// returns false, with nothing changed, also when it only cannot rule out that a coefficient is lowered.
+//
+// RDCOST() is 128 times the distortion with that multiplier, so a coefficient is lowered iff |dqc| >= |tqc| and
+// svt_qm_coeff_dist() of the lower level is the smaller one, whatever the rates. The pass rules that out for
+// almost every block; what is left to add are the rates of the levels of 3 and more, in any order.
+static NOINLINE bool cost_coeffs_if_unsuspected_2d(int* accu_rate, int si_start, int si_end, int bwl, int height,
+                                                   int shift, int dqv_ac, const int16_t* scan, const int16_t* iscan,
+                                                   const LvMapCoeffCost* txb_costs, const TranLow* tcoeff,
+                                                   const TranLow* qcoeff, const TranLow* dqcoeff, const uint8_t* levels,
+                                                   const QmVal* iqm_ptr, const int8_t* nz_ctx) {
+    uint64_t high_bits[32 * 32 / 64] = {0};
+    bool     suspect                 = false;
+
+    const int rate_low = cost_low_levels_2d(si_start,
+                                            si_end,
+                                            bwl,
+                                            height,
+                                            scan,
+                                            iscan,
+                                            txb_costs,
+                                            levels,
+                                            nz_ctx,
+                                            true,
+                                            tcoeff,
+                                            dqcoeff,
+                                            iqm_ptr,
+                                            dqv_ac,
+                                            shift,
+                                            high_bits,
+                                            &suspect);
+    if (suspect) {
+        return false;
+    }
+
+    // the rates of the levels of 3 and more, as in cost_coeffs_if_unchanged_2d()
+    int       rate_high = 0;
+    const int words     = ((height << bwl) + 63) >> 6;
+    for (int w = 0; w < words; ++w) {
+        for (uint64_t m = high_bits[w]; m; m &= m - 1) {
+            const int            ci        = (w << 6) + svt_ctzll(m);
+            const TranLow        abs_qc    = abs(qcoeff[ci]);
+            const int            coeff_ctx = nz_ctx[ci];
+            const int32_t* const base_cost = txb_costs->base_cost[coeff_ctx];
+            if (abs_qc > COEFF_BASE_RANGE + NUM_BASE_LEVELS + 31) {
+                int rate_lower;
+                rate_high += get_two_coeff_cost_simple(
+                    ci, abs_qc, coeff_ctx, txb_costs, bwl, TX_CLASS_2D, levels, &rate_lower);
+            } else {
+                const int32_t* const lps        = txb_costs->lps_cost[get_br_ctx_2d_ac(levels, ci, bwl)];
+                const int            base_range = AOMMIN(abs_qc - 1 - NUM_BASE_LEVELS, COEFF_BASE_RANGE);
+                const int            r          = AOMMAX(abs_qc - COEFF_BASE_RANGE - NUM_BASE_LEVELS, 0);
+                rate_high += base_cost[3] + av1_cost_literal(1) + lps[base_range] + golomb_bits_cost[r];
+            }
+        }
+    }
+
+    *accu_rate += rate_high + rate_low;
+    return true;
 }
 
 // update_coeff_simple() over the scan positions [si_end, si_start] (1 <= si_end <= si_start) of a TX_CLASS_2D block
@@ -1364,6 +1518,27 @@ static NOINLINE bool cost_coeffs_if_unchanged_2d(int* accu_rate, int si_start, i
                                                  const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff,
                                                  const uint8_t* levels, const QmVal* iqm_ptr, const int8_t* nz_ctx,
                                                  const QmVal* qm) {
+    // A block whose RD multiplier is 0 is first tried in raster order, which settles almost all of them. The 16-bit
+    // dequantizers of that pass hold (255 * dequant[1] + 16) >> 5 for dequant[1] up to 8224.
+    if (rdmult == 0 && (!iqm_ptr || dequant[1] <= 8224) &&
+        cost_coeffs_if_unsuspected_2d(accu_rate,
+                                      si_start,
+                                      si_end,
+                                      bwl,
+                                      height,
+                                      shift,
+                                      dequant[1],
+                                      scan,
+                                      iscan,
+                                      txb_costs,
+                                      tcoeff,
+                                      qcoeff,
+                                      dqcoeff,
+                                      levels,
+                                      iqm_ptr,
+                                      nz_ctx)) {
+        return true;
+    }
     uint16_t list[32 * 32];
     int      n_low  = 0;
     int      n_high = 0;
@@ -1417,7 +1592,7 @@ static NOINLINE bool cost_coeffs_if_unchanged_2d(int* accu_rate, int si_start, i
         if (abs_qc > COEFF_BASE_RANGE + NUM_BASE_LEVELS + 31) {
             rate = get_two_coeff_cost_simple(ci, abs_qc, coeff_ctx, txb_costs, bwl, TX_CLASS_2D, levels, &rate_low);
         } else {
-            const int32_t* const lps        = txb_costs->lps_cost[get_br_ctx(levels, ci, bwl, TX_CLASS_2D)];
+            const int32_t* const lps        = txb_costs->lps_cost[get_br_ctx_2d_ac(levels, ci, bwl)];
             const int            base_range = AOMMIN(abs_qc - 1 - NUM_BASE_LEVELS, COEFF_BASE_RANGE);
             const int            r          = AOMMAX(abs_qc - COEFF_BASE_RANGE - NUM_BASE_LEVELS, 0);
             rate     = base_cost[3] + av1_cost_literal(1) + lps[base_range] + golomb_bits_cost[r];
@@ -1436,7 +1611,24 @@ static NOINLINE bool cost_coeffs_if_unchanged_2d(int* accu_rate, int si_start, i
         return false;
     }
 
-    *accu_rate += rate_high + cost_low_levels_2d(si_start, si_end, bwl, height, scan, iscan, txb_costs, levels, nz_ctx);
+    *accu_rate += rate_high +
+        cost_low_levels_2d(si_start,
+                           si_end,
+                           bwl,
+                           height,
+                           scan,
+                           iscan,
+                           txb_costs,
+                           levels,
+                           nz_ctx,
+                           false,
+                           NULL,
+                           NULL,
+                           NULL,
+                           0,
+                           0,
+                           NULL,
+                           NULL);
     return true;
 }
 #endif // ARCH_AARCH64
