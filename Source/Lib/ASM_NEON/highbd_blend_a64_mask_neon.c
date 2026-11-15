@@ -259,7 +259,7 @@ void svt_aom_highbd_blend_a64_mask_neon(uint8_t* dst_8, uint32_t dst_stride, con
                                                              int                  w,                                  \
                                                              int                  h,                                  \
                                                              int                  subw,                               \
-                                                             int                  subh) {                                              \
+                                                             int                  subh) {                             \
         const int offset_bits  = bd + 2 * FILTER_BITS - round0_bits;                                                  \
         int32_t   round_offset = (1 << (offset_bits - COMPOUND_ROUND1_BITS)) +                                        \
             (1 << (offset_bits - COMPOUND_ROUND1_BITS - 1));                                                          \

@@ -21,7 +21,8 @@ else()
             -D INPUT_FILE=${CMAKE_CURRENT_SOURCE_DIR}/EbVersion.h.in
             -D OUTPUT_FILE=EbVersion.h
             -D GIT_ROOT_DIR=${PROJECT_SOURCE_DIR}
-            -D PACKAGE_VERSION_STRING=${PROJECT_VERSION}${VERSION_TAG}
+            -D PROJECT_VERSION=${PROJECT_VERSION}
+            -D VERSION_TAG=${VERSION_TAG}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/ConfigureGitVersion.cmake
         BYPRODUCTS EbVersion.h
         COMMENT "Generating version header"
@@ -294,6 +295,7 @@ set(all_files
         kernel_dispatch.h
         temporal_filtering.c
         temporal_filtering.h
+        temporal_mv.h
         transforms.c
         transforms.h
         utility.c

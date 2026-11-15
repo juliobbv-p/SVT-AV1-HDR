@@ -63,7 +63,7 @@
 #endif
 #else
 #define GTEST_OS_WINDOWS_DESKTOP 1
-#endif  // _WIN32_WCE
+#endif // _WIN32_WCE
 #elif defined __OS2__
 #define GTEST_OS_OS2 1
 #elif defined __APPLE__
@@ -111,6 +111,6 @@
 #define GTEST_OS_ESP32 1
 #elif defined(__XTENSA__)
 #define GTEST_OS_XTENSA 1
-#endif  // __CYGWIN__
+#endif // __CYGWIN__
 
-#endif  // GOOGLETEST_INCLUDE_GTEST_INTERNAL_GTEST_PORT_ARCH_H_
+#endif // GOOGLETEST_INCLUDE_GTEST_INTERNAL_GTEST_PORT_ARCH_H_

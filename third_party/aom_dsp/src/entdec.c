@@ -75,27 +75,27 @@
 
 /*The return value of od_ec_dec_tell does not change across an od_ec_dec_refill
    call.*/
-static void od_ec_dec_refill(od_ec_dec *dec) {
-  int s;
-  OdEcWindow dif;
-  int16_t cnt;
-  const unsigned char *bptr;
-  const unsigned char *end;
-  dif = dec->dif;
-  cnt = dec->cnt;
-  bptr = dec->bptr;
-  end = dec->end;
-  s = OD_EC_WINDOW_SIZE - 9 - (cnt + 15);
-  for (; s >= 0 && bptr < end; s -= 8, bptr++) {
-    /*Each time a byte is inserted into the window (dif), bptr advances and cnt
+static void od_ec_dec_refill(od_ec_dec* dec) {
+    int                  s;
+    OdEcWindow           dif;
+    int16_t              cnt;
+    const unsigned char* bptr;
+    const unsigned char* end;
+    dif  = dec->dif;
+    cnt  = dec->cnt;
+    bptr = dec->bptr;
+    end  = dec->end;
+    s    = OD_EC_WINDOW_SIZE - 9 - (cnt + 15);
+    for (; s >= 0 && bptr < end; s -= 8, bptr++) {
+        /*Each time a byte is inserted into the window (dif), bptr advances and cnt
        is incremented by 8, so the total number of consumed bits (the return
        value of od_ec_dec_tell) does not change.*/
-    assert(s <= OD_EC_WINDOW_SIZE - 8);
-    dif ^= (OdEcWindow)bptr[0] << s;
-    cnt += 8;
-  }
-  if (bptr >= end) {
-    /*We've reached the end of the buffer. It is perfectly valid for us to need
+        assert(s <= OD_EC_WINDOW_SIZE - 8);
+        dif ^= (OdEcWindow)bptr[0] << s;
+        cnt += 8;
+    }
+    if (bptr >= end) {
+        /*We've reached the end of the buffer. It is perfectly valid for us to need
        to fill the window with additional bits past the end of the buffer (and
        this happens in normal operation). These bits should all just be taken
        as zero. But we cannot increment bptr past 'end' (this is undefined
@@ -106,12 +106,12 @@ static void od_ec_dec_refill(od_ec_dec *dec) {
        puts lots of zero bits into the window, and means we won't try to refill
        it from the buffer for a very long time (at which point we'll put lots
        of zero bits into the window again).*/
-    dec->tell_offs += OD_EC_LOTS_OF_BITS - cnt;
-    cnt = OD_EC_LOTS_OF_BITS;
-  }
-  dec->dif = dif;
-  dec->cnt = cnt;
-  dec->bptr = bptr;
+        dec->tell_offs += OD_EC_LOTS_OF_BITS - cnt;
+        cnt = OD_EC_LOTS_OF_BITS;
+    }
+    dec->dif  = dif;
+    dec->cnt  = cnt;
+    dec->bptr = bptr;
 }
 
 /*Takes updated dif and range values, renormalizes them so that
@@ -122,63 +122,63 @@ static void od_ec_dec_refill(od_ec_dec *dec) {
   ret: The value to return.
   Return: ret.
           This allows the compiler to jump to this function via a tail-call.*/
-static int od_ec_dec_normalize(od_ec_dec *dec, OdEcWindow dif, unsigned rng,
-                               int ret) {
-  int d;
-  assert(rng <= 65535U);
-  /*The number of leading zeros in the 16-bit binary representation of rng.*/
-  d = 16 - OD_ILOG_NZ(rng);
-  /*d bits in dec->dif are consumed.*/
-  dec->cnt -= d;
-  /*This is equivalent to shifting in 1's instead of 0's.*/
-  dec->dif = ((dif + 1) << d) - 1;
-  dec->rng = rng << d;
-  if (dec->cnt < 0) od_ec_dec_refill(dec);
-  return ret;
+static int od_ec_dec_normalize(od_ec_dec* dec, OdEcWindow dif, unsigned rng, int ret) {
+    int d;
+    assert(rng <= 65535U);
+    /*The number of leading zeros in the 16-bit binary representation of rng.*/
+    d = 16 - OD_ILOG_NZ(rng);
+    /*d bits in dec->dif are consumed.*/
+    dec->cnt -= d;
+    /*This is equivalent to shifting in 1's instead of 0's.*/
+    dec->dif = ((dif + 1) << d) - 1;
+    dec->rng = rng << d;
+    if (dec->cnt < 0) {
+        od_ec_dec_refill(dec);
+    }
+    return ret;
 }
 
 /*Initializes the decoder.
   buf: The input buffer to use.
   storage: The size in bytes of the input buffer.*/
-void od_ec_dec_init(od_ec_dec *dec, const unsigned char *buf,
-                    uint32_t storage) {
-  dec->buf = buf;
-  dec->tell_offs = 10 - (OD_EC_WINDOW_SIZE - 8);
-  dec->end = buf + storage;
-  dec->bptr = buf;
-  dec->dif = ((OdEcWindow)1 << (OD_EC_WINDOW_SIZE - 1)) - 1;
-  dec->rng = 0x8000;
-  dec->cnt = -15;
-  od_ec_dec_refill(dec);
+void od_ec_dec_init(od_ec_dec* dec, const unsigned char* buf, uint32_t storage) {
+    dec->buf       = buf;
+    dec->tell_offs = 10 - (OD_EC_WINDOW_SIZE - 8);
+    dec->end       = buf + storage;
+    dec->bptr      = buf;
+    dec->dif       = ((OdEcWindow)1 << (OD_EC_WINDOW_SIZE - 1)) - 1;
+    dec->rng       = 0x8000;
+    dec->cnt       = -15;
+    od_ec_dec_refill(dec);
 }
 
 /*Decode a single binary value.
   f: The probability that the bit is one, scaled by 32768.
   Return: The value decoded (0 or 1).*/
-int od_ec_decode_bool_q15(od_ec_dec *dec, unsigned f) {
-  OdEcWindow dif;
-  OdEcWindow vw;
-  unsigned r;
-  unsigned r_new;
-  unsigned v;
-  int ret;
-  assert(0 < f);
-  assert(f < 32768U);
-  dif = dec->dif;
-  r = dec->rng;
-  assert(dif >> (OD_EC_WINDOW_SIZE - 16) < r);
-  assert(32768U <= r);
-  v = ((r >> 8) * (uint32_t)(f >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT));
-  v += EC_MIN_PROB;
-  vw = (OdEcWindow)v << (OD_EC_WINDOW_SIZE - 16);
-  ret = 1;
-  r_new = v;
-  if (dif >= vw) {
-    r_new = r - v;
-    dif -= vw;
-    ret = 0;
-  }
-  return od_ec_dec_normalize(dec, dif, r_new, ret);
+int od_ec_decode_bool_q15(od_ec_dec* dec, unsigned f) {
+    OdEcWindow dif;
+    OdEcWindow vw;
+    unsigned   r;
+    unsigned   r_new;
+    unsigned   v;
+    int        ret;
+    assert(0 < f);
+    assert(f < 32768U);
+    dif = dec->dif;
+    r   = dec->rng;
+    assert(dif >> (OD_EC_WINDOW_SIZE - 16) < r);
+    assert(32768U <= r);
+    v = ((r >> 8) * (uint32_t)(f >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT));
+    v += EC_MIN_PROB;
+    vw    = (OdEcWindow)v << (OD_EC_WINDOW_SIZE - 16);
+    ret   = 1;
+    r_new = v;
+    if (dif >= vw) {
+        r_new = r - v;
+        dif -= vw;
+        ret = 0;
+    }
+    return od_ec_dec_normalize(dec, dif, r_new, ret);
 }
 
 /*Decodes a symbol given an inverse cumulative distribution function (CDF)
@@ -190,36 +190,35 @@ int od_ec_decode_bool_q15(od_ec_dec *dec, unsigned f) {
   nsyms: The number of symbols in the alphabet.
          This should be at most 16.
   Return: The decoded symbol s.*/
-int od_ec_decode_cdf_q15(od_ec_dec *dec, const uint16_t *icdf, int nsyms) {
-  OdEcWindow dif;
-  unsigned r;
-  unsigned c;
-  unsigned u;
-  unsigned v;
-  int ret;
-  (void)nsyms;
-  dif = dec->dif;
-  r = dec->rng;
-  const int N = nsyms - 1;
+int od_ec_decode_cdf_q15(od_ec_dec* dec, const uint16_t* icdf, int nsyms) {
+    OdEcWindow dif;
+    unsigned   r;
+    unsigned   c;
+    unsigned   u;
+    unsigned   v;
+    int        ret;
+    (void)nsyms;
+    dif         = dec->dif;
+    r           = dec->rng;
+    const int N = nsyms - 1;
 
-  assert(dif >> (OD_EC_WINDOW_SIZE - 16) < r);
-  assert(icdf[nsyms - 1] == OD_ICDF(CDF_PROB_TOP));
-  assert(32768U <= r);
-  assert(7 - EC_PROB_SHIFT >= 0);
-  c = (unsigned)(dif >> (OD_EC_WINDOW_SIZE - 16));
-  v = r;
-  ret = -1;
-  do {
-    u = v;
-    v = ((r >> 8) * (uint32_t)(icdf[++ret] >> EC_PROB_SHIFT) >>
-         (7 - EC_PROB_SHIFT));
-    v += EC_MIN_PROB * (N - ret);
-  } while (c < v);
-  assert(v < u);
-  assert(u <= r);
-  r = u - v;
-  dif -= (OdEcWindow)v << (OD_EC_WINDOW_SIZE - 16);
-  return od_ec_dec_normalize(dec, dif, r, ret);
+    assert(dif >> (OD_EC_WINDOW_SIZE - 16) < r);
+    assert(icdf[nsyms - 1] == OD_ICDF(CDF_PROB_TOP));
+    assert(32768U <= r);
+    assert(7 - EC_PROB_SHIFT >= 0);
+    c   = (unsigned)(dif >> (OD_EC_WINDOW_SIZE - 16));
+    v   = r;
+    ret = -1;
+    do {
+        u = v;
+        v = ((r >> 8) * (uint32_t)(icdf[++ret] >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT));
+        v += EC_MIN_PROB * (N - ret);
+    } while (c < v);
+    assert(v < u);
+    assert(u <= r);
+    r = u - v;
+    dif -= (OdEcWindow)v << (OD_EC_WINDOW_SIZE - 16);
+    return od_ec_dec_normalize(dec, dif, r, ret);
 }
 
 /*Returns the number of bits "used" by the decoded symbols so far.
@@ -228,12 +227,12 @@ int od_ec_decode_cdf_q15(od_ec_dec *dec, const uint16_t *icdf, int nsyms) {
   Return: The number of bits.
           This will always be slightly larger than the exact value (e.g., all
            rounding error is in the positive direction).*/
-int od_ec_dec_tell(const od_ec_dec *dec) {
-  /*There is a window of bits stored in dec->dif. The difference
+int od_ec_dec_tell(const od_ec_dec* dec) {
+    /*There is a window of bits stored in dec->dif. The difference
      (dec->bptr - dec->buf) tells us how many bytes have been read into this
      window. The difference (dec->cnt - dec->tell_offs) tells us how many of
      the bits in that window remain unconsumed.*/
-  return (int)((dec->bptr - dec->buf) * 8 - dec->cnt + dec->tell_offs);
+    return (int)((dec->bptr - dec->buf) * 8 - dec->cnt + dec->tell_offs);
 }
 
 /*Given the current total integer number of bits used and the current value of
@@ -246,10 +245,10 @@ int od_ec_dec_tell(const od_ec_dec *dec) {
           This will always be slightly larger than the exact value (e.g., all
            rounding error is in the positive direction).*/
 uint32_t od_ec_tell_frac(uint32_t nbits_total, uint32_t rng) {
-  uint32_t nbits;
-  int      l;
-  int      i;
-  /*To handle the non-integral number of bits still left in the encoder/decoder
+    uint32_t nbits;
+    int      l;
+    int      i;
+    /*To handle the non-integral number of bits still left in the encoder/decoder
      state, we compute the worst-case number of bits of val that must be
      encoded to ensure that the value is inside the range for any possible
      subsequent bits.
@@ -261,16 +260,16 @@ uint32_t od_ec_tell_frac(uint32_t nbits_total, uint32_t rng) {
      probability of 1/(1 << n) might sometimes appear to use more than n bits.
     This may help explain the surprising result that a newly initialized
      encoder or decoder claims to have used 1 bit.*/
-  nbits = nbits_total << OD_BITRES;
-  l     = 0;
-  for (i = OD_BITRES; i-- > 0;) {
-    int b;
-    rng = rng * rng >> 15;
-    b   = (int)(rng >> 16);
-    l   = l << 1 | b;
-    rng >>= b;
-  }
-  return nbits - l;
+    nbits = nbits_total << OD_BITRES;
+    l     = 0;
+    for (i = OD_BITRES; i-- > 0;) {
+        int b;
+        rng = rng * rng >> 15;
+        b   = (int)(rng >> 16);
+        l   = l << 1 | b;
+        rng >>= b;
+    }
+    return nbits - l;
 }
 
 /*Returns the number of bits "used" by the decoded symbols so far.
@@ -279,6 +278,6 @@ uint32_t od_ec_tell_frac(uint32_t nbits_total, uint32_t rng) {
   Return: The number of bits scaled by 2**OD_BITRES.
           This will always be slightly larger than the exact value (e.g., all
            rounding error is in the positive direction).*/
-uint32_t od_ec_dec_tell_frac(const od_ec_dec *dec) {
-  return od_ec_tell_frac(od_ec_dec_tell(dec), dec->rng);
+uint32_t od_ec_dec_tell_frac(const od_ec_dec* dec) {
+    return od_ec_tell_frac(od_ec_dec_tell(dec), dec->rng);
 }

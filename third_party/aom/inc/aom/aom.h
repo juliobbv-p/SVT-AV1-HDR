@@ -43,30 +43,27 @@ extern "C" {
  * The set of macros define the control functions of AOM interface
  */
 enum aom_com_control_id {
-  /*!\brief pass in an external frame into decoder to be used as reference frame
+    /*!\brief pass in an external frame into decoder to be used as reference frame
    */
-  AOM_SET_POSTPROC = 3, /**< set the decoder's post processing settings  */
-  AOM_SET_DBG_COLOR_REF_FRAME =
-      4, /**< set the reference frames to color for each macroblock */
-  AOM_SET_DBG_COLOR_MB_MODES = 5, /**< set which macro block modes to color */
-  AOM_SET_DBG_COLOR_B_MODES = 6,  /**< set which blocks modes to color */
-  AOM_SET_DBG_DISPLAY_MV = 7,     /**< set which motion vector modes to draw */
+    AOM_SET_POSTPROC            = 3, /**< set the decoder's post processing settings  */
+    AOM_SET_DBG_COLOR_REF_FRAME = 4, /**< set the reference frames to color for each macroblock */
+    AOM_SET_DBG_COLOR_MB_MODES  = 5, /**< set which macro block modes to color */
+    AOM_SET_DBG_COLOR_B_MODES   = 6, /**< set which blocks modes to color */
+    AOM_SET_DBG_DISPLAY_MV      = 7, /**< set which motion vector modes to draw */
 
-  /* TODO(jkoleszar): The encoder incorrectly reuses some of these values (5+)
+    /* TODO(jkoleszar): The encoder incorrectly reuses some of these values (5+)
    * for its control ids. These should be migrated to something like the
    * AOM_DECODER_CTRL_ID_START range next time we're ready to break the ABI.
    */
-  AV1_GET_REFERENCE = 128, /**< get a pointer to a reference frame */
-  AV1_SET_REFERENCE = 129, /**< write a frame into a reference buffer */
-  AV1_COPY_REFERENCE =
-      130, /**< get a copy of reference frame from the decoder */
-  AOM_COMMON_CTRL_ID_MAX,
+    AV1_GET_REFERENCE  = 128, /**< get a pointer to a reference frame */
+    AV1_SET_REFERENCE  = 129, /**< write a frame into a reference buffer */
+    AV1_COPY_REFERENCE = 130, /**< get a copy of reference frame from the decoder */
+    AOM_COMMON_CTRL_ID_MAX,
 
-  AV1_GET_NEW_FRAME_IMAGE = 192, /**< get a pointer to the new frame */
-  AV1_COPY_NEW_FRAME_IMAGE =
-      193, /**< copy the new frame to an external buffer */
+    AV1_GET_NEW_FRAME_IMAGE  = 192, /**< get a pointer to the new frame */
+    AV1_COPY_NEW_FRAME_IMAGE = 193, /**< copy the new frame to an external buffer */
 
-  AOM_DECODER_CTRL_ID_START = 256
+    AOM_DECODER_CTRL_ID_START = 256
 };
 
 /*!\brief post process flags
@@ -74,16 +71,15 @@ enum aom_com_control_id {
  * The set of macros define AOM decoder post processing flags
  */
 enum aom_postproc_level {
-  AOM_NOFILTERING = 0,
-  AOM_DEBLOCK = 1 << 0,
-  AOM_DEMACROBLOCK = 1 << 1,
-  AOM_ADDNOISE = 1 << 2,
-  AOM_DEBUG_TXT_FRAME_INFO = 1 << 3, /**< print frame information */
-  AOM_DEBUG_TXT_MBLK_MODES =
-      1 << 4, /**< print macro block modes over each macro block */
-  AOM_DEBUG_TXT_DC_DIFF = 1 << 5,   /**< print dc diff for each macro block */
-  AOM_DEBUG_TXT_RATE_INFO = 1 << 6, /**< print video rate info (encoder only) */
-  AOM_MFQE = 1 << 10
+    AOM_NOFILTERING          = 0,
+    AOM_DEBLOCK              = 1 << 0,
+    AOM_DEMACROBLOCK         = 1 << 1,
+    AOM_ADDNOISE             = 1 << 2,
+    AOM_DEBUG_TXT_FRAME_INFO = 1 << 3, /**< print frame information */
+    AOM_DEBUG_TXT_MBLK_MODES = 1 << 4, /**< print macro block modes over each macro block */
+    AOM_DEBUG_TXT_DC_DIFF    = 1 << 5, /**< print dc diff for each macro block */
+    AOM_DEBUG_TXT_RATE_INFO  = 1 << 6, /**< print video rate info (encoder only) */
+    AOM_MFQE                 = 1 << 10
 };
 
 /*!\brief post process flags
@@ -94,11 +90,11 @@ enum aom_postproc_level {
  */
 
 typedef struct aom_postproc_cfg {
-  /*!\brief the types of post processing to be done, should be combination of
+    /*!\brief the types of post processing to be done, should be combination of
    * "aom_postproc_level" */
-  int post_proc_flag;
-  int deblocking_level; /**< the strength of deblocking, valid range [0, 16] */
-  int noise_level; /**< the strength of additive noise, valid range [0, 16] */
+    int post_proc_flag;
+    int deblocking_level; /**< the strength of deblocking, valid range [0, 16] */
+    int noise_level; /**< the strength of additive noise, valid range [0, 16] */
 } aom_postproc_cfg_t;
 
 /*!\brief AV1 specific reference frame data struct
@@ -106,9 +102,9 @@ typedef struct aom_postproc_cfg {
  * Define the data struct to access av1 reference frames.
  */
 typedef struct av1_ref_frame {
-  int idx;              /**< frame index to get (input) */
-  int use_external_ref; /**< Directly use external ref buffer(decoder only) */
-  aom_image_t img;      /**< img structure to populate (output) */
+    int         idx; /**< frame index to get (input) */
+    int         use_external_ref; /**< Directly use external ref buffer(decoder only) */
+    aom_image_t img; /**< img structure to populate (output) */
 } av1_ref_frame_t;
 
 /*!\cond */
@@ -116,7 +112,7 @@ typedef struct av1_ref_frame {
  *
  * defines the data type for each of AOM decoder control function requires
  */
-AOM_CTRL_USE_TYPE(AOM_SET_POSTPROC, aom_postproc_cfg_t *)
+AOM_CTRL_USE_TYPE(AOM_SET_POSTPROC, aom_postproc_cfg_t*)
 #define AOM_CTRL_AOM_SET_POSTPROC
 AOM_CTRL_USE_TYPE(AOM_SET_DBG_COLOR_REF_FRAME, int)
 #define AOM_CTRL_AOM_SET_DBG_COLOR_REF_FRAME
@@ -126,22 +122,22 @@ AOM_CTRL_USE_TYPE(AOM_SET_DBG_COLOR_B_MODES, int)
 #define AOM_CTRL_AOM_SET_DBG_COLOR_B_MODES
 AOM_CTRL_USE_TYPE(AOM_SET_DBG_DISPLAY_MV, int)
 #define AOM_CTRL_AOM_SET_DBG_DISPLAY_MV
-AOM_CTRL_USE_TYPE(AV1_GET_REFERENCE, av1_ref_frame_t *)
+AOM_CTRL_USE_TYPE(AV1_GET_REFERENCE, av1_ref_frame_t*)
 #define AOM_CTRL_AV1_GET_REFERENCE
-AOM_CTRL_USE_TYPE(AV1_SET_REFERENCE, av1_ref_frame_t *)
+AOM_CTRL_USE_TYPE(AV1_SET_REFERENCE, av1_ref_frame_t*)
 #define AOM_CTRL_AV1_SET_REFERENCE
-AOM_CTRL_USE_TYPE(AV1_COPY_REFERENCE, av1_ref_frame_t *)
+AOM_CTRL_USE_TYPE(AV1_COPY_REFERENCE, av1_ref_frame_t*)
 #define AOM_CTRL_AV1_COPY_REFERENCE
-AOM_CTRL_USE_TYPE(AV1_GET_NEW_FRAME_IMAGE, aom_image_t *)
+AOM_CTRL_USE_TYPE(AV1_GET_NEW_FRAME_IMAGE, aom_image_t*)
 #define AOM_CTRL_AV1_GET_NEW_FRAME_IMAGE
-AOM_CTRL_USE_TYPE(AV1_COPY_NEW_FRAME_IMAGE, aom_image_t *)
+AOM_CTRL_USE_TYPE(AV1_COPY_NEW_FRAME_IMAGE, aom_image_t*)
 #define AOM_CTRL_AV1_COPY_NEW_FRAME_IMAGE
 
 /*!\endcond */
 /*! @} - end defgroup aom */
 
 #ifdef __cplusplus
-}  // extern "C"
+} // extern "C"
 #endif
 
-#endif  // AOM_AOM_H_
+#endif // AOM_AOM_H_

@@ -14,7 +14,6 @@
 
 #include "definitions.h"
 #include "coding_unit.h"
-#include "vector.h"
 #include "pic_buffer_desc.h"
 
 #ifdef __cplusplus
@@ -30,15 +29,22 @@ typedef struct _block_hash {
     uint32_t hash_value2;
 } BlockHash;
 
+// Flat hash table: every bucket's entries are stored contiguously in `entries`, in insertion order.
+// Bucket `h` holds bucket_count[h] entries starting at entries[bucket_start[h]].
 typedef struct HashTable {
-    Vector** p_lookup_table;
+    uint32_t*  bucket_start;
+    uint16_t*  bucket_count;
+    uint16_t*  fill_cursor; // per-bucket scratch for one block-size region while filling
+    BlockHash* entries;
+    uint32_t   num_entries;
+    uint32_t   entries_capacity;
 } HashTable;
 
-void        svt_av1_hash_table_destroy(HashTable* p_hash_table);
-EbErrorType svt_aom_rtime_alloc_svt_av1_hash_table_create(HashTable* p_hash_table);
-int32_t     svt_av1_hash_table_count(const HashTable* p_hash_table, uint32_t hash_value);
-Iterator    svt_av1_hash_get_first_iterator(HashTable* p_hash_table, uint32_t hash_value);
-void        svt_av1_generate_block_2x2_hash_value(const Yv12BufferConfig* picture, uint32_t* pic_block_hash);
+void             svt_av1_hash_table_destroy(HashTable* p_hash_table);
+EbErrorType      svt_aom_rtime_alloc_svt_av1_hash_table_create(HashTable* p_hash_table);
+int32_t          svt_av1_hash_table_count(const HashTable* p_hash_table, uint32_t hash_value);
+const BlockHash* svt_av1_hash_get_first(const HashTable* p_hash_table, uint32_t hash_value);
+void             svt_av1_generate_block_2x2_hash_value(const Yv12BufferConfig* picture, uint32_t* pic_block_hash);
 
 void svt_av1_generate_block_hash_value(const Yv12BufferConfig* picture, int block_size, uint32_t* src_pic_block_hash,
                                        uint32_t* dst_pic_block_hash);

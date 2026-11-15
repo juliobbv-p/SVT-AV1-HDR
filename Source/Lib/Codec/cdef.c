@@ -401,6 +401,132 @@ void svt_cdef_filter_fb(uint8_t* dst8, uint16_t* dst16, int32_t dstride, uint16_
     }
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+bool svt_cdef_search_plan(CdefSearchPlan* plan, const uint8_t* strengths, const int8_t* enabled, int count) {
+    memset(plan, 0, sizeof(*plan));
+    memset(plan->slot_map, UINT8_MAX, sizeof(plan->slot_map));
+    if (count < 0 || count > TOTAL_STRENGTHS) {
+        return false;
+    }
+    uint8_t masks[CDEF_PRI_STRENGTHS] = {0};
+    for (int i = 0; i < count; ++i) {
+        if (strengths[i] >= TOTAL_STRENGTHS) {
+            return false;
+        }
+        if (!enabled || enabled[i] >= 0) {
+            masks[strengths[i] / 4] |= 1 << (strengths[i] % 4);
+            plan->nonzero |= strengths[i] != 0;
+        }
+    }
+    uint8_t compact[TOTAL_STRENGTHS];
+    for (int p = 0; p < CDEF_PRI_STRENGTHS; ++p) {
+        if (!masks[p]) {
+            continue;
+        }
+        const int group          = plan->primary_count++;
+        plan->primary[group]     = p;
+        plan->group_start[group] = plan->strength_count;
+        if (p) {
+            plan->secondary_mask |= masks[p] & ~1;
+        } else {
+            plan->zero_secondary_mask = masks[p] & ~1;
+        }
+        for (int sec = 0; sec < CDEF_SEC_STRENGTHS; ++sec) {
+            if (masks[p] & (1 << sec)) {
+                compact[p * 4 + sec]                    = plan->strength_count;
+                plan->secondary[plan->strength_count++] = sec;
+            }
+        }
+    }
+    plan->group_start[plan->primary_count] = plan->strength_count;
+    for (int i = 0; i < count; ++i) {
+        if (!enabled || enabled[i] >= 0) {
+            plan->slot_map[i] = compact[strengths[i]];
+        }
+    }
+    return true;
+}
+
+void svt_cdef_search_block_10bit_c(const uint16_t* input, const uint16_t* target, int target_stride,
+                                   const CdefSearchPlan* plan, const uint8_t primary[16], int dir, int damping,
+                                   int bsize, int subsampling_factor, uint64_t ssd[64]) {
+    uint16_t  filtered[64];
+    const int width  = bsize == BLOCK_8X8 || bsize == BLOCK_8X4 ? 8 : 4;
+    const int height = bsize == BLOCK_8X8 || bsize == BLOCK_4X8 ? 8 : 4;
+    for (int p = 0; p < plan->primary_count; ++p) {
+        for (int slot = plan->group_start[p]; slot < plan->group_start[p + 1]; ++slot) {
+            const int sec = plan->secondary[slot];
+            svt_cdef_filter_block_c(NULL,
+                                    filtered,
+                                    width,
+                                    input,
+                                    primary[p],
+                                    (sec + (sec == 3)) << 2,
+                                    plan->primary[p] ? dir : 0,
+                                    damping,
+                                    damping,
+                                    bsize,
+                                    2,
+                                    subsampling_factor);
+            uint64_t sum = 0;
+            for (int y = 0; y < height; y += subsampling_factor) {
+                for (int x = 0; x < width; ++x) {
+                    const int difference = (int)filtered[y * width + x] - target[y * target_stride + x];
+                    sum += difference * difference;
+                }
+            }
+            ssd[slot] = sum;
+        }
+    }
+}
+
+void svt_cdef_search_fb_10bit(uint16_t* in, const uint16_t* target, int target_stride,
+                              uint8_t dir[CDEF_NBLOCKS][CDEF_NBLOCKS], int32_t* dirinit,
+                              int32_t var[CDEF_NBLOCKS][CDEF_NBLOCKS], CdefList* dlist, int count,
+                              const CdefSearchPlan* plan, int xdec, int ydec, int pli, int damping,
+                              int subsampling_factor, uint64_t ssd[64]) {
+    // Zero-only search copies pixels without finding directions in the original path.
+    if (!pli && plan->nonzero && !*dirinit) {
+        cdef_find_dir(in, dlist, var, count, 2, dir);
+        *dirinit = 1;
+    }
+    // Asymmetric chroma stays on the per-strength path: its U trials repeatedly
+    // remap stored directions, so grouping them would change existing behavior.
+    assert(!pli || xdec == ydec);
+    const int  width = 8 >> xdec, height = 8 >> ydec;
+    const int  bsize       = ydec ? (xdec ? BLOCK_4X4 : BLOCK_8X4) : (xdec ? BLOCK_4X8 : BLOCK_8X8);
+    const bool has_primary = plan->primary_count && plan->primary[plan->primary_count - 1] != 0;
+    memset(ssd, 0, plan->strength_count * sizeof(*ssd));
+    for (int bi = 0; bi < count && plan->strength_count; ++bi) {
+        const int by = dlist[bi].by, bx = dlist[bi].bx;
+        uint8_t   primary[16];
+        for (int p = 0; p < plan->primary_count; ++p) {
+            const int configured = plan->primary[p] << 2;
+            primary[p]           = !configured || pli ? configured : adjust_strength(configured, var[by][bx]);
+        }
+        uint64_t block[64];
+        svt_cdef_search_block_10bit(in + height * by * CDEF_BSTRIDE + width * bx,
+                                    target + height * by * target_stride + width * bx,
+                                    target_stride,
+                                    plan,
+                                    primary,
+                                    has_primary ? dir[by][bx] : 0,
+                                    damping + 2 - (pli != 0),
+                                    bsize,
+                                    subsampling_factor,
+                                    block);
+        for (int slot = 0; slot < plan->strength_count; ++slot) {
+            ssd[slot] += block[slot];
+        }
+    }
+    // Match compute_cdef_dist: normalize after summing the whole filter block,
+    // then compensate for the rows omitted by the caller's capped sampling factor.
+    for (int slot = 0; slot < plan->strength_count; ++slot) {
+        ssd[slot] = (ssd[slot] >> 4) * subsampling_factor;
+    }
+}
+#endif // CONFIG_ENABLE_HIGH_BIT_DEPTH
+
 // Per-tap (drow,dcol) decode of eb_cdef_directions_padded, with the same +2-offset indexing as
 // svt_aom_eb_cdef_directions. The boundary-aware kernels (C and NEON) use these to test, per tap,
 // whether the tap lands off-frame (geometry) instead of reading an in-band 16-bit sentinel. Decoded

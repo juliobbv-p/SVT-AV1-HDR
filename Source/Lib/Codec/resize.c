@@ -1426,9 +1426,9 @@ EbErrorType svt_aom_downscaled_source_buffer_desc_ctor(EbPictureBufferDesc** pic
     initData.bit_depth          = picture_ptr_for_reference->bit_depth;
     initData.color_format       = picture_ptr_for_reference->color_format;
     initData.split_mode         = (picture_ptr_for_reference->bit_depth > EB_EIGHT_BIT &&
-                           picture_ptr_for_reference->packed_flag == false)
-                ? true
-                : false;
+                                   picture_ptr_for_reference->packed_flag == false)
+        ? true
+        : false;
     initData.border             = picture_ptr_for_reference->border;
 
     EB_NEW(*picture_ptr, svt_picture_buffer_desc_ctor, (EbPtr)&initData);

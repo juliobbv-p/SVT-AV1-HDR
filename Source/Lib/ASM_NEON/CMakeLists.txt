@@ -27,6 +27,7 @@ target_sources(
   PUBLIC cdef_block_neon.c
   PUBLIC cdef_filter_block_neon.c
   PUBLIC cdef_neon.c
+  PUBLIC cdef_search_neon.c
   PUBLIC cfl_neon.c
   PUBLIC compound_convolve_neon.c
   PUBLIC compute_sad_neon.c
@@ -69,6 +70,7 @@ target_sources(
   PUBLIC pic_analysis_neon.c
   PUBLIC pickrst_neon.c
   PUBLIC picture_operators_intrinsic_neon.c
+  PUBLIC qm_distortion_neon.c
   PUBLIC resize_neon.c
   PUBLIC restoration_pick_neon.c
   PUBLIC sad_neon.c

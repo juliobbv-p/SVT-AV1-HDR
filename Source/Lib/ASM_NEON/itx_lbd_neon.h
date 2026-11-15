@@ -75,6 +75,7 @@
     decl_itx_fn(BF(dav1d_inv_txfm_add_dct_dct_64x64, ext))
 
 decl_itx_fns(neon);
+decl_itx_fn(BF(dav1d_inv_txfm_add_wht_wht_4x4, neon));
 
 #undef decl_itx_fn
 #undef BF

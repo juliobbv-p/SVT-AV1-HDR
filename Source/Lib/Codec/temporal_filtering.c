@@ -171,7 +171,7 @@ static void derive_tf_32x32_block_split_flag(MeContext* me_ctx) {
     for (int i = 0; i < 4; ++i) {
         subblock_errors[i] = (int)me_ctx->tf_16x16_block_error[idx_32x32 * 4 + i];
 
-        if (me_ctx->tf_ctrls.enable_8x8_pred) {
+        if (SVT_EFFECTIVE_TF_8X8_PRED(me_ctx->tf_ctrls.enable_8x8_pred)) {
             // check 8x8
             int error_8x8 = 0;
             for (int idx_8x8 = 0; idx_8x8 < 4; ++idx_8x8) {
@@ -210,7 +210,7 @@ static void create_me_context_and_picture_control(MotionEstimationContext_t* me_
     // set reference picture for alt-refs
     me_context_ptr->me_ctx->alt_ref_reference_ptr = (EbPaReferenceObject*)
                                                         picture_control_set_ptr_frame->pa_ref_pic_wrapper->object_ptr;
-    me_context_ptr->me_ctx->me_type = ME_MCTF;
+    me_context_ptr->me_ctx->me_type               = ME_MCTF;
 
     // set the buffers with the original, quarter and sixteenth pixels version of the source frame
     EbPaReferenceObject* src_object     = (EbPaReferenceObject*)centre_pcs->pa_ref_pic_wrapper->object_ptr;
@@ -242,7 +242,10 @@ static void create_me_context_and_picture_control(MotionEstimationContext_t* me_
         }
     }
 #endif
-    me_context_ptr->me_ctx->b64_src_ptr    = &(padded_pic_ptr->y_buffer[buffer_index]);
+    me_context_ptr->me_ctx->b64_src_ptr = &(padded_pic_ptr->y_buffer[buffer_index]);
+#if EN_AVX512_SUPPORT
+    me_context_ptr->me_ctx->ext_sad_prep_src = NULL;
+#endif
     me_context_ptr->me_ctx->b64_src_stride = padded_pic_ptr->y_stride;
 
     // Load the 1/4 decimated SB from the 1/4 decimated input to the 1/4 intermediate SB buffer
@@ -587,24 +590,32 @@ int32_t svt_aom_noise_log1p_fp16(int32_t noise_level_fp16) {
     }
 }
 
+// decay_control * (0.7 + log1p(noise_level)), in fp10.
+int32_t svt_aom_tf_n_decay_fp10(int32_t decay_control, int32_t noise_log1p_fp16) {
+    const int32_t const_0dot7_fp16 = 45875; //0.7
+    // An unreliable noise estimate (-1) gives log1p = INT32_MIN (-inf), which
+    // would overflow here. Real estimates are never negative, so treat it as
+    // no noise, like vmaf_get_noise_gate() does.
+    return (decay_control * (const_0dot7_fp16 + AOMMAX(noise_log1p_fp16, 0))) / ((int32_t)1 << 6);
+}
+
 // Calculate decay factor for temporal filtering
 static inline void svt_av1_calculate_decay_factor(uint32_t* tf_decay_factor_fp16, int32_t* n_decay_fp10,
                                                   uint32_t q_decay_fp8, int decay_control_cu, int decay_control_cv,
-                                                  const int32_t  const_0dot7_fp16,
                                                   const int32_t* noise_levels_log1p_fp16, const uint8_t shift_factor,
                                                   uint8_t tf_chroma) {
     *(tf_decay_factor_fp16 +
       PLANE_Y) = (uint32_t)((((((int64_t)*n_decay_fp10) * ((int64_t)*n_decay_fp10))) * q_decay_fp8) >> shift_factor);
 
     if (tf_chroma) {
-        *n_decay_fp10 = (decay_control_cu * (const_0dot7_fp16 + noise_levels_log1p_fp16[PLANE_U])) / ((int32_t)1 << 6);
+        *n_decay_fp10 = svt_aom_tf_n_decay_fp10(decay_control_cu, noise_levels_log1p_fp16[PLANE_U]);
         *(tf_decay_factor_fp16 +
           PLANE_U)    = (uint32_t)((((((int64_t)*n_decay_fp10) * ((int64_t)*n_decay_fp10))) * q_decay_fp8) >>
-                                shift_factor);
-        *n_decay_fp10 = (decay_control_cv * (const_0dot7_fp16 + noise_levels_log1p_fp16[PLANE_V])) / ((int32_t)1 << 6);
+                                   shift_factor);
+        *n_decay_fp10 = svt_aom_tf_n_decay_fp10(decay_control_cv, noise_levels_log1p_fp16[PLANE_V]);
         *(tf_decay_factor_fp16 +
           PLANE_V)    = (uint32_t)((((((int64_t)*n_decay_fp10) * ((int64_t)*n_decay_fp10))) * q_decay_fp8) >>
-                                shift_factor);
+                                   shift_factor);
     }
 }
 
@@ -1161,21 +1172,21 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_c(
     FP_ASSERT(sum <= (1 << (26)));
     window_error_quad_fp8[1] = (((sum << 4) / bw_half) << 4) / bh_half;
     sum                      = calculate_squared_errors_sum_highbd(y_src + y_src_stride * (bh_half),
-                                              y_src_stride,
-                                              y_pre + y_pre_stride * (bh_half),
-                                              y_pre_stride,
-                                              bw_half,
-                                              bh_half,
-                                              shift_factor);
+                                                                   y_src_stride,
+                                                                   y_pre + y_pre_stride * (bh_half),
+                                                                   y_pre_stride,
+                                                                   bw_half,
+                                                                   bh_half,
+                                                                   shift_factor);
     FP_ASSERT(sum <= (1 << (26)));
     window_error_quad_fp8[2] = (((sum << 4) / bw_half) << 4) / bh_half;
     sum                      = calculate_squared_errors_sum_highbd(y_src + y_src_stride * (bh_half) + bw_half,
-                                              y_src_stride,
-                                              y_pre + y_pre_stride * (bh_half) + bw_half,
-                                              y_pre_stride,
-                                              bw_half,
-                                              bh_half,
-                                              shift_factor);
+                                                                   y_src_stride,
+                                                                   y_pre + y_pre_stride * (bh_half) + bw_half,
+                                                                   y_pre_stride,
+                                                                   bw_half,
+                                                                   bh_half,
+                                                                   shift_factor);
     FP_ASSERT(sum <= (1 << (26)));
     window_error_quad_fp8[3] = (((sum << 4) / bw_half) << 4) / bh_half;
 
@@ -1459,7 +1470,7 @@ static void svt_check_position(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PicturePare
     mv.y = tf_sp_param->mv_y + tf_sp_param->yd;
 
     svt_aom_simple_luma_unipred(scs,
-                                scs->sf_identity,
+                                &scs->sf_identity,
                                 tf_sp_param->interp_filters,
                                 blk_ptr,
                                 mv,
@@ -1497,14 +1508,18 @@ static void svt_check_position(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PicturePare
             tf_sp_param->bsize * tf_sp_param->idx_x;
         uint8_t* src_y_ptr = src[PLANE_Y] + tf_sp_param->bsize * tf_sp_param->idx_y * stride_src[PLANE_Y] +
             tf_sp_param->bsize * tf_sp_param->idx_x;
-        const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[block_size];
-        unsigned int            sse;
-        distortion = fn_ptr->vf(pred_y_ptr,
-                                stride_pred[PLANE_Y] << tf_sp_param->subsampling_shift,
-                                src_y_ptr,
-                                stride_src[PLANE_Y] << tf_sp_param->subsampling_shift,
-                                &sse)
-            << tf_sp_param->subsampling_shift;
+        if (tf_sp_param->sv) {
+            distortion = svt_aom_src_var(tf_sp_param->sv, pred_y_ptr, stride_pred[PLANE_Y]);
+        } else {
+            const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[block_size];
+            unsigned int            sse;
+            distortion = fn_ptr->vf(pred_y_ptr,
+                                    stride_pred[PLANE_Y] << tf_sp_param->subsampling_shift,
+                                    src_y_ptr,
+                                    stride_src[PLANE_Y] << tf_sp_param->subsampling_shift,
+                                    &sse)
+                << tf_sp_param->subsampling_shift;
+        }
     } else {
         uint16_t* pred_y_ptr = pred_16bit[PLANE_Y] + tf_sp_param->bsize * tf_sp_param->idx_y * stride_pred[PLANE_Y] +
             tf_sp_param->bsize * tf_sp_param->idx_x;
@@ -1540,6 +1555,20 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
                              EbByte* pred, uint16_t** pred_16bit, uint32_t* stride_pred, EbByte* src,
                              uint16_t** src_16bit, uint32_t* stride_src, uint64_t* best_dist, int16_t* best_mv_x,
                              int16_t* best_mv_y) {
+    // All positions are compared against the same source block
+    SrcVarCtx      sv;
+    const uint32_t bs = tf_sp_param->bsize;
+    tf_sp_param->sv   = NULL;
+    if (SVT_X86_ONLY_KERNEL_PATHS && !tf_sp_param->is_highbd && !tf_sp_param->subsampling_shift &&
+        (bs == 16 || bs == 32 || bs == 64)) {
+        sv.vf = svt_aom_mefn_ptr[bs == 16 ? BLOCK_16X16 : bs == 32 ? BLOCK_32X32 : BLOCK_64X64].vf;
+        svt_aom_src_var_prep(&sv,
+                             src[PLANE_Y] + bs * tf_sp_param->idx_y * stride_src[PLANE_Y] + bs * tf_sp_param->idx_x,
+                             stride_src[PLANE_Y],
+                             bs,
+                             bs);
+        tf_sp_param->sv = &sv;
+    }
     // Check centre position
     tf_sp_param->subpel_pel_mode = pcs->tf_ctrls.half_pel_mode;
     tf_sp_param->mv_x            = *best_mv_x;
@@ -1657,6 +1686,7 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
             }
         }
     }
+    tf_sp_param->sv = NULL;
 }
 
 static void tf_64x64_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_ctx, PictureParentControlSet* pcs_ref,
@@ -1732,11 +1762,11 @@ static void tf_64x64_sub_pel_search(PictureParentControlSet* pcs, MeContext* me_
     // Set the starting MV and distortion
     me_ctx->tf_64x64_block_error = INT_MAX;
     me_ctx->tf_64x64_mv_x        = (me_ctx->tf_use_pred_64x64_only_th == (uint8_t)~0)
-               ? me_ctx->search_results[0][0].hme_sc_x * 8
-               : (_MVXT(me_ctx->p_best_mv64x64[0])) * 8;
+        ? me_ctx->search_results[0][0].hme_sc_x * 8
+        : (_MVXT(me_ctx->p_best_mv64x64[0])) * 8;
     me_ctx->tf_64x64_mv_y        = (me_ctx->tf_use_pred_64x64_only_th == (uint8_t)~0)
-               ? me_ctx->search_results[0][0].hme_sc_y * 8
-               : (_MVYT(me_ctx->p_best_mv64x64[0])) * 8;
+        ? me_ctx->search_results[0][0].hme_sc_y * 8
+        : (_MVYT(me_ctx->p_best_mv64x64[0])) * 8;
 
     TF_SUBPEL_SEARCH_PARAMS tf_sp_param;
     tf_sp_param.subsampling_shift = pcs->tf_ctrls.sub_sampling_shift;
@@ -2250,7 +2280,7 @@ static void tf_32x32_inter_prediction(PictureParentControlSet* pcs, MeContext* m
     uint32_t idx_32x32 = me_ctx->idx_32x32;
     if (me_ctx->tf_32x32_block_split_flag[idx_32x32]) {
         for (uint32_t idx_16x16 = 0; idx_16x16 < 4; idx_16x16++) {
-            if (me_ctx->tf_16x16_block_split_flag[idx_32x32][idx_16x16]) {
+            if (SVT_EFFECTIVE_TF_8X8_PRED(me_ctx->tf_16x16_block_split_flag[idx_32x32][idx_16x16])) {
                 uint32_t bsize = 8;
 
                 for (uint32_t idx_8x8 = 0; idx_8x8 < 4; idx_8x8++) {
@@ -2728,11 +2758,9 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
     } else {
         q_decay_fp8 = MAX(q << 2, 1);
     }
-    const int32_t const_0dot7_fp16 = 45875; //0.7
     /*Calculation of log and dceay_factor possible to move to estimate_noise() and calculate one time for GOP*/
     //decay_control * (0.7 + log1p(noise_levels[PLANE_Y]))
-    int32_t n_decay_fp10 = (decay_control[PLANE_Y] * (const_0dot7_fp16 + noise_levels_log1p_fp16[PLANE_Y])) /
-        ((int32_t)1 << 6);
+    int32_t n_decay_fp10 = svt_aom_tf_n_decay_fp10(decay_control[PLANE_Y], noise_levels_log1p_fp16[PLANE_Y]);
     //2 * n_decay * n_decay * q_decay * (s_decay always is 1);
     /*
          * TF STRENGTH CALCULATION
@@ -2778,7 +2806,6 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
                                            q_decay_fp8,
                                            decay_control[PLANE_U],
                                            decay_control[PLANE_V],
-                                           const_0dot7_fp16,
                                            noise_levels_log1p_fp16,
                                            kf_tf_shift_factor,
                                            ctx->tf_chroma);
@@ -2788,7 +2815,6 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
                                            q_decay_fp8,
                                            decay_control[PLANE_U],
                                            decay_control[PLANE_V],
-                                           const_0dot7_fp16,
                                            noise_levels_log1p_fp16,
                                            tf_shift_factor,
                                            ctx->tf_chroma);
@@ -2799,9 +2825,9 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
             int blk_y_src_offset  = (blk_col * TF_BW) + (blk_row * TF_BH) * stride[PLANE_Y];
             int blk_ch_src_offset = (blk_col * blk_width_ch) + (blk_row * blk_height_ch) * stride[PLANE_U];
 
-            // reset accumulator and count
-            memset(accumulator, 0, BLK_PELS * MAX_PLANES * sizeof(accumulator[0]));
-            memset(counter, 0, BLK_PELS * MAX_PLANES * sizeof(counter[0]));
+            // Central filtering assigns the whole padded 64x64 luma tile and
+            // active chroma rectangle before reference filtering reads them.
+            // Disabled chroma and the unused chroma tail are never consumed.
 
             EbByte    src_center_ptr[MAX_PLANES]           = {NULL};
             uint16_t* altref_buffer_highbd_ptr[MAX_PLANES] = {NULL};
@@ -2958,7 +2984,6 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
                                                                q_decay_fp8,
                                                                decay_control[PLANE_U],
                                                                decay_control[PLANE_V],
-                                                               const_0dot7_fp16,
                                                                noise_levels_log1p_fp16,
                                                                kf_tf_shift_factor,
                                                                ctx->tf_chroma);
@@ -2968,7 +2993,6 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
                                                                q_decay_fp8,
                                                                decay_control[PLANE_U],
                                                                decay_control[PLANE_V],
-                                                               const_0dot7_fp16,
                                                                noise_levels_log1p_fp16,
                                                                adaptive_tf_shift_factor,
                                                                ctx->tf_chroma);
@@ -3073,7 +3097,7 @@ static EbErrorType produce_temporally_filtered_pic(PictureParentControlSet** pcs
                                                 ss_x,
                                                 (ctx->tf_ctrls.use_8bit_subpel) ? EB_EIGHT_BIT : encoder_bit_depth);
 
-                                            if (ctx->tf_ctrls.enable_8x8_pred) {
+                                            if (SVT_EFFECTIVE_TF_8X8_PRED(ctx->tf_ctrls.enable_8x8_pred)) {
                                                 tf_8x8_sub_pel_search(
                                                     centre_pcs,
                                                     ctx,
@@ -3252,10 +3276,9 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
     FP_ASSERT(TF_Q_DECAY_THRESHOLD == 20);
     const uint32_t q_decay_fp8 = 256;
 
-    const int32_t const_0dot7_fp16 = 45875; //0.7
     /*Calculation of log and dceay_factor possible to move to estimate_noise() and calculate one time for GOP*/
     //decay_control * (0.7 + log1p(noise_levels[PLANE_Y]))
-    int32_t n_decay_fp10 = (decay_control * (const_0dot7_fp16 + noise_levels_log1p_fp16[PLANE_Y])) / ((int32_t)1 << 6);
+    int32_t n_decay_fp10 = svt_aom_tf_n_decay_fp10(decay_control, noise_levels_log1p_fp16[PLANE_Y]);
     //2 * n_decay * n_decay * q_decay * (s_decay always is 1);
     /*
      * TF STRENGTH CALCULATION (2)
@@ -3279,7 +3302,6 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
                                            q_decay_fp8,
                                            decay_control,
                                            decay_control,
-                                           const_0dot7_fp16,
                                            noise_levels_log1p_fp16,
                                            kf_tf_shift_factor,
                                            ctx->tf_chroma);
@@ -3289,7 +3311,6 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
                                            q_decay_fp8,
                                            decay_control,
                                            decay_control,
-                                           const_0dot7_fp16,
                                            noise_levels_log1p_fp16,
                                            adaptive_tf_shift_factor,
                                            ctx->tf_chroma);
@@ -3332,7 +3353,6 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
                                            q_decay_fp8,
                                            decay_control,
                                            decay_control,
-                                           const_0dot7_fp16,
                                            noise_levels_log1p_fp16,
                                            kf_tf_shift_factor,
                                            ctx->tf_chroma);
@@ -3342,7 +3362,6 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
                                            q_decay_fp8,
                                            decay_control,
                                            decay_control,
-                                           const_0dot7_fp16,
                                            noise_levels_log1p_fp16,
                                            tf_shift_factor,
                                            ctx->tf_chroma);
@@ -3353,9 +3372,9 @@ static EbErrorType produce_temporally_filtered_pic_ld(PictureParentControlSet** 
             int blk_y_src_offset  = (blk_col * TF_BW) + (blk_row * TF_BH) * stride[PLANE_Y];
             int blk_ch_src_offset = (blk_col * blk_width_ch) + (blk_row * blk_height_ch) * stride[PLANE_U];
 
-            // reset accumulator and count
-            memset(accumulator, 0, BLK_PELS * MAX_PLANES * sizeof(accumulator[0]));
-            memset(counter, 0, BLK_PELS * MAX_PLANES * sizeof(counter[0]));
+            // Central filtering assigns the whole padded 64x64 luma tile and
+            // active chroma rectangle before reference filtering reads them.
+            // Disabled chroma and the unused chroma tail are never consumed.
             EbByte    src_center_ptr[MAX_PLANES]           = {NULL};
             uint16_t* altref_buffer_highbd_ptr[MAX_PLANES] = {NULL};
             // Prep 8bit source if 8bit content or using 8bit for subpel

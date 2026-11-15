@@ -22,6 +22,7 @@
 #include "md_process.h"
 #include "av1me.h"
 #include "q_matrices.h"
+#include "qm_psnr.h"
 #include "svt_log.h"
 #include "coefficients.h"
 #include "common_utils.h"
@@ -57,7 +58,7 @@ static void set_global_motion_field(PictureControlSet* pcs) {
     for (frame_index = INTRA_FRAME; frame_index <= ALTREF_FRAME; ++frame_index) {
         const uint8_t list_idx = get_list_idx(frame_index);
         const uint8_t ref_idx  = get_ref_frame_idx(frame_index);
-        if (!ppcs->is_global_motion[list_idx][ref_idx]) {
+        if (!SVT_EFFECTIVE_GM(ppcs->is_global_motion[list_idx][ref_idx])) {
             continue;
         }
         ppcs->global_motion[frame_index] = ppcs->global_motion_estimation[list_idx][ref_idx];
@@ -238,6 +239,59 @@ static INLINE int svt_av1_still_get_chroma_qmlevel_444(int qindex, int min, int 
     return CLIP3(min, max, level);
 }
 
+#if CONFIG_ENABLE_QUANT_MATRIX
+// One immutable copy for all pictures and encoder instances. Keep the original
+// matrices for quantization/RDOQ; only full-block distortion uses this layout.
+static QmVal    qmpsnr_weights[NUM_QM_LEVELS - 1][2][QM_TOTAL_SIZE];
+static uint16_t qmpsnr_offsets[TX_SIZES_ALL];
+#endif
+
+void svt_av1_init_qmpsnr_weights(void) {
+#if CONFIG_ENABLE_QUANT_MATRIX
+    int offset = 0;
+    for (int t = 0; t < TX_SIZES_ALL; ++t) {
+        const TxSize adjusted = av1_get_adjusted_tx_size(t);
+        if (t != adjusted) {
+            qmpsnr_offsets[t] = qmpsnr_offsets[adjusted];
+            continue;
+        }
+        qmpsnr_offsets[t]     = offset;
+        const int      width  = tx_size_wide[t];
+        const int      height = tx_size_high[t];
+        const int16_t* scan   = get_scan_order(t, DCT_DCT)->scan;
+        for (int q = 0; q < NUM_QM_LEVELS - 1; ++q) {
+            for (int plane = 0; plane < 2; ++plane) {
+                const QmVal* src = &wt_matrix_ref[q][plane][offset];
+                QmVal*       dst = &qmpsnr_weights[q][plane][offset];
+                for (int y = 0; y < height; ++y) {
+                    for (int x = 0; x < width; ++x) {
+                        // Preserve the column-major scan-position lookup used
+                        // by QM-PSNR, including rectangular transforms.
+                        dst[y * width + x] = src[scan[x * height + y]];
+                    }
+                }
+            }
+        }
+        offset += width * height;
+    }
+    assert(offset == QM_TOTAL_SIZE);
+#endif
+}
+
+const QmVal* svt_av1_get_qmpsnr_weights(int level, int plane, TxSize tx_size) {
+#if CONFIG_ENABLE_QUANT_MATRIX
+    assert(level >= 0 && level < NUM_QM_LEVELS);
+    assert(plane >= 0 && plane < 3);
+    assert(tx_size >= 0 && tx_size < TX_SIZES_ALL);
+    return level == NUM_QM_LEVELS - 1 ? NULL : &qmpsnr_weights[level][plane != 0][qmpsnr_offsets[tx_size]];
+#else
+    UNUSED(level);
+    UNUSED(plane);
+    UNUSED(tx_size);
+    return NULL;
+#endif
+}
+
 static void svt_av1_qm_init(PictureParentControlSet* pcs) {
     const uint8_t num_planes = 3; // MAX_PLANES;// NM- No monochroma
     uint8_t       q, c, t;
@@ -281,6 +335,12 @@ static void svt_av1_qm_init(PictureParentControlSet* pcs) {
         const int32_t min_chroma_qmlevel = pcs->scs->static_config.min_chroma_qm_level;
         const int32_t max_chroma_qmlevel = pcs->scs->static_config.max_chroma_qm_level;
         const int32_t base_qindex        = pcs->frm_hdr.quantization_params.base_q_idx;
+        // Clip the chroma qindex to the valid range, as the spec does when deriving the quantizer,
+        // so that large chroma qindex offsets cannot map to an out-of-range QM level.
+        const int32_t qindex_u = CLIP3(
+            0, QINDEX_RANGE - 1, base_qindex + pcs->frm_hdr.quantization_params.delta_q_ac[PLANE_U]);
+        const int32_t qindex_v = CLIP3(
+            0, QINDEX_RANGE - 1, base_qindex + pcs->frm_hdr.quantization_params.delta_q_ac[PLANE_V]);
 
         switch (pcs->scs->static_config.tune) {
         case TUNE_IQ:
@@ -292,25 +352,17 @@ static void svt_av1_qm_init(PictureParentControlSet* pcs) {
             pcs->frm_hdr.quantization_params.qm[PLANE_Y] = svt_av1_still_get_qmlevel(
                 base_qindex, min_qmlevel, max_qmlevel);
             pcs->frm_hdr.quantization_params.qm[PLANE_U] = get_chroma_qmlevel(
-                base_qindex + pcs->frm_hdr.quantization_params.delta_q_ac[PLANE_U],
-                min_chroma_qmlevel,
-                max_chroma_qmlevel);
+                qindex_u, min_chroma_qmlevel, max_chroma_qmlevel);
             pcs->frm_hdr.quantization_params.qm[PLANE_V] = get_chroma_qmlevel(
-                base_qindex + pcs->frm_hdr.quantization_params.delta_q_ac[PLANE_V],
-                min_chroma_qmlevel,
-                max_chroma_qmlevel);
+                qindex_v, min_chroma_qmlevel, max_chroma_qmlevel);
             break;
         }
         default:
             pcs->frm_hdr.quantization_params.qm[PLANE_Y] = aom_get_qmlevel(base_qindex, min_qmlevel, max_qmlevel);
             pcs->frm_hdr.quantization_params.qm[PLANE_U] = aom_get_qmlevel(
-                base_qindex + pcs->frm_hdr.quantization_params.delta_q_ac[PLANE_U],
-                min_chroma_qmlevel,
-                max_chroma_qmlevel);
+                qindex_u, min_chroma_qmlevel, max_chroma_qmlevel);
             pcs->frm_hdr.quantization_params.qm[PLANE_V] = aom_get_qmlevel(
-                base_qindex + pcs->frm_hdr.quantization_params.delta_q_ac[PLANE_V],
-                min_chroma_qmlevel,
-                max_chroma_qmlevel);
+                qindex_v, min_chroma_qmlevel, max_chroma_qmlevel);
             break;
         }
 #if DEBUG_QM_LEVEL
@@ -357,12 +409,24 @@ static void init_frame_rate_tables(PictureControlSet* pcs) {
     svt_aom_estimate_mv_rate(pcs, md_rate_est_ctx, &pcs->md_frame_context);
     // Initial Rate Estimation of the quantized coefficients
     if (pcs->rdoq_level || pcs->rate_est_level) {
+#if CONFIG_ENABLE_FAST_DECODE_3
+        svt_aom_estimate_coefficients_rate(md_rate_est_ctx, &pcs->md_frame_context, ppcs->scs->dec_cost_ctrls.pos_rate);
+#else
         svt_aom_estimate_coefficients_rate(md_rate_est_ctx, &pcs->md_frame_context);
+#endif
     }
 }
 
 // Perform initializations needed for MD
 void mdc_init_qp_update(PictureControlSet* pcs) {
+    FrameHeader* frm_hdr = &pcs->ppcs->frm_hdr;
+    // A lossless frame recoded at qindex > 0 is coded as a lossy frame.
+    // Restore QM use; the other tools disabled during lossless frame setup stay off.
+    if (frm_hdr->coded_lossless && frm_hdr->quantization_params.base_q_idx) {
+        memset(pcs->lossless, 0, sizeof(pcs->lossless));
+        frm_hdr->coded_lossless = frm_hdr->all_lossless = 0;
+        frm_hdr->quantization_params.using_qmatrix      = pcs->scs->static_config.enable_qm;
+    }
     pcs->intra_coded_area = 0;
     pcs->skip_coded_area  = 0;
     pcs->hp_coded_area    = 0;
@@ -616,7 +680,7 @@ static void av1_setup_motion_field(Av1Common* cm, PictureControlSet* pcs) {
 
 EbErrorType svt_av1_hash_table_create(HashTable* p_hash_table);
 int32_t     svt_aom_noise_log1p_fp16(int32_t noise_level_fp16);
-
+#if CONFIG_ENABLE_INTRA_BC || !MOBILE_BUILD
 static void generate_ibc_data(PictureControlSet* pcs) {
     const int pic_width  = pcs->ppcs->aligned_width;
     const int pic_height = pcs->ppcs->aligned_height;
@@ -650,7 +714,7 @@ static void generate_ibc_data(PictureControlSet* pcs) {
         EB_FREE_ARRAY(block_hash_values[j]);
     }
 }
-
+#endif
 static void derive_intra_coeff_level(PictureControlSet* pcs) {
     uint64_t cmplx = pcs->ppcs->pic_avg_variance / MAX(1, pcs->scs->static_config.qp);
 
@@ -822,8 +886,8 @@ static bool me_based_cdef_skip(PictureControlSet* pcs) {
     const uint8_t in_res = pcs->ppcs->input_resolution;
     // For flat, mult should be based on update_type since all pics are temporal layer 0
     const int      mult = pcs->ppcs->hierarchical_levels ? (pcs->temporal_layer_index + 1)
-             : frame_is_boosted(pcs->ppcs)               ? 1
-             : frame_is_leaf(pcs->ppcs)                  ? 3
+        : frame_is_boosted(pcs->ppcs)                    ? 1
+        : frame_is_leaf(pcs->ppcs)                       ? 3
                                                          : 2;
     const uint32_t use_zero_strength_th =
         disable_cdef_th[pcs->ppcs->cdef_recon_ctrls.zero_filter_strength_lvl][in_res] * mult;
@@ -979,6 +1043,7 @@ EbErrorType svt_aom_mode_decision_configuration_kernel_iter(void* context) {
     svt_av1_qm_init(pcs->ppcs);
     // Initialize the rate estimation tables for the frame
     init_frame_rate_tables(pcs);
+#if CONFIG_ENABLE_INTRA_BC || !MOBILE_BUILD
     if (frm_hdr->allow_intrabc) {
         IntrabcCtrls* intraBC_ctrls = &(pcs->ppcs->intrabc_ctrls);
         // Generate hash table for intra-Bc if max block size is set
@@ -1004,6 +1069,7 @@ EbErrorType svt_aom_mode_decision_configuration_kernel_iter(void* context) {
             }
         }
     }
+#endif
     CdefSearchControls* cdef_ctrls = &pcs->ppcs->cdef_search_ctrls;
     const uint8_t       skip_perc  = pcs->ref_skip_percentage;
     // Adjust skip_th by QP: at low QP lower the threshold (skip CDEF more — picture already clean),
@@ -1065,7 +1131,7 @@ EbErrorType svt_aom_mode_decision_configuration_kernel_iter(void* context) {
 #endif
 
     if (frm_hdr->coded_lossless) {
-        // The decoder does not apply quantization matrices to lossless segments.
+        // Lossless segments use a flat matrix regardless of the configured QM levels.
         frm_hdr->quantization_params.using_qmatrix        = 0;
         pcs->ppcs->frm_hdr.delta_q_params.delta_q_present = 0;
         frm_hdr->quantization_params.delta_q_dc[PLANE_Y]  = 0;
@@ -1121,13 +1187,13 @@ EbErrorType svt_aom_mode_decision_configuration_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_mode_decision_configuration_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_mode_decision_configuration_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_mode_decision_configuration_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

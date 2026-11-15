@@ -273,7 +273,7 @@ void svt_aom_lpf_horizontal_4_sse2(uint8_t* s, int32_t p /* pitch */, const uint
                                    const uint8_t* _thresh) {
     const __m128i zero   = _mm_setzero_si128();
     const __m128i limit  = _mm_unpacklo_epi64(_mm_loadl_epi64((const __m128i*)_blimit),
-                                             _mm_loadl_epi64((const __m128i*)_limit));
+                                              _mm_loadl_epi64((const __m128i*)_limit));
     const __m128i thresh = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)_thresh), zero);
     __m128i       q1p1, q0p0, p1p0, q1q0, ps1ps0, qs1qs0;
     __m128i       mask, hev;
@@ -294,7 +294,7 @@ void svt_aom_lpf_vertical_4_sse2(uint8_t* s, int32_t p /* pitch */, const uint8_
                                  const uint8_t* _thresh) {
     const __m128i zero   = _mm_setzero_si128();
     const __m128i limit  = _mm_unpacklo_epi64(_mm_loadl_epi64((const __m128i*)_blimit),
-                                             _mm_loadl_epi64((const __m128i*)_limit));
+                                              _mm_loadl_epi64((const __m128i*)_limit));
     const __m128i thresh = _mm_unpacklo_epi8(_mm_loadl_epi64((const __m128i*)_thresh), zero);
 
     __m128i x0, x1, x2, x3;
@@ -724,21 +724,21 @@ static AOM_FORCE_INLINE void lpf_internal_6_sse2(__m128i* p2, __m128i* q2, __m12
         // op0
         workp_b     = _mm_add_epi16(_mm_add_epi16(q0_16, q0_16), q1_16); // q0 * 2 + q1
         workp_a     = _mm_add_epi16(workp_a,
-                                workp_b); // p2 + p0 * 2 + p1 * 2 + q0 * 2 + q1 + 4
+                                    workp_b); // p2 + p0 * 2 + p1 * 2 + q0 * 2 + q1 + 4
         workp_shft1 = _mm_srli_epi16(workp_a, 3);
 
         flat_p1p0 = _mm_packus_epi16(workp_shft1, workp_shft0);
 
         // oq0
         workp_a     = _mm_sub_epi16(_mm_sub_epi16(workp_a, p2_16),
-                                p1_16); // p0 * 2 + p1  + q0 * 2 + q1 + 4
+                                    p1_16); // p0 * 2 + p1  + q0 * 2 + q1 + 4
         workp_b     = _mm_add_epi16(q1_16, q2_16);
         workp_a     = _mm_add_epi16(workp_a, workp_b); // p0 * 2 + p1  + q0 * 2 + q1 * 2 + q2 + 4
         workp_shft0 = _mm_srli_epi16(workp_a, 3);
 
         // oq1
         workp_a     = _mm_sub_epi16(_mm_sub_epi16(workp_a, p1_16),
-                                p0_16); // p0   + q0 * 2 + q1 * 2 + q2 + 4
+                                    p0_16); // p0   + q0 * 2 + q1 * 2 + q2 + 4
         workp_b     = _mm_add_epi16(q2_16, q2_16);
         workp_shft1 = _mm_srli_epi16(_mm_add_epi16(workp_a, workp_b),
                                      3); // p0  + q0 * 2 + q1 * 2 + q2 * 3 + 4
@@ -1598,14 +1598,14 @@ static AOM_FORCE_INLINE void highbd_lpf_internal_6_sse2(__m128i* p2, __m128i* p1
 
         // oq0
         workp_a     = _mm_sub_epi16(_mm_sub_epi16(workp_a, *p2),
-                                *p1); // *p0 * 2 + *p1  + *q0 * 2 + *q1 + 4
+                                    *p1); // *p0 * 2 + *p1  + *q0 * 2 + *q1 + 4
         workp_b     = _mm_add_epi16(*q1, *q2);
         workp_shft0 = _mm_add_epi16(workp_a,
                                     workp_b); // *p0 * 2 + *p1  + *q0 * 2 + *q1 * 2 + *q2 + 4
 
         // oq1
         workp_a     = _mm_sub_epi16(_mm_sub_epi16(workp_shft0, *p1),
-                                *p0); // *p0   + *q0 * 2 + *q1 * 2 + *q2 + 4
+                                    *p0); // *p0   + *q0 * 2 + *q1 * 2 + *q2 + 4
         workp_b     = _mm_add_epi16(*q2, *q2);
         workp_shft1 = _mm_add_epi16(workp_a, workp_b); // *p0  + *q0 * 2 + *q1 * 2 + *q2 * 3 + 4
 

@@ -336,9 +336,6 @@ class DenoiseModelRunTest : public ::testing::Test {
         pbd_init_data.split_mode = false;
         pbd_init_data.is_16bit_pipeline = false;
 
-        const int subsampling_x_ =
-            (pbd_init_data.color_format == EB_YUV444 ? 0 : 1);
-
         EbErrorType err =
             svt_picture_buffer_desc_ctor(&in_pic_, &pbd_init_data);
         EXPECT_EQ(err, EB_ErrorNone) << "create input pic fail";
@@ -346,20 +343,29 @@ class DenoiseModelRunTest : public ::testing::Test {
         data_ptr_[1] = in_pic_.u_buffer;
         data_ptr_[2] = in_pic_.v_buffer;
 
-        // create the denoise and noise model
+        create_model(4);  // TODO: check the range;
+    }
+
+    // create the denoise and noise model
+    void create_model(int noise_level) {
+        if (noise_model.dctor) {
+            noise_model.dctor(&noise_model);
+            noise_model = {};
+        }
         DenoiseAndModelInitData fg_init_data;
         fg_init_data.adaptive_film_grain = true;
         fg_init_data.encoder_bit_depth = EB_EIGHT_BIT;
         fg_init_data.encoder_color_format = EB_YUV420;
-        fg_init_data.noise_level = 4;  // TODO: check the range;
+        fg_init_data.noise_level = noise_level;
         fg_init_data.denoise_apply = false;
         fg_init_data.width = width_;
         fg_init_data.height = height_;
         fg_init_data.y_stride = width_;
         fg_init_data.u_stride = fg_init_data.v_stride =
-            fg_init_data.y_stride >> subsampling_x_;
+            fg_init_data.y_stride >> 1;
 
-        err = svt_aom_denoise_and_model_ctor(&noise_model, &fg_init_data);
+        EbErrorType err =
+            svt_aom_denoise_and_model_ctor(&noise_model, &fg_init_data);
         EXPECT_EQ(err, EB_ErrorNone) << "svt_aom_denoise_and_model_ctor fail";
     }
 
@@ -403,6 +409,34 @@ TEST_F(DenoiseModelRunTest, OutputFilmGrainCheck) {
     run_test();
     check_filmgrain();
     EXPECT_FALSE(HasFailure());
+}
+
+// Noisy luma with perfectly flat chroma gives the chroma strength solver an
+// all-zero solution, so the average chroma strength used to rescale the
+// luma correlation is 0. The model must not divide by it and feed the
+// resulting NaN into the integer AR coefficients.
+TEST_F(DenoiseModelRunTest, FlatChromaNoNaN) {
+    create_model(29);
+    for (int y = 0; y < height_; ++y) {
+        for (int x = 0; x < width_; ++x) {
+            data_ptr_[0][y * width_ + x] = random_.Rand8();
+        }
+    }
+    for (int c = 1; c < 3; ++c) {
+        memset(data_ptr_[c], 128, (width_ >> 1) * (height_ >> 1));
+    }
+    svt_aom_denoise_and_model_run(
+        &noise_model, &in_pic_, &output_film_grain, 0);
+    ASSERT_EQ(output_film_grain.apply_grain, 1);
+    ASSERT_EQ(output_film_grain.ar_coeff_lag, 3);
+    // All AR coefficients of this model are below 0.25 in magnitude, so the
+    // finest shift (9) must be chosen. A NaN luma correlation used to leak
+    // into the shift computation and lose precision.
+    EXPECT_EQ(output_film_grain.ar_coeff_shift, 9);
+    // Flat chroma has no correlation with luma.
+    const int n_coeff = 24;
+    EXPECT_EQ(output_film_grain.ar_coeffs_cb[n_coeff], 0);
+    EXPECT_EQ(output_film_grain.ar_coeffs_cr[n_coeff], 0);
 }
 
 }  // namespace

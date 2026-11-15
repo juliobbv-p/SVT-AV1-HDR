@@ -12,7 +12,7 @@
 
 #ifndef EbEntropyCodingProcess_h
 #define EbEntropyCodingProcess_h
-
+#include "svt_threads.h"
 #include "definitions.h"
 
 #include "sys_resource_manager.h"
@@ -78,6 +78,6 @@ typedef struct EntropyCodingContext {
 EbErrorType svt_aom_entropy_coding_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                                 int index);
 
-void* svt_aom_entropy_coding_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_entropy_coding_kernel(void* input_ptr);
 
 #endif // EbEntropyCodingProcess_h

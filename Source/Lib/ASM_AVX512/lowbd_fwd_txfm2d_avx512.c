@@ -282,9 +282,9 @@ static INLINE void btf16_0_x32(int16_t w0, int16_t w1, __m512i in0, __m512i in1,
     const __m512i lo  = _mm512_unpacklo_epi16(in0, in1);
     const __m512i hi  = _mm512_unpackhi_epi16(in0, in1);
     *o0               = _mm512_packs_epi32(_mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(lo, wp0), rnd), bit),
-                             _mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(hi, wp0), rnd), bit));
+                                           _mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(hi, wp0), rnd), bit));
     *o1               = _mm512_packs_epi32(_mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(lo, wp1), rnd), bit),
-                             _mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(hi, wp1), rnd), bit));
+                                           _mm512_srai_epi32(_mm512_add_epi32(_mm512_madd_epi16(hi, wp1), rnd), bit));
 }
 
 // btf_32_type1(w0,w1,in0,in1) == btf_32_type0(w1,w0,in1,in0)
@@ -312,24 +312,24 @@ static void fdct64_x32_avx512(const __m512i* in, __m512i* output, int cos_bit) {
     const int16_t  c8 = (int16_t)cospi[8], c56 = (int16_t)cospi[56], c40 = (int16_t)cospi[40], c24 = (int16_t)cospi[24];
     const int16_t  c4 = (int16_t)cospi[4], c60 = (int16_t)cospi[60], c36 = (int16_t)cospi[36], c28 = (int16_t)cospi[28];
     const int16_t  c20 = (int16_t)cospi[20], c44 = (int16_t)cospi[44], c52 = (int16_t)cospi[52],
-                  c12 = (int16_t)cospi[12];
-    const int16_t c2 = (int16_t)cospi[2], c62 = (int16_t)cospi[62], c34 = (int16_t)cospi[34], c30 = (int16_t)cospi[30];
-    const int16_t c46 = (int16_t)cospi[46], c18 = (int16_t)cospi[18], c50 = (int16_t)cospi[50],
-                  c14 = (int16_t)cospi[14];
-    const int16_t c54 = (int16_t)cospi[54], c10 = (int16_t)cospi[10], c42 = (int16_t)cospi[42],
-                  c22 = (int16_t)cospi[22];
-    const int16_t c38 = (int16_t)cospi[38], c26 = (int16_t)cospi[26], c58 = (int16_t)cospi[58], c6 = (int16_t)cospi[6];
-    const int16_t c63 = (int16_t)cospi[63], c1 = (int16_t)cospi[1], c31 = (int16_t)cospi[31], c33 = (int16_t)cospi[33];
-    const int16_t c47 = (int16_t)cospi[47], c17 = (int16_t)cospi[17], c49 = (int16_t)cospi[49],
-                  c15 = (int16_t)cospi[15];
-    const int16_t c55 = (int16_t)cospi[55], c9 = (int16_t)cospi[9], c41 = (int16_t)cospi[41], c23 = (int16_t)cospi[23];
-    const int16_t c39 = (int16_t)cospi[39], c25 = (int16_t)cospi[25], c57 = (int16_t)cospi[57], c7 = (int16_t)cospi[7];
-    const int16_t c59 = (int16_t)cospi[59], c5 = (int16_t)cospi[5], c37 = (int16_t)cospi[37], c27 = (int16_t)cospi[27];
-    const int16_t c43 = (int16_t)cospi[43], c21 = (int16_t)cospi[21], c53 = (int16_t)cospi[53],
-                  c11 = (int16_t)cospi[11];
-    const int16_t c51 = (int16_t)cospi[51], c13 = (int16_t)cospi[13], c19 = (int16_t)cospi[19],
-                  c45 = (int16_t)cospi[45];
-    const int16_t c35 = (int16_t)cospi[35], c29 = (int16_t)cospi[29], c3 = (int16_t)cospi[3], c61 = (int16_t)cospi[61];
+                   c12 = (int16_t)cospi[12];
+    const int16_t  c2 = (int16_t)cospi[2], c62 = (int16_t)cospi[62], c34 = (int16_t)cospi[34], c30 = (int16_t)cospi[30];
+    const int16_t  c46 = (int16_t)cospi[46], c18 = (int16_t)cospi[18], c50 = (int16_t)cospi[50],
+                   c14 = (int16_t)cospi[14];
+    const int16_t  c54 = (int16_t)cospi[54], c10 = (int16_t)cospi[10], c42 = (int16_t)cospi[42],
+                   c22 = (int16_t)cospi[22];
+    const int16_t  c38 = (int16_t)cospi[38], c26 = (int16_t)cospi[26], c58 = (int16_t)cospi[58], c6 = (int16_t)cospi[6];
+    const int16_t  c63 = (int16_t)cospi[63], c1 = (int16_t)cospi[1], c31 = (int16_t)cospi[31], c33 = (int16_t)cospi[33];
+    const int16_t  c47 = (int16_t)cospi[47], c17 = (int16_t)cospi[17], c49 = (int16_t)cospi[49],
+                   c15 = (int16_t)cospi[15];
+    const int16_t  c55 = (int16_t)cospi[55], c9 = (int16_t)cospi[9], c41 = (int16_t)cospi[41], c23 = (int16_t)cospi[23];
+    const int16_t  c39 = (int16_t)cospi[39], c25 = (int16_t)cospi[25], c57 = (int16_t)cospi[57], c7 = (int16_t)cospi[7];
+    const int16_t  c59 = (int16_t)cospi[59], c5 = (int16_t)cospi[5], c37 = (int16_t)cospi[37], c27 = (int16_t)cospi[27];
+    const int16_t  c43 = (int16_t)cospi[43], c21 = (int16_t)cospi[21], c53 = (int16_t)cospi[53],
+                   c11 = (int16_t)cospi[11];
+    const int16_t  c51 = (int16_t)cospi[51], c13 = (int16_t)cospi[13], c19 = (int16_t)cospi[19],
+                   c45 = (int16_t)cospi[45];
+    const int16_t  c35 = (int16_t)cospi[35], c29 = (int16_t)cospi[29], c3 = (int16_t)cospi[3], c61 = (int16_t)cospi[61];
 
     __m512i x1[64];
     for (int i = 0; i < 32; i++) {

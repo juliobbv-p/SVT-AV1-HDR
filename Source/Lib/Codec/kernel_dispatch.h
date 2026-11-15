@@ -87,9 +87,9 @@ void svt_kernel_dispatcher_run(SvtKernelDispatcher* dispatcher);
  *   name           - thread/kernel name
  *   dispatcher     - dispatcher (NULL = always create thread)
  **************************************/
-EbErrorType svt_create_kernel_or_thread(EbHandle* thread_handle, void* (*kernel_fn)(void*), SvtKernelIterFn iter_fn,
-                                        EbThreadContext* thread_ctx, EbFifo* input_fifo, const char* name,
-                                        SvtKernelDispatcher* dispatcher);
+EbErrorType svt_create_kernel_or_thread(EbHandle* thread_handle, THREAD_FUNC_RETURN kernel_fn(void*),
+                                        SvtKernelIterFn iter_fn, EbThreadContext* thread_ctx, EbFifo* input_fifo,
+                                        const char* name, SvtKernelDispatcher* dispatcher);
 
 /**************************************
  * All 16 pipeline kernel _iter() functions.

@@ -10,6 +10,7 @@
  */
 
 #include <immintrin.h>
+#include "aom_dsp_rtcd.h"
 #include "definitions.h"
 #include "memory_avx2.h"
 #include "common_dsp_rtcd.h"
@@ -820,9 +821,20 @@ void svt_av1_interpolate_core_avx2(const uint8_t* const input, int in_length, ui
 }
 
 void svt_av1_down2_symeven_avx2(const uint8_t* const input, int length, uint8_t* output) {
+    // Every production caller passes an even length.
+    assert(!(length & 1));
+
     const int16_t* filter          = svt_aom_av1_down2_symeven_half_filter;
     const int      filter_len_half = sizeof(svt_aom_av1_down2_symeven_half_filter) / 2;
     const int      steps           = 32;
+
+    // down2_symeven_w16_init_part_avx2 below unconditionally reads up to
+    // input+36 and writes a fixed 16-byte output batch, in-bounds only
+    // once length>=37; the mid/end chunk sizing below needs that floor too.
+    if (length < 38) {
+        svt_av1_down2_symeven_c(input, length, output);
+        return;
+    }
 
     const __m128i filter_1x = _mm_loadl_epi64((const __m128i*)filter);
     const __m256i filter_4x = _mm256_broadcastq_epi64(filter_1x);
@@ -839,6 +851,11 @@ void svt_av1_down2_symeven_avx2(const uint8_t* const input, int length, uint8_t*
 
     // Middle part.
     int mid = (l2 - l1 + 1) & (~(steps - 1));
+    // Leave enough trailing input for the mid part's 4-byte lookahead; the
+    // length - i >= steps check below then routes the remainder to end_part.
+    if (mid > 0 && (length - l1 - mid) < 5) {
+        mid -= steps;
+    }
     if (mid > 0) {
         down2_symeven_w16_mid_part_avx2(input + i, mid, &optr, &filter_4x);
         i += mid;
@@ -1638,10 +1655,28 @@ static EbErrorType svt_av1_interpolate_core_col_avx2(const uint8_t* const input,
 }
 
 void svt_av1_highbd_down2_symeven_avx2(const uint16_t* const input, int length, uint16_t* output, int bd) {
+    // Every production caller passes an even length.
+    assert(!(length & 1));
+
     const int16_t* filter          = svt_aom_av1_down2_symeven_half_filter;
     const int      filter_len_half = sizeof(svt_aom_av1_down2_symeven_half_filter) / 2;
     const int      steps           = 16;
-    __m256i        max;
+
+    // highbd_down2_symeven_w8_init_part_avx2 below unconditionally reads up
+    // to input+20, in-bounds only once length>=21; the mid/end chunk sizing
+    // below needs that floor too. svt_av1_highbd_down2_symeven_c isn't
+    // declared at all when highbd support is compiled out, but this whole
+    // function is unreachable then too (the rtcd dispatch that would call it
+    // is behind the same guard), so the fallback itself only needs to exist
+    // when the reference it calls does.
+    if (length < 22) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+        svt_av1_highbd_down2_symeven_c(input, length, output, bd);
+#endif
+        return;
+    }
+
+    __m256i max;
     if (bd == 10) {
         max = _mm256_set1_epi32(1023);
     } else {
@@ -1663,6 +1698,11 @@ void svt_av1_highbd_down2_symeven_avx2(const uint16_t* const input, int length, 
 
     // Middle part.
     int mid = (l2 - l1 + 1) & (~(steps - 1));
+    // Leave enough trailing input for the mid part's lookahead; the
+    // length - i >= steps check below then routes the remainder to end_part.
+    if (mid > 0 && (length - l1 - mid) < 5) {
+        mid -= steps;
+    }
     if (mid > 0) {
         highbd_down2_symeven_w8_mid_part_avx2(input + i, mid, &optr, filter_2x, max);
         i += mid;
@@ -1695,7 +1735,7 @@ static INLINE __m128i mm_32i_to_16i(__m256i a) {
 static INLINE void highbd_down2_symeven_mm_gather_load_8x8(const uint16_t* in, __m128i dst[8], __m256i vindex) {
     __m256i load = _mm256_i32gather_epi32((const int*)in, vindex, 2);
     dst[0]       = mm_32i_to_16i(_mm256_and_si256(load,
-                                            _mm256_set1_epi32(0xffff))); // col 0
+                                                  _mm256_set1_epi32(0xffff))); // col 0
     dst[1]       = mm_32i_to_16i(_mm256_srli_epi32(load, 16)); // col 1
 
     load   = _mm256_i32gather_epi32((const int*)(in + 2), vindex, 2);
@@ -1717,7 +1757,7 @@ static INLINE void highbd_down2_symeven_mm_gather_load_8x8(const uint16_t* in, _
 static INLINE void highbd_down2_symeven_mm256_gather_load_8x8(const uint16_t* in, __m256i dst[8], __m256i vindex) {
     __m256i load = _mm256_i32gather_epi32((const int*)in, vindex, 2);
     dst[0]       = _mm256_and_si256(load,
-                              _mm256_set1_epi32(0xffff)); // col 0
+                                    _mm256_set1_epi32(0xffff)); // col 0
     dst[1]       = _mm256_srli_epi32(load, 16); // col 1
 
     load   = _mm256_i32gather_epi32((const int*)(in + 2), vindex, 2);

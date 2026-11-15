@@ -52,16 +52,16 @@ static int32_t svt_aom_crf_assign_max_rate(PictureParentControlSet* ppcs) {
     int32_t start_index = ((ppcs->picture_number / frames_in_sw) * frames_in_sw) % CODED_FRAMES_STAT_QUEUE_MAX_DEPTH;
     int32_t end_index   = start_index + frames_in_sw;
     frames_in_sw        = (scs->passes > 1)
-               ? MIN(end_index, (int32_t)scs->twopass.stats_buf_ctx->total_stats->count) - start_index
-               : frames_in_sw;
+        ? MIN(end_index, (int32_t)scs->twopass.stats_buf_ctx->total_stats->count) - start_index
+        : frames_in_sw;
     int64_t max_bits_sw = (int64_t)(scs->static_config.max_bit_rate * ((double)frames_in_sw / scs->frame_rate));
     max_bits_sw += (max_bits_sw * scs->static_config.mbr_over_shoot_pct / 100);
 
     // Loop over the sliding window and calculated the spent bits
     for (int index = start_index; index < end_index; index++) {
         int32_t                   queue_entry_index = (index > CODED_FRAMES_STAT_QUEUE_MAX_DEPTH - 1)
-                              ? index - CODED_FRAMES_STAT_QUEUE_MAX_DEPTH
-                              : index;
+            ? index - CODED_FRAMES_STAT_QUEUE_MAX_DEPTH
+            : index;
         coded_frames_stats_entry* queue_entry_ptr   = rc->coded_frames_stat_queue[queue_entry_index];
         spent_bits_sw += (queue_entry_ptr->frame_total_bit_actual > 0) ? queue_entry_ptr->frame_total_bit_actual : 0;
         coded_frames_num_sw += (queue_entry_ptr->frame_total_bit_actual > 0) ? 1 : 0;
@@ -627,15 +627,15 @@ void capped_crf_reencode(PictureParentControlSet* ppcs, int* const q) {
     int32_t start_index = ((ppcs->picture_number / frames_in_sw) * frames_in_sw) % CODED_FRAMES_STAT_QUEUE_MAX_DEPTH;
     int32_t end_index   = start_index + frames_in_sw;
     frames_in_sw        = (scs->passes > 1)
-               ? MIN(end_index, (int32_t)scs->twopass.stats_buf_ctx->total_stats->count) - start_index
-               : frames_in_sw;
+        ? MIN(end_index, (int32_t)scs->twopass.stats_buf_ctx->total_stats->count) - start_index
+        : frames_in_sw;
     int64_t max_bits_sw = (int64_t)(scs->static_config.max_bit_rate * (double)frames_in_sw / scs->frame_rate);
     max_bits_sw += max_bits_sw * scs->static_config.mbr_over_shoot_pct / 100;
     // Loop over the sliding window and calculated the spent bits
     for (int index = start_index; index < end_index; index++) {
         int32_t                   queue_entry_index = (index > CODED_FRAMES_STAT_QUEUE_MAX_DEPTH - 1)
-                              ? index - CODED_FRAMES_STAT_QUEUE_MAX_DEPTH
-                              : index;
+            ? index - CODED_FRAMES_STAT_QUEUE_MAX_DEPTH
+            : index;
         coded_frames_stats_entry* queue_entry_ptr   = rc->coded_frames_stat_queue[queue_entry_index];
         spent_bits_sw += (queue_entry_ptr->frame_total_bit_actual > 0) ? queue_entry_ptr->frame_total_bit_actual : 0;
         coded_frames_num_sw += (queue_entry_ptr->frame_total_bit_actual > 0) ? 1 : 0;

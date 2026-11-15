@@ -239,7 +239,7 @@ static INLINE void svt_unpack_weights_and_set_round_const(ConvolveParams* conv_p
                                                           const int offset_bits, __m128i* res_sub_const,
                                                           __m128i* round_bits_const, __m128i* wt) {
     *res_sub_const    = _mm_set1_epi16(-(1 << (offset_bits - conv_params->round_1)) -
-                                    (1 << (offset_bits - conv_params->round_1 - 1)));
+                                       (1 << (offset_bits - conv_params->round_1 - 1)));
     *round_bits_const = _mm_set1_epi16(((1 << round_bits) >> 1));
 
     const int     w0  = conv_params->fwd_offset;
@@ -1132,7 +1132,7 @@ void svt_av1_highbd_warp_affine_sse4_1(const int32_t* mat, const uint8_t* ref8b,
     const int     round_bits             = 2 * FILTER_BITS - conv_params->round_0 - conv_params->round_1;
     const int     offset_bits            = bd + 2 * FILTER_BITS - conv_params->round_0;
     const __m128i res_sub_const          = _mm_set1_epi32(-(1 << (offset_bits - conv_params->round_1)) -
-                                                 (1 << (offset_bits - conv_params->round_1 - 1)));
+                                                          (1 << (offset_bits - conv_params->round_1 - 1)));
     __m128i       round_bits_shift       = _mm_cvtsi32_si128(round_bits);
     __m128i       round_bits_const       = _mm_set1_epi32(((1 << round_bits) >> 1));
 
@@ -1190,7 +1190,7 @@ void svt_av1_highbd_warp_affine_sse4_1(const int32_t* mat, const uint8_t* ref8b,
                     }
                     uint16_t ref_val = (ref8b[iy * stride8b] << 2) | ((ref2b[iy * stride2b] >> 6) & 3);
                     tmp[k + 7]       = _mm_set1_epi16((1 << (bd + FILTER_BITS - reduce_bits_horiz - 1)) +
-                                                ref_val * (1 << (FILTER_BITS - reduce_bits_horiz)));
+                                                      ref_val * (1 << (FILTER_BITS - reduce_bits_horiz)));
                 }
             } else if (ix4 >= width + 6) {
                 for (k = -7; k < AOMMIN(8, p_height - i); ++k) {
@@ -1222,7 +1222,7 @@ void svt_av1_highbd_warp_affine_sse4_1(const int32_t* mat, const uint8_t* ref8b,
                     //const __m128i src  = _mm_loadu_si128((__m128i *)(ref + iy * stride + ix4 - 7));
                     //const __m128i src2 = _mm_loadu_si128((__m128i *)(ref + iy * stride + ix4 + 1));
                     const __m128i src  = load_ref_2buffer(&ref8b[iy * stride8b + ix4 - 7],
-                                                         &ref2b[iy * stride2b + ix4 - 7]);
+                                                          &ref2b[iy * stride2b + ix4 - 7]);
                     const __m128i src2 = load_ref_2buffer(&ref8b[iy * stride8b + ix4 + 1],
                                                           &ref2b[iy * stride2b + ix4 + 1]);
 

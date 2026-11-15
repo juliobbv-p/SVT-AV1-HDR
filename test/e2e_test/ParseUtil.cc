@@ -176,9 +176,19 @@ static void read_color_config(Bitstrm *bs, EbColorConfig *color_info,
     color_info->mono_chrome = (seq_header->seq_profile != HIGH_PROFILE)
                                   ? svt_aom_dec_get_bits(bs, 1)
                                   : 0;
-    color_info->color_primaries = EB_CICP_CP_UNSPECIFIED;
-    color_info->transfer_characteristics = EB_CICP_TC_UNSPECIFIED;
-    color_info->matrix_coefficients = EB_CICP_MC_UNSPECIFIED;
+    const bool color_description_present_flag = svt_aom_dec_get_bits(bs, 1);
+    if (color_description_present_flag) {
+        color_info->color_primaries =
+            static_cast<EbColorPrimaries>(svt_aom_dec_get_bits(bs, 8));
+        color_info->transfer_characteristics =
+            static_cast<EbTransferCharacteristics>(svt_aom_dec_get_bits(bs, 8));
+        color_info->matrix_coefficients =
+            static_cast<EbMatrixCoefficients>(svt_aom_dec_get_bits(bs, 8));
+    } else {
+        color_info->color_primaries = EB_CICP_CP_UNSPECIFIED;
+        color_info->transfer_characteristics = EB_CICP_TC_UNSPECIFIED;
+        color_info->matrix_coefficients = EB_CICP_MC_UNSPECIFIED;
+    }
     if (color_info->mono_chrome) {
         color_info->color_range = (EbColorRange)svt_aom_dec_get_bits(bs, 1);
         color_info->subsampling_y = color_info->subsampling_x = 1;
@@ -323,8 +333,11 @@ EbErrorType read_sequence_header_obu(Bitstrm *bs, SeqHeader *seq_header) {
     }
     if (seq_header->frame_id_numbers_present_flag) {
         seq_header->delta_frame_id_length = svt_aom_dec_get_bits(bs, 4) + 2;
-        seq_header->frame_id_length = svt_aom_dec_get_bits(bs, 3) + 1;
-        if (seq_header->frame_id_length - 1 > 16)
+        // additional_frame_id_length_minus_1 is an increment over
+        // delta_frame_id_length, not an absolute width (AV1 5.5.1).
+        seq_header->frame_id_length =
+            svt_aom_dec_get_bits(bs, 3) + seq_header->delta_frame_id_length + 1;
+        if (seq_header->frame_id_length > 16)
             return EB_Corrupt_Frame;
     }
 
@@ -458,6 +471,7 @@ void SequenceHeaderParser::input_obu_data(const uint8_t *obu_data,
 
         // update stream info
         stream_info->profile = seg_header.seq_profile;
+        stream_info->tier = seg_header.operating_point[0].seq_tier;
         stream_info->still_pic = seg_header.still_picture == 1;
         stream_info->sb_size = sb_size_;
         stream_info->force_integer_mv = seg_header.seq_force_integer_mv;
@@ -473,7 +487,11 @@ void SequenceHeaderParser::input_obu_data(const uint8_t *obu_data,
         stream_info->enable_warped_motion = seg_header.enable_warped_motion;
         stream_info->cdef_level = seg_header.cdef_level;
         stream_info->enable_restoration = seg_header.enable_restoration;
+        stream_info->film_grain_params_present =
+            seg_header.film_grain_params_present;
         stream_info->enable_superres = seg_header.enable_superres;
+        stream_info->frame_id_numbers_present_flag =
+            seg_header.frame_id_numbers_present_flag;
     }
 }
 }  // namespace svt_av1_e2e_tools

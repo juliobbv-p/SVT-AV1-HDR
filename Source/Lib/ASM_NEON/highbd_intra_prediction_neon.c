@@ -254,7 +254,7 @@ HIGHBD_SMOOTH_V_NXM(8, 32)
                                                     const ptrdiff_t       stride,                                      \
                                                     const uint16_t* const top_row,                                     \
                                                     const uint16_t* const left_column,                                 \
-                                                    const int             height) {                                                \
+                                                    const int             height) {                                    \
         const uint16_t        bottom_left = left_column[height - 1];                                                   \
         const uint16_t* const weights_y   = sm_weight_arrays_u16 + height - 4;                                         \
                                                                                                                        \
@@ -384,7 +384,7 @@ HIGHBD_SMOOTH_H_NXM(8, 32)
                                                     ptrdiff_t             stride,                                  \
                                                     const uint16_t* const top_row,                                 \
                                                     const uint16_t* const left_column,                             \
-                                                    const int             height) {                                            \
+                                                    const int             height) {                                \
         const uint16_t top_right = top_row[(W) - 1];                                                               \
                                                                                                                    \
         uint16x4_t weights_x_low[(W) >> 3];                                                                        \
@@ -532,7 +532,7 @@ HIGHBD_SMOOTH_NXM(8, 32)
                                                   ptrdiff_t             stride,                       \
                                                   const uint16_t* const top_row,                      \
                                                   const uint16_t* const left_column,                  \
-                                                  const int             height) {                                 \
+                                                  const int             height) {                     \
         const uint16_t        top_right   = top_row[(W) - 1];                                         \
         const uint16_t        bottom_left = left_column[height - 1];                                  \
         const uint16_t* const weights_y   = sm_weight_arrays_u16 + height - 4;                        \
@@ -1865,7 +1865,7 @@ static AOM_FORCE_INLINE uint16x8_t highbd_dr_prediction_z2_step_x8(const uint16_
                                                                   int             upsample_left,                 \
                                                                   int             dx,                            \
                                                                   int             dy,                            \
-                                                                  int             bd) {                                      \
+                                                                  int             bd) {                          \
         (void)bd;                                                                                                \
         (void)upsample_above;                                                                                    \
         (void)upsample_left;                                                                                     \

@@ -41,6 +41,9 @@ typedef struct LvMapCoeffCost {
     int32_t eob_extra_cost[EOB_COEF_CONTEXTS][2];
     int32_t dc_sign_cost[DC_SIGN_CONTEXTS][2];
     int32_t lps_cost[LEVEL_CONTEXTS][COEFF_BASE_RANGE + 1 + COEFF_BASE_RANGE + 1];
+    // base_cost[ctx][level] for level 0..3, transposed to int16 (64 contexts) for SIMD table lookups
+    int16_t base_cost16[4][64];
+    bool    base_cost16_ok;
 } LvMapCoeffCost;
 
 /**************************************
@@ -64,11 +67,12 @@ typedef struct MdRateEstimationContext {
     int32_t motion_mode_fac_bits[BLOCK_SIZES_ALL][MOTION_MODES];
     int32_t motion_mode_fac_bits1[BLOCK_SIZES_ALL][2];
 
-    int32_t        nmv_vec_cost[MV_JOINTS];
-    int32_t        nmv_costs[2][MV_VALS];
-    int32_t        nmv_costs_hp[2][MV_VALS];
-    const int32_t* nmvcoststack[2];
-    int32_t        dv_cost[2][MV_VALS];
+    int32_t nmv_vec_cost[MV_JOINTS];
+    // Costs of the frame's vector components: the MV costs at the frame's MV precision, or the DV costs when
+    // intra-BC is allowed (intra frames only, which have no MVs)
+    int32_t        mv_costs[2][MV_VALS];
+    const int32_t* nmvcoststack[2]; // mv_costs centred on a zero component
+    bool           nmv_costs_zero; // nmv_vec_cost and mv_costs hold only zeros
     int32_t        dv_joint_cost[MV_JOINTS];
 
     // Compouned Mode
@@ -179,7 +183,12 @@ extern void svt_aom_estimate_syntax_rate(MdRateEstimationContext* md_rate_est_ct
     * Estimate the rate of the quantized coefficient
     * based on the frame CDF
     ***************************************************************************/
+#if CONFIG_ENABLE_FAST_DECODE_3
+extern void svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc,
+                                               int32_t dec_pos_rate);
+#else
 extern void svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc);
+#endif
 /**************************************************************************
     * svt_aom_estimate_mv_rate()
     * Estimate the rate of motion vectors

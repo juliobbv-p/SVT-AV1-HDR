@@ -297,10 +297,10 @@ static uint32_t count_total_num_of_active_blks(uint8_t min_nsq_bsize, uint32_t m
     for (depth_it = 0; depth_it < max_depth; depth_it++) {
         uint32_t tot_num_sq = 1 << depth_it;
         uint32_t sq_size    = depth_it == 0 ? max_sb
-               : depth_it == 1              ? max_sb / 2
-               : depth_it == 2              ? max_sb / 4
-               : depth_it == 3              ? max_sb / 8
-               : depth_it == 4              ? max_sb / 16
+            : depth_it == 1                 ? max_sb / 2
+            : depth_it == 2                 ? max_sb / 4
+            : depth_it == 3                 ? max_sb / 8
+            : depth_it == 4                 ? max_sb / 16
                                             : max_sb / 32;
 
         uint32_t max_part_updated = sq_size == 128 ? MIN(max_part, (uint32_t)(max_part < 9 && max_part > 3 ? 3 : 7))

@@ -595,12 +595,12 @@ void svt_av1_highbd_wiener_convolve_add_src_avx2(const uint8_t* const src, const
                 const __m256i res_even_sum = _mm256_add_epi32(_mm256_add_epi32(res_0, res_4),
                                                               _mm256_add_epi32(res_2, res_6));
                 const __m256i res_even     = _mm256_srai_epi32(_mm256_add_epi32(res_even_sum, round_const),
-                                                           conv_params->round_0);
+                                                               conv_params->round_0);
 
                 const __m256i res_odd_sum = _mm256_add_epi32(_mm256_add_epi32(res_1, res_5),
                                                              _mm256_add_epi32(res_3, res_7));
                 const __m256i res_odd     = _mm256_srai_epi32(_mm256_add_epi32(res_odd_sum, round_const),
-                                                          conv_params->round_0);
+                                                              conv_params->round_0);
 
                 // Reduce to 16-bit precision and pack even- and odd-index results
                 // back into one register. The _mm256_packs_epi32 intrinsic returns

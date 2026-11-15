@@ -201,6 +201,20 @@ Linux (RTC, Minimal):
   needs:
     - Linux (GCC 11, Static)
 
+Linux (Mobile, Minimal):
+  extends: .linux-compiler-base
+  stage: standalone
+  parallel:
+    matrix:
+      - EXTRA_CMAKE_FLAGS: -DMOBILE_BUILD=ON -DMINIMAL_BUILD=ON -DBUILD_TESTING=ON
+      # Arm64 without tests: Neon is guaranteed there, so the C functions with Neon versions are compiled out
+      - CC: aarch64-linux-gnu-gcc
+        CXX: aarch64-linux-gnu-g++
+        EXTRA_CMAKE_FLAGS: -DMOBILE_BUILD=ON -DMINIMAL_BUILD=ON --toolchain $CI_PROJECT_DIR/cmake/toolchains/aarch64_toolchain.cmake
+  # Set so this job can run even if the other OS' jobs are blocked
+  needs:
+    - Linux (GCC 11, Static)
+
 #
 # Test jobs
 #
@@ -268,7 +282,7 @@ Linux Unit Tests:
   script:
     - cmake -B Build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
     - cmake --build Build --target TestVectors
-    - python3 gtest_parallel.py --print_test_times --shard_index=$SHARD_INDEX --shard_count=$TOTAL_SHARDS ./Bin/Release/SvtAv1UnitTests ./Bin/Release/SvtAv1E2ETests -- --gtest_output="xml:reports/{#}.xml"
+    - python3 gtest_parallel.py --print_test_times --shard_index=$SHARD_INDEX --shard_count=$TOTAL_SHARDS ./Bin/Release/SvtAv1UnitTests ./Bin/Release/SvtAv1ApiTests ./Bin/Release/SvtAv1E2ETests -- --gtest_output="xml:reports/{#}.xml"
 
 Linux RC Test:
   extends: .linux-test-base

@@ -80,6 +80,10 @@ int  svt_av1_get_mvpred_var(const IntraBcContext* x, const Mv best_mv, const Mv 
 void svt_av1_intrabc_hash_search(struct PictureControlSet* pcs, IntraBcContext* x, BlockSize bsize, int x_pos,
                                  int y_pos, const Mv ref_mv, int intra, const AomVarianceFnPtr* fn_ptr,
                                  int* best_hash_cost, Mv* best_hash_mv);
+int  svt_av1_intrabc_pred_first(IntraBcContext* x, BlockSize bsize, const Mv* mvp_full, uint16_t pred_exit_th,
+                                Mv* best_pred_mv);
+int  svt_av1_intrabc_pred_best4(IntraBcContext* x, BlockSize bsize, const Mv cands[4], uint16_t pred_exit_th, Mv* best);
+void svt_av1_intrabc_probe_around(IntraBcContext* x, BlockSize bsize, Mv center, int npts, Mv* best);
 #if CONFIG_ENABLE_OBMC
 struct ModeDecisionContext;
 struct Av1Common;

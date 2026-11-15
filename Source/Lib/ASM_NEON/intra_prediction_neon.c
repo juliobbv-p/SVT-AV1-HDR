@@ -647,6 +647,7 @@ void svt_av1_dr_prediction_z2_neon(uint8_t* dst, ptrdiff_t stride, int32_t bw, i
 }
 
 /* ---------------------P R E D I C T I O N   Z 3--------------------------- */
+#if !CONFIG_COMPACT_KERNELS
 static inline void transpose4x16_neon(uint8x16_t* x, uint16x8x2_t* d) {
     uint8x16x2_t w0, w1;
 
@@ -791,6 +792,7 @@ static inline void transpose8x16_16x8_neon(uint8x16_t* x, uint64x2_t* d) {
     d[6] = vzip1q_u64(vreinterpretq_u64_u32(w10.val[1]), vreinterpretq_u64_u32(w11.val[1]));
     d[7] = vzip2q_u64(vreinterpretq_u64_u32(w10.val[1]), vreinterpretq_u64_u32(w11.val[1]));
 }
+#endif // !CONFIG_COMPACT_KERNELS
 
 static inline void transpose16x16_neon(uint8x16_t* x, uint64x2_t* d) {
     uint8x16x2_t w0, w1, w2, w3, w4, w5, w6, w7;
@@ -847,6 +849,7 @@ static inline void transpose16x16_neon(uint8x16_t* x, uint64x2_t* d) {
     d[15] = vzip2q_u64(vreinterpretq_u64_u32(w14.val[1]), vreinterpretq_u64_u32(w15.val[1]));
 }
 
+#if !CONFIG_COMPACT_KERNELS
 static inline void transpose16x32_neon(uint8x16x2_t* x, uint64x2x2_t* d) {
     uint8x16x2_t w0, w1, w2, w3, w8, w9, w10, w11;
     uint16x8x2_t w4, w5, w12, w13;
@@ -957,6 +960,7 @@ static inline void transpose16x32_neon(uint8x16x2_t* x, uint64x2x2_t* d) {
     d[15].val[0] = vzip1q_u64(vreinterpretq_u64_u32(w7.val[1]), vreinterpretq_u64_u32(w15.val[1]));
     d[15].val[1] = vzip2q_u64(vreinterpretq_u64_u32(w7.val[1]), vreinterpretq_u64_u32(w15.val[1]));
 }
+#endif // !CONFIG_COMPACT_KERNELS
 
 static inline void transpose_TX_16X16(const uint8_t* src, ptrdiff_t pitchSrc, uint8_t* dst, ptrdiff_t pitchDst) {
     uint8x16_t r[16];
@@ -979,6 +983,30 @@ static inline void transpose(const uint8_t* src, ptrdiff_t pitchSrc, uint8_t* ds
     }
 }
 
+#if CONFIG_COMPACT_KERNELS
+// Directional prediction, zone 3: 180 < angle < 270
+// Zone 3 predicts from the left edge exactly as zone 1 predicts from the above edge with rows and columns swapped, so
+// the transposed block is predicted with the zone 1 kernel and transposed into place.
+void svt_av1_dr_prediction_z3_neon(uint8_t* dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint8_t* above,
+                                   const uint8_t* left, int32_t upsample_left, int32_t dx, int32_t dy) {
+    (void)above;
+    (void)dx;
+    assert(dx == 1);
+    assert(dy > 0);
+
+    DECLARE_ALIGNED(16, uint8_t, dst_t[64 * 64]);
+    svt_av1_dr_prediction_z1_neon(dst_t, bh, bh, bw, left, NULL, upsample_left, dy, 1);
+    if (bw >= 16 && bh >= 16) {
+        transpose(dst_t, bh, dst, stride, bw, bh);
+    } else {
+        for (int r = 0; r < bh; r++) {
+            for (int c = 0; c < bw; c++) {
+                dst[r * stride + c] = dst_t[c * bh + r];
+            }
+        }
+    }
+}
+#else
 static inline void dr_prediction_z3_4x4_neon(uint8_t* dst, ptrdiff_t stride, const uint8_t* left, int upsample_left,
                                              int dy) {
     uint8x8_t    dstvec[4];
@@ -1328,6 +1356,7 @@ void svt_av1_dr_prediction_z3_neon(uint8_t* dst, ptrdiff_t stride, int32_t bw, i
         }
     }
 }
+#endif // CONFIG_COMPACT_KERNELS
 
 // clang-format off
 // These kernels are a transposed version of those defined in filterintra_c.c,
@@ -2119,7 +2148,7 @@ static inline uint8x16_t negate_s8q(const uint8x16_t v) {
                                                 ptrdiff_t            stride,                                        \
                                                 const uint8_t* const top_row,                                       \
                                                 const uint8_t* const left_column,                                   \
-                                                const int            height) {                                                 \
+                                                const int            height) {                                      \
         const uint8_t        top_right   = top_row[(W) - 1];                                                        \
         const uint8_t        bottom_left = left_column[height - 1];                                                 \
         const uint8_t* const weights_y   = sm_weight_arrays + height;                                               \
@@ -2230,7 +2259,7 @@ SMOOTH_NXM_WIDE(64, 64)
                                              ptrdiff_t            stride,                                        \
                                              const uint8_t* const top_row,                                       \
                                              const uint8_t* const left_column,                                   \
-                                             const int            height) {                                                 \
+                                             const int            height) {                                      \
         const uint8_t top_right = top_row[(W) - 1];                                                              \
                                                                                                                  \
         const uint8x8_t top_right_v = vdup_n_u8(top_right);                                                      \
@@ -2292,7 +2321,7 @@ static inline uint8x16_t calculate_horizontal_weights_and_pred(const uint8x8_t l
                                                   ptrdiff_t            stride,       \
                                                   const uint8_t* const top_row,      \
                                                   const uint8_t* const left_column,  \
-                                                  const int            height) {                \
+                                                  const int            height) {     \
         const uint8_t top_right = top_row[(W) - 1];                                  \
                                                                                      \
         const uint8x8_t top_right_v = vdup_n_u8(top_right);                          \
@@ -2374,7 +2403,7 @@ SMOOTH_H_NXM_WIDE(64, 64)
                                              ptrdiff_t            stride,                                       \
                                              const uint8_t* const top_row,                                      \
                                              const uint8_t* const left_column,                                  \
-                                             const int            height) {                                                \
+                                             const int            height) {                                     \
         uint8x8_t            top_v;                                                                             \
         const uint8_t        bottom_left = left_column[height - 1];                                             \
         const uint8_t* const weights_y   = sm_weight_arrays + height;                                           \
@@ -2438,7 +2467,7 @@ static inline uint8x16_t calculate_vertical_weights_and_pred(const uint8x16_t to
                                                   ptrdiff_t            stride,                                         \
                                                   const uint8_t* const top_row,                                        \
                                                   const uint8_t* const left_column,                                    \
-                                                  const int            height) {                                                  \
+                                                  const int            height) {                                       \
         const uint8_t        bottom_left = left_column[height - 1];                                                    \
         const uint8_t* const weights_y   = sm_weight_arrays + height;                                                  \
                                                                                                                        \
@@ -2997,7 +3026,7 @@ static inline uint8x16_t select_paeth(const uint8x16_t top, const uint8x16_t lef
 /* Generate numbered and high/low versions of top_left_dist.*/
 #define TOP_LEFT_DIST(num)                                                                                       \
     const uint16x8_t top_left_##num##_dist_low  = vabdq_u16(vaddl_u8(vget_low_u8(top[num]), vget_low_u8(left)),  \
-                                                           top_left_x2);                                        \
+                                                            top_left_x2);                                        \
     const uint16x8_t top_left_##num##_dist_high = vabdq_u16(vaddl_u8(vget_high_u8(top[num]), vget_low_u8(left)), \
                                                             top_left_x2)
 
@@ -3284,3 +3313,47 @@ void svt_av1_upsample_intra_edge_neon(uint8_t* p, int sz) {
         sz -= 8;
     } while (sz > 0);
 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+void svt_aom_highbd_filter_intra_predictor_neon(uint16_t* dst, ptrdiff_t stride, TxSize tx_size, const uint16_t* above,
+                                                const uint16_t* left, int mode, int bd) {
+    if (bd > 10) {
+        svt_aom_highbd_filter_intra_predictor_c(dst, stride, tx_size, above, left, mode, bd);
+        return;
+    }
+    const int w = tx_size_wide[tx_size];
+    const int h = tx_size_high[tx_size];
+    assert(w <= 32 && h <= 32);
+    const int16x8_t f0 = vnegq_s16(vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][0]))));
+    const int16x8_t f1 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][1])));
+    const int16x8_t f2 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][2])));
+    const int16x8_t f3 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][3])));
+    const int16x8_t f4 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][4])));
+    const int16x8_t f5 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][5])));
+    const int16x8_t f6 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(av1_filter_intra_taps_neon[mode][6])));
+    const int16x8_t max_value = vdupq_n_s16((1 << bd) - 1);
+    for (int y = 0; y < h; y += 2) {
+        const uint16_t* top      = y ? dst + (y - 1) * stride : above;
+        int             p0       = y ? left[y - 1] : above[-1];
+        int16x8_t       previous = vsetq_lane_s16(left[y], vdupq_n_s16(0), 3);
+        previous                 = vsetq_lane_s16(left[y + 1], previous, 7);
+        for (int x = 0; x < w; x += 4) {
+            const int16x4_t p = vreinterpret_s16_u16(vld1_u16(top + x));
+            // Tap sums lie in [-12, 28], so every partial sum fits in
+            // int16 for 10-bit pixels: [-12276, 28644].
+            int16x8_t sum = vmulq_n_s16(f0, p0);
+            sum           = vmlaq_lane_s16(sum, f1, p, 0);
+            sum           = vmlaq_lane_s16(sum, f2, p, 1);
+            sum           = vmlaq_lane_s16(sum, f3, p, 2);
+            sum           = vmlaq_lane_s16(sum, f4, p, 3);
+            sum           = vmlaq_laneq_s16(sum, f5, previous, 3);
+            sum           = vmlaq_laneq_s16(sum, f6, previous, 7);
+            // Negative rounding differences disappear when clipping to zero.
+            previous = vminq_s16(vmaxq_s16(vrshrq_n_s16(sum, 4), vdupq_n_s16(0)), max_value);
+            vst1_u16(dst + y * stride + x, vreinterpret_u16_s16(vget_low_s16(previous)));
+            vst1_u16(dst + (y + 1) * stride + x, vreinterpret_u16_s16(vget_high_s16(previous)));
+            p0 = vget_lane_s16(p, 3);
+        }
+    }
+}
+#endif

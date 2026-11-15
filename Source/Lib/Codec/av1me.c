@@ -205,6 +205,128 @@ int svt_av1_get_mvpred_var(const IntraBcContext* x, const Mv best_mv, const Mv c
     }
 }
 
+// Predictor-first early exit for RTC IntraBC: evaluate the AV1 DV predictor's SAD directly and, if
+// the per-pixel SAD is within the budget (0 => exact match only), accept it and skip the hash and
+// full-pixel searches. Returns 1 and writes *best_pred_mv (full-pel) when accepted, else 0.
+int svt_av1_intrabc_pred_first(IntraBcContext* x, BlockSize bsize, const Mv* mvp_full, uint16_t pred_exit_th,
+                               Mv* best_pred_mv) {
+    if (!is_mv_in(&x->mv_limits, *mvp_full)) {
+        return 0;
+    }
+    const AomVarianceFnPtr* fn_ptr  = &svt_aom_mefn_ptr[bsize];
+    const Buf2D* const      what    = &x->plane[0].src;
+    const Buf2D* const      in_what = &x->xdplane[0].pre[0];
+    const unsigned int sad = fn_ptr->sdf(what->buf, what->stride, get_buf_from_mv(in_what, *mvp_full), in_what->stride);
+    const unsigned int area = (unsigned int)block_size_wide[bsize] * (unsigned int)block_size_high[bsize];
+    if (sad <= (unsigned int)pred_exit_th * area) {
+        *best_pred_mv = *mvp_full;
+        return 1;
+    }
+    return 0;
+}
+
+// BVP candidate evaluation for the RTC IntraBC fallback: evaluate up to 4 full-pel DV candidates
+// (neighbour predictor, second predictor, frame's last-used DV) in a single sad_x4d call and return
+// the lowest-SAD one within the budget. Zero (self) and out-of-range candidates are excluded; their
+// x4d slots are padded with the first valid candidate so all 4 addresses are safe.
+// Returns 1 and writes *best (full-pel) when one qualifies, else 0.
+int svt_av1_intrabc_pred_best4(IntraBcContext* x, BlockSize bsize, const Mv cands[4], uint16_t pred_exit_th, Mv* best) {
+    bool valid[4];
+    int  pad = -1;
+    for (int i = 0; i < 4; ++i) {
+        valid[i] = (cands[i].as_int != 0) && is_mv_in(&x->mv_limits, cands[i]);
+        if (valid[i] && pad < 0) {
+            pad = i;
+        }
+    }
+    if (pad < 0) {
+        return 0;
+    }
+    const AomVarianceFnPtr* fn_ptr  = &svt_aom_mefn_ptr[bsize];
+    const Buf2D* const      what    = &x->plane[0].src;
+    const Buf2D* const      in_what = &x->xdplane[0].pre[0];
+    const uint8_t*          addrs[4];
+    for (int i = 0; i < 4; ++i) {
+        addrs[i] = get_buf_from_mv(in_what, valid[i] ? cands[i] : cands[pad]);
+    }
+    unsigned int sads[4];
+    fn_ptr->sdx4df(what->buf, what->stride, addrs, in_what->stride, sads);
+    const unsigned int area     = (unsigned int)block_size_wide[bsize] * (unsigned int)block_size_high[bsize];
+    int                best_i   = -1;
+    unsigned int       best_sad = UINT_MAX;
+    for (int i = 0; i < 4; ++i) {
+        if (valid[i] && sads[i] < best_sad) {
+            best_sad = sads[i];
+            best_i   = i;
+        }
+    }
+    if (best_i >= 0 && best_sad <= (unsigned int)pred_exit_th * area) {
+        *best = cands[best_i];
+        return 1;
+    }
+    return 0;
+}
+
+// One-shot offset probe for the RTC IntraBC fallback (variant A): given a qualifying full-pel center
+// DV, evaluate a fixed cloud of integer offsets around it (radius-1 ring then radius-2) in one pass
+// and return the lowest-SAD point (possibly the center), at a fixed cost of ceil(npts/4) sad_x4d
+// calls. Out-of-range offsets are skipped; x4d slots are padded with the first valid address.
+void svt_av1_intrabc_probe_around(IntraBcContext* x, BlockSize bsize, Mv center, int npts, Mv* best) {
+    static const int8_t off[16][2] = {{1, 0},
+                                      {-1, 0},
+                                      {0, 1},
+                                      {0, -1},
+                                      {1, 1},
+                                      {1, -1},
+                                      {-1, 1},
+                                      {-1, -1},
+                                      {2, 0},
+                                      {-2, 0},
+                                      {0, 2},
+                                      {0, -2},
+                                      {2, 2},
+                                      {2, -2},
+                                      {-2, 2},
+                                      {-2, -2}};
+    if (npts > 16) {
+        npts = 16;
+    }
+    const AomVarianceFnPtr* fn_ptr  = &svt_aom_mefn_ptr[bsize];
+    const Buf2D* const      what    = &x->plane[0].src;
+    const Buf2D* const      in_what = &x->xdplane[0].pre[0];
+    Mv                      bestmv  = center;
+    unsigned int best_sad = fn_ptr->sdf(what->buf, what->stride, get_buf_from_mv(in_what, center), in_what->stride);
+    for (int base = 0; base < npts; base += 4) {
+        Mv             cand[4];
+        const uint8_t* addr[4];
+        int            nv = 0;
+        for (int k = 0; k < 4 && base + k < npts; ++k) {
+            Mv c = {{(int16_t)(center.x + off[base + k][0]), (int16_t)(center.y + off[base + k][1])}};
+            if (is_mv_in(&x->mv_limits, c)) {
+                cand[nv] = c;
+                addr[nv] = get_buf_from_mv(in_what, c);
+                ++nv;
+            }
+        }
+        if (!nv) {
+            continue;
+        }
+        for (int k = nv; k < 4; ++k) {
+            cand[k] = cand[0];
+            addr[k] = addr[0];
+        }
+        unsigned int sads[4];
+        fn_ptr->sdx4df(what->buf, what->stride, addr, in_what->stride, sads);
+        for (int k = 0; k < nv; ++k) {
+            if (sads[k] < best_sad) {
+                best_sad = sads[k];
+                bestmv   = cand[k];
+            }
+        }
+    }
+    *best = bestmv;
+}
+
 // Exhaustive motion search around a given centre position with a given
 // step size.
 static int exhaustive_mesh_search(IntraBcContext* x, Mv* ref_mv, Mv* best_mv, int range, int step, int sad_per_bit,
@@ -761,20 +883,20 @@ static unsigned int setup_obmc_center_error(const int32_t* mask, const Mv bestmv
         if (c >= minc && c <= maxc && r >= minr && r <= maxr) {                           \
             Mv this_mv = {{c, r}};                                                        \
             thismse    = upsampled_obmc_pref_error(xd,                                    \
-                                                cm,                                    \
-                                                mi_row,                                \
-                                                mi_col,                                \
-                                                mask,                                  \
-                                                vfp,                                   \
-                                                z,                                     \
-                                                pre(y, y_stride, r, c),                \
-                                                y_stride,                              \
-                                                sp(c),                                 \
-                                                sp(r),                                 \
-                                                w,                                     \
-                                                h,                                     \
-                                                &sse,                                  \
-                                                use_accurate_subpel_search);           \
+                                                   cm,                                    \
+                                                   mi_row,                                \
+                                                   mi_col,                                \
+                                                   mask,                                  \
+                                                   vfp,                                   \
+                                                   z,                                     \
+                                                   pre(y, y_stride, r, c),                \
+                                                   y_stride,                              \
+                                                   sp(c),                                 \
+                                                   sp(r),                                 \
+                                                   w,                                     \
+                                                   h,                                     \
+                                                   &sse,                                  \
+                                                   use_accurate_subpel_search);           \
             if (lp)                                                                       \
                 v = svt_aom_mv_err_cost_light(this_mv, ref_mv);                           \
             else                                                                          \
@@ -933,7 +1055,7 @@ int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcCo
             if (tc >= minc && tc <= maxc && tr >= minr && tr <= maxr) {
                 Mv this_mv = {{tc, tr}};
                 thismse    = use_accurate_subpel_search
-                       ? (unsigned)upsampled_obmc_pref_error(xd,
+                    ? (unsigned)upsampled_obmc_pref_error(xd,
                                                           cm,
                                                           mi_row,
                                                           mi_col,
@@ -948,7 +1070,7 @@ int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcCo
                                                           h,
                                                           &sse,
                                                           use_accurate_subpel_search)
-                       : vfp->osvf(pre(y, y_stride, tr, tc), y_stride, sp(tc), sp(tr), src_address, mask, &sse);
+                    : vfp->osvf(pre(y, y_stride, tr, tc), y_stride, sp(tc), sp(tr), src_address, mask, &sse);
                 if (lp) {
                     cost_array[idx] = thismse + svt_aom_mv_err_cost_light(this_mv, ref_mv);
                 } else {
@@ -974,7 +1096,7 @@ int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcCo
         if (tc >= minc && tc <= maxc && tr >= minr && tr <= maxr) {
             Mv this_mv = {{tc, tr}};
             thismse    = use_accurate_subpel_search
-                   ? (unsigned)upsampled_obmc_pref_error(xd,
+                ? (unsigned)upsampled_obmc_pref_error(xd,
                                                       cm,
                                                       mi_row,
                                                       mi_col,
@@ -989,7 +1111,7 @@ int svt_av1_find_best_obmc_sub_pixel_tree_up(ModeDecisionContext* ctx, IntraBcCo
                                                       h,
                                                       &sse,
                                                       use_accurate_subpel_search)
-                   : vfp->osvf(pre(y, y_stride, tr, tc), y_stride, sp(tc), sp(tr), src_address, mask, &sse);
+                : vfp->osvf(pre(y, y_stride, tr, tc), y_stride, sp(tc), sp(tr), src_address, mask, &sse);
             if (lp) {
                 cost_array[4] = thismse + svt_aom_mv_err_cost_light(this_mv, ref_mv);
             } else {
@@ -1057,13 +1179,13 @@ void svt_av1_intrabc_hash_search(PictureControlSet* pcs, IntraBcContext* x, Bloc
         return;
     }
 
-    Iterator iterator = svt_av1_hash_get_first_iterator(ref_frame_hash, hash_value1);
+    const BlockHash* cands = svt_av1_hash_get_first(ref_frame_hash, hash_value1);
 
     const int mi_col = x_pos / MI_SIZE;
     const int mi_row = y_pos / MI_SIZE;
 
-    for (int i = 0; i < count; i++, svt_aom_iterator_increment(&iterator)) {
-        BlockHash ref_block_hash = *(BlockHash*)(svt_aom_iterator_get(&iterator));
+    for (int i = 0; i < count; i++) {
+        const BlockHash ref_block_hash = cands[i];
 
         if (hash_value2 != ref_block_hash.hash_value2) {
             continue;

@@ -107,25 +107,25 @@ typedef struct SequenceControlSet {
     uint16_t film_grain_random_seed;
 
     /*!< Sequence resolution parameters */
-    uint32_t          chroma_format_idc;
-    uint16_t          subsampling_x; // add chroma subsampling parameters
-    uint16_t          subsampling_y;
-    uint16_t          max_input_luma_width; // input luma width aligned to 8, this is used during encoding
-    uint16_t          max_input_luma_height; // input luma height aligned to 8, this is used during encoding
-    uint16_t          max_input_pad_bottom;
-    uint16_t          max_input_pad_right;
-    uint16_t          max_initial_input_luma_width; // max init time input luma width aligned to 8
-    uint16_t          max_initial_input_luma_height; // max init time input luma height aligned to 8
-    uint16_t          max_initial_input_pad_bottom; // max init time input pad bottom
-    uint16_t          max_initial_input_pad_right; // max init time input pad right
-    uint32_t          chroma_width;
-    uint32_t          chroma_height;
-    uint32_t          pad_right;
-    uint32_t          pad_bottom;
-    uint16_t          border; // Padding to be applied to picture buffers
-    double            frame_rate;
-    uint32_t          encoder_bit_depth;
-    ResolutionRange   input_resolution;
+    uint32_t        chroma_format_idc;
+    uint16_t        subsampling_x; // add chroma subsampling parameters
+    uint16_t        subsampling_y;
+    uint16_t        max_input_luma_width; // input luma width aligned to 8, this is used during encoding
+    uint16_t        max_input_luma_height; // input luma height aligned to 8, this is used during encoding
+    uint16_t        max_input_pad_bottom;
+    uint16_t        max_input_pad_right;
+    uint16_t        max_initial_input_luma_width; // max init time input luma width aligned to 8
+    uint16_t        max_initial_input_luma_height; // max init time input luma height aligned to 8
+    uint16_t        max_initial_input_pad_bottom; // max init time input pad bottom
+    uint16_t        max_initial_input_pad_right; // max init time input pad right
+    uint32_t        chroma_width;
+    uint32_t        chroma_height;
+    uint32_t        pad_right;
+    uint32_t        pad_bottom;
+    uint16_t        border; // Padding to be applied to picture buffers
+    double          frame_rate;
+    uint32_t        encoder_bit_depth;
+    ResolutionRange input_resolution;
 
     /*!< Super block parameters set for the stream */
     uint8_t  b64_size;
@@ -304,6 +304,10 @@ typedef struct SequenceControlSet {
     bool allintra;
     // If true, enables fast anti-alias aware screen detection
     bool fast_aa_aware_screen_detection_mode;
+#if CONFIG_ENABLE_FAST_DECODE_3
+    // Decoder-complexity RD terms, see DecCostCtrls
+    DecCostCtrls dec_cost_ctrls;
+#endif
 } SequenceControlSet;
 
 typedef struct EbSequenceControlSetInstance {

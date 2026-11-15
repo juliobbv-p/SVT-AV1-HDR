@@ -148,23 +148,23 @@ void svt_av1_convolve_y_sr_12tap_sse2(const uint8_t* src, int src_stride, uint8_
 
         src10 = _mm_loadl_epi64((__m128i*)(data + 10 * src_stride));
         s[0]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 0 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 1 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 1 * src_stride)));
         s[1]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 1 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 2 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 2 * src_stride)));
         s[2]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 2 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 3 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 3 * src_stride)));
         s[3]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 3 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 4 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 4 * src_stride)));
         s[4]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 4 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 5 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 5 * src_stride)));
         s[5]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 5 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 6 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 6 * src_stride)));
         s[6]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 6 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 7 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 7 * src_stride)));
         s[7]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 7 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 8 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 8 * src_stride)));
         s[8]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 8 * src_stride)),
-                                 _mm_loadl_epi64((__m128i*)(data + 9 * src_stride)));
+                                  _mm_loadl_epi64((__m128i*)(data + 9 * src_stride)));
         s[9]  = _mm_unpacklo_epi8(_mm_loadl_epi64((__m128i*)(data + 9 * src_stride)), src10);
 
         int i = 0;

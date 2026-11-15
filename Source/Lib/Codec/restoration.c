@@ -149,7 +149,7 @@ static void extend_frame_highbd(uint16_t* data, int32_t width, int32_t height, i
 
 void svt_extend_frame(uint8_t* data, int32_t width, int32_t height, int32_t stride, int32_t border_horz,
                       int32_t border_vert, int32_t highbd) {
-    if (highbd) {
+    if (SVT_EFFECTIVE_IS_16BIT_PIPELINE(highbd)) {
         extend_frame_highbd(CONVERT_TO_SHORTPTR(data), width, height, stride, border_horz, border_vert);
     } else {
         extend_frame_lowbd(data, width, height, stride, border_horz, border_vert);
@@ -1044,6 +1044,7 @@ void svt_av1_loop_restoration_filter_unit(uint8_t need_bounadaries, const Restor
                                           int32_t bit_depth, uint8_t* data8, int32_t stride, uint8_t* dst8,
                                           int32_t dst_stride, int32_t* tmpbuf, int32_t optimized_lr) {
     RestorationType unit_rtype = rui->restoration_type;
+    const int32_t   hbd        = SVT_EFFECTIVE_IS_16BIT_PIPELINE(highbd);
 
     int32_t  unit_h   = limits->v_end - limits->v_start;
     int32_t  unit_w   = limits->h_end - limits->h_start;
@@ -1051,11 +1052,11 @@ void svt_av1_loop_restoration_filter_unit(uint8_t need_bounadaries, const Restor
     uint8_t* dst8_tl  = dst8 + limits->v_start * dst_stride + limits->h_start;
 
     if (unit_rtype == RESTORE_NONE) {
-        copy_tile(unit_w, unit_h, data8_tl, stride, dst8_tl, dst_stride, highbd);
+        copy_tile(unit_w, unit_h, data8_tl, stride, dst8_tl, dst_stride, hbd);
         return;
     }
 
-    const int32_t filter_idx = 2 * highbd + (unit_rtype == RESTORE_SGRPROJ);
+    const int32_t filter_idx = 2 * hbd + SVT_EFFECTIVE_SGRPROJ(unit_rtype == RESTORE_SGRPROJ);
     assert(filter_idx < NUM_STRIPE_FILTERS);
     const StripeFilterFun stripe_filter = stripe_filters[filter_idx];
 
@@ -1067,7 +1068,6 @@ void svt_av1_loop_restoration_filter_unit(uint8_t need_bounadaries, const Restor
     while (i < unit_h) {
         int32_t copy_above, copy_below;
         remaining_stripes.v_start = limits->v_start + i;
-
         get_stripe_boundary_info(&remaining_stripes, tile_rect, ss_y, &copy_above, &copy_below);
 
         const int32_t full_stripe_height = RESTORATION_PROC_UNIT_SIZE >> ss_y;
@@ -1087,7 +1087,7 @@ void svt_av1_loop_restoration_filter_unit(uint8_t need_bounadaries, const Restor
 
         if (need_bounadaries) {
             setup_processing_stripe_boundary(
-                &remaining_stripes, rsb, rsb_row, highbd, h, data8, stride, rlbs, copy_above, copy_below, optimized_lr);
+                &remaining_stripes, rsb, rsb_row, hbd, h, data8, stride, rlbs, copy_above, copy_below, optimized_lr);
         }
 
         stripe_filter(rui,
@@ -1102,7 +1102,7 @@ void svt_av1_loop_restoration_filter_unit(uint8_t need_bounadaries, const Restor
                       bit_depth);
         if (need_bounadaries) {
             restore_processing_stripe_boundary(
-                &remaining_stripes, rlbs, highbd, h, data8, stride, copy_above, copy_below, optimized_lr);
+                &remaining_stripes, rlbs, hbd, h, data8, stride, copy_above, copy_below, optimized_lr);
         }
 
         i += h;
@@ -1330,8 +1330,8 @@ static void foreach_rest_unit_in_tile_seg(const Av1PixelRect* tile_rect, int32_t
     while (y0 < yend) {
         int32_t remaining_h = tile_h - y0;
         int32_t h           = (remaining_h < ext_size)
-                      ? remaining_h
-                      : unit_size; //the area at the pic boundary should have size>= half unit_size to be an independent unit.
+            ? remaining_h
+            : unit_size; //the area at the pic boundary should have size>= half unit_size to be an independent unit.
         //if not, it will be added to the last complete unit, increasing its size to up to  3/2 unit_size.
 
         RestorationTileLimits limits;

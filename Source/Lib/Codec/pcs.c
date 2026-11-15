@@ -477,7 +477,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     uint32_t tile_idx       = 0;
 
     uint32_t output_buffer_size   = svt_aom_get_out_buffer_size(init_data_ptr->picture_width,
-                                                              init_data_ptr->picture_height);
+                                                                init_data_ptr->picture_height);
     object_ptr->frame_width       = init_data_ptr->picture_width;
     object_ptr->frame_height      = init_data_ptr->picture_height;
     object_ptr->tile_row_count    = init_data_ptr->tile_row_count;
@@ -485,7 +485,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
 
     object_ptr->dctor = picture_control_set_dctor;
 
-    object_ptr->hash_table.p_lookup_table = NULL;
+    memset(&object_ptr->hash_table, 0, sizeof(object_ptr->hash_table));
 
     // Init Picture Init data
     uint16_t padding = init_data_ptr->sb_size + 32;
@@ -504,12 +504,12 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     object_ptr->temp_lf_recon_pic                 = NULL;
     object_ptr->scaled_input_pic                  = NULL;
     bool enable_restoration                       = allintra
-                              ? svt_aom_get_enable_restoration_allintra(init_data_ptr->enc_mode,
+        ? svt_aom_get_enable_restoration_allintra(init_data_ptr->enc_mode,
                                                   init_data_ptr->static_config.enable_restoration_filtering)
-                              : rtc_tune ? svt_aom_get_enable_restoration_rtc(init_data_ptr->static_config.enable_restoration_filtering,
+        : rtc_tune ? svt_aom_get_enable_restoration_rtc(init_data_ptr->static_config.enable_restoration_filtering,
                                                         init_data_ptr->input_resolution,
                                                         init_data_ptr->static_config.fast_decode)
-                                         : svt_aom_get_enable_restoration_default(init_data_ptr->enc_mode,
+                   : svt_aom_get_enable_restoration_default(init_data_ptr->enc_mode,
                                                             init_data_ptr->static_config.enable_restoration_filtering,
                                                             init_data_ptr->input_resolution,
                                                             init_data_ptr->static_config.fast_decode);
@@ -588,8 +588,9 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
         sb_origin_x = (sb_origin_x == picture_sb_w - 1) ? 0 : sb_origin_x + 1;
     }
     // MD Rate Estimation Array
-    EB_MALLOC_ARRAY(object_ptr->md_rate_est_ctx, 1);
-    memset(object_ptr->md_rate_est_ctx, 0, sizeof(MdRateEstimationContext));
+    EB_CALLOC_ARRAY(object_ptr->md_rate_est_ctx, 1);
+    // calloc already zeroed the MV costs, so the approximated MV rate never needs to write (and page in) them
+    object_ptr->md_rate_est_ctx->nmv_costs_zero = true;
     if (SVT_EFFECTIVE_HBD_MD(init_data_ptr->hbd_md) == DEFAULT) {
         object_ptr->hbd_md = init_data_ptr->hbd_md = 2;
     } else {
@@ -999,6 +1000,7 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
            init_data_ptr->picture_height);
     // Segments
     object_ptr->enc_dec_coded_sb_count = 0;
+    object_ptr->sb_final_blk_arr_used  = 0;
 
     EB_MALLOC_ARRAY(object_ptr->enc_dec_segment_ctrl, total_tile_cnt);
 
@@ -1073,14 +1075,9 @@ static EbErrorType picture_control_set_ctor(PictureControlSet* object_ptr, EbPtr
     /* If 4x4 blocks are disallowed for all frames, the the MI blocks only need to be allocated for
     8x8 blocks.  The mi_grid will still be 4x4 so that the data can be accessed the same way throughout
     the code. */
-    EB_MALLOC_ARRAY(object_ptr->mip,
+    EB_CALLOC_ARRAY(object_ptr->mip,
                     all_sb * (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)) *
                         (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)));
-
-    memset(object_ptr->mip,
-           0,
-           sizeof(MbModeInfo) * all_sb * (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)) *
-               (init_data_ptr->sb_size >> (MI_SIZE_LOG2 + disallow_4x4 + disallow_8x8)));
 
     uint32_t mi_stride = picture_sb_w * (init_data_ptr->sb_size >> MI_SIZE_LOG2);
     for (uint32_t mi_h = 0; mi_h < picture_sb_h * (init_data_ptr->sb_size >> MI_SIZE_LOG2); mi_h++) {
@@ -1302,7 +1299,8 @@ static EbErrorType picture_parent_control_set_ctor(PictureParentControlSet* obje
         }
     }
 
-    object_ptr->r0 = 0;
+    // Match the per-picture reset in resource coordination.
+    object_ptr->r0 = 1.0;
 
     EB_MALLOC_ARRAY(object_ptr->rc_me_distortion, object_ptr->b64_total_count);
     EB_MALLOC_ARRAY(object_ptr->rc_me_allow_gm, object_ptr->b64_total_count);
@@ -1334,16 +1332,16 @@ static EbErrorType picture_parent_control_set_ctor(PictureParentControlSet* obje
 
     EB_MALLOC_ARRAY(object_ptr->av1_cm->frame_to_show, 1);
 
-    object_ptr->av1_cm->use_highbitdepth                 = ((init_data_ptr->bit_depth > 8) ||
-                                            (SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline)))
-                        ? 1
-                        : 0;
-    object_ptr->av1_cm->bit_depth                        = init_data_ptr->bit_depth;
-    object_ptr->av1_cm->color_format                     = init_data_ptr->color_format;
-    object_ptr->av1_cm->subsampling_x                    = subsampling_x;
-    object_ptr->av1_cm->subsampling_y                    = subsampling_y;
-    object_ptr->av1_cm->frm_size.frame_width             = init_data_ptr->picture_width - init_data_ptr->non_m8_pad_w;
-    object_ptr->av1_cm->frm_size.frame_height            = init_data_ptr->picture_height - init_data_ptr->non_m8_pad_h;
+    object_ptr->av1_cm->use_highbitdepth      = ((init_data_ptr->bit_depth > 8) ||
+                                                 (SVT_EFFECTIVE_IS_16BIT_PIPELINE(init_data_ptr->is_16bit_pipeline)))
+        ? 1
+        : 0;
+    object_ptr->av1_cm->bit_depth             = init_data_ptr->bit_depth;
+    object_ptr->av1_cm->color_format          = init_data_ptr->color_format;
+    object_ptr->av1_cm->subsampling_x         = subsampling_x;
+    object_ptr->av1_cm->subsampling_y         = subsampling_y;
+    object_ptr->av1_cm->frm_size.frame_width  = init_data_ptr->picture_width - init_data_ptr->non_m8_pad_w;
+    object_ptr->av1_cm->frm_size.frame_height = init_data_ptr->picture_height - init_data_ptr->non_m8_pad_h;
     object_ptr->av1_cm->frm_size.superres_upscaled_width = init_data_ptr->picture_width - init_data_ptr->non_m8_pad_w;
     ;
     object_ptr->av1_cm->frm_size.superres_upscaled_height = init_data_ptr->picture_height - init_data_ptr->non_m8_pad_h;
@@ -1427,6 +1425,16 @@ EbErrorType me_update_param(MotionEstimationData* me_data, SequenceControlSet* s
     me_data->b64_total_count = scs->b64_total_count;
 
     return return_error;
+}
+
+/*
+me_reset_carryover: a recycled MotionEstimationData still holds its previous tenant's output. tpl_stats and
+base_rdmult are the two fields a picture can read without a guard of its own, so clear them here; the other
+pooled TPL arrays are only read behind tpl_is_valid or blk_lambda_tuning.
+*/
+void me_reset_carryover(MotionEstimationData* me_data) {
+    me_data->tpl_stats_valid = false;
+    me_data->base_rdmult     = 0;
 }
 
 static EbErrorType me_ctor(MotionEstimationData* object_ptr, EbPtr object_init_data_ptr) {

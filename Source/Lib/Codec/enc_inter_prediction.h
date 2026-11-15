@@ -32,7 +32,7 @@ struct calc_target_weighted_pred_ctxt {
     int            overlap;
 };
 
-EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, ScaleFactors sf_identity, uint32_t interp_filters,
+EbErrorType svt_aom_simple_luma_unipred(SequenceControlSet* scs, const ScaleFactors* sf, uint32_t interp_filters,
                                         BlkStruct* blk_ptr, Mv mv, uint16_t pu_origin_x, uint16_t pu_origin_y,
                                         uint8_t bwidth, uint8_t bheight, EbPictureBufferDesc* ref_pic_list0,
                                         EbPictureBufferDesc* prediction_ptr, uint16_t dst_origin_x,
@@ -58,8 +58,10 @@ EbErrorType svt_aom_inter_pu_prediction_av1_pd0(uint8_t hbd_md, struct ModeDecis
                                                 ModeDecisionCandidateBuffer* cand_bf);
 EbErrorType svt_aom_inter_pu_prediction_av1_light_pd1(uint8_t hbd_md, struct ModeDecisionContext* ctx,
                                                       PictureControlSet* pcs, ModeDecisionCandidateBuffer* cand_bf);
-EbErrorType svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, struct ModeDecisionContext* ctx, PictureControlSet* pcs,
-                                            ModeDecisionCandidateBuffer* cand_bf);
+const uint8_t* svt_aom_light_pd1_fullpel_luma_ref(SequenceControlSet* scs, struct ModeDecisionContext* ctx,
+                                                  const EbPictureBufferDesc* ref_pic, Mv mv);
+EbErrorType    svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, struct ModeDecisionContext* ctx, PictureControlSet* pcs,
+                                               ModeDecisionCandidateBuffer* cand_bf);
 
 void    svt_aom_precompute_obmc_data(PictureControlSet* pcs, struct ModeDecisionContext* ctx, uint32_t component_mask);
 int64_t pick_wedge_fixed_sign(PictureControlSet* pcs, struct ModeDecisionContext* ctx, const BlockSize bsize,

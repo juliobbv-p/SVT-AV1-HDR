@@ -85,6 +85,9 @@ static const std::vector<EncTestSetting> default_enc_settings = {
     // test intra period length
     {"IntraPeriodTest1", {{"IntraPeriod", "3"}}, default_test_vectors},
 
+    // test high tier signaling at a level that supports it
+    {"TierTest1", {{"Tier", "1"}, {"Level", "4.0"}}, dummy_test_vectors},
+
     // test different qp
     {"QpTest1",
      {{"RateControlMode", "0"}, {"QP", "20"}}, default_test_vectors},
@@ -143,6 +146,12 @@ class CodingOptionTest : public SvtAv1E2ETestFramework {
         EXPECT_EQ(config->profile, stream_info->profile)
             << "config profile: " << config->profile << "got "
             << stream_info->profile;
+
+        if (config->level >= 40) {
+            EXPECT_EQ(config->tier, stream_info->tier)
+                << "config tier: " << config->tier << " got "
+                << stream_info->tier;
+        }
 
         // Verify bit depth
         EXPECT_EQ(config->encoder_bit_depth, stream_info->bit_depth)

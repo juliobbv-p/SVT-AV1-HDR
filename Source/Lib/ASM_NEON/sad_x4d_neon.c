@@ -104,7 +104,7 @@ static inline void sadwxhx4d_neon(const uint8_t* src, int src_stride, const uint
                                                              const uint8_t* const ref_array[], \
                                                              int                  ref_stride,  \
                                                              int                  h,           \
-                                                             uint32_t*            sad_array) {            \
+                                                             uint32_t*            sad_array) { \
         sadwxhx4d_neon(src, src_stride, ref_array, ref_stride, (w), h, sad_array);             \
     }
 

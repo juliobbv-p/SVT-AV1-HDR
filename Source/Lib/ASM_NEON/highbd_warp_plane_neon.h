@@ -157,16 +157,16 @@ static AOM_FORCE_INLINE void warp_affine_horizontal(const uint8_t* ref8b, const 
                 src_1.val[1] = vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(src_1_2b, src_1_8b)), 6);    \
                                                                                                        \
                 src_1         = clamp_horizontal(src_1,                                                \
-                                         out_of_boundary_left,                                 \
-                                         out_of_boundary_right,                                \
-                                         ref2b,                                                \
-                                         ref8b,                                                \
-                                         iy,                                                   \
-                                         stride2b,                                             \
-                                         stride8b,                                             \
-                                         width,                                                \
-                                         indx0,                                                \
-                                         indx1);                                               \
+                                                 out_of_boundary_left,                                 \
+                                                 out_of_boundary_right,                                \
+                                                 ref2b,                                                \
+                                                 ref8b,                                                \
+                                                 iy,                                                   \
+                                                 stride2b,                                             \
+                                                 stride8b,                                             \
+                                                 width,                                                \
+                                                 indx0,                                                \
+                                                 indx1);                                               \
                 int16x8_t rv0 = vextq_s16(                                                             \
                     vreinterpretq_s16_u16(src_1.val[0]), vreinterpretq_s16_u16(src_1.val[1]), 0);      \
                 int16x8_t rv1 = vextq_s16(                                                             \
@@ -212,16 +212,16 @@ static AOM_FORCE_INLINE void warp_affine_horizontal(const uint8_t* ref8b, const 
                 src_1.val[1] = vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(src2b, src8b)), 6);          \
                                                                                                        \
                 src_1         = clamp_horizontal(src_1,                                                \
-                                         out_of_boundary_left,                                 \
-                                         out_of_boundary_right,                                \
-                                         ref2b,                                                \
-                                         ref8b,                                                \
-                                         iy,                                                   \
-                                         stride2b,                                             \
-                                         stride8b,                                             \
-                                         width,                                                \
-                                         indx0,                                                \
-                                         indx1);                                               \
+                                                 out_of_boundary_left,                                 \
+                                                 out_of_boundary_right,                                \
+                                                 ref2b,                                                \
+                                                 ref8b,                                                \
+                                                 iy,                                                   \
+                                                 stride2b,                                             \
+                                                 stride8b,                                             \
+                                                 width,                                                \
+                                                 indx0,                                                \
+                                                 indx1);                                               \
                 int16x8_t rv0 = vextq_s16(                                                             \
                     vreinterpretq_s16_u16(src_1.val[0]), vreinterpretq_s16_u16(src_1.val[1]), 0);      \
                 int16x8_t rv1 = vextq_s16(                                                             \
@@ -349,13 +349,12 @@ static AOM_FORCE_INLINE void highbd_vertical_filter_4x1_f4(uint16_t* pred, int p
     vst1_u16(dst16, res0);
 }
 
-static AOM_FORCE_INLINE void highbd_vertical_filter_8x1_f8(uint16_t* pred, int p_stride, int bd, uint16_t* dst,
-                                                           int dst_stride, bool is_compound, bool do_average,
-                                                           bool use_dist_wtd_comp_avg, int fwd, int bwd, int16_t gamma,
-                                                           const int16x8_t* tmp, int i, int sy, int j) {
-    int32x4x2_t sums = gamma == 0 ? vertical_filter_8x1_f1(tmp, sy) : vertical_filter_8x1_f8(tmp, sy, gamma);
-    int32x4_t   sum0 = sums.val[0];
-    int32x4_t   sum1 = sums.val[1];
+static AOM_FORCE_INLINE void highbd_vertical_output_8x1(uint16_t* pred, int p_stride, int bd, uint16_t* dst,
+                                                        int dst_stride, bool is_compound, bool do_average,
+                                                        bool use_dist_wtd_comp_avg, int fwd, int bwd, int32x4x2_t sums,
+                                                        int i, int j) {
+    int32x4_t sum0 = sums.val[0];
+    int32x4_t sum1 = sums.val[1];
 
     const int offset_bits_vert = bd + 2 * FILTER_BITS - ROUND0_BITS;
 
@@ -419,6 +418,15 @@ static AOM_FORCE_INLINE void highbd_vertical_filter_8x1_f8(uint16_t* pred, int p
     vst1_u16(dst16 + 4, res1);
 }
 
+static AOM_FORCE_INLINE void highbd_vertical_filter_8x1_f8(uint16_t* pred, int p_stride, int bd, uint16_t* dst,
+                                                           int dst_stride, bool is_compound, bool do_average,
+                                                           bool use_dist_wtd_comp_avg, int fwd, int bwd, int16_t gamma,
+                                                           const int16x8_t* tmp, int i, int sy, int j) {
+    int32x4x2_t sums = gamma == 0 ? vertical_filter_8x1_f1(tmp, sy) : vertical_filter_8x1_f8(tmp, sy, gamma);
+    highbd_vertical_output_8x1(
+        pred, p_stride, bd, dst, dst_stride, is_compound, do_average, use_dist_wtd_comp_avg, fwd, bwd, sums, i, j);
+}
+
 static AOM_FORCE_INLINE void warp_affine_vertical(uint16_t* pred, int p_width, int p_height, int p_stride, int bd,
                                                   uint16_t* dst, int dst_stride, bool is_compound, bool do_average,
                                                   bool use_dist_wtd_comp_avg, int fwd, int bwd, int16_t gamma,
@@ -468,12 +476,18 @@ static AOM_FORCE_INLINE void warp_affine_vertical(uint16_t* pred, int p_width, i
     }
 }
 
-static AOM_FORCE_INLINE void highbd_warp_affine_common(const int32_t* mat, const uint8_t* ref8b, const uint8_t* ref2b,
-                                                       int width, int height, int stride8b, int stride2b,
-                                                       uint16_t* pred, int p_col, int p_row, int p_width, int p_height,
-                                                       int p_stride, int subsampling_x, int subsampling_y, int bd,
-                                                       ConvolveParams* conv_params, int16_t alpha, int16_t beta,
-                                                       int16_t gamma, int16_t delta) {
+// Each ISA supplies statically known stages; the common driver inlines them.
+typedef void (*HighbdWarpHorizontal)(const uint8_t*, const uint8_t*, int, int, int, int, int, int16_t, int16_t, int,
+                                     int, int, int16x8_t*, int);
+
+typedef void (*HighbdWarpVertical)(uint16_t*, int, int, int, int, uint16_t*, int, bool, bool, bool, int, int, int16_t,
+                                   int16_t, const int16x8_t*, int, int, int);
+
+static AOM_FORCE_INLINE void highbd_warp_affine_common(
+    const int32_t* mat, const uint8_t* ref8b, const uint8_t* ref2b, int width, int height, int stride8b, int stride2b,
+    uint16_t* pred, int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x, int subsampling_y,
+    int bd, ConvolveParams* conv_params, int16_t alpha, int16_t beta, int16_t gamma, int16_t delta,
+    HighbdWarpHorizontal horizontal_filter, HighbdWarpVertical vertical_filter) {
     uint16_t* const dst                   = conv_params->dst;
     const int       dst_stride            = conv_params->dst_stride;
     const bool      is_compound           = conv_params->is_compound;
@@ -522,26 +536,26 @@ static AOM_FORCE_INLINE void highbd_warp_affine_common(const int32_t* mat, const
             // So it is safe to use int16x8_t as the intermediate storage type here.
             int16x8_t tmp[15];
 
-            warp_affine_horizontal(
+            horizontal_filter(
                 ref8b, ref2b, width, height, stride8b, stride2b, p_width, alpha, beta, iy4, sx4, ix4, tmp, bd);
-            warp_affine_vertical(pred,
-                                 p_width,
-                                 p_height,
-                                 p_stride,
-                                 bd,
-                                 dst,
-                                 dst_stride,
-                                 is_compound,
-                                 do_average,
-                                 use_dist_wtd_comp_avg,
-                                 fwd,
-                                 bwd,
-                                 gamma,
-                                 delta,
-                                 tmp,
-                                 i,
-                                 sy4,
-                                 j);
+            vertical_filter(pred,
+                            p_width,
+                            p_height,
+                            p_stride,
+                            bd,
+                            dst,
+                            dst_stride,
+                            is_compound,
+                            do_average,
+                            use_dist_wtd_comp_avg,
+                            fwd,
+                            bwd,
+                            gamma,
+                            delta,
+                            tmp,
+                            i,
+                            sy4,
+                            j);
         }
     }
 }

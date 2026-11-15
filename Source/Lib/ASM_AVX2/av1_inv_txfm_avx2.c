@@ -2713,42 +2713,44 @@ static void inv_txf_add_16x8_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t strid
 
 static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_r, int32_t stride_r, uint8_t* dst_w,
                                     int32_t stride_w, const TxfmParam* txfm_param, const TranLow* dqcoeff32) {
+    // dav1d takes the last nonzero scan index, SVT keeps a count; never 0 (the ported DC-only paths are unused)
+    const int eob = txfm_param->eob > 1 ? txfm_param->eob - 1 : 1;
     switch (txfm_param->tx_type) {
     case DCT_DCT:
-        svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case DCT_ADST:
-        svt_dav1d_inv_txfm_add_adst_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_DCT:
-        svt_dav1d_inv_txfm_add_dct_adst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_adst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_ADST:
-        svt_dav1d_inv_txfm_add_adst_adst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_adst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case DCT_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_DCT:
-        svt_dav1d_inv_txfm_add_dct_flipadst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_flipadst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_flipadst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_flipadst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_ADST:
-        svt_dav1d_inv_txfm_add_adst_flipadst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_flipadst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_adst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_adst_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case IDTX:
-        svt_dav1d_inv_txfm_add_identity_identity_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_identity_identity_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case H_DCT:
-        svt_dav1d_inv_txfm_add_dct_identity_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_identity_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     case V_DCT:
-        svt_dav1d_inv_txfm_add_identity_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_identity_dct_16x16_8bpc_avx2(dst_w, stride_w, dqcoeff, eob);
         break;
     default:
         svt_av1_inv_txfm_add_avx2(dqcoeff32, dst_r, stride_r, dst_w, stride_w, txfm_param);
@@ -2819,7 +2821,8 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
     }
 
     const TxType tx_type = txfm_param->tx_type;
-    const int    eob     = txfm_param->eob;
+    // dav1d takes the last nonzero scan index, SVT keeps a count; never 0 (the ported DC-only paths are unused)
+    const int eob = txfm_param->eob > 1 ? txfm_param->eob - 1 : 1;
     switch (txfm_param->tx_size) {
     case TX_32X32:
         svt_pack_and_transpose_32x32(dqcoeff, dqcoeff_16);
@@ -2831,7 +2834,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_dav1d_inv_txfm_add_identity_identity_32x32_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
             break;
         default:
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_16X16:
@@ -2868,7 +2871,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_dav1d_inv_txfm_add_identity_identity_16x32_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
             break;
         default:
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_32X16:
@@ -2881,7 +2884,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_dav1d_inv_txfm_add_identity_identity_32x16_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
             break;
         default:
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_64X64:
@@ -2889,7 +2892,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x64_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
         } else {
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_32X64:
@@ -2897,7 +2900,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_32x64_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
         } else {
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_64X32:
@@ -2905,7 +2908,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x32_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
         } else {
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_16X64:
@@ -2913,7 +2916,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_16x64_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
         } else {
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_64X16:
@@ -2921,7 +2924,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x16_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
         } else {
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_4X4:
@@ -2946,7 +2949,7 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_dav1d_inv_txfm_add_identity_identity_8x32_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
             break;
         default:
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     case TX_32X8:
@@ -2959,10 +2962,10 @@ void svt_dav1d_inv_txfm_add_avx2(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
             svt_dav1d_inv_txfm_add_identity_identity_32x8_8bpc_avx2(dst_w, stride_w, dqcoeff_16, eob);
             break;
         default:
-            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+            svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
         }
         break;
     default:
-        svt_av1_inv_txfm_add_avx2(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+        svt_av1_inv_txfm_add_avx2(dqcoeff, dst_w, stride_w, dst_w, stride_w, txfm_param);
     }
 }

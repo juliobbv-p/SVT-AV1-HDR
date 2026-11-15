@@ -402,6 +402,13 @@ void svt_ext_eight_sad_calculation_32x32_64x64_c(const uint32_t p_sad16x16[16][8
     }
 }
 
+#if EN_AVX512_SUPPORT
+void svt_ext_all_sad_prep_src_avx512(const uint8_t* src, uint32_t src_stride, bool sub_sad, uint8_t* prep);
+void svt_ext_all_sad_pre_8x8_16x16_avx512(const uint8_t* prep, uint8_t* ref, uint32_t ref_stride, uint32_t mv,
+                                          uint32_t* p_best_sad_8x8, uint32_t* p_best_sad_16x16, uint32_t* p_best_mv8x8,
+                                          uint32_t* p_best_mv16x16, uint32_t p_eight_sad16x16[16][8], bool sub_sad);
+#endif
+
 /*******************************************
  * open_loop_me_get_search_point_results_block
  *******************************************/
@@ -428,18 +435,32 @@ static void open_loop_me_get_eight_search_point_results_block(
     uint16_t curr_mv_2 = ((uint16_t)x_search_index);
     uint32_t curr_mv   = curr_mv_1 | curr_mv_2;
 
-    svt_ext_all_sad_calculation_8x8_16x16(me_ctx->b64_src_ptr,
-                                          me_ctx->b64_src_stride,
-                                          ref_ptr,
-                                          ref_luma_stride,
-                                          curr_mv,
-                                          me_ctx->p_best_sad_8x8,
-                                          me_ctx->p_best_sad_16x16,
-                                          me_ctx->p_best_mv8x8,
-                                          me_ctx->p_best_mv16x16,
-                                          me_ctx->p_eight_sad16x16,
-                                          me_ctx->p_eight_sad8x8,
-                                          sub_sad);
+#if EN_AVX512_SUPPORT
+    if (svt_aom_use_avx512) {
+        svt_ext_all_sad_pre_8x8_16x16_avx512(me_ctx->ext_sad_src_prep,
+                                             ref_ptr,
+                                             ref_luma_stride,
+                                             curr_mv,
+                                             me_ctx->p_best_sad_8x8,
+                                             me_ctx->p_best_sad_16x16,
+                                             me_ctx->p_best_mv8x8,
+                                             me_ctx->p_best_mv16x16,
+                                             me_ctx->p_eight_sad16x16,
+                                             sub_sad);
+    } else
+#endif
+        svt_ext_all_sad_calculation_8x8_16x16(me_ctx->b64_src_ptr,
+                                              me_ctx->b64_src_stride,
+                                              ref_ptr,
+                                              ref_luma_stride,
+                                              curr_mv,
+                                              me_ctx->p_best_sad_8x8,
+                                              me_ctx->p_best_sad_16x16,
+                                              me_ctx->p_best_mv8x8,
+                                              me_ctx->p_best_mv16x16,
+                                              me_ctx->p_eight_sad16x16,
+                                              me_ctx->p_eight_sad8x8,
+                                              sub_sad);
 
     svt_ext_eight_sad_calculation_32x32_64x64(me_ctx->p_eight_sad16x16,
                                               me_ctx->p_best_sad_32x32,
@@ -759,6 +780,15 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
     uint32_t search_area_width_rest_8 = search_area_width & 7;
     uint32_t search_area_width_mult_8 = search_area_width - search_area_width_rest_8;
 
+#if EN_AVX512_SUPPORT
+    const bool sub_sad = me_ctx->me_search_method == SUB_SAD_SEARCH;
+    if (svt_aom_use_avx512 && search_area_width_mult_8 &&
+        (me_ctx->ext_sad_prep_src != me_ctx->b64_src_ptr || me_ctx->ext_sad_prep_sub != sub_sad)) {
+        svt_ext_all_sad_prep_src_avx512(me_ctx->b64_src_ptr, me_ctx->b64_src_stride, sub_sad, me_ctx->ext_sad_src_prep);
+        me_ctx->ext_sad_prep_src = me_ctx->b64_src_ptr;
+        me_ctx->ext_sad_prep_sub = sub_sad;
+    }
+#endif
     for (y_search_index = 0; y_search_index < search_area_height; y_search_index++) {
         for (x_search_index = 0; x_search_index < search_area_width_mult_8; x_search_index += 8) {
             // this function will do:  x_search_index, +1, +2, ..., +7
@@ -781,6 +811,75 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
                 (int32_t)y_search_index + y_search_area_origin);
         }
     }
+}
+
+#if EN_AVX512_SUPPORT
+void svt_sad_loop_16xh_sea_avx512(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                  uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                  int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
+                                  uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
+#endif
+
+// Sixteenth-resolution 16-wide full-pel search (pre-HME / HME level 0); successive elimination when box sums exist
+static void sixteenth_sad_loop(MeContext* me_ctx, EbPictureBufferDesc* ref_pic, int32_t search_region_index,
+                               uint32_t block_width, uint32_t block_height, uint64_t* best_sad, int16_t* x, int16_t* y,
+                               uint8_t skip_search_line, int16_t sa_width, int16_t sa_height) {
+    const bool full = me_ctx->hme_search_method == FULL_SAD_SEARCH;
+#if defined(ARCH_AARCH64)
+    const uint16_t* sea = full ? ref_pic->sea_full : ref_pic->sea_sub;
+    if (sea && block_width == 16 && block_height == 16 && svt_sad_loop_16xh_sea != svt_sad_loop_16xh_sea_c) {
+        svt_sad_loop_16xh_sea(me_ctx->sixteenth_b64_buffer,
+                              full ? me_ctx->sixteenth_b64_buffer_stride : 2 * me_ctx->sixteenth_b64_buffer_stride,
+                              ref_pic->y_buffer + search_region_index,
+                              full ? ref_pic->y_stride : 2 * ref_pic->y_stride,
+                              full ? block_height : block_height / 2,
+                              sea + search_region_index,
+                              8 * ref_pic->y_stride,
+                              best_sad,
+                              x,
+                              y,
+                              ref_pic->y_stride,
+                              skip_search_line,
+                              sa_width,
+                              sa_height);
+        return;
+    }
+#endif
+#if EN_AVX512_SUPPORT
+    const uint16_t* sea = full ? ref_pic->sea_full : ref_pic->sea_sub;
+    if (svt_aom_use_avx512 && sea && block_width == 16 && block_height == 16 &&
+        (sa_width == 8 || sa_width == 16 || (sa_width <= 496 && sa_height <= 128))) {
+        svt_sad_loop_16xh_sea_avx512(
+            &me_ctx->sixteenth_b64_buffer[0],
+            full ? me_ctx->sixteenth_b64_buffer_stride : me_ctx->sixteenth_b64_buffer_stride * 2,
+            &ref_pic->y_buffer[search_region_index],
+            full ? ref_pic->y_stride : ref_pic->y_stride * 2,
+            full ? block_height : block_height >> 1,
+            sea + search_region_index,
+            8 * ref_pic->y_stride,
+            best_sad,
+            x,
+            y,
+            ref_pic->y_stride,
+            skip_search_line,
+            sa_width,
+            sa_height);
+        return;
+    }
+#endif
+    svt_sad_loop_kernel(&me_ctx->sixteenth_b64_buffer[0],
+                        full ? me_ctx->sixteenth_b64_buffer_stride : me_ctx->sixteenth_b64_buffer_stride * 2,
+                        &ref_pic->y_buffer[search_region_index],
+                        full ? ref_pic->y_stride : ref_pic->y_stride * 2,
+                        full ? block_height : block_height >> 1,
+                        block_width,
+                        best_sad,
+                        x,
+                        y,
+                        ref_pic->y_stride,
+                        skip_search_line,
+                        sa_width,
+                        sa_height);
 }
 
 // Perform HME Level 0 for one 64x64 block on the given picture
@@ -845,23 +944,17 @@ static void hme_level_0(MeContext*           me_ctx, // ME context Ptr, used to 
     int32_t search_region_index = x_top_left_search_region + y_top_left_search_region * sixteenth_ref_pic_ptr->y_stride;
 
     // Put the first search location into level0 results
-    svt_sad_loop_kernel(&me_ctx->sixteenth_b64_buffer[0],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? me_ctx->sixteenth_b64_buffer_stride
-                                                                       : me_ctx->sixteenth_b64_buffer_stride * 2,
-                        &sixteenth_ref_pic_ptr->y_buffer[search_region_index],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? sixteenth_ref_pic_ptr->y_stride
-                                                                       : sixteenth_ref_pic_ptr->y_stride * 2,
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? block_height : block_height >> 1,
-                        block_width,
-                        /* results */
-                        best_sad,
-                        hme_l0_sc_x,
-                        hme_l0_sc_y,
-                        /* range */
-                        sixteenth_ref_pic_ptr->y_stride,
-                        0, // skip search line
-                        sa_width,
-                        sa_height);
+    sixteenth_sad_loop(me_ctx,
+                       sixteenth_ref_pic_ptr,
+                       search_region_index,
+                       block_width,
+                       block_height,
+                       best_sad,
+                       hme_l0_sc_x,
+                       hme_l0_sc_y,
+                       0,
+                       sa_width,
+                       sa_height);
 
     *best_sad = (me_ctx->hme_search_method == FULL_SAD_SEARCH)
         ? *best_sad
@@ -870,99 +963,6 @@ static void hme_level_0(MeContext*           me_ctx, // ME context Ptr, used to 
     *hme_l0_sc_x *= 4; // Multiply by 4 because operating on 1/4 resolution
     *hme_l0_sc_y += sa_origin_y;
     *hme_l0_sc_y *= 4; // Multiply by 4 because operating on 1/4 resolution
-
-    return;
-}
-
-// Perform HME Level 1 for one 64x64 block on the given picture
-static void hme_level_1(MeContext*           me_ctx, // ME context Ptr, used to get/update ME results
-                        int16_t              org_x, // Block position in the horizontal direction - quarter resolution
-                        int16_t              org_y, // Block position in the vertical direction - quarter resolution
-                        uint32_t             block_width, // Block width - quarter resolution
-                        uint32_t             block_height, // Block height - quarter resolution
-                        EbPictureBufferDesc* quarter_ref_pic_ptr, // quarter reference picture
-                        int16_t              sa_width, // hme level 1 search area in width
-                        int16_t              sa_height, // hme level 1 search area in height
-                        int16_t              hme_l0_sc_x, // input parameter, best Level0 xMV at (sr_w, sr_h)
-                        int16_t              hme_l0_sc_y, // input parameter, best Level0 yMV at (sr_w, sr_h)
-                        uint64_t*            best_sad, // output parameter, Level1 SAD at (sr_w, sr_h)
-                        int16_t*             hme_l1_sc_x, // output parameter, Level1 xMV at (sr_w, sr_h)
-                        int16_t*             hme_l1_sc_y // output parameter, Level1 yMV at (sr_w, sr_h)
-) {
-    // round up the search region width to nearest multiple of 8 because the SAD calculation performance (for
-    // intrinsic functions) is the same for search region width from 1 to 8
-    sa_width = (int16_t)((sa_width + 7) & ~0x07);
-
-    int16_t pad_width  = (int16_t)(quarter_ref_pic_ptr->border) - 1;
-    int16_t pad_height = (int16_t)(quarter_ref_pic_ptr->border) - 1;
-
-    int16_t sa_origin_x = -(sa_width >> 1) + hme_l0_sc_x;
-    int16_t sa_origin_y = -(sa_height >> 1) + hme_l0_sc_y;
-
-    // Correct the left edge of the Search Area if it is not on the reference picture
-    if (((org_x + sa_origin_x) < -pad_width)) {
-        sa_origin_x = -pad_width - org_x;
-        sa_width    = sa_width - (-pad_width - (org_x + sa_origin_x));
-    }
-
-    // Correct the right edge of the Search Area if its not on the reference picture
-    if (((org_x + sa_origin_x) > (int16_t)quarter_ref_pic_ptr->width - 1)) {
-        sa_origin_x = sa_origin_x - ((org_x + sa_origin_x) - ((int16_t)quarter_ref_pic_ptr->width - 1));
-    }
-
-    if (((org_x + sa_origin_x + sa_width) > (int16_t)quarter_ref_pic_ptr->width)) {
-        sa_width = MAX(1, sa_width - ((org_x + sa_origin_x + sa_width) - (int16_t)quarter_ref_pic_ptr->width));
-    }
-
-    // Constrain x_HME_L1 to be a multiple of 8 (round down as cropping alrea performed)
-    sa_width = (sa_width < 8) ? sa_width : sa_width & ~0x07;
-
-    // Correct the top edge of the Search Area if it is not on the reference picture
-    if (((org_y + sa_origin_y) < -pad_height)) {
-        sa_origin_y = -pad_height - org_y;
-        sa_height   = sa_height - (-pad_height - (org_y + sa_origin_y));
-    }
-
-    // Correct the bottom edge of the Search Area if its not on the reference picture
-    if (((org_y + sa_origin_y) > (int16_t)quarter_ref_pic_ptr->height - 1)) {
-        sa_origin_y = sa_origin_y - ((org_y + sa_origin_y) - ((int16_t)quarter_ref_pic_ptr->height - 1));
-    }
-
-    if ((org_y + sa_origin_y + sa_height > (int16_t)quarter_ref_pic_ptr->height)) {
-        sa_height = MAX(1, sa_height - ((org_y + sa_origin_y + sa_height) - (int16_t)quarter_ref_pic_ptr->height));
-    }
-
-    // Move to the top left of the search region
-    int16_t x_top_left_search_region = (org_x) + sa_origin_x;
-    int16_t y_top_left_search_region = (org_y) + sa_origin_y;
-    int32_t search_region_index = x_top_left_search_region + y_top_left_search_region * quarter_ref_pic_ptr->y_stride;
-
-    // Put the first search location into level1 results
-    svt_sad_loop_kernel(&me_ctx->quarter_b64_buffer[0],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? me_ctx->quarter_b64_buffer_stride
-                                                                       : me_ctx->quarter_b64_buffer_stride * 2,
-                        &quarter_ref_pic_ptr->y_buffer[search_region_index],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? quarter_ref_pic_ptr->y_stride
-                                                                       : quarter_ref_pic_ptr->y_stride * 2,
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? block_height : block_height >> 1,
-                        block_width,
-                        /* results */
-                        best_sad,
-                        hme_l1_sc_x,
-                        hme_l1_sc_y,
-                        /* range */
-                        quarter_ref_pic_ptr->y_stride,
-                        0, // skip search line
-                        sa_width,
-                        sa_height);
-
-    *best_sad = (me_ctx->hme_search_method == FULL_SAD_SEARCH)
-        ? *best_sad
-        : *best_sad * 2; // Multiply by 2 because considered only ever other line
-    *hme_l1_sc_x += sa_origin_x;
-    *hme_l1_sc_x *= 2; // Multiply by 2 because operating on 1/2 resolution
-    *hme_l1_sc_y += sa_origin_y;
-    *hme_l1_sc_y *= 2; // Multiply by 2 because operating on 1/2 resolution
 
     return;
 }
@@ -1355,8 +1355,8 @@ static void integer_search_b64(PictureParentControlSet* pcs, MeContext* me_ctx, 
             x_search_area_origin = ((org_x + x_search_area_origin) < -pad_width) ? -pad_width - org_x
                                                                                  : x_search_area_origin;
             search_area_width    = ((org_x + x_search_area_origin) < -pad_width)
-                   ? search_area_width - (-pad_width - (org_x + x_search_area_origin))
-                   : search_area_width;
+                ? search_area_width - (-pad_width - (org_x + x_search_area_origin))
+                : search_area_width;
             // Correct the right edge of the Search Area if its not on the
             // reference Picture
             x_search_area_origin = ((org_x + x_search_area_origin) > picture_width - 1)
@@ -1376,16 +1376,16 @@ static void integer_search_b64(PictureParentControlSet* pcs, MeContext* me_ctx, 
             y_search_area_origin = ((org_y + y_search_area_origin) < -pad_height) ? -pad_height - org_y
                                                                                   : y_search_area_origin;
             search_area_height   = ((org_y + y_search_area_origin) < -pad_height)
-                  ? search_area_height - (-pad_height - (org_y + y_search_area_origin))
-                  : search_area_height;
+                ? search_area_height - (-pad_height - (org_y + y_search_area_origin))
+                : search_area_height;
             // Correct the bottom edge of the Search Area if its not on the
             // reference Picture
             y_search_area_origin = ((org_y + y_search_area_origin) > picture_height - 1)
                 ? y_search_area_origin - ((org_y + y_search_area_origin) - (picture_height - 1))
                 : y_search_area_origin;
             search_area_height   = (org_y + y_search_area_origin + search_area_height > picture_height)
-                  ? MAX(1, search_area_height - ((org_y + y_search_area_origin + search_area_height) - picture_height))
-                  : search_area_height;
+                ? MAX(1, search_area_height - ((org_y + y_search_area_origin + search_area_height) - picture_height))
+                : search_area_height;
 
             x_top_left_search_region = (int16_t)(b64_origin_x) - (ME_FILTER_TAP >> 1) + x_search_area_origin;
             y_top_left_search_region = (int16_t)(b64_origin_y) - (ME_FILTER_TAP >> 1) + y_search_area_origin;
@@ -1509,22 +1509,17 @@ static void prehme_core(MeContext* me_ctx, int16_t org_x, int16_t org_y, uint32_
     y_top_left_search_region = (org_y) + y_search_area_origin;
     search_region_index      = x_top_left_search_region + y_top_left_search_region * sixteenth_ref_pic_ptr->y_stride;
 
-    svt_sad_loop_kernel(&me_ctx->sixteenth_b64_buffer[0],
-                        me_ctx->hme_search_method == FULL_SAD_SEARCH ? me_ctx->sixteenth_b64_buffer_stride
-                                                                     : me_ctx->sixteenth_b64_buffer_stride * 2,
-                        &sixteenth_ref_pic_ptr->y_buffer[search_region_index],
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? sixteenth_ref_pic_ptr->y_stride
-                                                                       : sixteenth_ref_pic_ptr->y_stride * 2,
-                        (me_ctx->hme_search_method == FULL_SAD_SEARCH) ? sb_height : sb_height >> 1,
-                        sb_width,
-                        /* results */
-                        &prehme_data->sad,
-                        &prehme_data->best_mv.x,
-                        &prehme_data->best_mv.y,
-                        sixteenth_ref_pic_ptr->y_stride,
-                        me_ctx->prehme_ctrl.skip_search_line,
-                        search_area_width,
-                        search_area_height);
+    sixteenth_sad_loop(me_ctx,
+                       sixteenth_ref_pic_ptr,
+                       search_region_index,
+                       sb_width,
+                       sb_height,
+                       &prehme_data->sad,
+                       &prehme_data->best_mv.x,
+                       &prehme_data->best_mv.y,
+                       me_ctx->prehme_ctrl.skip_search_line,
+                       search_area_width,
+                       search_area_height);
 
     prehme_data->sad = (me_ctx->hme_search_method == FULL_SAD_SEARCH)
         ? prehme_data->sad
@@ -1620,7 +1615,7 @@ static void prehme_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_t or
                         continue;
                     }
                     prehme_data->sa.width  = MIN((me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_min.width * hme_sr_factor),
-                                                me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_max.width);
+                                                 me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_max.width);
                     prehme_data->sa.height = MIN(
                         (me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_min.height * hme_sr_factor),
                         me_ctx->prehme_ctrl.prehme_sa_cfg[sr_i].sa_max.height);
@@ -1659,7 +1654,7 @@ static void prehme_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_t or
 
                 const uint32_t prhme_th   = me_ctx->me_hme_prune_ctrls.phme_sad_pct;
                 uint32_t       prehme_sad = (uint32_t)MIN(me_ctx->prehme_data[list_i][ref_i][0].sad,
-                                                    me_ctx->prehme_data[list_i][ref_i][1].sad);
+                                                          me_ctx->prehme_data[list_i][ref_i][1].sad);
                 if ((prehme_sad - best_sad) * 100 > (prhme_th * best_sad)) {
                     me_ctx->search_results[list_i][ref_i].do_ref = 0;
                 }
@@ -1686,9 +1681,9 @@ static void get_hme_l0_search_area(MeContext* me_ctx, uint8_t list_index, uint8_
 
                 // Determine whether the computed motion from list0/ref_index0 is in vertical or horizintal direction
                 is_ver   = ((ABS(l0_mvx) < me_ctx->reduce_hme_l0_sr_th_min) &&
-                          (ABS(l0_mvy) > me_ctx->reduce_hme_l0_sr_th_max));
+                            (ABS(l0_mvy) > me_ctx->reduce_hme_l0_sr_th_max));
                 is_hor   = ((ABS(l0_mvx) > me_ctx->reduce_hme_l0_sr_th_max) &&
-                          (ABS(l0_mvy) < me_ctx->reduce_hme_l0_sr_th_min));
+                            (ABS(l0_mvy) < me_ctx->reduce_hme_l0_sr_th_min));
                 is_still = ((ABS(l0_mvx) < (me_ctx->reduce_hme_l0_sr_th_min * 3)) &&
                             (ABS(l0_mvy) < (me_ctx->reduce_hme_l0_sr_th_min * 3)));
             }
@@ -1721,10 +1716,10 @@ static void get_hme_l0_search_area(MeContext* me_ctx, uint8_t list_index, uint8_
     // Derive the search area width and height, rounding the width up to the nearest sixteenth
     int16_t search_area_width  = me_ctx->hme_l0_sa.sa_min.width / me_ctx->num_hme_sa_w;
     search_area_width          = (int16_t)MIN((((search_area_width * hme_sr_factor) + 15) & ~0x0F),
-                                     (((me_ctx->hme_l0_sa.sa_max.width / me_ctx->num_hme_sa_w) + 15) & ~0x0F));
+                                              (((me_ctx->hme_l0_sa.sa_max.width / me_ctx->num_hme_sa_w) + 15) & ~0x0F));
     int16_t search_area_height = me_ctx->hme_l0_sa.sa_min.height / me_ctx->num_hme_sa_h;
     search_area_height         = (int16_t)MIN((search_area_height * hme_sr_factor),
-                                      me_ctx->hme_l0_sa.sa_max.height / me_ctx->num_hme_sa_h);
+                                              me_ctx->hme_l0_sa.sa_max.height / me_ctx->num_hme_sa_h);
 
     *sa_width  = search_area_width;
     *sa_height = search_area_height;
@@ -1888,6 +1883,115 @@ static void hme_level0_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_
     } // End list loop
 }
 
+typedef struct {
+    int16_t x, y, w, h;
+} HmeRect;
+
+// HME level-1 search window (origin relative to the block, size), clamped to the picture edges.
+static HmeRect hme_l1_window(int16_t org_x, int16_t org_y, const EbPictureBufferDesc* ref, int16_t sa_width,
+                             int16_t sa_height, int16_t hme_l0_sc_x, int16_t hme_l0_sc_y) {
+    sa_width            = (int16_t)((sa_width + 7) & ~0x07);
+    int16_t pad_width   = (int16_t)(ref->border) - 1;
+    int16_t pad_height  = (int16_t)(ref->border) - 1;
+    int16_t sa_origin_x = -(sa_width >> 1) + hme_l0_sc_x;
+    int16_t sa_origin_y = -(sa_height >> 1) + hme_l0_sc_y;
+    if (((org_x + sa_origin_x) < -pad_width)) {
+        sa_origin_x = -pad_width - org_x;
+        sa_width    = sa_width - (-pad_width - (org_x + sa_origin_x));
+    }
+    if (((org_x + sa_origin_x) > (int16_t)ref->width - 1)) {
+        sa_origin_x = sa_origin_x - ((org_x + sa_origin_x) - ((int16_t)ref->width - 1));
+    }
+    if (((org_x + sa_origin_x + sa_width) > (int16_t)ref->width)) {
+        sa_width = MAX(1, sa_width - ((org_x + sa_origin_x + sa_width) - (int16_t)ref->width));
+    }
+    sa_width = (sa_width < 8) ? sa_width : sa_width & ~0x07;
+    if (((org_y + sa_origin_y) < -pad_height)) {
+        sa_origin_y = -pad_height - org_y;
+        sa_height   = sa_height - (-pad_height - (org_y + sa_origin_y));
+    }
+    if (((org_y + sa_origin_y) > (int16_t)ref->height - 1)) {
+        sa_origin_y = sa_origin_y - ((org_y + sa_origin_y) - ((int16_t)ref->height - 1));
+    }
+    if ((org_y + sa_origin_y + sa_height > (int16_t)ref->height)) {
+        sa_height = MAX(1, sa_height - ((org_y + sa_origin_y + sa_height) - (int16_t)ref->height));
+    }
+    return (HmeRect){sa_origin_x, sa_origin_y, sa_width, sa_height};
+}
+
+// Splits r minus s into at most 4 disjoint rectangles appended to out; returns the new count.
+static int hme_rect_subtract(HmeRect r, HmeRect s, HmeRect* out, int n) {
+    const int16_t ix0 = MAX(r.x, s.x), iy0 = MAX(r.y, s.y);
+    const int16_t ix1 = MIN(r.x + r.w, s.x + s.w), iy1 = MIN(r.y + r.h, s.y + s.h);
+    if (ix0 >= ix1 || iy0 >= iy1) {
+        out[n++] = r;
+        return n;
+    }
+    if (iy0 > r.y) {
+        out[n++] = (HmeRect){r.x, r.y, r.w, (int16_t)(iy0 - r.y)};
+    }
+    if (r.y + r.h > iy1) {
+        out[n++] = (HmeRect){r.x, iy1, r.w, (int16_t)(r.y + r.h - iy1)};
+    }
+    if (ix0 > r.x) {
+        out[n++] = (HmeRect){r.x, iy0, (int16_t)(ix0 - r.x), (int16_t)(iy1 - iy0)};
+    }
+    if (r.x + r.w > ix1) {
+        out[n++] = (HmeRect){ix1, iy0, (int16_t)(r.x + r.w - ix1), (int16_t)(iy1 - iy0)};
+    }
+    return n;
+}
+
+// HME level 1 over the part of one search region not already covered by earlier regions of the same block/ref.
+// Positions in the covered part were evaluated by an earlier region, whose best SAD is no larger, so the minimum
+// over all regions (what set_final_search_centre_sb() keeps) and its raster-first tie-break are unchanged.
+static void hme_level_1_dedup(MeContext* me_ctx, int16_t org_x, int16_t org_y, uint32_t block_width,
+                              uint32_t block_height, EbPictureBufferDesc* ref, HmeRect win, const HmeRect* done,
+                              int n_done, uint64_t* best_sad, int16_t* hme_l1_sc_x, int16_t* hme_l1_sc_y) {
+    HmeRect parts[2][64];
+    int     np = 1, cur = 0;
+    parts[0][0] = win;
+    for (int k = 0; k < n_done && np; k++) {
+        int nn = 0;
+        for (int p = 0; p < np; p++) {
+            nn = hme_rect_subtract(parts[cur][p], done[k], parts[cur ^ 1], nn);
+        }
+        np = nn;
+        cur ^= 1;
+    }
+    const bool full = me_ctx->hme_search_method == FULL_SAD_SEARCH;
+    uint64_t   best = (uint64_t)~0;
+    int16_t    bx = win.x, by = win.y;
+    for (int p = 0; p < np; p++) {
+        const HmeRect r = parts[cur][p];
+        uint64_t      sad;
+        int16_t       x = 0, y = 0;
+        svt_sad_loop_kernel(&me_ctx->quarter_b64_buffer[0],
+                            full ? me_ctx->quarter_b64_buffer_stride : me_ctx->quarter_b64_buffer_stride * 2,
+                            &ref->y_buffer[(org_x + r.x) + (org_y + r.y) * ref->y_stride],
+                            full ? ref->y_stride : ref->y_stride * 2,
+                            full ? block_height : block_height >> 1,
+                            block_width,
+                            &sad,
+                            &x,
+                            &y,
+                            ref->y_stride,
+                            0,
+                            r.w,
+                            r.h);
+        x += r.x;
+        y += r.y;
+        if (sad < best || (sad == best && (y < by || (y == by && x < bx)))) {
+            best = sad;
+            bx   = x;
+            by   = y;
+        }
+    }
+    *best_sad    = np ? (full ? best : best * 2) : MAX_U32;
+    *hme_l1_sc_x = bx * 2;
+    *hme_l1_sc_y = by * 2;
+}
+
 /*******************************************
  * performs hierarchical ME level 1 for one 64x64 block (uni-prediction only)
  *******************************************/
@@ -1930,6 +2034,8 @@ static void hme_level1_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_
                     }
                     continue;
                 }
+                HmeRect done[4];
+                int     n_done = 0;
                 for (uint8_t sr_h = 0; sr_h < me_ctx->num_hme_sa_h; sr_h++) {
                     for (uint8_t sr_w = 0; sr_w < me_ctx->num_hme_sa_w; sr_w++) {
                         if (me_ctx->prev_me_stage_based_exit_th) {
@@ -1945,19 +2051,29 @@ static void hme_level1_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_
                             }
                         }
 
-                        hme_level_1(me_ctx,
-                                    ((int16_t)org_x) >> 1,
-                                    ((int16_t)org_y) >> 1,
-                                    block_width >> 1,
-                                    block_height >> 1,
-                                    quarter_ref_pic,
-                                    (int16_t)me_ctx->hme_l1_sa.width,
-                                    (int16_t)me_ctx->hme_l1_sa.height,
-                                    me_ctx->x_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] >> 1,
-                                    me_ctx->y_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] >> 1,
-                                    &(me_ctx->hme_level1_sad[list_index][ref_pic_index][sr_w][sr_h]),
-                                    &(me_ctx->x_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h]),
-                                    &(me_ctx->y_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h]));
+                        const HmeRect win = hme_l1_window(
+                            ((int16_t)org_x) >> 1,
+                            ((int16_t)org_y) >> 1,
+                            quarter_ref_pic,
+                            (int16_t)me_ctx->hme_l1_sa.width,
+                            (int16_t)me_ctx->hme_l1_sa.height,
+                            me_ctx->x_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] >> 1,
+                            me_ctx->y_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] >> 1);
+                        hme_level_1_dedup(me_ctx,
+                                          ((int16_t)org_x) >> 1,
+                                          ((int16_t)org_y) >> 1,
+                                          block_width >> 1,
+                                          block_height >> 1,
+                                          quarter_ref_pic,
+                                          win,
+                                          done,
+                                          // level 2 refines around each region's own level-1 result, so regions
+                                          // skip each other's positions only when level 1 is the last level
+                                          me_ctx->enable_hme_level2_flag ? 0 : n_done,
+                                          &(me_ctx->hme_level1_sad[list_index][ref_pic_index][sr_w][sr_h]),
+                                          &(me_ctx->x_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h]),
+                                          &(me_ctx->y_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h]));
+                        done[n_done++] = win;
                     }
                 }
             }
@@ -2188,8 +2304,9 @@ void set_final_search_centre_sb(PictureParentControlSet* pcs, MeContext* me_ctx)
     }
 }
 
-// Initialize zz SAD array
-static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_t org_x, uint32_t org_y) {
+// Initialize zz SAD array. l0r0_zz_sad: the raw list0/ref0 zz SAD (get_zz_sad()).
+static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_t org_x, uint32_t org_y,
+                        uint32_t l0r0_zz_sad) {
     const uint32_t block_width  = me_ctx->b64_width;
     const uint32_t block_height = me_ctx->b64_height;
     uint32_t       best_zz_sad  = MAX_U32;
@@ -2199,7 +2316,9 @@ static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_
         for (uint8_t ref_i = 0; ref_i < me_ctx->num_of_ref_pic_to_search[list_i]; ++ref_i) {
             if (me_ctx->temporal_layer_index > 0 || list_i == 0) {
                 EbPictureBufferDesc* ref_pic = me_ctx->me_ds_ref_array[list_i][ref_i].picture_ptr;
-                uint32_t             zz_sad  = get_zz_sad(ref_pic, me_ctx, org_x, org_y, block_width, block_height);
+                uint32_t             zz_sad  = list_i == REF_LIST_0 && ref_i == 0
+                    ? l0r0_zz_sad
+                    : get_zz_sad(ref_pic, me_ctx, org_x, org_y, block_width, block_height);
                 //normalize for incomplete b64
                 zz_sad                        = (zz_sad * 64 * 64) / (block_width * block_height);
                 me_ctx->zz_sad[list_i][ref_i] = zz_sad;
@@ -2246,10 +2365,10 @@ static void init_zz_sad(PictureParentControlSet* pcs, MeContext* me_ctx, uint32_
  * performs hierarchical ME for a 64x64 block for every ref frame
  *******************************************/
 static void hme_b64(PictureParentControlSet* pcs, uint32_t org_x, uint32_t org_y, MeContext* me_ctx,
-                    EbPictureBufferDesc* input_ptr) {
+                    EbPictureBufferDesc* input_ptr, uint32_t l0r0_zz_sad) {
     // If needed, initialize the zz sad array
     if (me_ctx->me_early_exit_th || me_ctx->me_safe_limit_zz_th) {
-        init_zz_sad(pcs, me_ctx, org_x, org_y);
+        init_zz_sad(pcs, me_ctx, org_x, org_y, l0r0_zz_sad);
     }
 
     if (me_ctx->prehme_ctrl.enable) {
@@ -2368,10 +2487,10 @@ static void construct_me_candidate_array_mrp_off(PictureParentControlSet* pcs, M
         }
         uint8_t        blk_do_ref[MAX_NUM_OF_REF_PIC_LIST] = {blk_do_ref_org[REF_LIST_0], blk_do_ref_org[REF_LIST_1]};
         const uint32_t best_me_dist                        = blk_do_ref_org[REF_LIST_0] && blk_do_ref_org[REF_LIST_1]
-                                   ? MIN(me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx],
+            ? MIN(me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx],
                   me_ctx->p_sb_best_sad[REF_LIST_1][ref_pic_idx][n_idx])
-                                   : blk_do_ref_org[REF_LIST_0] ? me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx]
-                                                                : me_ctx->p_sb_best_sad[REF_LIST_1][ref_pic_idx][n_idx];
+            : blk_do_ref_org[REF_LIST_0] ? me_ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx]
+                                         : me_ctx->p_sb_best_sad[REF_LIST_1][ref_pic_idx][n_idx];
 
         me_ctx->me_distortion[pu_index] = best_me_dist;
         int8_t min_dist_list            = -1;
@@ -2458,40 +2577,33 @@ static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs
 
     // Set the count to 1 for all PUs using memset, which is faster than setting at the end of each loop.  The count will only need
     // to be updated if both reference frames are allowed.
-    uint8_t number_of_pus = pcs->enable_me_16x16
+    uint8_t            number_of_pus = pcs->enable_me_16x16
         ? pcs->enable_me_8x8 ? pcs->max_number_of_pus_per_sb : MAX_SB64_PU_COUNT_NO_8X8
         : MAX_SB64_PU_COUNT_WO_16X16;
-    memset(pcs->pa_me_data->me_results[sb_index]->total_me_candidate_index, 1, number_of_pus);
+    MeSbResults* const me_results    = pcs->pa_me_data->me_results[sb_index];
+    memset(me_results->total_me_candidate_index, 1, number_of_pus);
 
+    const uint32_t* const best_sad = ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx];
+    const uint32_t* const best_mv  = ctx->p_sb_best_mv[REF_LIST_0][ref_pic_idx];
     for (uint8_t n_idx = 0; n_idx < pcs->max_number_of_pus_per_sb; ++n_idx) {
+        ctx->me_distortion[z_to_raster[n_idx]] = best_sad[n_idx];
+    }
+    //ME was skipped, so do not add this Unipred candidate
+    if (blk_do_ref == 0) {
+        return;
+    }
+    // The PUs with ME results are the first number_of_pus in z-order.
+    const uint8_t max_cand = pcs->pa_me_data->max_cand;
+    const uint8_t max_refs = pcs->pa_me_data->max_refs;
+    for (uint8_t n_idx = 0; n_idx < number_of_pus; ++n_idx) {
         const uint8_t pu_index = z_to_raster[n_idx];
-
-        uint8_t      use_me_pu          = pcs->enable_me_16x16 ? pcs->enable_me_8x8 || n_idx < MAX_SB64_PU_COUNT_NO_8X8
-                                                               : n_idx < MAX_SB64_PU_COUNT_WO_16X16;
-        MeCandidate* me_candidate_array = NULL;
-        if (use_me_pu) {
-            me_candidate_array =
-                &pcs->pa_me_data->me_results[sb_index]->me_candidate_array[pu_index * pcs->pa_me_data->max_cand];
-        }
-        ctx->me_distortion[pu_index] = ctx->p_sb_best_sad[REF_LIST_0][ref_pic_idx][n_idx];
-        ;
-
-        //ME was skipped, so do not add this Unipred candidate
-        if (blk_do_ref == 0) {
-            continue;
-        }
-
-        if (use_me_pu) {
-            me_candidate_array[0].direction  = REF_LIST_0;
-            me_candidate_array[0].ref_idx_l0 = ref_pic_idx;
-            me_candidate_array[0].ref_idx_l1 = ref_pic_idx;
-            me_candidate_array[0].ref0_list  = 0;
-            me_candidate_array[0].ref1_list  = 0;
-
-            pcs->pa_me_data->me_results[sb_index]
-                ->me_mv_array[pu_index * pcs->pa_me_data->max_refs + ref_pic_idx]
-                .as_int = ctx->p_sb_best_mv[0][ref_pic_idx][n_idx];
-        }
+        MeCandidate*  cand     = &me_results->me_candidate_array[pu_index * max_cand];
+        cand->direction        = REF_LIST_0;
+        cand->ref_idx_l0       = ref_pic_idx;
+        cand->ref_idx_l1       = ref_pic_idx;
+        cand->ref0_list        = 0;
+        cand->ref1_list        = 0;
+        me_results->me_mv_array[pu_index * max_refs + ref_pic_idx].as_int = best_mv[n_idx];
     }
 }
 
@@ -2632,6 +2744,7 @@ static void construct_me_candidate_array(PictureParentControlSet* pcs, MeContext
     }
 }
 
+#if CONFIG_ENABLE_GLOBAL_MOTION || !MOBILE_BUILD
 // Active and stationary detection for global motion
 static void perform_gm_detection(
     PictureParentControlSet* pcs, // input parameter, Picture Control Set Ptr
@@ -2660,8 +2773,8 @@ static void perform_gm_detection(
                 pcs->pa_me_data->me_results[sb_index]->me_candidate_array[n_idx * pcs->pa_me_data->max_cand]);
 
             uint32_t list_index    = (me_candidate->direction == 0 || me_candidate->direction == 2)
-                   ? me_candidate->ref0_list
-                   : me_candidate->ref1_list;
+                ? me_candidate->ref0_list
+                : me_candidate->ref1_list;
             uint32_t ref_pic_index = (me_candidate->direction == 0 || me_candidate->direction == 2)
                 ? me_candidate->ref_idx_l0
                 : me_candidate->ref_idx_l1;
@@ -2695,8 +2808,8 @@ static void perform_gm_detection(
                 pcs->pa_me_data->me_results[sb_index]->me_candidate_array[n_idx * pcs->pa_me_data->max_cand]);
 
             uint32_t list_index    = (me_candidate->direction == 0 || me_candidate->direction == 2)
-                   ? me_candidate->ref0_list
-                   : me_candidate->ref1_list;
+                ? me_candidate->ref0_list
+                : me_candidate->ref1_list;
             uint32_t ref_pic_index = (me_candidate->direction == 0 || me_candidate->direction == 2)
                 ? me_candidate->ref_idx_l0
                 : me_candidate->ref_idx_l1;
@@ -2733,6 +2846,7 @@ static void perform_gm_detection(
         }
     }
 }
+#endif // CONFIG_ENABLE_GLOBAL_MOTION || !MOBILE_BUILD
 
 // Compute the distortion per block size based on the ME results
 static void compute_distortion(
@@ -2828,19 +2942,13 @@ static INLINE void init_me_hme_data(MeContext* me_ctx) {
 // below me_ctx->me_static_b64_th, populate the minimal set of outputs that
 // downstream consumers (construct_me_candidate_array*, compute_distortion)
 // need and return true so the caller can skip init/HME/integer ME.
-static bool me_static_b64_bypass(MeContext* me_ctx, uint32_t b64_origin_x, uint32_t b64_origin_y) {
+static bool me_static_b64_bypass(MeContext* me_ctx, uint32_t l0r0_raw) {
     if (!me_ctx->me_static_b64_th) {
         return false;
     }
 
     // The bypass decision uses the list0/ref0 zero-motion SAD: if the block is static against the
     // primary reference, skip the full ME pipeline (HME + integer search).
-    const uint32_t l0r0_raw = get_zz_sad(me_ctx->me_ds_ref_array[0][0].picture_ptr,
-                                         me_ctx,
-                                         b64_origin_x,
-                                         b64_origin_y,
-                                         me_ctx->b64_width,
-                                         me_ctx->b64_height);
     if ((uint64_t)l0r0_raw * 64 * 64 >= (uint64_t)me_ctx->me_static_b64_th * me_ctx->b64_width * me_ctx->b64_height) {
         return false;
     }
@@ -2856,7 +2964,7 @@ static bool me_static_b64_bypass(MeContext* me_ctx, uint32_t b64_origin_x, uint3
     // every reference by init_me_hme_data() at the top of each b64, so disabling it here is per-b64
     // safe. The single-reference path is unchanged (no farther refs to disable).
     const uint32_t zz_sad = (uint32_t)((uint64_t)l0r0_raw * 64 * 64 / (me_ctx->b64_width * me_ctx->b64_height));
-    me_ctx->zz_sad[0][0]                = zz_sad;
+    me_ctx->zz_sad[0][0]  = zz_sad;
     me_ctx->search_results[0][0].do_ref = 1;
     // 64x64
     me_ctx->p_sb_best_sad[0][0][RASTER_SCAN_CU_INDEX_64x64] = zz_sad;
@@ -2878,8 +2986,9 @@ static bool me_static_b64_bypass(MeContext* me_ctx, uint32_t b64_origin_x, uint3
     // Disable every farther reference: do_ref = 0 => skipped in MD, stale SAD never read.
     for (uint32_t list_index = REF_LIST_0; list_index < me_ctx->num_of_list_to_search; ++list_index) {
         for (uint8_t ref_idx = 0; ref_idx < me_ctx->num_of_ref_pic_to_search[list_index]; ++ref_idx) {
-            if (list_index != 0 || ref_idx != 0)
+            if (list_index != 0 || ref_idx != 0) {
                 me_ctx->search_results[list_index][ref_idx].do_ref = 0;
+            }
         }
     }
     return true;
@@ -2916,9 +3025,18 @@ EbErrorType svt_aom_motion_estimation_b64(
     // processed b64, which can drive an out-of-bounds reference fetch in inter prediction
     // (observed as a SIGSEGV in svt_av1_convolve_2d_copy_sr_neon on edge SBs at >=1080p RTC).
     init_me_hme_data(me_ctx);
-    if (!me_static_b64_bypass(me_ctx, b64_origin_x, b64_origin_y)) {
+    // The list0/ref0 zero-MV SAD is used by both the static-block bypass and the HME zz SAD init.
+    const uint32_t l0r0_zz_sad = me_ctx->me_static_b64_th || me_ctx->me_early_exit_th || me_ctx->me_safe_limit_zz_th
+        ? get_zz_sad(me_ctx->me_ds_ref_array[0][0].picture_ptr,
+                     me_ctx,
+                     b64_origin_x,
+                     b64_origin_y,
+                     me_ctx->b64_width,
+                     me_ctx->b64_height)
+        : 0;
+    if (!me_static_b64_bypass(me_ctx, l0r0_zz_sad)) {
         // HME: Perform Hierarchical Motion Estimation for all reference frames for the current 64x64 block.
-        hme_b64(pcs, b64_origin_x, b64_origin_y, me_ctx, input_ptr);
+        hme_b64(pcs, b64_origin_x, b64_origin_y, me_ctx, input_ptr, l0r0_zz_sad);
 
         if (me_ctx->me_type == ME_MCTF && me_ctx->search_results[0][0].hme_sad < me_ctx->tf_me_exit_th) {
             me_ctx->tf_use_pred_64x64_only_th = (uint8_t)~0;
@@ -2955,9 +3073,11 @@ EbErrorType svt_aom_motion_estimation_b64(
         // Perform GM detection if GM is enabled
         pcs->rc_me_allow_gm[b64_index] = 0;
 
+#if CONFIG_ENABLE_GLOBAL_MOTION || !MOBILE_BUILD
         if (pcs->gm_ctrls.enabled) {
             perform_gm_detection(pcs, b64_index, me_ctx);
         }
+#endif
     }
     return return_error;
 }

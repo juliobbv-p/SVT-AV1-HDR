@@ -184,7 +184,10 @@ EbErrorType svt_aom_motion_estimation_kernel_iter(void* context) {
                             _mm_prefetch(p, _MM_HINT_T2);
                         }
 #endif
-                        me_context_ptr->me_ctx->b64_src_ptr    = &input_padded_pic->y_buffer[buffer_index];
+                        me_context_ptr->me_ctx->b64_src_ptr = &input_padded_pic->y_buffer[buffer_index];
+#if EN_AVX512_SUPPORT
+                        me_context_ptr->me_ctx->ext_sad_prep_src = NULL;
+#endif
                         me_context_ptr->me_ctx->b64_src_stride = input_padded_pic->y_stride;
 
                         // Load the 1/4 decimated SB from the 1/4 decimated input to the 1/4 intermediate SB buffer
@@ -319,13 +322,13 @@ EbErrorType svt_aom_motion_estimation_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_motion_estimation_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_motion_estimation_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_motion_estimation_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

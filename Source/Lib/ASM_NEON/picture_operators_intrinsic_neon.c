@@ -159,45 +159,55 @@ void svt_residual_kernel8bit_neon(uint8_t* input, uint32_t input_stride, uint8_t
 }
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-void svt_full_distortion_kernel32_bits_neon(int32_t* coeff, int32_t* recon_coeff, uint32_t stride, uint32_t area_width,
-                                            uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]) {
-    int64x2_t residual_distortion = vdupq_n_s64(0);
-    int64x2_t residual_prediction = vdupq_n_s64(0);
+static inline void full_dist_sqacc_hbd_neon(const int32_t* coeff, const int32_t* recon_coeff, int64x2_t* p0,
+                                            int64x2_t* p1, int64x2_t* r0, int64x2_t* r1) {
+    const int32x4_t c = vld1q_s32(coeff);
+    const int32x4_t d = vsubq_s32(c, vld1q_s32(recon_coeff));
+    // Highbd coefficients and errors can exceed int16. Keep exact widening
+    // squares, with independent low/high chains instead of serial updates.
+    *p0 = vmlal_s32(*p0, vget_low_s32(c), vget_low_s32(c));
+    *p1 = vmlal_high_s32(*p1, c, c);
+    *r0 = vmlal_s32(*r0, vget_low_s32(d), vget_low_s32(d));
+    *r1 = vmlal_high_s32(*r1, d, d);
+}
 
-    do {
-        int32_t* coeff_temp       = coeff;
-        int32_t* recon_coeff_temp = recon_coeff;
-
-        uint32_t col_count = area_width;
-        do {
-            int32x4_t x0 = vld1q_s32(coeff_temp);
-            int32x4_t y0 = vld1q_s32(recon_coeff_temp);
-
-            int32x2_t x_lo = vget_low_s32(x0);
-            int32x2_t x_hi = vget_high_s32(x0);
-            int32x2_t y_lo = vget_low_s32(y0);
-            int32x2_t y_hi = vget_high_s32(y0);
-
-            residual_prediction = vmlal_s32(residual_prediction, x_lo, x_lo);
-            residual_prediction = vmlal_s32(residual_prediction, x_hi, x_hi);
-
-            int32x2_t x_lo_sub = vsub_s32(x_lo, y_lo);
-            int32x2_t x_hi_sub = vsub_s32(x_hi, y_hi);
-
-            residual_distortion = vmlal_s32(residual_distortion, x_lo_sub, x_lo_sub);
-            residual_distortion = vmlal_s32(residual_distortion, x_hi_sub, x_hi_sub);
-
-            coeff_temp += 4;
-            recon_coeff_temp += 4;
-            col_count -= 4;
-        } while (col_count != 0);
-
+static inline void full_distortion_hbd_neon(const int32_t* coeff, const int32_t* recon_coeff, uint32_t stride,
+                                            uint32_t width, uint32_t height, uint64_t* distortion) {
+    int64x2_t p0 = vdupq_n_s64(0), p1 = vdupq_n_s64(0);
+    int64x2_t r0 = vdupq_n_s64(0), r1 = vdupq_n_s64(0);
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; x += 4) {
+            full_dist_sqacc_hbd_neon(coeff + x, recon_coeff + x, &p0, &p1, &r0, &r1);
+        }
         coeff += stride;
         recon_coeff += stride;
-    } while (--area_height != 0);
-
-    vst1q_s64((int64_t*)distortion_result, vpaddq_s64(residual_distortion, residual_prediction));
+    }
+    vst1q_s64((int64_t*)distortion, vpaddq_s64(vaddq_s64(r0, r1), vaddq_s64(p0, p1)));
 }
+
+void svt_full_distortion_kernel32_bits_neon(int32_t* coeff, int32_t* recon_coeff, uint32_t stride, uint32_t area_width,
+                                            uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]) {
+    // Constant widths let the compiler unroll each row, including the short
+    // heights produced by N2/N4 transforms. Retain arbitrary row strides.
+    switch (area_width) {
+    case 4:
+        full_distortion_hbd_neon(coeff, recon_coeff, stride, 4, area_height, distortion_result);
+        break;
+    case 8:
+        full_distortion_hbd_neon(coeff, recon_coeff, stride, 8, area_height, distortion_result);
+        break;
+    case 16:
+        full_distortion_hbd_neon(coeff, recon_coeff, stride, 16, area_height, distortion_result);
+        break;
+    case 32:
+        full_distortion_hbd_neon(coeff, recon_coeff, stride, 32, area_height, distortion_result);
+        break;
+    default:
+        full_distortion_hbd_neon(coeff, recon_coeff, stride, area_width, area_height, distortion_result);
+        break;
+    }
+}
+
 #else
 // 8 bit depth variant that assumes the coefficient buffers hold 8-bit-depth
 // transform coefficients, i.e. every element fits in the int16 range
@@ -690,12 +700,145 @@ void svt_compressed_packmsb_neon(uint8_t* in8_bit_buffer, uint32_t in8_stride, u
     }
 }
 
+static INLINE void pack2d_16_neon(const uint8_t* msb, const uint8_t* lsb, uint16_t* out) {
+    const uint8x16_t m = vld1q_u8(msb);
+    const uint8x16_t l = vld1q_u8(lsb);
+    vst1q_u16(out, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l, m)), 6));
+    vst1q_u16(out + 8, vshrq_n_u16(vreinterpretq_u16_u8(vzip2q_u8(l, m)), 6));
+}
+
+static INLINE void pack2d_padded_rows_neon(const uint8_t* msb, uint32_t msb_stride, const uint8_t* lsb, uint16_t* out,
+                                           uint32_t lsb_stride, uint32_t out_stride, uint32_t width, uint32_t rows) {
+    for (uint32_t y = 0; y < rows; ++y) {
+        for (uint32_t x = 0; x + 16 <= width; x += 16) {
+            pack2d_16_neon(msb + y * msb_stride + x, lsb + y * lsb_stride + x, out + y * out_stride + x);
+        }
+        if ((width & 15) == 8) {
+            const uint32_t   tail = width & ~15u;
+            const uint8x16_t m    = vcombine_u8(vld1_u8(msb + y * msb_stride + tail), vdup_n_u8(0));
+            const uint8x16_t l    = vcombine_u8(vld1_u8(lsb + y * lsb_stride + tail), vdup_n_u8(0));
+            vst1q_u16(out + y * out_stride + tail, vshrq_n_u16(vreinterpretq_u16_u8(vzip1q_u8(l, m)), 6));
+        } else if (width == 20) {
+            const uint8x8_t m = load_unaligned_u8_4x1(msb + y * msb_stride + 16);
+            const uint8x8_t l = load_unaligned_u8_4x1(lsb + y * lsb_stride + 16);
+            vst1_u16(out + y * out_stride + 16, vshr_n_u16(vreinterpret_u16_u8(vzip1_u8(l, m)), 6));
+        }
+    }
+}
+
+// Specialize padded prediction widths while retaining arbitrary strides
+// and even heights. Unscaled NEON 2D windows need only a four-pixel border.
+static INLINE void pack2d_padded_neon(uint8_t* msb, uint32_t msb_stride, uint8_t* lsb, uint16_t* out,
+                                      uint32_t lsb_stride, uint32_t out_stride, uint32_t width, uint32_t height,
+                                      uint32_t rows) {
+    uint32_t y = 0;
+    for (; y + rows <= height; y += rows) {
+        pack2d_padded_rows_neon(msb, msb_stride, lsb, out, lsb_stride, out_stride, width, rows);
+        msb += rows * msb_stride;
+        lsb += rows * lsb_stride;
+        out += rows * out_stride;
+    }
+    for (; y < height; y += 2) {
+        pack2d_padded_rows_neon(msb, msb_stride, lsb, out, lsb_stride, out_stride, width, 2);
+        msb += 2 * msb_stride;
+        lsb += 2 * lsb_stride;
+        out += 2 * out_stride;
+    }
+}
+
+// Isolate the unrolled widths so their register allocation does not slow
+// the common 32-pixel path.
+static NOINLINE void pack2d_padded_widths_neon(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8_t* inn_bit_buffer,
+                                               uint16_t* out16_bit_buffer, uint32_t inn_stride, uint32_t out_stride,
+                                               uint32_t width, uint32_t height) {
+    if (width == 24) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 24, height, 4);
+        return;
+    }
+    if (width == 48) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 48, height, 4);
+        return;
+    }
+    if (width == 80) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 80, height, 4);
+        return;
+    }
+    if (width == 40) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 40, height, 4);
+        return;
+    }
+    if (width == 72) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 72, height, 4);
+        return;
+    }
+    if (width == 136) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 136, height, 4);
+        return;
+    }
+    if (width == 20) {
+        pack2d_padded_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, 20, height, 2);
+        return;
+    }
+}
+
 void svt_enc_msb_pack2d_neon(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8_t* inn_bit_buffer,
                              uint16_t* out16_bit_buffer, uint32_t inn_stride, uint32_t out_stride, uint32_t width,
                              uint32_t height) {
     uint32_t count_width, count_height;
 
-    if (width == 4) {
+    if (width == 32) {
+        for (count_height = 0; count_height < height; count_height += 2) {
+            const uint8x16_t inn_bit_buffer_1 = vld1q_u8(inn_bit_buffer);
+            const uint8x16_t inn_bit_buffer_2 = vld1q_u8(inn_bit_buffer + 16);
+            const uint8x16_t inn_bit_buffer_3 = vld1q_u8(inn_bit_buffer + inn_stride);
+            const uint8x16_t inn_bit_buffer_4 = vld1q_u8(inn_bit_buffer + inn_stride + 16);
+
+            const uint8x16_t in_8bit_buffer1 = vld1q_u8(in8_bit_buffer);
+            const uint8x16_t in_8bit_buffer2 = vld1q_u8(in8_bit_buffer + 16);
+            const uint8x16_t in_8bit_buffer3 = vld1q_u8(in8_bit_buffer + in8_stride);
+            const uint8x16_t in_8bit_buffer4 = vld1q_u8(in8_bit_buffer + in8_stride + 16);
+
+            const uint16x8_t out_pixel_1 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_1, in_8bit_buffer1)), 6);
+            const uint16x8_t out_pixel_2 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_1, in_8bit_buffer1)), 6);
+            const uint16x8_t out_pixel_3 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_2, in_8bit_buffer2)), 6);
+            const uint16x8_t out_pixel_4 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_2, in_8bit_buffer2)), 6);
+            const uint16x8_t out_pixel_5 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_3, in_8bit_buffer3)), 6);
+            const uint16x8_t out_pixel_6 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_3, in_8bit_buffer3)), 6);
+            const uint16x8_t out_pixel_7 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_4, in_8bit_buffer4)), 6);
+            const uint16x8_t out_pixel_8 = vshrq_n_u16(
+                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_4, in_8bit_buffer4)), 6);
+
+            vst1q_u16(out16_bit_buffer + 0, out_pixel_1);
+            vst1q_u16(out16_bit_buffer + 8, out_pixel_2);
+            vst1q_u16(out16_bit_buffer + 16, out_pixel_3);
+            vst1q_u16(out16_bit_buffer + 24, out_pixel_4);
+            vst1q_u16(out16_bit_buffer + out_stride + 0, out_pixel_5);
+            vst1q_u16(out16_bit_buffer + out_stride + 8, out_pixel_6);
+            vst1q_u16(out16_bit_buffer + out_stride + 16, out_pixel_7);
+            vst1q_u16(out16_bit_buffer + out_stride + 24, out_pixel_8);
+
+            in8_bit_buffer += (in8_stride << 1);
+            inn_bit_buffer += (inn_stride << 1);
+            out16_bit_buffer += (out_stride << 1);
+        }
+    } else if (width == 24 || width == 48 || width == 80 || width == 20 || width == 40 || width == 72 || width == 136) {
+        pack2d_padded_widths_neon(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, out16_bit_buffer, inn_stride, out_stride, width, height);
+    } else if (width == 4) {
         for (count_height = 0; count_height < height; count_height += 2) {
             vst1_u16(out16_bit_buffer,
                      vshr_n_u16(vreinterpret_u16_u8(vzip1_u8(load_unaligned_u8_4x1(inn_bit_buffer),
@@ -751,48 +894,6 @@ void svt_enc_msb_pack2d_neon(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8
             vst1q_u16(out16_bit_buffer + 8, out_pixel_2);
             vst1q_u16(out16_bit_buffer + out_stride + 0, out_pixel_3);
             vst1q_u16(out16_bit_buffer + out_stride + 8, out_pixel_4);
-
-            in8_bit_buffer += (in8_stride << 1);
-            inn_bit_buffer += (inn_stride << 1);
-            out16_bit_buffer += (out_stride << 1);
-        }
-    } else if (width == 32) {
-        for (count_height = 0; count_height < height; count_height += 2) {
-            const uint8x16_t inn_bit_buffer_1 = vld1q_u8(inn_bit_buffer);
-            const uint8x16_t inn_bit_buffer_2 = vld1q_u8(inn_bit_buffer + 16);
-            const uint8x16_t inn_bit_buffer_3 = vld1q_u8(inn_bit_buffer + inn_stride);
-            const uint8x16_t inn_bit_buffer_4 = vld1q_u8(inn_bit_buffer + inn_stride + 16);
-
-            const uint8x16_t in_8bit_buffer1 = vld1q_u8(in8_bit_buffer);
-            const uint8x16_t in_8bit_buffer2 = vld1q_u8(in8_bit_buffer + 16);
-            const uint8x16_t in_8bit_buffer3 = vld1q_u8(in8_bit_buffer + in8_stride);
-            const uint8x16_t in_8bit_buffer4 = vld1q_u8(in8_bit_buffer + in8_stride + 16);
-
-            const uint16x8_t out_pixel_1 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_1, in_8bit_buffer1)), 6);
-            const uint16x8_t out_pixel_2 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_1, in_8bit_buffer1)), 6);
-            const uint16x8_t out_pixel_3 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_2, in_8bit_buffer2)), 6);
-            const uint16x8_t out_pixel_4 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_2, in_8bit_buffer2)), 6);
-            const uint16x8_t out_pixel_5 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_3, in_8bit_buffer3)), 6);
-            const uint16x8_t out_pixel_6 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_3, in_8bit_buffer3)), 6);
-            const uint16x8_t out_pixel_7 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip1q_u8(inn_bit_buffer_4, in_8bit_buffer4)), 6);
-            const uint16x8_t out_pixel_8 = vshrq_n_u16(
-                vreinterpretq_u16_u8(vzip2q_u8(inn_bit_buffer_4, in_8bit_buffer4)), 6);
-
-            vst1q_u16(out16_bit_buffer + 0, out_pixel_1);
-            vst1q_u16(out16_bit_buffer + 8, out_pixel_2);
-            vst1q_u16(out16_bit_buffer + 16, out_pixel_3);
-            vst1q_u16(out16_bit_buffer + 24, out_pixel_4);
-            vst1q_u16(out16_bit_buffer + out_stride + 0, out_pixel_5);
-            vst1q_u16(out16_bit_buffer + out_stride + 8, out_pixel_6);
-            vst1q_u16(out16_bit_buffer + out_stride + 16, out_pixel_7);
-            vst1q_u16(out16_bit_buffer + out_stride + 24, out_pixel_8);
 
             in8_bit_buffer += (in8_stride << 1);
             inn_bit_buffer += (inn_stride << 1);

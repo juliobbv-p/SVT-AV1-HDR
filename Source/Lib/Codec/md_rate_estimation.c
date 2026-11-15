@@ -484,34 +484,24 @@ static void svt_av1_build_nmv_cost_table(int32_t* mvjoint, int32_t* mvcost[2], c
  * based on the frame CDF
  ***************************************************************************/
 void svt_aom_estimate_mv_rate(PictureControlSet* pcs, MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc) {
+    int32_t* mvcost[2]               = {&md_rate_est_ctx->mv_costs[0][MV_MAX], &md_rate_est_ctx->mv_costs[1][MV_MAX]};
+    md_rate_est_ctx->nmvcoststack[0] = mvcost[0];
+    md_rate_est_ctx->nmvcoststack[1] = mvcost[1];
     if (pcs->approx_inter_rate) {
-        memset(md_rate_est_ctx->nmv_vec_cost, 0, sizeof(int32_t) * MV_JOINTS);
-        memset(md_rate_est_ctx->nmv_costs, 0, sizeof(int32_t) * MV_VALS * 2);
-        md_rate_est_ctx->nmvcoststack[0] = &md_rate_est_ctx->nmv_costs[0][MV_MAX];
-        md_rate_est_ctx->nmvcoststack[1] = &md_rate_est_ctx->nmv_costs[1][MV_MAX];
+        if (!md_rate_est_ctx->nmv_costs_zero) {
+            memset(md_rate_est_ctx->nmv_vec_cost, 0, sizeof(int32_t) * MV_JOINTS);
+            memset(md_rate_est_ctx->mv_costs, 0, sizeof(int32_t) * MV_VALS * 2);
+            md_rate_est_ctx->nmv_costs_zero = true;
+        }
         return;
     }
-    int32_t*     nmvcost[2];
-    int32_t*     nmvcost_hp[2];
-    FrameHeader* frm_hdr = &pcs->ppcs->frm_hdr;
-
-    nmvcost[0]                            = &md_rate_est_ctx->nmv_costs[0][MV_MAX];
-    nmvcost[1]                            = &md_rate_est_ctx->nmv_costs[1][MV_MAX];
-    nmvcost_hp[0]                         = &md_rate_est_ctx->nmv_costs_hp[0][MV_MAX];
-    nmvcost_hp[1]                         = &md_rate_est_ctx->nmv_costs_hp[1][MV_MAX];
-    const uint8_t allow_high_precision_mv = frm_hdr->allow_high_precision_mv;
-    svt_av1_build_nmv_cost_table(md_rate_est_ctx->nmv_vec_cost, // out
-                                 allow_high_precision_mv ? nmvcost_hp : nmvcost, // out
-                                 &fc->nmvc,
-                                 allow_high_precision_mv);
-    md_rate_est_ctx->nmvcoststack[0] = allow_high_precision_mv ? &md_rate_est_ctx->nmv_costs_hp[0][MV_MAX]
-                                                               : &md_rate_est_ctx->nmv_costs[0][MV_MAX];
-    md_rate_est_ctx->nmvcoststack[1] = allow_high_precision_mv ? &md_rate_est_ctx->nmv_costs_hp[1][MV_MAX]
-                                                               : &md_rate_est_ctx->nmv_costs[1][MV_MAX];
-
+    FrameHeader* frm_hdr            = &pcs->ppcs->frm_hdr;
+    md_rate_est_ctx->nmv_costs_zero = false;
     if (frm_hdr->allow_intrabc) {
-        int32_t* dvcost[2] = {&md_rate_est_ctx->dv_cost[0][MV_MAX], &md_rate_est_ctx->dv_cost[1][MV_MAX]};
-        svt_av1_build_nmv_cost_table(md_rate_est_ctx->dv_joint_cost, dvcost, &fc->ndvc, MV_SUBPEL_NONE);
+        svt_av1_build_nmv_cost_table(md_rate_est_ctx->dv_joint_cost, mvcost, &fc->ndvc, MV_SUBPEL_NONE);
+    } else {
+        svt_av1_build_nmv_cost_table(
+            md_rate_est_ctx->nmv_vec_cost, mvcost, &fc->nmvc, frm_hdr->allow_high_precision_mv);
     }
 }
 
@@ -520,7 +510,12 @@ void svt_aom_estimate_mv_rate(PictureControlSet* pcs, MdRateEstimationContext* m
  * Estimate the rate of the quantized coefficient
  * based on the frame CDF
  ***************************************************************************/
+#if CONFIG_ENABLE_FAST_DECODE_3
+void svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc,
+                                        int32_t dec_pos_rate) {
+#else
 void svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* fc) {
+#endif
     const int32_t num_planes = 3; // NM - Hardcoded to 3
     const int32_t nplanes    = AOMMIN(num_planes, PLANE_TYPES);
 
@@ -572,11 +567,35 @@ void svt_aom_estimate_coefficients_rate(MdRateEstimationContext* md_rate_est_ctx
             for (int ctx = 0; ctx < SIG_COEF_CONTEXTS; ++ctx) {
                 svt_aom_get_syntax_rate_from_cdf(pcost->base_cost[ctx], fc->coeff_base_cdf[tx_size][plane][ctx], NULL);
             }
+#if CONFIG_ENABLE_FAST_DECODE_3
+            // Each scan position before eob codes exactly one coeff_base_eob or coeff_base symbol, so the
+            // per-position decoder-complexity rate is folded into those costs (used by MD and RDOQ).
+            if (dec_pos_rate) {
+                for (int ctx = 0; ctx < SIG_COEF_CONTEXTS_EOB; ++ctx) {
+                    for (int l = 0; l < 3; ++l) {
+                        pcost->base_eob_cost[ctx][l] += dec_pos_rate;
+                    }
+                }
+                for (int ctx = 0; ctx < SIG_COEF_CONTEXTS; ++ctx) {
+                    for (int l = 0; l <= NUM_BASE_LEVELS + 1; ++l) {
+                        pcost->base_cost[ctx][l] += dec_pos_rate;
+                    }
+                }
+            }
+#endif
             for (int ctx = 0; ctx < SIG_COEF_CONTEXTS; ++ctx) {
                 pcost->base_cost[ctx][4] = 0;
                 pcost->base_cost[ctx][5] = pcost->base_cost[ctx][1] + av1_cost_literal(1) - pcost->base_cost[ctx][0];
                 pcost->base_cost[ctx][6] = pcost->base_cost[ctx][2] - pcost->base_cost[ctx][1];
                 pcost->base_cost[ctx][7] = pcost->base_cost[ctx][3] - pcost->base_cost[ctx][2];
+            }
+            pcost->base_cost16_ok = true;
+            for (int l = 0; l < 4; ++l) {
+                for (int ctx = 0; ctx < 64; ++ctx) {
+                    const int32_t c = ctx < SIG_COEF_CONTEXTS ? pcost->base_cost[ctx][l] : 0;
+                    pcost->base_cost16_ok &= c >= 0 && c <= INT16_MAX;
+                    pcost->base_cost16[l][ctx] = (int16_t)c;
+                }
             }
             for (int ctx = 0; ctx < EOB_COEF_CONTEXTS; ++ctx) {
                 svt_aom_get_syntax_rate_from_cdf(
@@ -792,13 +811,13 @@ static AOM_INLINE void update_palette_cdf(MacroBlockD* xd, const MbModeInfo* con
  ******************************************************************************/
 static AOM_INLINE void sum_intra_stats(PictureControlSet* pcs, BlkStruct* blk_ptr, const int intraonly,
                                        const int mi_row, const int mi_col) {
-    MacroBlockD*            xd       = blk_ptr->av1xd;
-    const MbModeInfo* const mbmi     = xd->mi[0];
-    FRAME_CONTEXT*          fc       = xd->tile_ctx;
-    const PredictionMode    y_mode   = mbmi->block_mi.mode;
-    const BlockSize         bsize    = mbmi->bsize;
-    const int               bwidth   = block_size_wide[bsize];
-    const int               bheight  = block_size_high[bsize];
+    MacroBlockD*            xd      = blk_ptr->av1xd;
+    const MbModeInfo* const mbmi    = xd->mi[0];
+    FRAME_CONTEXT*          fc      = xd->tile_ctx;
+    const PredictionMode    y_mode  = mbmi->block_mi.mode;
+    const BlockSize         bsize   = mbmi->bsize;
+    const int               bwidth  = block_size_wide[bsize];
+    const int               bheight = block_size_high[bsize];
     assert(bsize < BLOCK_SIZES_ALL);
     assert(y_mode < 13);
 

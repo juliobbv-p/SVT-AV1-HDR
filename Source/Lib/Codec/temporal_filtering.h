@@ -73,9 +73,9 @@ extern "C" {
 EbErrorType svt_av1_init_temporal_filtering(PictureParentControlSet** pcs_list, PictureParentControlSet* centre_pcs,
                                             MotionEstimationContext_t* me_context_ptr, int32_t segment_index);
 void        svt_av1_apply_zz_based_temporal_filter_planewise_medium_c(
-           MeContext* me_ctx, const uint8_t* y_pre, int y_pre_stride, const uint8_t* u_pre, const uint8_t* v_pre,
-           int uv_pre_stride, unsigned int block_width, unsigned int block_height, int ss_x, int ss_y, uint32_t* y_accum,
-           uint16_t* y_count, uint32_t* u_accum, uint16_t* u_count, uint32_t* v_accum, uint16_t* v_count);
+    MeContext* me_ctx, const uint8_t* y_pre, int y_pre_stride, const uint8_t* u_pre, const uint8_t* v_pre,
+    int uv_pre_stride, unsigned int block_width, unsigned int block_height, int ss_x, int ss_y, uint32_t* y_accum,
+    uint16_t* y_count, uint32_t* u_accum, uint16_t* u_count, uint32_t* v_accum, uint16_t* v_count);
 
 void svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c(
     MeContext* me_ctx, const uint16_t* y_pre, int y_pre_stride, const uint16_t* u_pre, const uint16_t* v_pre,
@@ -98,6 +98,7 @@ void svt_av1_apply_temporal_filter_planewise_medium_hbd_c(
     uint32_t encoder_bit_depth);
 
 int32_t svt_aom_noise_log1p_fp16(int32_t noise_level_fp16);
+int32_t svt_aom_tf_n_decay_fp10(int32_t decay_control, int32_t noise_log1p_fp16);
 
 typedef struct {
     uint8_t      subpel_pel_mode;
@@ -116,6 +117,8 @@ typedef struct {
     uint8_t      subsampling_shift;
     uint32_t     idx_x;
     uint32_t     idx_y;
+    // prepared source block for the luma distortion, or NULL
+    const SrcVarCtx* sv;
 } TF_SUBPEL_SEARCH_PARAMS;
 #ifdef __cplusplus
 }

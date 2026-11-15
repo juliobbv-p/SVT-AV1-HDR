@@ -348,7 +348,7 @@ unsigned svt_aom_obmc_variance64x16_neon(const uint8_t* pre, int pre_stride, con
                                                                  int            yoffset,    \
                                                                  const int32_t* wsrc,       \
                                                                  const int32_t* mask,       \
-                                                                 unsigned int*  sse) {       \
+                                                                 unsigned int*  sse) {      \
         uint8_t tmp0[w * (h + padding)];                                                    \
         uint8_t tmp1[w * h];                                                                \
         var_filter_block2d_bil_w##w(pre, tmp0, pre_stride, 1, h + padding, xoffset);        \
@@ -363,7 +363,7 @@ unsigned svt_aom_obmc_variance64x16_neon(const uint8_t* pre, int pre_stride, con
                                                                  int            yoffset,        \
                                                                  const int32_t* wsrc,           \
                                                                  const int32_t* mask,           \
-                                                                 unsigned int*  sse) {           \
+                                                                 unsigned int*  sse) {          \
         if (xoffset == 0) {                                                                     \
             if (yoffset == 0) {                                                                 \
                 return svt_aom_obmc_variance##w##x##h##_neon(pre, pre_stride, wsrc, mask, sse); \

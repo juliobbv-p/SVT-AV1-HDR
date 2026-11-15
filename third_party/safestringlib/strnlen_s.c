@@ -53,7 +53,7 @@
  *    strnterminate_s()
  *
  */
-rsize_t strnlen_s(const char *dest, rsize_t dmax) {
+rsize_t strnlen_s(const char* dest, rsize_t dmax) {
     rsize_t count;
 
     if (dest == NULL) {

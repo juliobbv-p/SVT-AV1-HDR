@@ -37,28 +37,33 @@ static INLINE __m128i paeth_row_sse4_1(__m128i t, __m128i l, __m128i tl) {
     return _mm_blendv_epi8(top_or_tl, l, mask_left);
 }
 
-#define HBD_PAETH_FN(w, h)                                                                                     \
-    void svt_aom_highbd_paeth_predictor_##w##x##h##_sse4_1(uint16_t* dst, ptrdiff_t stride,                    \
-                                                           const uint16_t* above, const uint16_t* left,        \
-                                                           int32_t bd) {                                       \
-        (void)bd;                                                                                              \
-        const __m128i tl = _mm_set1_epi16((int16_t)above[-1]);                                                 \
-        for (int32_t r = 0; r < h; r++, dst += stride) {                                                       \
-            const __m128i l = _mm_set1_epi16((int16_t)left[r]);                                                \
-            for (int32_t c = 0; c < w; c += 8) {                                                               \
-                const __m128i t   = (w == 4) ? _mm_loadl_epi64((const __m128i*)(above + c))                    \
-                                             : _mm_loadu_si128((const __m128i*)(above + c));                   \
-                const __m128i res = paeth_row_sse4_1(t, l, tl);                                                \
-                if (w == 4)                                                                                    \
-                    _mm_storel_epi64((__m128i*)(dst + c), res);                                                \
-                else                                                                                           \
-                    _mm_storeu_si128((__m128i*)(dst + c), res);                                                \
-            }                                                                                                  \
-        }                                                                                                      \
+#define HBD_PAETH_FN(w, h)                                                                          \
+    void svt_aom_highbd_paeth_predictor_##w##x##h##_sse4_1(                                         \
+        uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int32_t bd) { \
+        (void)bd;                                                                                   \
+        const __m128i tl = _mm_set1_epi16((int16_t)above[-1]);                                      \
+        for (int32_t r = 0; r < h; r++, dst += stride) {                                            \
+            const __m128i l = _mm_set1_epi16((int16_t)left[r]);                                     \
+            for (int32_t c = 0; c < w; c += 8) {                                                    \
+                const __m128i t   = (w == 4) ? _mm_loadl_epi64((const __m128i*)(above + c))         \
+                                             : _mm_loadu_si128((const __m128i*)(above + c));        \
+                const __m128i res = paeth_row_sse4_1(t, l, tl);                                     \
+                if (w == 4)                                                                         \
+                    _mm_storel_epi64((__m128i*)(dst + c), res);                                     \
+                else                                                                                \
+                    _mm_storeu_si128((__m128i*)(dst + c), res);                                     \
+            }                                                                                       \
+        }                                                                                           \
     }
 
-#define HBD_PAETH_SIZES(X)                                                                                     \
-    X(4, 4) X(4, 8) X(4, 16) X(8, 4) X(8, 8) X(8, 16) X(8, 32) X(16, 4) X(16, 8) X(16, 16) X(16, 32) X(16, 64) \
-        X(32, 8) X(32, 16) X(32, 32) X(32, 64) X(64, 16) X(64, 32) X(64, 64)
+#define HBD_PAETH_SIZES(X) \
+    X(4, 4)                \
+    X(4, 8)                \
+    X(4, 16)               \
+    X(8, 4)                \
+    X(8, 8)                \
+    X(8, 16)               \
+    X(8, 32)               \
+    X(16, 4) X(16, 8) X(16, 16) X(16, 32) X(16, 64) X(32, 8) X(32, 16) X(32, 32) X(32, 64) X(64, 16) X(64, 32) X(64, 64)
 
 HBD_PAETH_SIZES(HBD_PAETH_FN)

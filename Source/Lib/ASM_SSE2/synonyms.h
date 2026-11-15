@@ -79,12 +79,20 @@ static INLINE __m128i load_u16_4x2_sse2(const uint16_t* const src, const ptrdiff
 
 SIMD_INLINE void store_u8_4x2_sse2(const __m128i src, uint8_t* const dst, const ptrdiff_t stride) {
     xx_storel_32(dst, src);
-    *(int32_t*)(dst + stride) = (_mm_extract_epi16(src, 3) << 16) | _mm_extract_epi16(src, 2);
+    // _mm_extract_epi16 returns a zero-extended lane in an int, so a lane at or
+    // above 0x8000 overflows the sign bit when shifted by 16. Pack through
+    // uint32_t to keep the shift defined.
+    *(int32_t*)(dst + stride) = (int32_t)(((uint32_t)_mm_extract_epi16(src, 3) << 16) |
+                                          (uint32_t)_mm_extract_epi16(src, 2));
 }
 
 SIMD_INLINE void store_u16_2x2_sse2(const __m128i src, uint16_t* const dst, const ptrdiff_t stride) {
     xx_storel_32(dst, src);
-    *(int32_t*)(dst + stride) = (_mm_extract_epi16(src, 3) << 16) | _mm_extract_epi16(src, 2);
+    // _mm_extract_epi16 returns a zero-extended lane in an int, so a lane at or
+    // above 0x8000 overflows the sign bit when shifted by 16. Pack through
+    // uint32_t to keep the shift defined.
+    *(int32_t*)(dst + stride) = (int32_t)(((uint32_t)_mm_extract_epi16(src, 3) << 16) |
+                                          (uint32_t)_mm_extract_epi16(src, 2));
 }
 
 SIMD_INLINE void store_s16_4x2_sse2(const __m128i src, int16_t* const dst, const ptrdiff_t stride) {

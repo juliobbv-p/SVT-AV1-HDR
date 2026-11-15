@@ -202,7 +202,7 @@ uint8_t svt_aom_get_gm_core_level(EncMode enc_mode, bool super_res_off) {
 
 uint8_t svt_aom_derive_gm_level(PictureParentControlSet* pcs, bool super_res_off) {
     uint8_t       gm_level  = 0;
-    const EncMode enc_mode  = pcs->enc_mode;
+    const EncMode enc_mode  = SVT_ENC_MODE(pcs->enc_mode);
     const uint8_t is_islice = pcs->slice_type == I_SLICE;
 
     // disable global motion when reference scaling enabled,
@@ -224,7 +224,7 @@ uint8_t svt_aom_derive_gm_level(PictureParentControlSet* pcs, bool super_res_off
  ************************************************/
 static void set_hme_search_params(PictureParentControlSet* pcs, MeContext* me_ctx, ResolutionRange input_resolution) {
     const bool    rtc_tune = pcs->scs->static_config.rtc;
-    const EncMode enc_mode = pcs->enc_mode;
+    const EncMode enc_mode = SVT_ENC_MODE(pcs->enc_mode);
     // Set number of HME level 0 search regions to use
     me_ctx->num_hme_sa_w = 2;
     me_ctx->num_hme_sa_h = 2;
@@ -275,11 +275,11 @@ static void set_hme_search_params(PictureParentControlSet* pcs, MeContext* me_ct
                                             &q_weight_denom,
                                             pcs->scs->static_config.qp);
     me_ctx->hme_l0_sa.sa_min.width  = MAX(8,
-                                         DIVIDE_AND_ROUND(me_ctx->hme_l0_sa.sa_min.width * q_weight, q_weight_denom));
+                                          DIVIDE_AND_ROUND(me_ctx->hme_l0_sa.sa_min.width * q_weight, q_weight_denom));
     me_ctx->hme_l0_sa.sa_min.height = MAX(8,
                                           DIVIDE_AND_ROUND(me_ctx->hme_l0_sa.sa_min.height * q_weight, q_weight_denom));
     me_ctx->hme_l0_sa.sa_max.width  = MAX(96,
-                                         DIVIDE_AND_ROUND(me_ctx->hme_l0_sa.sa_max.width * q_weight, q_weight_denom));
+                                          DIVIDE_AND_ROUND(me_ctx->hme_l0_sa.sa_max.width * q_weight, q_weight_denom));
     me_ctx->hme_l0_sa.sa_max.height = MAX(96,
                                           DIVIDE_AND_ROUND(me_ctx->hme_l0_sa.sa_max.height * q_weight, q_weight_denom));
     // Set the HME Level 1 and Level 2 refinement areas
@@ -297,7 +297,7 @@ static void set_hme_search_params(PictureParentControlSet* pcs, MeContext* me_ct
  ************************************************/
 static void set_me_search_params(SequenceControlSet* scs, PictureParentControlSet* pcs, MeContext* me_ctx,
                                  ResolutionRange input_resolution) {
-    const EncMode enc_mode = pcs->enc_mode;
+    const EncMode enc_mode = SVT_ENC_MODE(pcs->enc_mode);
     const bool    rtc_tune = scs->static_config.rtc;
 
     // Set the min and max ME search area
@@ -716,7 +716,7 @@ static void tf_set_me_hme_params_oq(MeContext* me_ctx, PictureParentControlSet* 
   Output  : ME Kernel signal(s)
 ******************************************************/
 void svt_aom_sig_deriv_me(SequenceControlSet* scs, PictureParentControlSet* pcs, MeContext* me_ctx) {
-    EncMode         enc_mode         = pcs->enc_mode;
+    EncMode         enc_mode         = SVT_ENC_MODE(pcs->enc_mode);
     const uint8_t   sc_class5        = pcs->sc_class5;
     ResolutionRange input_resolution = scs->input_resolution;
     const bool      rtc_tune         = scs->static_config.rtc;
@@ -1683,9 +1683,25 @@ static void svt_aom_set_dlf_controls(PictureParentControlSet* pcs, uint8_t dlf_l
     set controls for intra block copy
 */
 #define MAX_INTRABC_LEVEL 7
+#define RTC_INTRABC_LEVEL \
+    8 // Dedicated light level for RTC keyframes: hash<=8, no mesh, predictor-first early-exit, local search window
+#define RTC_INTRABC_CAND_HEADROOM 8 // Extra fast-candidate slots reserved for the RTC IntraBC DV candidates
 
 static void set_intrabc_level(PictureParentControlSet* pcs, uint8_t ibc_level) {
     IntrabcCtrls* intrabc_ctrls = &pcs->intrabc_ctrls;
+#if !CONFIG_ENABLE_INTRA_BC
+    // IntraBC is compiled out (block_structures.h folds use_intrabc to 0): never signal allow_intrabc, which
+    // would also turn off deblocking, CDEF and restoration for the frame (RTC sets it on screen content).
+    ibc_level = 0;
+#endif
+
+    // Defaults for the clean-room RTC knobs; only the dedicated RTC level overrides them.
+    intrabc_ctrls->pred_first      = 0;
+    intrabc_ctrls->pred_exit_th    = 0;
+    intrabc_ctrls->local_search_sb = 0;
+    intrabc_ctrls->hash_miss_mode  = 0; // default: full diamond search on a hash miss
+    intrabc_ctrls->bvp_th          = 0;
+    intrabc_ctrls->probe_pts       = 0;
 
     switch (ibc_level) {
     case 0:
@@ -1859,6 +1875,40 @@ static void set_intrabc_level(PictureParentControlSet* pcs, uint8_t ibc_level) {
 
         break;
 
+    case RTC_INTRABC_LEVEL:
+
+        intrabc_ctrls->enabled = 1;
+
+        intrabc_ctrls->palette_hint      = 1;
+        intrabc_ctrls->nsq_parent_gating = 1;
+        intrabc_ctrls->b4_parent_gating  = 1; // also gate 4x4 to cut work on keyframes
+
+        // Hash search settings. Hash up to 16x16 so medium blocks get a cheap exact match
+        // (the hash lookup is far cheaper than the diamond search those blocks would otherwise hit).
+        intrabc_ctrls->max_block_size_hash = 16;
+        intrabc_ctrls->max_cand_per_bucket = 16;
+
+        // Mesh search disabled
+        intrabc_ctrls->exhaustive_mesh_thresh = (uint64_t)~0;
+
+        // Keep Left + Top so horizontal text/UI repetition is still found
+        intrabc_ctrls->search_dir = 0;
+
+        // RTC fast path: replace the diamond fallback (the bulk of the per-keyframe DV-search cost)
+        // with block-vector prediction. Predictor-first exact-match early-exit (pred_exit_th=0)
+        // up front; on a hash miss inject the predicted DV gated by a per-pixel SAD budget
+        // (hash_miss_mode=1) instead of searching, since screen-content DVs are spatially coherent.
+        intrabc_ctrls->pred_first      = 1;
+        intrabc_ctrls->pred_exit_th    = 0;
+        intrabc_ctrls->local_search_sb = 0;
+        intrabc_ctrls->hash_miss_mode  = 1; // BVP fallback (no diamond)
+        intrabc_ctrls->bvp_th          = 16;
+        // One-shot 12-point offset probe around the BVP pick: recovers matches that sit a few px
+        // off the spatial predictor, at near-zero cost.
+        intrabc_ctrls->probe_pts = 12;
+
+        break;
+
     default:
         assert(0);
         break;
@@ -1870,6 +1920,11 @@ static void set_intrabc_level(PictureParentControlSet* pcs, uint8_t ibc_level) {
 */
 static void set_palette_level(PictureParentControlSet* pcs, uint8_t palette_level) {
     PaletteCtrls* palette_ctrls = &pcs->palette_ctrls;
+#if !CONFIG_ENABLE_PALETTE
+    // Palette is compiled out (svt_aom_allow_palette() folds to 0, so no palette syntax is written): a nonzero level
+    // would signal allow_screen_content_tools, and the decoder would read palette flags the stream lacks.
+    pcs->palette_level = palette_level = 0;
+#endif
 
     switch (palette_level) {
     case 0:
@@ -1975,6 +2030,12 @@ uint16_t svt_aom_get_max_can_count(EncMode enc_mode, bool rtc) {
         } else {
             mem_max_can_count = 10;
         }
+#if RTC_INTRABC
+        // Headroom for the IntraBC DV candidates injected on RTC I-slices. Enlarges the
+        // fast-candidate buffer allocation only; the per-frame cap (pcs->max_can_count) is reset to
+        // baseline on non-IntraBC frames, so their buffer layout and output stay byte-identical.
+        mem_max_can_count += RTC_INTRABC_CAND_HEADROOM;
+#endif
     } else {
         if (enc_mode <= ENC_M1) {
             mem_max_can_count = 1225;
@@ -2004,7 +2065,7 @@ Output  : Multi-Processes signal(s)
 ******************************************************/
 void svt_aom_sig_deriv_multi_processes_default(SequenceControlSet* scs, PictureParentControlSet* pcs) {
     FrameHeader*          frm_hdr           = &pcs->frm_hdr;
-    EncMode               enc_mode          = pcs->enc_mode;
+    EncMode               enc_mode          = SVT_ENC_MODE(pcs->enc_mode);
     const uint8_t         is_islice         = pcs->slice_type == I_SLICE;
     const uint8_t         is_base           = pcs->temporal_layer_index == 0;
     const ResolutionRange input_resolution  = pcs->input_resolution;
@@ -2209,7 +2270,7 @@ void svt_aom_sig_deriv_multi_processes_default(SequenceControlSet* scs, PictureP
 
 void svt_aom_sig_deriv_multi_processes_rtc(SequenceControlSet* scs, PictureParentControlSet* pcs) {
     FrameHeader*  frm_hdr      = &pcs->frm_hdr;
-    EncMode       enc_mode     = pcs->enc_mode;
+    EncMode       enc_mode     = SVT_ENC_MODE(pcs->enc_mode);
     const uint8_t is_islice    = pcs->slice_type == I_SLICE;
     const uint8_t fast_decode  = scs->static_config.fast_decode;
     const uint8_t sc_class5    = pcs->sc_class5;
@@ -2266,6 +2327,21 @@ void svt_aom_sig_deriv_multi_processes_rtc(SequenceControlSet* scs, PictureParen
 
     // Set intra-bc level
     uint8_t intrabc_level = 0;
+#if RTC_INTRABC
+    // IntraBC is intra-frame-only (AV1 spec: allow_intrabc requires FrameIsIntra) and only helps
+    // screen content. Enable it on RTC I-slices of detected screen content (sc_class5), mirroring
+    // the palette gating below. allow_intrabc also disables the in-loop filters for the frame, so
+    // the strict sc_class5 gate avoids hurting non-screen keyframes.
+    if (scs->static_config.enable_intrabc && is_islice && sc_class5) {
+#if RTC_INTRABC_PRED_FIRST
+        // RTC clamps presets to internal M7-M8 (M9+ has SC tools off), so use the BVP level
+        // across that whole range.
+        intrabc_level = RTC_INTRABC_LEVEL;
+#else
+        intrabc_level = enc_mode <= ENC_M7 ? 6 : MAX_INTRABC_LEVEL;
+#endif
+    }
+#endif
     set_intrabc_level(pcs, intrabc_level);
     frm_hdr->allow_intrabc = pcs->intrabc_ctrls.enabled;
 
@@ -2375,13 +2451,21 @@ void svt_aom_sig_deriv_multi_processes_rtc(SequenceControlSet* scs, PictureParen
         pcs->hbd_md = scs->enable_hbd_mode_decision;
     }
 
-    pcs->max_can_count                 = svt_aom_get_max_can_count(enc_mode, true);
+    pcs->max_can_count = svt_aom_get_max_can_count(enc_mode, true);
+#if RTC_INTRABC
+    // The headroom in svt_aom_get_max_can_count() only enlarges the allocation. On frames that do
+    // not use IntraBC, restore the baseline cap so the fast-candidate buffer partitioning (and the
+    // encoded output) stays byte-identical to baseline.
+    if (!pcs->intrabc_ctrls.enabled) {
+        pcs->max_can_count -= RTC_INTRABC_CAND_HEADROOM;
+    }
+#endif
     pcs->use_best_me_unipred_cand_only = 1;
 }
 
 void svt_aom_sig_deriv_multi_processes_allintra(SequenceControlSet* scs, PictureParentControlSet* pcs) {
     FrameHeader*          frm_hdr          = &pcs->frm_hdr;
-    EncMode               enc_mode         = pcs->enc_mode;
+    EncMode               enc_mode         = SVT_ENC_MODE(pcs->enc_mode);
     const ResolutionRange input_resolution = pcs->input_resolution;
     const uint8_t         fast_decode      = scs->static_config.fast_decode;
     const uint8_t         sc_class5        = pcs->sc_class5;
@@ -2604,7 +2688,7 @@ void svt_aom_set_gm_controls(PictureParentControlSet* pcs, uint8_t gm_level) {
         gm_ctrls->ref_idx0_only           = 1;
         gm_ctrls->rfn_early_exit          = 1;
         gm_ctrls->correspondence_method   = pcs->input_resolution <= INPUT_SIZE_480p_RANGE ? MV_8x8
-              : pcs->input_resolution <= INPUT_SIZE_1080p_RANGE                            ? MV_16x16
+            : pcs->input_resolution <= INPUT_SIZE_1080p_RANGE                              ? MV_16x16
                                                                                            : MV_32x32;
         break;
     case 4:
@@ -2624,7 +2708,7 @@ void svt_aom_set_gm_controls(PictureParentControlSet* pcs, uint8_t gm_level) {
         gm_ctrls->ref_idx0_only           = 1;
         gm_ctrls->rfn_early_exit          = 1;
         gm_ctrls->correspondence_method   = pcs->input_resolution <= INPUT_SIZE_480p_RANGE ? MV_8x8
-              : pcs->input_resolution <= INPUT_SIZE_1080p_RANGE                            ? MV_16x16
+            : pcs->input_resolution <= INPUT_SIZE_1080p_RANGE                              ? MV_16x16
                                                                                            : MV_32x32;
         break;
     default:
@@ -2809,8 +2893,8 @@ void svt_aom_sig_deriv_pre_analysis_pcs(PictureParentControlSet* pcs) {
     svt_aom_derive_input_resolution(&resolution, scs->max_input_luma_width * scs->max_input_luma_height);
     pcs->enable_me_16x16 = svt_aom_get_enable_me_16x16(pcs->enc_mode);
     pcs->enable_me_8x8   = pcs->enable_me_16x16
-          ? svt_aom_get_enable_me_8x8(pcs->enc_mode, resolution, scs->static_config.rtc)
-          : 0;
+        ? svt_aom_get_enable_me_8x8(pcs->enc_mode, resolution, scs->static_config.rtc)
+        : 0;
 
     // Derive HME Flag
     // Set here to allocate resources for the downsampled pictures used in HME (generated in PictureAnalysis)
@@ -2861,7 +2945,12 @@ void svt_aom_sig_deriv_pre_analysis_scs(SequenceControlSet* scs, int8_t enc_mode
         : rtc_tune                          ? get_filter_intra_level_rtc()
                                             : get_filter_intra_level_default(enc_mode);
 
+#if CONFIG_ENABLE_FAST_DECODE_3
+    // Filter intra is slow to reconstruct; off when decoder-complexity RD terms are on
+    scs->seq_header.filter_intra_level = is_filter_intra_used && !scs->dec_cost_ctrls.enabled ? 1 : 0;
+#else
     scs->seq_header.filter_intra_level = is_filter_intra_used ? 1 : 0;
+#endif
 #else
     scs->seq_header.filter_intra_level = 0;
 #endif
@@ -2916,9 +3005,9 @@ void svt_aom_sig_deriv_pre_analysis_scs(SequenceControlSet* scs, int8_t enc_mode
         svt_aom_derive_input_resolution(&fr_res,
                                         scs->max_initial_input_luma_width * scs->max_initial_input_luma_height);
         const uint8_t auto_en              = allintra ? svt_aom_get_enable_restoration_allintra(enc_mode, DEFAULT)
-                         : rtc_tune
-                         ? svt_aom_get_enable_restoration_rtc(DEFAULT, fr_res, scs->static_config.fast_decode)
-                         : svt_aom_get_enable_restoration_default(enc_mode, DEFAULT, fr_res, scs->static_config.fast_decode);
+            : rtc_tune
+            ? svt_aom_get_enable_restoration_rtc(DEFAULT, fr_res, scs->static_config.fast_decode)
+            : svt_aom_get_enable_restoration_default(enc_mode, DEFAULT, fr_res, scs->static_config.fast_decode);
         scs->seq_header.enable_restoration = (scs->static_config.enable_restoration_filtering && auto_en) ? 1 : 0;
     }
 #else
@@ -3865,9 +3954,14 @@ static void md_subpel_pme_controls(ModeDecisionContext* ctx, uint8_t md_subpel_p
 /*
  * Control RDOQ
  */
-static void set_rdoq_controls(ModeDecisionContext* ctx, uint8_t rdoq_level) {
+static void set_rdoq_controls(PictureControlSet* pcs, ModeDecisionContext* ctx, uint8_t rdoq_level) {
     RdoqCtrls* rdoq_ctrls = &ctx->rdoq_ctrls;
 
+    // Lossless frames are not quantized: turn RDOQ off here, once per call, rather than per transform block in
+    // svt_aom_quantize_inv_quantize(), the only reader of rdoq_ctrls.enabled.
+    if (svt_av1_is_lossless_segment(pcs, 0)) {
+        rdoq_level = 0;
+    }
     switch (rdoq_level) {
     case 0:
         rdoq_ctrls->enabled = 0;
@@ -5027,6 +5121,10 @@ void svt_aom_set_nsq_geom_ctrls(ModeDecisionContext* ctx, uint8_t nsq_geom_level
         assert(0);
         break;
     }
+#if !CONFIG_ENABLE_HV4
+    // The vertical 1:4 transforms are compiled out in this build: catch any preset that allows HV4.
+    assert(!nsq_geom_ctrls->allow_HV4);
+#endif
 
     if (allow_HVA_HVB) {
         *allow_HVA_HVB = nsq_geom_ctrls->allow_HVA_HVB;
@@ -5373,7 +5471,7 @@ static void set_nsq_search_ctrls(PictureControlSet* pcs, ModeDecisionContext* ct
     nsq_search_ctrls->component_multiple_th = DIVIDE_AND_ROUND(nsq_search_ctrls->component_multiple_th * q_weight,
                                                                q_weight_denom);
     nsq_search_ctrls->nsq_split_cost_th     = DIVIDE_AND_ROUND(nsq_search_ctrls->nsq_split_cost_th * q_weight,
-                                                           q_weight_denom);
+                                                               q_weight_denom);
     int max_part0_to_part1_dev_offset       = 5;
     max_part0_to_part1_dev_offset = DIVIDE_AND_ROUND(max_part0_to_part1_dev_offset * q_weight, q_weight_denom);
     nsq_search_ctrls->max_part0_to_part1_dev = MAX(
@@ -5503,9 +5601,10 @@ static void set_inter_intra_ctrls(ModeDecisionContext* ctx, uint8_t inter_intra_
 
 static void set_pd0_ctrls(ModeDecisionContext* ctx, uint8_t lpd0_lvl) {
     Pd0Ctrls* ctrls = &ctx->pd0_ctrls;
+    // High-bit-depth PD0 keeps the light DCT/quantization path. The variance-only
+    // shortcuts and their cached ME costs use 8-bit reference samples.
     if (SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
-        ctx->pd0_ctrls.pd0_level = PD0_LVL_0;
-        return;
+        lpd0_lvl = 0;
     }
     switch (lpd0_lvl) {
     case 0:
@@ -6591,7 +6690,7 @@ static bool get_sb_tpl_intra_stats(PictureControlSet* pcs, ModeDecisionContext* 
         const uint32_t mb_origin_x     = ctx->sb_origin_x;
         const uint32_t mb_origin_y     = ctx->sb_origin_y;
         const int      tpl_blk_size    = ppcs->tpl_ctrls.dispenser_search_level == 0 ? 16
-                    : ppcs->tpl_ctrls.dispenser_search_level == 1                    ? 32
+            : ppcs->tpl_ctrls.dispenser_search_level == 1                            ? 32
                                                                                      : 64;
         // tpl_src_stats_buffer is created for 16x16 always, so TPL dispenser is for larger block sizes
         // the step between blocks must be adjusted
@@ -7117,7 +7216,7 @@ static void get_max_block_size_rtc(PictureControlSet* pcs, ModeDecisionContext* 
         return;
     }
 
-    EncMode enc_mode = pcs->enc_mode;
+    EncMode enc_mode = SVT_ENC_MODE(pcs->enc_mode);
 
     uint32_t base_me_var_th;
     if (enc_mode <= ENC_M8) {
@@ -7157,7 +7256,7 @@ static void get_max_block_size_allintra(PictureControlSet* pcs, ModeDecisionCont
         ctx->max_block_size = pcs->scs->super_block_size;
         return;
     }
-    EncMode enc_mode = pcs->enc_mode;
+    EncMode enc_mode = SVT_ENC_MODE(pcs->enc_mode);
     // Base threshold
     uint16_t base_var_th_cap;
 
@@ -7194,7 +7293,7 @@ static void get_max_block_size_allintra(PictureControlSet* pcs, ModeDecisionCont
  * Generate per-SB MD settings (do not change per-PD)
  */
 void svt_aom_sig_deriv_enc_dec_common(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx) {
-    EncMode    enc_mode          = pcs->enc_mode;
+    EncMode    enc_mode          = SVT_ENC_MODE(pcs->enc_mode);
     const bool rtc_tune          = scs->static_config.rtc;
     const bool allintra          = scs->allintra;
     const bool is_not_last_layer = !frame_is_leaf(pcs->ppcs);
@@ -7254,7 +7353,8 @@ void svt_aom_sig_deriv_enc_dec_common(SequenceControlSet* scs, PictureControlSet
         set_lpd1_ctrls(ctx, pcs->pic_lpd1_lvl);
     } else {
         int lpd1_lvl = pcs->pic_lpd1_lvl;
-        if (pcs->slice_type != I_SLICE) {
+        // Lossless frames keep light PD1 off (set in md_config_process): it does not code the 4x4 WHT.
+        if (pcs->slice_type != I_SLICE && !pcs->ppcs->frm_hdr.coded_lossless) {
             int me_8x8 = pcs->ppcs->me_8x8_cost_variance[ctx->sb_index];
             int th     = enc_mode <= ENC_M8 ? 3 * ctx->qp_index : 3000;
             if (lpd1_lvl == 0) {
@@ -7320,7 +7420,7 @@ static void set_depth_early_exit_ctrls(ModeDecisionContext* ctx, uint8_t early_e
 }
 
 // Set signals used for light-pd0 path; only PD0 should call this function
-// assumes NSQ OFF, no 4x4, no chroma, no TXT/TXS/RDOQ/SSSE, SB_64x64
+// Luma-only light search with depth-0 DCTs and quantization, in 8-bit or 10-bit MD.
 void svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx) {
     const Pd0Level           pd0_level = ctx->pd0_ctrls.pd0_level;
     PictureParentControlSet* ppcs      = pcs->ppcs;
@@ -7508,7 +7608,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_default(PictureControlSet* pcs, ModeDec
     uint32_t       me_64x64_distortion  = (uint32_t)~0;
     uint8_t        l0_was_skip = 0, l1_was_skip = 0;
     uint8_t        l0_was_64x64_mvp = 0, l1_was_64x64_mvp = 0;
-    const EncMode  enc_mode = pcs->enc_mode;
+    const EncMode  enc_mode = SVT_ENC_MODE(pcs->enc_mode);
 
     // the frame size of reference pics are different if enable reference scaling.
     // sb info can not be reused because super blocks are mismatched, so we set
@@ -7529,8 +7629,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_default(PictureControlSet* pcs, ModeDec
             l1_was_64x64_mvp              = ref_obj_l1->sb_64x64_mvp[ctx->sb_index];
         }
     }
-    uint8_t ref_skip_perc        = pcs->ref_skip_percentage;
-    ctx->lpd1_globalmv_bypass_th = 0;
+    uint8_t ref_skip_perc = pcs->ref_skip_percentage;
 
     // Set candidate reduction levels
     uint8_t cand_reduction_level = 0;
@@ -7582,7 +7681,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_default(PictureControlSet* pcs, ModeDec
             rdoq_level = MAX(rdoq_level, pcs->rdoq_level);
         }
     }
-    set_rdoq_controls(ctx, rdoq_level);
+    set_rdoq_controls(pcs, ctx, rdoq_level);
 
     set_coeff_shaving_controls(ctx, pcs->coeff_shaving_level);
 
@@ -7700,7 +7799,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_default(PictureControlSet* pcs, ModeDec
 void svt_aom_sig_deriv_enc_dec_light_pd1_rtc(PictureControlSet* pcs, ModeDecisionContext* ctx) {
     Pd1Level                 lpd1_level   = ctx->lpd1_ctrls.pd1_level;
     PictureParentControlSet* ppcs         = pcs->ppcs;
-    const EncMode            enc_mode     = pcs->enc_mode;
+    const EncMode            enc_mode     = SVT_ENC_MODE(pcs->enc_mode);
     uint8_t                  use_flat_ipp = pcs->ppcs->hierarchical_levels == 0;
     // Get ref info, used to set some feature levels
     const uint32_t picture_qp           = ppcs->picture_qp;
@@ -7728,8 +7827,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_rtc(PictureControlSet* pcs, ModeDecisio
             l1_was_64x64_mvp              = ref_obj_l1->sb_64x64_mvp[ctx->sb_index];
         }
     }
-    uint8_t ref_skip_perc        = pcs->ref_skip_percentage;
-    ctx->lpd1_globalmv_bypass_th = 0;
+    uint8_t ref_skip_perc = pcs->ref_skip_percentage;
 
     // Set candidate reduction levels
     uint8_t cand_reduction_level = 0;
@@ -7770,7 +7868,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_rtc(PictureControlSet* pcs, ModeDecisio
             rdoq_level = MAX(rdoq_level, pcs->rdoq_level);
         }
     }
-    set_rdoq_controls(ctx, rdoq_level);
+    set_rdoq_controls(pcs, ctx, rdoq_level);
 
     set_coeff_shaving_controls(ctx, pcs->coeff_shaving_level);
 
@@ -7934,7 +8032,7 @@ void svt_aom_sig_deriv_enc_dec_light_pd1_rtc(PictureControlSet* pcs, ModeDecisio
 }
 
 void svt_aom_sig_deriv_enc_dec_default(PictureControlSet* pcs, ModeDecisionContext* ctx) {
-    EncMode                  enc_mode             = pcs->enc_mode;
+    EncMode                  enc_mode             = SVT_ENC_MODE(pcs->enc_mode);
     PictureParentControlSet* ppcs                 = pcs->ppcs;
     const uint32_t           picture_qp           = ppcs->picture_qp;
     uint32_t                 me_8x8_cost_variance = (uint32_t)~0;
@@ -7984,7 +8082,7 @@ void svt_aom_sig_deriv_enc_dec_default(PictureControlSet* pcs, ModeDecisionConte
     }
 
     uint8_t rdoq_level = pcs->rdoq_level;
-    set_rdoq_controls(ctx, rdoq_level);
+    set_rdoq_controls(pcs, ctx, rdoq_level);
 
     uint8_t coeff_shaving_level = pcs->coeff_shaving_level;
     set_coeff_shaving_controls(ctx, coeff_shaving_level);
@@ -8056,7 +8154,7 @@ void svt_aom_sig_deriv_enc_dec_default(PictureControlSet* pcs, ModeDecisionConte
 }
 
 void svt_aom_sig_deriv_enc_dec_rtc(PictureControlSet* pcs, ModeDecisionContext* ctx) {
-    EncMode                  enc_mode             = pcs->enc_mode;
+    EncMode                  enc_mode             = SVT_ENC_MODE(pcs->enc_mode);
     PictureParentControlSet* ppcs                 = pcs->ppcs;
     const uint32_t           picture_qp           = ppcs->picture_qp;
     uint32_t                 me_8x8_cost_variance = (uint32_t)~0;
@@ -8105,7 +8203,7 @@ void svt_aom_sig_deriv_enc_dec_rtc(PictureControlSet* pcs, ModeDecisionContext* 
     }
 
     uint8_t rdoq_level = pcs->rdoq_level;
-    set_rdoq_controls(ctx, rdoq_level);
+    set_rdoq_controls(pcs, ctx, rdoq_level);
 
     uint8_t coeff_shaving_level = pcs->coeff_shaving_level;
     set_coeff_shaving_controls(ctx, coeff_shaving_level);
@@ -8168,7 +8266,7 @@ void svt_aom_sig_deriv_enc_dec_rtc(PictureControlSet* pcs, ModeDecisionContext* 
 }
 
 void svt_aom_sig_deriv_enc_dec_allintra(PictureControlSet* pcs, ModeDecisionContext* ctx) {
-    EncMode        enc_mode             = pcs->enc_mode;
+    EncMode        enc_mode             = SVT_ENC_MODE(pcs->enc_mode);
     const uint32_t picture_qp           = pcs->ppcs->picture_qp;
     uint32_t       me_8x8_cost_variance = (uint32_t)~0;
     uint32_t       me_64x64_distortion  = (uint32_t)~0;
@@ -8216,7 +8314,7 @@ void svt_aom_sig_deriv_enc_dec_allintra(PictureControlSet* pcs, ModeDecisionCont
     }
 
     uint8_t rdoq_level = pcs->rdoq_level;
-    set_rdoq_controls(ctx, rdoq_level);
+    set_rdoq_controls(pcs, ctx, rdoq_level);
 
     uint8_t coeff_shaving_level = pcs->coeff_shaving_level;
     set_coeff_shaving_controls(ctx, coeff_shaving_level);
@@ -9050,7 +9148,7 @@ static void mfmv_controls(PictureControlSet* pcs, uint8_t mfmv_level) {
 
 void svt_aom_sig_deriv_mode_decision_config_default(SequenceControlSet* scs, PictureControlSet* pcs) {
     PictureParentControlSet* ppcs                = pcs->ppcs;
-    EncMode                  enc_mode            = pcs->enc_mode;
+    EncMode                  enc_mode            = SVT_ENC_MODE(pcs->enc_mode);
     const uint8_t            is_ref              = ppcs->is_ref;
     const uint8_t            is_base             = ppcs->temporal_layer_index == 0;
     const uint8_t            is_layer1           = ppcs->temporal_layer_index == 1;
@@ -9162,6 +9260,15 @@ void svt_aom_sig_deriv_mode_decision_config_default(SequenceControlSet* scs, Pic
     ppcs->pic_obmc_level               = svt_aom_get_obmc_level(enc_mode, sq_qp, scs->seq_qp_mod);
     // Switchable Motion Mode
     frm_hdr->is_motion_mode_switchable = frm_hdr->is_motion_mode_switchable || ppcs->pic_obmc_level;
+#if MOBILE_BUILD && !CONFIG_ENABLE_OBMC
+    // OBMC is compiled out (obmc_level is nonzero only at M6-M8): the switchable motion mode signals warped motion
+    // only; svt_aom_motion_mode_allowed() still writes the spec's use_obmc = 0 symbols.
+    ppcs->pic_obmc_level = 0;
+#if !CONFIG_ENABLE_WARP
+    frm_hdr->allow_warped_motion = 0; // compiled out too: no motion_mode symbols are written
+#endif
+    frm_hdr->is_motion_mode_switchable = frm_hdr->allow_warped_motion;
+#endif
 
     if (enc_mode <= ENC_M9) {
         pcs->approx_inter_rate = 0;
@@ -9663,7 +9770,7 @@ static INLINE bool should_disable_cdf_update(SequenceControlSet* scs, EncMode en
 
 void svt_aom_sig_deriv_mode_decision_config_rtc(SequenceControlSet* scs, PictureControlSet* pcs) {
     PictureParentControlSet* ppcs               = pcs->ppcs;
-    EncMode                  enc_mode           = pcs->enc_mode;
+    EncMode                  enc_mode           = SVT_ENC_MODE(pcs->enc_mode);
     const uint8_t            is_base            = frame_is_boosted(ppcs);
     const ResolutionRange    input_resolution   = ppcs->input_resolution;
     const uint8_t            is_islice          = pcs->slice_type == I_SLICE;
@@ -9770,6 +9877,15 @@ void svt_aom_sig_deriv_mode_decision_config_rtc(SequenceControlSet* scs, Picture
     ppcs->pic_obmc_level               = svt_aom_get_obmc_level(enc_mode, sq_qp, scs->seq_qp_mod);
     // Switchable Motion Mode
     frm_hdr->is_motion_mode_switchable = frm_hdr->is_motion_mode_switchable || ppcs->pic_obmc_level;
+#if MOBILE_BUILD && !CONFIG_ENABLE_OBMC
+    // OBMC is compiled out (obmc_level is nonzero only at M6-M8): the switchable motion mode signals warped motion
+    // only; svt_aom_motion_mode_allowed() still writes the spec's use_obmc = 0 symbols.
+    ppcs->pic_obmc_level = 0;
+#if !CONFIG_ENABLE_WARP
+    frm_hdr->allow_warped_motion = 0; // compiled out too: no motion_mode symbols are written
+#endif
+    frm_hdr->is_motion_mode_switchable = frm_hdr->allow_warped_motion;
+#endif
     if (enc_mode <= ENC_M8) {
         pcs->approx_inter_rate = 0;
     } else {
@@ -10079,7 +10195,7 @@ void svt_aom_sig_deriv_mode_decision_config_rtc(SequenceControlSet* scs, Picture
 
 void svt_aom_sig_deriv_mode_decision_config_allintra(SequenceControlSet* scs, PictureControlSet* pcs) {
     PictureParentControlSet* ppcs             = pcs->ppcs;
-    EncMode                  enc_mode         = pcs->enc_mode;
+    EncMode                  enc_mode         = SVT_ENC_MODE(pcs->enc_mode);
     const ResolutionRange    input_resolution = ppcs->input_resolution;
     const uint8_t            fast_decode      = scs->static_config.fast_decode;
     FrameHeader*             frm_hdr          = &ppcs->frm_hdr;
@@ -10117,7 +10233,11 @@ void svt_aom_sig_deriv_mode_decision_config_allintra(SequenceControlSet* scs, Pi
         rtime_alloc_ec_ctx_array(pcs, all_sb);
     }
 
+#if CONFIG_ENABLE_FAST_DECODE_3
+    pcs->pic_filter_intra_level = scs->dec_cost_ctrls.enabled ? 0 : get_filter_intra_level_allintra(enc_mode);
+#else
     pcs->pic_filter_intra_level = get_filter_intra_level_allintra(enc_mode);
+#endif
     if (pcs->enc_mode <= ENC_M8) {
         pcs->ppcs->use_accurate_part_ctx = true;
     } else {

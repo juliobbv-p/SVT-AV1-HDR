@@ -95,7 +95,7 @@ static INLINE __m128i load_2rows_x8(const uint8_t* r0, const uint8_t* r1) {
                      int32_t        dir,                                                                           \
                      int32_t        damping,                                                                       \
                      int32_t        coeff_shift,                                                                   \
-                     uint8_t        height) {                                                                             \
+                     uint8_t        height) {                                                                      \
         const int*      pri_taps    = svt_aom_eb_cdef_pri_taps[(pri_strength >> coeff_shift) & 1];                 \
         const int*      sec_taps    = svt_aom_eb_cdef_sec_taps[(pri_strength >> coeff_shift) & 1];                 \
         const int32_t   pri_damping = pri_strength ? AOMMAX(0, damping - get_msb(pri_strength)) : 0;               \
@@ -209,7 +209,7 @@ DEFINE_8XN_SSE4(cdef_8xn_native_s4_sse4, 4)
                      int32_t        dir,                                                                          \
                      int32_t        damping,                                                                      \
                      int32_t        coeff_shift,                                                                  \
-                     uint8_t        height) {                                                                            \
+                     uint8_t        height) {                                                                     \
         const int*      pri_taps    = svt_aom_eb_cdef_pri_taps[(pri_strength >> coeff_shift) & 1];                \
         const int*      sec_taps    = svt_aom_eb_cdef_sec_taps[(pri_strength >> coeff_shift) & 1];                \
         const int32_t   pri_damping = pri_strength ? AOMMAX(0, damping - get_msb(pri_strength)) : 0;              \

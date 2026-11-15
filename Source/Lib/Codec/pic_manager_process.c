@@ -342,6 +342,7 @@ void superres_setup_child_pcs(SequenceControlSet* entry_scs_ptr, PictureParentCo
     }
 
     child_pcs->enc_dec_coded_sb_count = 0;
+    child_pcs->sb_final_blk_arr_used  = 0;
 }
 
 /* Picture Manager Kernel */
@@ -679,6 +680,7 @@ EbErrorType svt_aom_picture_manager_kernel_iter(void* context) {
         child_pcs->b64_total_count      = entry_ppcs->b64_total_count;
 
         child_pcs->enc_dec_coded_sb_count = 0;
+        child_pcs->sb_final_blk_arr_used  = 0;
         child_pcs->hbd_md                 = SVT_EFFECTIVE_HBD_MD(entry_ppcs->hbd_md);
         context_ptr->pmgr_dec_order       = child_pcs->ppcs->decode_order;
         // Update consecutive_dec_order using the min-heap of pending decode orders.
@@ -841,10 +843,11 @@ EbErrorType svt_aom_picture_manager_kernel_iter(void* context) {
                 }
                 // Set the Reference Object
                 EbReferenceObject* ref_obj = (EbReferenceObject*)ref_entry->reference_object_ptr->object_ptr;
-                child_pcs->ref_pic_ptr_array[list_idx][ref_idx] = ref_entry->reference_object_ptr;
-                child_pcs->ref_base_q_idx[list_idx][ref_idx]    = ref_obj->base_q_idx;
-                child_pcs->ref_slice_type[list_idx][ref_idx]    = ref_obj->slice_type;
-                child_pcs->ref_pic_r0[list_idx][ref_idx]        = ref_obj->r0;
+                child_pcs->ref_pic_ptr_array[list_idx][ref_idx]                   = ref_entry->reference_object_ptr;
+                child_pcs->ref_pic_buf[svt_get_ref_frame_type(list_idx, ref_idx)] = ref_obj->reference_picture;
+                child_pcs->ref_base_q_idx[list_idx][ref_idx]                      = ref_obj->base_q_idx;
+                child_pcs->ref_slice_type[list_idx][ref_idx]                      = ref_obj->slice_type;
+                child_pcs->ref_pic_r0[list_idx][ref_idx]                          = ref_obj->r0;
                 // Increment the Reference's liveCount by the number of tiles in the
                 // input picture
                 svt_object_inc_live_count(ref_entry->reference_object_ptr, 1);
@@ -879,15 +882,8 @@ EbErrorType svt_aom_picture_manager_kernel_iter(void* context) {
             // off in low layers.
             child_pcs->ppcs->refresh_frame_context = REFRESH_FRAME_CONTEXT_BACKWARD;
         }
-        EbObjectWrapper* out_results_wrapper;
-        // Get Empty Results Object
-        svt_get_empty_object(context_ptr->picture_manager_output_fifo_ptr, &out_results_wrapper);
-        RateControlTasks* rc_tasks = (RateControlTasks*)out_results_wrapper->object_ptr;
-        rc_tasks->pcs_wrapper      = child_pcs->c_pcs_wrapper_ptr;
-        rc_tasks->task_type        = RC_INPUT;
-
-        // Post the Full Results Object
-        svt_post_full_object(out_results_wrapper);
+        // Read entry_ppcs before posting to RC: once posted, the parent PCS can be
+        // released and reused for the next input (single-PPCS pool in low delay).
         // Remove the Input Entry from the Input Queue
         input_entry->input_object_ptr = NULL;
         svt_block_on_mutex(enc_ctx->ref_pic_list_mutex);
@@ -902,6 +898,16 @@ EbErrorType svt_aom_picture_manager_kernel_iter(void* context) {
             }
         }
         svt_release_mutex(enc_ctx->ref_pic_list_mutex);
+
+        EbObjectWrapper* out_results_wrapper;
+        // Get Empty Results Object
+        svt_get_empty_object(context_ptr->picture_manager_output_fifo_ptr, &out_results_wrapper);
+        RateControlTasks* rc_tasks = (RateControlTasks*)out_results_wrapper->object_ptr;
+        rc_tasks->pcs_wrapper      = child_pcs->c_pcs_wrapper_ptr;
+        rc_tasks->task_type        = RC_INPUT;
+
+        // Post the Full Results Object
+        svt_post_full_object(out_results_wrapper);
     }
 
     svt_block_on_mutex(enc_ctx->ref_pic_list_mutex);
@@ -933,13 +939,13 @@ EbErrorType svt_aom_picture_manager_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_picture_manager_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_picture_manager_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_picture_manager_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

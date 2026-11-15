@@ -18,17 +18,11 @@ static const int crc_bits        = 16;
 static const int block_size_bits = 3;
 
 static void hash_table_clear_all(HashTable* p_hash_table) {
-    if (p_hash_table->p_lookup_table == NULL) {
+    if (p_hash_table->bucket_count == NULL) {
         return;
     }
-    int max_addr = 1 << (crc_bits + block_size_bits);
-    for (int i = 0; i < max_addr; i++) {
-        if (p_hash_table->p_lookup_table[i] != NULL) {
-            svt_aom_vector_destroy(p_hash_table->p_lookup_table[i]);
-            EB_FREE(p_hash_table->p_lookup_table[i]);
-            p_hash_table->p_lookup_table[i] = NULL;
-        }
-    }
+    memset(p_hash_table->bucket_count, 0, sizeof(*p_hash_table->bucket_count) << (crc_bits + block_size_bits));
+    p_hash_table->num_entries = 0;
 }
 
 static void get_pixels_in_1d_char_array_by_block_2x2(uint8_t* y_src, int stride, uint8_t* p_pixels_in1D) {
@@ -93,61 +87,36 @@ static uint32_t get_xor_hash_value_hbd(const uint16_t a, const uint16_t b, const
 }
 
 void svt_av1_hash_table_destroy(HashTable* p_hash_table) {
-    hash_table_clear_all(p_hash_table);
-    EB_FREE_ARRAY(p_hash_table->p_lookup_table);
-    p_hash_table->p_lookup_table = NULL;
+    EB_FREE_ARRAY(p_hash_table->bucket_start);
+    EB_FREE_ARRAY(p_hash_table->bucket_count);
+    EB_FREE_ARRAY(p_hash_table->fill_cursor);
+    EB_FREE_ARRAY(p_hash_table->entries);
+    p_hash_table->num_entries      = 0;
+    p_hash_table->entries_capacity = 0;
 }
 
 EbErrorType svt_aom_rtime_alloc_svt_av1_hash_table_create(HashTable* p_hash_table) {
-    EbErrorType err_code = EB_ErrorNone;
-    ;
-
-    if (p_hash_table->p_lookup_table != NULL) {
+    if (p_hash_table->bucket_count != NULL) {
         hash_table_clear_all(p_hash_table);
-        return err_code;
+        return EB_ErrorNone;
     }
     const int max_addr = 1 << (crc_bits + block_size_bits);
-    EB_CALLOC_ARRAY(p_hash_table->p_lookup_table, max_addr);
-
-    return err_code;
-}
-
-static bool hash_table_add_to_table(HashTable* p_hash_table, uint32_t hash_value, const BlockHash* curr_block_hash,
-                                    uint16_t max_cand_per_bucket) {
-    if (p_hash_table->p_lookup_table[hash_value] == NULL) {
-        EB_MALLOC_OBJECT_NO_CHECK(p_hash_table->p_lookup_table[hash_value]);
-        if (p_hash_table->p_lookup_table[hash_value] == NULL) {
-            return false;
-        }
-        if (svt_aom_vector_setup(p_hash_table->p_lookup_table[hash_value], 10, sizeof(*curr_block_hash)) ==
-            VECTOR_ERROR) {
-            return false;
-        }
-    }
-    // Place an upper bound each hash table bucket to up to 256 intrabc
-    // block candidates, and ignore subsequent ones. Considering more can
-    // unnecessarily slow down encoding for virtually no efficiency gain.
-    if (svt_aom_vector_byte_size(p_hash_table->p_lookup_table[hash_value]) <
-        max_cand_per_bucket * sizeof(*curr_block_hash)) {
-        if (svt_aom_vector_push_back(p_hash_table->p_lookup_table[hash_value], (void*)curr_block_hash) ==
-            VECTOR_ERROR) {
-            return false;
-        }
-    }
-    return true;
+    EB_MALLOC_ARRAY(p_hash_table->bucket_start, max_addr);
+    EB_CALLOC_ARRAY(p_hash_table->bucket_count, max_addr);
+    EB_MALLOC_ARRAY(p_hash_table->fill_cursor, 1llu << crc_bits);
+    p_hash_table->entries          = NULL;
+    p_hash_table->num_entries      = 0;
+    p_hash_table->entries_capacity = 0;
+    return EB_ErrorNone;
 }
 
 int32_t svt_av1_hash_table_count(const HashTable* p_hash_table, uint32_t hash_value) {
-    if (p_hash_table->p_lookup_table[hash_value] == NULL) {
-        return 0;
-    } else {
-        return (int32_t)(p_hash_table->p_lookup_table[hash_value]->size);
-    }
+    return p_hash_table->bucket_count[hash_value];
 }
 
-Iterator svt_av1_hash_get_first_iterator(HashTable* p_hash_table, uint32_t hash_value) {
+const BlockHash* svt_av1_hash_get_first(const HashTable* p_hash_table, uint32_t hash_value) {
     assert(svt_av1_hash_table_count(p_hash_table, hash_value) > 0);
-    return svt_aom_vector_begin(p_hash_table->p_lookup_table[hash_value]);
+    return &p_hash_table->entries[p_hash_table->bucket_start[hash_value]];
 }
 
 void svt_av1_generate_block_2x2_hash_value(const Yv12BufferConfig* picture, uint32_t* pic_block_hash) {
@@ -215,19 +184,20 @@ void svt_av1_generate_block_hash_value(const Yv12BufferConfig* picture, int bloc
     }
 }
 
-bool svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data(HashTable* p_hash_table, uint32_t* pic_hash,
-                                                                         int pic_width, int pic_height, int block_size,
-                                                                         uint16_t max_cand_per_bucket) {
-    const int x_end = pic_width - block_size + 1;
-    const int y_end = pic_height - block_size + 1;
-
-    int add_value = hash_block_size_to_index(block_size);
-    assert(add_value >= 0);
-    add_value <<= crc_bits;
-    const int crc_mask = (1 << crc_bits) - 1;
-    int       step     = block_size;
-    int       x_offset = 0;
-    int       y_offset = 0;
+// Walk every candidate block of one block size in the hierarchical exploration order below. With
+// fill == false, count the entries each bucket keeps (capped at max_cand_per_bucket); with fill ==
+// true, write them. Both passes visit blocks in the same order, so each bucket keeps the same blocks
+// in the same order as a single push-back pass would.
+static void explore_blocks(HashTable* p_hash_table, const uint32_t* pic_hash, int pic_width, int x_end, int y_end,
+                           int block_size, int add_value, uint16_t max_cand_per_bucket, bool fill) {
+    const uint32_t  crc_mask = (1 << crc_bits) - 1;
+    uint16_t*       count    = p_hash_table->bucket_count;
+    const uint32_t* start    = p_hash_table->bucket_start;
+    uint16_t*       cursor   = p_hash_table->fill_cursor;
+    BlockHash*      entries  = p_hash_table->entries;
+    int             step     = block_size;
+    int             x_offset = 0;
+    int             y_offset = 0;
 
     // Explore the entire frame hierarchically to add intrabc candidate blocks to
     // the hash table, by starting with coarser steps (the block size), towards
@@ -261,16 +231,19 @@ bool svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data(HashTab
     while (step > 1) {
         for (int x_pos = x_offset; x_pos < x_end; x_pos += step) {
             for (int y_pos = y_offset; y_pos < y_end; y_pos += step) {
-                const int pos = y_pos * pic_width + x_pos;
-                BlockHash curr_block_hash;
-
-                curr_block_hash.x = x_pos;
-                curr_block_hash.y = y_pos;
-
-                const uint32_t hash_value1  = (pic_hash[pos] & crc_mask) + add_value;
-                curr_block_hash.hash_value2 = pic_hash[pos];
-                if (!hash_table_add_to_table(p_hash_table, hash_value1, &curr_block_hash, max_cand_per_bucket)) {
-                    return false;
+                const int      pos         = y_pos * pic_width + x_pos;
+                const uint32_t bucket      = pic_hash[pos] & crc_mask;
+                const uint32_t hash_value1 = bucket + add_value;
+                // Keep only the first max_cand_per_bucket blocks of each bucket in exploration order.
+                if (!fill) {
+                    if (count[hash_value1] < max_cand_per_bucket) {
+                        count[hash_value1]++;
+                    }
+                } else if (cursor[bucket] < count[hash_value1]) {
+                    BlockHash* e   = &entries[start[hash_value1] + cursor[bucket]++];
+                    e->x           = x_pos;
+                    e->y           = y_pos;
+                    e->hash_value2 = pic_hash[pos];
                 }
             }
         }
@@ -302,7 +275,39 @@ bool svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data(HashTab
             y_offset = 0;
         }
     }
+}
 
+bool svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data(HashTable* p_hash_table, uint32_t* pic_hash,
+                                                                         int pic_width, int pic_height, int block_size,
+                                                                         uint16_t max_cand_per_bucket) {
+    const int x_end = pic_width - block_size + 1;
+    const int y_end = pic_height - block_size + 1;
+
+    int add_value = hash_block_size_to_index(block_size);
+    assert(add_value >= 0);
+    add_value <<= crc_bits;
+
+    // Each block size owns its own range of 1 << crc_bits buckets, so it can be counted, laid out
+    // and filled independently of the other sizes.
+    explore_blocks(p_hash_table, pic_hash, pic_width, x_end, y_end, block_size, add_value, max_cand_per_bucket, false);
+
+    uint32_t total = p_hash_table->num_entries;
+    for (int b = 0; b < (1 << crc_bits); b++) {
+        p_hash_table->bucket_start[add_value + b] = total;
+        total += p_hash_table->bucket_count[add_value + b];
+    }
+    if (total > p_hash_table->entries_capacity) {
+        EB_REALLOC_ARRAY_NO_CHECK(p_hash_table->entries, total);
+        if (p_hash_table->entries == NULL) {
+            p_hash_table->entries_capacity = 0;
+            return false;
+        }
+        p_hash_table->entries_capacity = total;
+    }
+    p_hash_table->num_entries = total;
+
+    memset(p_hash_table->fill_cursor, 0, sizeof(*p_hash_table->fill_cursor) << crc_bits);
+    explore_blocks(p_hash_table, pic_hash, pic_width, x_end, y_end, block_size, add_value, max_cand_per_bucket, true);
     return true;
 }
 

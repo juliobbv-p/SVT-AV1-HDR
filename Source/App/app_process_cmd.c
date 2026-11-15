@@ -798,6 +798,12 @@ void process_input_buffer(EncChannel* channel) {
             test_update_mg_size_info(header_ptr->pts, header_ptr);
 #endif
             retrieve_roi_map_event(app_cfg->roi_map, header_ptr->pts, header_ptr);
+            AomFilmGrain   grain;
+            EbPrivDataNode grain_node = {FILM_GRAIN_EVENT, &grain, sizeof(grain), header_ptr->p_app_private};
+            if (app_cfg->fgs_table.head) {
+                lookup_film_grain_table(&app_cfg->fgs_table, header_ptr->pts, &app_cfg->config, &grain);
+                header_ptr->p_app_private = &grain_node;
+            }
 #ifdef LIBDOVI_FOUND
             retrieve_dovi_rpu_for_frame(app_cfg->dovi_rpus, header_ptr->pts, header_ptr);
 #endif
@@ -809,6 +815,9 @@ void process_input_buffer(EncChannel* channel) {
                 return_value = APP_ExitConditionFinished;
             }
             // p_app_private is deep copied so it's safe to free it now
+            if (app_cfg->fgs_table.head) {
+                header_ptr->p_app_private = grain_node.next;
+            }
             free_private_data_list(header_ptr->p_app_private);
 
             if (app_cfg->mmap.enable) {

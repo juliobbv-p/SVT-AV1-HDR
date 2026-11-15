@@ -50,9 +50,8 @@ typedef struct PacketizationReorderEntry {
     //small size bitstream for show existing frame
     Bitstream* bitstream_ptr;
     //valid when has_show_existing is true
-    int64_t                  next_pts;
-    uint8_t                  is_alt_ref;
-    struct SvtMetadataArray* metadata;
+    int64_t next_pts;
+    uint8_t is_alt_ref;
 } PacketizationReorderEntry;
 
 EbErrorType svt_aom_packetization_reorder_entry_ctor(PacketizationReorderEntry* entry_ptr, uint32_t picture_number);

@@ -1188,7 +1188,7 @@ static AOM_FORCE_INLINE void highbd_dr_prediction_z1_32xn_internal_avx2(int32_t 
                     res[1] = a_mbase_x;
                 }
                 res1        = _mm256_inserti128_si256(res[0], _mm256_castsi256_si128(res[1]),
-                                               1); // 16 16bit values
+                                                      1); // 16 16bit values
                 base_inc256 = _mm256_setr_epi16(base + j,
                                                 base + j + 1,
                                                 base + j + 2,
@@ -1307,7 +1307,7 @@ static void highbd_dr_prediction_z1_64xn_avx2(int32_t N, uint16_t* dst, ptrdiff_
                     res[1] = a_mbase_x;
                 }
                 res1        = _mm256_inserti128_si256(res[0], _mm256_castsi256_si128(res[1]),
-                                               1); // 16 16bit values
+                                                      1); // 16 16bit values
                 base_inc256 = _mm256_setr_epi16(base + j,
                                                 base + j + 1,
                                                 base + j + 2,
@@ -1559,13 +1559,13 @@ static void dr_prediction_z2_nx8_avx2(int32_t N, uint8_t* dst, ptrdiff_t stride,
             _mm_storeu_si128((__m128i*)base_y_c, base_y_c128);
 
             a0_y        = _mm_setr_epi16(left[base_y_c[0]],
-                                  left[base_y_c[1]],
-                                  left[base_y_c[2]],
-                                  left[base_y_c[3]],
-                                  left[base_y_c[4]],
-                                  left[base_y_c[5]],
-                                  left[base_y_c[6]],
-                                  left[base_y_c[7]]);
+                                         left[base_y_c[1]],
+                                         left[base_y_c[2]],
+                                         left[base_y_c[3]],
+                                         left[base_y_c[4]],
+                                         left[base_y_c[5]],
+                                         left[base_y_c[6]],
+                                         left[base_y_c[7]]);
             base_y_c128 = _mm_add_epi16(base_y_c128, _mm_srli_epi16(_mm256_castsi256_si128(a16), 4));
             _mm_storeu_si128((__m128i*)base_y_c, base_y_c128);
 
@@ -1715,21 +1715,21 @@ static void dr_prediction_z2_hxw_avx2(int32_t H, int32_t W, uint8_t* dst, ptrdif
                     _mm256_store_si256((__m256i*)base_y_c, base_y_c256);
 
                     a0_y        = _mm256_setr_epi16(left[base_y_c[0]],
-                                             left[base_y_c[1]],
-                                             left[base_y_c[2]],
-                                             left[base_y_c[3]],
-                                             left[base_y_c[4]],
-                                             left[base_y_c[5]],
-                                             left[base_y_c[6]],
-                                             left[base_y_c[7]],
-                                             left[base_y_c[8]],
-                                             left[base_y_c[9]],
-                                             left[base_y_c[10]],
-                                             left[base_y_c[11]],
-                                             left[base_y_c[12]],
-                                             left[base_y_c[13]],
-                                             left[base_y_c[14]],
-                                             left[base_y_c[15]]);
+                                                    left[base_y_c[1]],
+                                                    left[base_y_c[2]],
+                                                    left[base_y_c[3]],
+                                                    left[base_y_c[4]],
+                                                    left[base_y_c[5]],
+                                                    left[base_y_c[6]],
+                                                    left[base_y_c[7]],
+                                                    left[base_y_c[8]],
+                                                    left[base_y_c[9]],
+                                                    left[base_y_c[10]],
+                                                    left[base_y_c[11]],
+                                                    left[base_y_c[12]],
+                                                    left[base_y_c[13]],
+                                                    left[base_y_c[14]],
+                                                    left[base_y_c[15]]);
                     base_y_c256 = _mm256_add_epi16(base_y_c256, c1);
                     _mm256_store_si256((__m256i*)base_y_c, base_y_c256);
 
@@ -2933,16 +2933,16 @@ static void highbd_dr_prediction_z2_nx8_32bit_avx2(int32_t N, uint16_t* dst, ptr
                 mask    = _mm_cmpgt_epi8(*(__m128i*)(highbd_even_odd_maskx[base_shift] + 16), _mm_set1_epi8(15));
                 a1_x128 = _mm_blendv_epi8(atmp2, atmp3, mask);
                 shift   = _mm256_srli_epi32(_mm256_and_si256(_mm256_slli_epi32(_mm256_setr_epi32(-y * dx,
-                                                                                               (1 << 6) - y * dx,
-                                                                                               (2 << 6) - y * dx,
-                                                                                               (3 << 6) - y * dx,
-                                                                                               (4 << 6) - y * dx,
-                                                                                               (5 << 6) - y * dx,
-                                                                                               (6 << 6) - y * dx,
-                                                                                               (7 << 6) - y * dx),
-                                                                             upsample_above),
-                                                           c3f),
-                                          1);
+                                                                                                 (1 << 6) - y * dx,
+                                                                                                 (2 << 6) - y * dx,
+                                                                                                 (3 << 6) - y * dx,
+                                                                                                 (4 << 6) - y * dx,
+                                                                                                 (5 << 6) - y * dx,
+                                                                                                 (6 << 6) - y * dx,
+                                                                                                 (7 << 6) - y * dx),
+                                                                               upsample_above),
+                                                             c3f),
+                                            1);
             } else {
                 a1_x128 = _mm_loadu_si128((__m128i*)(above + base_x + 1 + base_shift));
                 a0_x128 = _mm_shuffle_epi8(a0_x128, *(__m128i*)highbd_load_maskx[base_shift]);
@@ -3134,21 +3134,21 @@ static void highbd_dr_prediction_z2_hxw_avx2(int32_t H, int32_t W, uint16_t* dst
                 _mm256_storeu_si256((__m256i*)base_y_c, base_y_c256);
 
                 a0_y        = _mm256_setr_epi16(left[base_y_c[0]],
-                                         left[base_y_c[1]],
-                                         left[base_y_c[2]],
-                                         left[base_y_c[3]],
-                                         left[base_y_c[4]],
-                                         left[base_y_c[5]],
-                                         left[base_y_c[6]],
-                                         left[base_y_c[7]],
-                                         left[base_y_c[8]],
-                                         left[base_y_c[9]],
-                                         left[base_y_c[10]],
-                                         left[base_y_c[11]],
-                                         left[base_y_c[12]],
-                                         left[base_y_c[13]],
-                                         left[base_y_c[14]],
-                                         left[base_y_c[15]]);
+                                                left[base_y_c[1]],
+                                                left[base_y_c[2]],
+                                                left[base_y_c[3]],
+                                                left[base_y_c[4]],
+                                                left[base_y_c[5]],
+                                                left[base_y_c[6]],
+                                                left[base_y_c[7]],
+                                                left[base_y_c[8]],
+                                                left[base_y_c[9]],
+                                                left[base_y_c[10]],
+                                                left[base_y_c[11]],
+                                                left[base_y_c[12]],
+                                                left[base_y_c[13]],
+                                                left[base_y_c[14]],
+                                                left[base_y_c[15]]);
                 base_y_c256 = _mm256_add_epi16(base_y_c256, c1);
                 _mm256_storeu_si256((__m256i*)base_y_c, base_y_c256);
 
@@ -3343,21 +3343,21 @@ static void highbd_dr_prediction_z2_hxw_32bit_avx2(int32_t H, int32_t W, uint16_
                 resy[0] = _mm256_packus_epi32(res, _mm256_castsi128_si256(_mm256_extracti128_si256(res, 1)));
 
                 a0_y  = _mm256_cvtepu16_epi32(_mm_setr_epi16(left[base_y_c[8]],
-                                                            left[base_y_c[9]],
-                                                            left[base_y_c[10]],
-                                                            left[base_y_c[11]],
-                                                            left[base_y_c[12]],
-                                                            left[base_y_c[13]],
-                                                            left[base_y_c[14]],
-                                                            left[base_y_c[15]]));
+                                                             left[base_y_c[9]],
+                                                             left[base_y_c[10]],
+                                                             left[base_y_c[11]],
+                                                             left[base_y_c[12]],
+                                                             left[base_y_c[13]],
+                                                             left[base_y_c[14]],
+                                                             left[base_y_c[15]]));
                 a1_y  = _mm256_cvtepu16_epi32(_mm_setr_epi16(left[base_y_c[8] + 1],
-                                                            left[base_y_c[9] + 1],
-                                                            left[base_y_c[10] + 1],
-                                                            left[base_y_c[11] + 1],
-                                                            left[base_y_c[12] + 1],
-                                                            left[base_y_c[13] + 1],
-                                                            left[base_y_c[14] + 1],
-                                                            left[base_y_c[15] + 1]));
+                                                             left[base_y_c[9] + 1],
+                                                             left[base_y_c[10] + 1],
+                                                             left[base_y_c[11] + 1],
+                                                             left[base_y_c[12] + 1],
+                                                             left[base_y_c[13] + 1],
+                                                             left[base_y_c[14] + 1],
+                                                             left[base_y_c[15] + 1]));
                 shift = _mm256_srli_epi32(_mm256_and_si256(y_c_1_256, c3f), 1);
 
                 diff = _mm256_sub_epi32(a1_y, a0_y); // a[x+1] - a[x]

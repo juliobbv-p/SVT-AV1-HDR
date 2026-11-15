@@ -29,7 +29,9 @@ void svt_convert_8bit_to_16bit_sse4_1(uint8_t* src, uint32_t src_stride, uint16_
             _mm_storeu_si128((__m128i*)(d + k), _mm_cvtepu8_epi16(v));
             _mm_storeu_si128((__m128i*)(d + k + 8), _mm_cvtepu8_epi16(_mm_srli_si128(v, 8)));
         }
-        for (; k < width; k++) d[k] = s[k];
+        for (; k < width; k++) {
+            d[k] = s[k];
+        }
     }
 }
 
@@ -46,7 +48,9 @@ void svt_convert_16bit_to_8bit_sse4_1(uint16_t* src, uint32_t src_stride, uint8_
             const __m128i b = _mm_and_si128(_mm_loadu_si128((const __m128i*)(s + k + 8)), lo);
             _mm_storeu_si128((__m128i*)(d + k), _mm_packus_epi16(a, b));
         }
-        for (; k < width; k++) d[k] = (uint8_t)s[k];
+        for (; k < width; k++) {
+            d[k] = (uint8_t)s[k];
+        }
     }
 }
 
@@ -58,17 +62,18 @@ void svt_aom_subtract_block_sse4_1(int rows, int cols, int16_t* diff, ptrdiff_t 
         for (; c + 16 <= cols; c += 16) {
             const __m128i s = _mm_loadu_si128((const __m128i*)(src + c));
             const __m128i p = _mm_loadu_si128((const __m128i*)(pred + c));
-            _mm_storeu_si128((__m128i*)(diff + c),
-                             _mm_sub_epi16(_mm_cvtepu8_epi16(s), _mm_cvtepu8_epi16(p)));
-            _mm_storeu_si128((__m128i*)(diff + c + 8),
-                             _mm_sub_epi16(_mm_cvtepu8_epi16(_mm_srli_si128(s, 8)),
-                                           _mm_cvtepu8_epi16(_mm_srli_si128(p, 8))));
+            _mm_storeu_si128((__m128i*)(diff + c), _mm_sub_epi16(_mm_cvtepu8_epi16(s), _mm_cvtepu8_epi16(p)));
+            _mm_storeu_si128(
+                (__m128i*)(diff + c + 8),
+                _mm_sub_epi16(_mm_cvtepu8_epi16(_mm_srli_si128(s, 8)), _mm_cvtepu8_epi16(_mm_srli_si128(p, 8))));
         }
         for (; c + 8 <= cols; c += 8) {
             const __m128i s = _mm_loadl_epi64((const __m128i*)(src + c));
             const __m128i p = _mm_loadl_epi64((const __m128i*)(pred + c));
             _mm_storeu_si128((__m128i*)(diff + c), _mm_sub_epi16(_mm_cvtepu8_epi16(s), _mm_cvtepu8_epi16(p)));
         }
-        for (; c < cols; c++) diff[c] = (int16_t)(src[c] - pred[c]);
+        for (; c < cols; c++) {
+            diff[c] = (int16_t)(src[c] - pred[c]);
+        }
     }
 }

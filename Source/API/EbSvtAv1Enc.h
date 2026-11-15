@@ -208,6 +208,16 @@ typedef struct SvtAv1SFramePositions {
 
 // Will contain the EbEncApi which will live in the EncHandle class
 // Only modifiable during config-time.
+/* EbSvtAv1EncConfiguration.fast_decode_user_opts bits (used only when built with ENABLE_FAST_DECODE_3) */
+#define SVT_AV1_FD_USER_CDEF (1 << 0) // enable_cdef / cdef_level
+#define SVT_AV1_FD_USER_RESTORATION (1 << 1) // enable_restoration_filtering
+#define SVT_AV1_FD_USER_QM (1 << 2) // enable_qm
+#define SVT_AV1_FD_USER_LAMBDA (1 << 3) // lambda_scale_factors
+#define SVT_AV1_FD_USER_QM_MIN (1 << 4) // min_qm_level
+#define SVT_AV1_FD_USER_QM_MAX (1 << 5) // max_qm_level
+#define SVT_AV1_FD_USER_CHROMA_QM_MIN (1 << 6) // min_chroma_qm_level
+#define SVT_AV1_FD_USER_CHROMA_QM_MAX (1 << 7) // max_chroma_qm_level
+
 typedef struct EbSvtAv1EncConfiguration {
     /**
      * @brief Encoder preset used.
@@ -333,12 +343,13 @@ typedef struct EbSvtAv1EncConfiguration {
      * with an informational log message. This does not convert the input format.
      */
     EbAv1SeqProfile profile;
-    /* Constraints for bitstream in terms of max bitrate and max buffer size.
+    /**
+     * @brief Bitstream tier.
+     * 0: Main tier, for most applications.
+     * 1: High tier, for demanding applications.
      *
-     * 0 = Main, for most applications.
-     * 1 = High, for demanding applications.
-     *
-     * Default is 0. */
+     * Default is Main tier (0).
+     */
     uint32_t tier;
     /**
      * @brief Bitstream level.
@@ -670,6 +681,11 @@ typedef struct EbSvtAv1EncConfiguration {
     * 0: No decoder-targeted speed optimization
     * 1: Level 1 of decoder-targeted speed optimizations (faster decoder-speed than level 0)
     * 2: Level 2 of decoder-targeted speed optimizations (faster decoder-speed than level 1)
+    * 3: Experimental, only in builds with the ENABLE_FAST_DECODE_3 CMake option (rejected otherwise).
+    *    Level 2 plus, for still images (avif), CDEF and loop restoration off, quantization matrices on
+    *    (luma 5, chroma 4), key-frame lambda scale 192, filter intra off and decoder-complexity RD terms.
+    *    Options set through svt_av1_enc_parse_parameter() win; for options assigned directly, see
+    *    fast_decode_user_opts. Other encodes behave as level 2.
     */
     uint8_t fast_decode;
     /* S-Frame interval (frames)
@@ -1025,12 +1041,22 @@ typedef struct EbSvtAv1EncConfiguration {
      * 1..4       : enable the STORE / CLEAR / USE event API. The
      *              ref-buffer pool grows by this many entries (one full
      *              picture buffer each) to hold the locked anchors.
-     *              The encoder still uses all 8 DPB slots dynamically;
-     *              STORE locks one slot at a time, and CLEAR releases.
+     *              The DPB is split: the encoder's own references use
+     *              slots {0..3} and anchors use {4..7}, so at most 4 can
+     *              be held at once. STORE locks one, CLEAR releases it.
      *
      * Validation (svt_av1_verify_settings):
      *   - max_managed_refs <= 4
      *   - if > 0: pred_structure must be LOW_DELAY.
+     *   - if > 0: rate_control_mode must be CBR.
+     *   - if > 0: switch frames must be off (sframe_dist == 0 and no
+     *     sframe_posi). An S-frame refreshes all 8 DPB slots, evicting
+     *     every anchor on the decoder side.
+     *
+     * Additionally rejected in svt_av1_enc_set_parameter once the preset's
+     * reference counts are known: the split requires all counts <= 2, so a
+     * multi-reference preset is refused rather than silently retuned. Use
+     * enc_mode >= 9 with rtc=1, or enc_mode >= 10 without.
      */
     uint8_t max_managed_refs;
 
@@ -1055,6 +1081,27 @@ typedef struct EbSvtAv1EncConfiguration {
      */
     uint8_t max_hierarchical_levels;
 
+    /**
+     * @brief Maximum number of consecutive input frames RTC CBR may skip.
+     *
+     * 0 (default): disabled.
+     * Nonzero values require RTC low-delay CBR. A skipped input makes
+     * svt_av1_enc_send_picture() return EB_NoErrorFrameSkipped and produces no
+     * output packet.
+     */
+    uint8_t max_allowed_consecutive_frames_skips;
+
+    /**
+     * @brief Options that fast_decode 3 must leave unchanged (SVT_AV1_FD_USER_* bits).
+     * Only used when the library is built with ENABLE_FAST_DECODE_3.
+     *
+     * fast_decode 3 changes an option only while it holds its library default. Options set through
+     * svt_av1_enc_parse_parameter() (and so the app) are marked here automatically. A caller that assigns
+     * the struct fields directly cannot be told apart from an unset option when it assigns the default
+     * value (e.g. enable_qm = 0, lambda_scale_factors = 128); to keep such a value, set the matching bit
+     * after svt_av1_enc_init_handle(), which clears this field.
+     */
+    uint8_t fast_decode_user_opts;
     /**
      * @brief Noise normalization strength; modifies the encoder's willingness
      * to boost AC coefficients in low-noise blocks.
@@ -1200,6 +1247,8 @@ typedef struct EbSvtAv1EncConfiguration {
         - sizeof(bool) // enable_intrabc
         - sizeof(uint8_t) // max_managed_refs (ref-frame mgmt)
         - sizeof(uint8_t) // max_hierarchical_levels (runtime MG size change)
+        - sizeof(uint8_t) // max_allowed_consecutive_frames_skips
+        - sizeof(uint8_t) // fast_decode_user_opts
         - sizeof(uint8_t) // noise_norm_strength
         - sizeof(uint8_t) // kf_tf_strength
         - sizeof(bool) // alt_lambda_factors
@@ -1334,7 +1383,10 @@ EB_API EbErrorType svt_av1_enc_stream_header_release(EbBufferHeaderType* stream_
      *
      * Parameter:
      * @ *svt_enc_component  Encoder handler.
-     * @ *p_buffer           Header pointer, picture buffer. */
+     * @ *p_buffer           Header pointer, picture buffer.
+     *
+     * Returns EB_NoErrorFrameSkipped when the input was accepted but no output
+     * packet will be produced. */
 EB_API EbErrorType svt_av1_enc_send_picture(EbComponentType* svt_enc_component, EbBufferHeaderType* p_buffer);
 
 /**

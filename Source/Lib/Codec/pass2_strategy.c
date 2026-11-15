@@ -404,7 +404,7 @@ static void calculate_active_worst_quality(PictureParentControlSet* ppcs, GF_GRO
         double group_av_err             = gf_stats.gf_group_raw_error / rc->baseline_gf_interval;
         double group_av_skip_pct        = gf_stats.gf_group_skip_pct / rc->baseline_gf_interval;
         double group_av_inactive_zone   = ((gf_stats.gf_group_inactive_zone_rows * 2) /
-                                         (rc->baseline_gf_interval * (double)frame_info->mb_rows));
+                                           (rc->baseline_gf_interval * (double)frame_info->mb_rows));
 
         int tmp_q;
         // rc factor is a weight factor that corrects for local rate control drift.
@@ -656,14 +656,14 @@ static void kf_group_rate_assingment(PictureParentControlSet* pcs, FIRSTPASS_STA
     FIRSTPASS_STATS     next_frame;
     av1_zero(next_frame);
 
-    rc->frames_since_key                        = 0;
-    rc->frames_since_cdf_update                 = 0;
-    const FIRSTPASS_STATS*       start_position = twopass->stats_in;
-    int                          kf_bits        = 0;
-    double                       kf_mod_err;
-    double                       kf_group_err          = 0.0;
-    int                          frames_to_key_clipped = INT_MAX;
-    int64_t                      kf_group_bits_clipped = INT64_MAX;
+    rc->frames_since_key                  = 0;
+    rc->frames_since_cdf_update           = 0;
+    const FIRSTPASS_STATS* start_position = twopass->stats_in;
+    int                    kf_bits        = 0;
+    double                 kf_mod_err;
+    double                 kf_group_err          = 0.0;
+    int                    frames_to_key_clipped = INT_MAX;
+    int64_t                kf_group_bits_clipped = INT64_MAX;
 
     twopass->kf_group_bits       = 0; // Total bits available to kf group
     twopass->kf_group_error_left = 0; // Group modified error score.
@@ -924,8 +924,8 @@ void svt_aom_set_rc_param(SequenceControlSet* scs) {
     enc_ctx->two_pass_cfg.vbrmin_section = scs->static_config.vbr_min_section_pct;
     enc_ctx->two_pass_cfg.vbrmax_section = scs->static_config.vbr_max_section_pct;
     enc_ctx->rc_cfg.mode                 = scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_VBR
-                        ? AOM_VBR
-                        : (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR ? AOM_CBR : AOM_Q);
+        ? AOM_VBR
+        : (scs->static_config.rate_control_mode == SVT_AV1_RC_MODE_CBR ? AOM_CBR : AOM_Q);
     enc_ctx->rc_cfg.best_allowed_q       = (int32_t)quantizer_to_qindex[scs->static_config.min_qp_allowed];
     enc_ctx->rc_cfg.worst_allowed_q      = (int32_t)quantizer_to_qindex[scs->static_config.max_qp_allowed];
 

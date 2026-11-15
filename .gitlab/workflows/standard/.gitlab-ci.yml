@@ -27,6 +27,5 @@ Enc OS Diff Test:
       $success
   needs:
     - Linux Enc Test
-    - macOS Enc Test (x86)
-    - macOS Enc Test (m1)
+    - macOS Enc Test
     - Win64 Enc Test

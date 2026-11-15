@@ -70,6 +70,7 @@ static void mode_decision_context_dctor(EbPtr p) {
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_pred_pool);
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_rec_coeff_pool);
     svt_aom_pic_buf_desc_pool_dctor(&obj->cand_quant_pool);
+    EB_FREE_ALIGNED_ARRAY(obj->cand_dct_dct_coeff);
     EB_FREE_ARRAY(obj->cand_bf_tx_depth_1->cand);
     EB_DELETE(obj->cand_bf_tx_depth_1);
     EB_FREE_ARRAY(obj->cand_bf_tx_depth_2->cand);
@@ -80,7 +81,7 @@ static void mode_decision_context_dctor(EbPtr p) {
     EB_FREE_ALIGNED_ARRAY(obj->tmp_conv_buf);
     EB_FREE_ALIGNED_ARRAY(obj->seg_mask_buf);
     EB_FREE_ARRAY(obj->fast_cand_array);
-    EB_FREE_2D(obj->injected_mvs);
+    EB_FREE_ARRAY(obj->injected_mvs);
     EB_FREE_ARRAY(obj->injected_ref_types);
     EB_FREE_ARRAY(obj->fast_cost_array);
     EB_FREE_ARRAY(obj->full_cost_array);
@@ -101,7 +102,7 @@ static void mode_decision_context_dctor(EbPtr p) {
     EB_FREE_ARRAY(obj->uv_cand_buff_indices);
     obj->blocks_to_alloc = 0;
     EB_FREE_ARRAY(obj->md_blk_arr_nsq);
-    EB_FREE_ARRAY(obj->pd0_mds0_best_cost);
+    EB_FREE_ARRAY(obj->pd0_fullpel_var);
     if (obj->rate_est_table) {
         EB_FREE_ARRAY(obj->rate_est_table);
     }
@@ -224,6 +225,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     uint32_t   buffer_index;
     uint32_t   cand_index;
 
+    ctx->intrabc_last_dv.as_int = 0; // no last DV yet (seeds the RTC IntraBC BVP fallback)
     ctx->init_max_block_cnt     = max_block_cnt;
     uint32_t block_max_count_sb = max_block_cnt;
 
@@ -233,6 +235,10 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
 
     ctx->dctor  = mode_decision_context_dctor;
     ctx->hbd_md = enable_hbd_mode_decision;
+
+#if CONFIG_ENABLE_FAST_DECODE_3
+    ctx->dec_cost_ctrls = scs->dec_cost_ctrls;
+#endif
 
     // Zero the tail of md_levels_buf once; it serves as permanent bottom-padding
     // for set_levels() and is never overwritten by svt_av1_txb_init_levels().
@@ -341,6 +347,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     }
     if (use_update_cdf) {
         EB_CALLOC_ARRAY(ctx->rate_est_table, 1);
+        ctx->rate_est_table->nmv_costs_zero = true;
     } else {
         ctx->rate_est_table = NULL;
     }
@@ -388,7 +395,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
         EB_MALLOC(ctx->mask_buf, sb_size * sb_size * sizeof(ctx->mask_buf[0]));
     }
     EB_MALLOC_ARRAY(ctx->md_blk_arr_nsq, block_max_count_sb);
-    EB_MALLOC_ARRAY(ctx->pd0_mds0_best_cost, block_max_count_sb);
+    EB_CALLOC_ARRAY(ctx->pd0_fullpel_var, block_max_count_sb);
     // Fast Candidate Array
     uint16_t max_can_count = svt_aom_get_max_can_count(enc_mode, rtc_tune) + ind_uv_cands;
     EB_MALLOC_ARRAY(ctx->fast_cand_array, max_can_count);
@@ -397,7 +404,7 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
         ctx->fast_cand_array[cand_index].palette_info = NULL;
     }
     svt_aom_assert_err(max_can_count > ind_uv_cands, "Max. candidates is too low");
-    EB_MALLOC_2D(ctx->injected_mvs, (uint16_t)(max_can_count - ind_uv_cands), 2);
+    EB_MALLOC_ARRAY(ctx->injected_mvs, (uint16_t)(max_can_count - ind_uv_cands));
     EB_MALLOC_ARRAY(ctx->injected_ref_types, (max_can_count - ind_uv_cands));
 
     // Set buffers for MD palette search to NULL; will be init'd at runtime if needed
@@ -675,10 +682,12 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
     if (cand_err != EB_ErrorNone) {
         return cand_err;
     }
+    // Zeroed: the debug reuse check compares whole blocks, including coefficients a transform leaves unwritten
+    EB_CALLOC_ALIGNED_ARRAY(ctx->cand_dct_dct_coeff, (size_t)ctx->max_nics * MAX_TX_SQUARE);
 
     for (buffer_index = 0; buffer_index < ctx->max_nics_uv; ++buffer_index) {
         ctx->cand_bf_ptr_array[buffer_index] = &ctx->cand_bf_pool[buffer_index];
-        EbErrorType cbf_err                  = svt_aom_mode_decision_cand_bf_ctor(ctx->cand_bf_ptr_array[buffer_index],
+        EbErrorType cbf_err = svt_aom_mode_decision_cand_bf_ctor(ctx->cand_bf_ptr_array[buffer_index],
                                                                  &ctx->cand_pred_pool.descs[buffer_index],
                                                                  &ctx->cand_rec_coeff_pool.descs[buffer_index],
                                                                  &ctx->cand_quant_pool.descs[buffer_index],
@@ -689,6 +698,11 @@ EbErrorType svt_aom_mode_decision_context_ctor(ModeDecisionContext* ctx, Sequenc
                                                                  &(ctx->full_cost_ssim_array[buffer_index]));
         if (cbf_err != EB_ErrorNone) {
             return cbf_err;
+        }
+        // chroma-only slots never hold a luma candidate
+        if (buffer_index < ctx->max_nics) {
+            ctx->cand_bf_ptr_array[buffer_index]->dct_dct_coeff = ctx->cand_dct_dct_coeff +
+                (size_t)buffer_index * MAX_TX_SQUARE;
         }
     }
 
@@ -784,6 +798,9 @@ void svt_aom_reset_mode_decision(SequenceControlSet* scs, ModeDecisionContext* c
     ctx->hbd_md = SVT_EFFECTIVE_HBD_MD(pcs->hbd_md);
     // Reset MD rate Estimation table to initial values by copying from md_rate_est_ctx
     ctx->md_rate_est_ctx = pcs->md_rate_est_ctx;
+    // Segments are dispatched to EncDec threads dynamically; scoping the last DV to the segment keeps
+    // the BVP fallback independent of the SB->thread mapping (deterministic at any --lp).
+    ctx->intrabc_last_dv.as_int = 0;
     // Reset CABAC Contexts
 
     // Reset Neighbor Arrays at start of new Segment / Picture

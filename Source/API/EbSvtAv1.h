@@ -26,7 +26,7 @@ struct SvtMetadataArray;
 
 // API Version
 #define SVT_AV1_VERSION_MAJOR 4
-#define SVT_AV1_VERSION_MINOR 2
+#define SVT_AV1_VERSION_MINOR 3
 #define SVT_AV1_VERSION_PATCHLEVEL 0
 
 #define SVT_AV1_CHECK_VERSION(major, minor, patch)                                                               \
@@ -137,6 +137,7 @@ typedef enum EbErrorType {
     EB_ErrorDestroyMutexFailed     = (int32_t)0x80002032,
     EB_NoErrorEmptyQueue           = (int32_t)0x80002033,
     EB_NoErrorFifoShutdown         = (int32_t)0x80002034,
+    EB_NoErrorFrameSkipped         = (int32_t)0x80002035,
     EB_ErrorMax                    = 0x7FFFFFFF
 } EbErrorType;
 
@@ -237,7 +238,6 @@ typedef struct EbColorConfig {
 // svt_av1_enc_send_picture API call
 typedef enum {
     PRIVATE_DATA, // data to be passed through and written to the bitstream
-    //FILM_GRAIN_PARAM,        // passing film grain parameters per picture
     REF_FRAME_SCALING_EVENT, // reference frame scaling data per picture
     ROI_MAP_EVENT, // ROI map data per picture
     RES_CHANGE_EVENT, // resolution change data per picture (KF only)
@@ -249,6 +249,7 @@ typedef enum {
     REF_CLEAR_EVENT, // Ref-frame management: release a previously STOREd pic_id (payload: SvtAv1RefFrameCmd)
     REF_USE_EVENT, // Ref-frame management: predict current frame from a STOREd ref (payload: SvtAv1RefFrameCmd)
     MG_SIZE_CHANGE_EVENT, //MG size change data per picture
+    FILM_GRAIN_EVENT,
     PRIVATE_DATA_TYPES // end of private data types
 } PrivDataType;
 
@@ -307,7 +308,9 @@ typedef struct SvtAv1RateInfo {
 //   - Per-event payload: SvtAv1RefFrameCmd { uint32_t pic_id; }
 //     (one STORE + one CLEAR + one USE max per input; pic_id != 0).
 //   - Required encoder config: pred_structure == LOW_DELAY,
-//     rate_control_mode == CBR, hierarchical_levels in {0,1,2}.
+//     rate_control_mode == CBR, hierarchical_levels in {0,1,2}, and a
+//     preset whose reference counts are all <= 2 (enc_mode >= 9 with
+//     rtc=1, or enc_mode >= 10 without), and switch frames off.
 //   - Events apply only on base-layer (temporal_layer_index == 0) inputs.
 //   - Key frames implicitly release all anchors.
 //   - Pre-condition violations either FAIL-HARD (returns
@@ -317,7 +320,7 @@ typedef struct SvtAv1RateInfo {
 //     ERROR + DROP paths.
 //
 // Full workflow, configuration constraints, error-handling matrix,
-// encoder-side mrp_level override mechanics, and memory-overhead notes:
+// encoder-side DPB slot-split mechanics, and memory-overhead notes:
 // see src/Docs/Appendix-Ref-Frame-Management.md
 
 // Payload for the three ref-frame management events (REF_STORE_EVENT,

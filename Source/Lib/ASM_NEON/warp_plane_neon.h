@@ -220,7 +220,7 @@ static AOM_FORCE_INLINE void warp_affine_vertical(uint8_t* pred, int p_width, in
             if (is_compound) {
                 uint16_t* const p       = (uint16_t*)&dst[(i + k + 4) * dst_stride + j];
                 int16x8_t       res_s16 = vcombine_s16(vshrn_n_s32(res_lo, COMPOUND_ROUND1_BITS),
-                                                 vshrn_n_s32(res_hi, COMPOUND_ROUND1_BITS));
+                                                       vshrn_n_s32(res_hi, COMPOUND_ROUND1_BITS));
                 if (do_average) {
                     int16x8_t tmp16 = vreinterpretq_s16_u16(vld1q_u16(p));
                     if (use_dist_wtd_comp_avg) {
@@ -229,7 +229,7 @@ static AOM_FORCE_INLINE void warp_affine_vertical(uint8_t* pred, int p_width, in
                         tmp32_lo           = vmlal_n_s16(tmp32_lo, vget_low_s16(res_s16), bwd);
                         tmp32_hi           = vmlal_n_s16(tmp32_hi, vget_high_s16(res_s16), bwd);
                         tmp16              = vcombine_s16(vshrn_n_s32(tmp32_lo, DIST_PRECISION_BITS),
-                                             vshrn_n_s32(tmp32_hi, DIST_PRECISION_BITS));
+                                                          vshrn_n_s32(tmp32_hi, DIST_PRECISION_BITS));
                     } else {
                         tmp16 = vhaddq_s16(tmp16, res_s16);
                     }

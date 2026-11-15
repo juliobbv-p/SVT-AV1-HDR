@@ -294,8 +294,8 @@ void find_segment_qps(SegmentationParams* segmentation_params,
     uint16_t min_var_log = svt_log2f_safe(min_var);
     uint16_t max_var_log = svt_log2f_safe(max_var);
     uint16_t step_size   = (uint16_t)(max_var_log - min_var_log) <= MAX_SEGMENTS
-          ? 1
-          : ROUND(((max_var_log - min_var_log)) / MAX_SEGMENTS);
+        ? 1
+        : ROUND(((max_var_log - min_var_log)) / MAX_SEGMENTS);
     uint16_t bin_edge    = min_var_log + step_size;
     uint16_t bin_center  = bin_edge >> 1;
 

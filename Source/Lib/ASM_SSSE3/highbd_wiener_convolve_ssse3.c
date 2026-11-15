@@ -117,13 +117,13 @@ void svt_av1_highbd_wiener_convolve_add_src_ssse3(const uint8_t* const src8, con
                 // Filter even-index pixels
                 const uint16_t* data  = &temp[i * MAX_SB_SIZE + j];
                 const __m128i   src_0 = _mm_unpacklo_epi16(*(__m128i*)(data + 0 * MAX_SB_SIZE),
-                                                         *(__m128i*)(data + 1 * MAX_SB_SIZE));
+                                                           *(__m128i*)(data + 1 * MAX_SB_SIZE));
                 const __m128i   src_2 = _mm_unpacklo_epi16(*(__m128i*)(data + 2 * MAX_SB_SIZE),
-                                                         *(__m128i*)(data + 3 * MAX_SB_SIZE));
+                                                           *(__m128i*)(data + 3 * MAX_SB_SIZE));
                 const __m128i   src_4 = _mm_unpacklo_epi16(*(__m128i*)(data + 4 * MAX_SB_SIZE),
-                                                         *(__m128i*)(data + 5 * MAX_SB_SIZE));
+                                                           *(__m128i*)(data + 5 * MAX_SB_SIZE));
                 const __m128i   src_6 = _mm_unpacklo_epi16(*(__m128i*)(data + 6 * MAX_SB_SIZE),
-                                                         *(__m128i*)(data + 7 * MAX_SB_SIZE));
+                                                           *(__m128i*)(data + 7 * MAX_SB_SIZE));
 
                 const __m128i res_0 = _mm_madd_epi16(src_0, coeff_01);
                 const __m128i res_2 = _mm_madd_epi16(src_2, coeff_23);

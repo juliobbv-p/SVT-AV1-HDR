@@ -690,7 +690,7 @@ void svt_av1_rc_init_sb_qindex(PictureControlSet* pcs, SequenceControlSet* scs) 
         }
         // QPM with tpl_la
 #if CONFIG_ENABLE_TPL
-        if (scs->static_config.aq_mode == 2 && ppcs->tpl_ctrls.enable && ppcs->r0 != 0) {
+        if (scs->static_config.aq_mode == 2 && ppcs->tpl_ctrls.enable && ppcs->r0_gen) {
             svt_aom_sb_qp_derivation_tpl_la(pcs);
         }
 #endif

@@ -108,7 +108,7 @@ EbCpuFlags svt_aom_get_cpu_flags_to_use() {
 
 #if defined(__linux__) || HAVE_ELF_AUX_INFO
 
-#if HAVE_SVE && !defined(__ANDROID__)
+#if HAVE_SVE
 static inline uint64_t read_midr_el1(void) {
     uint64_t v;
     __asm__ volatile ("mrs %0, midr_el1" : "=r"(v));
@@ -120,6 +120,7 @@ static inline uint64_t read_midr_el1(void) {
 // hwcap values are not defined should not prevent features from being enabled.
 #define AOM_AARCH64_HWCAP_NEON (1 << 1)
 #define AOM_AARCH64_HWCAP_CRC32 (1 << 7)
+#define AOM_AARCH64_HWCAP_CPUID (1 << 11)
 #define AOM_AARCH64_HWCAP_ASIMDDP (1 << 20)
 #define AOM_AARCH64_HWCAP_SVE (1 << 22)
 #define AOM_AARCH64_HWCAP2_SVE2 (1 << 1)
@@ -172,18 +173,21 @@ EbCpuFlags svt_aom_get_cpu_flags(void) {
         flags |= EB_CPU_FLAGS_SVE2;
 #endif // HAVE_SVE2
 
-    // MIDR_EL1 is an EL1 register: reading it from EL0 needs kernel MRS
-    // trap-and-emulate (mainline >= 4.11, AOSP >= 4.14) and raises SIGILL
-    // without it. EB_CPU_FLAGS_NEOVERSE_V2 is only consumed under HAVE_SVE,
-    // and Neoverse V2 cannot occur on Android, so skip the read where the
-    // flag is unusable rather than risk the fault.
-#if HAVE_SVE && !defined(__ANDROID__)
-    const uint64_t midr = read_midr_el1();
-    const unsigned implementer = (midr >> 24) & 0xFF;   // [31:24]
-    const unsigned partnum     = (midr >> 4)  & 0xFFF;  // [15:4]
+    // MIDR_EL1 is an EL1 register: reading it from EL0 relies on the kernel
+    // trapping and emulating the MRS, which Linux does since 4.11 (AOSP since
+    // 4.14) and FreeBSD does too, each advertising it with HWCAP_CPUID. Without
+    // that bit the instruction is undefined at EL0 and raises SIGILL, so the
+    // read is skipped there. EB_CPU_FLAGS_NEOVERSE_V2 is only consumed under
+    // HAVE_SVE, so it is skipped where the flag is unusable too.
+#if HAVE_SVE
+    if (hwcap & AOM_AARCH64_HWCAP_CPUID) {
+        const uint64_t midr = read_midr_el1();
+        const unsigned implementer = (midr >> 24) & 0xFF;   // [31:24]
+        const unsigned partnum     = (midr >> 4)  & 0xFFF;  // [15:4]
 
-    if (implementer == 0x41 && partnum == 0xD4F) {
-      flags |= EB_CPU_FLAGS_NEOVERSE_V2;
+        if (implementer == 0x41 && partnum == 0xD4F) {
+            flags |= EB_CPU_FLAGS_NEOVERSE_V2;
+        }
     }
 #endif
 
@@ -457,6 +461,13 @@ EbCpuFlags svt_aom_get_cpu_flags_to_use() { return 0; }
 #define SET_NEON_NEON_I8MM_SVE(ptr, c, neon, neon_i8mm, sve)    SET_FUNCTIONS_NEON(ptr, c, neon, 0, neon_i8mm, sve, 0)
 #define SET_NEON_SVE(ptr, c, neon, sve)                         SET_FUNCTIONS_NEON(ptr, c, neon, 0, 0, sve, 0)
 #define SET_NEON_SVE2(ptr, c, neon, sve2)                       SET_FUNCTIONS_NEON(ptr, c, neon, 0, 0, 0, sve2)
+// MOBILE size lever: the compound jnt_convolve kernels serve only VOD (RTC and AVIF never run them); NEON-only
+// drops their dotprod tier to save binary size at a small VOD speed cost. Other builds keep the full registration.
+#if MOBILE_BUILD
+#define SET_JNT_CONVOLVE(ptr, c, neon, neon_dotprod, neon_i8mm) SET_NEON(ptr, c, neon)
+#else
+#define SET_JNT_CONVOLVE(ptr, c, neon, neon_dotprod, neon_i8mm) SET_NEON_NEON_DOTPROD_NEON_I8MM(ptr, c, neon, neon_dotprod, neon_i8mm)
+#endif
 #endif
 
 // Thread-safe RTCD initialization using lazily-initialized mutex
@@ -506,6 +517,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2(svt_cfl_predict_hbd, svt_cfl_predict_hbd_c, svt_cfl_predict_hbd_sse4_1, svt_cfl_predict_hbd_avx2);
 #endif
 #if CONFIG_ENABLE_FILTER_INTRA
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_ONLY_C(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c);
+#endif
     SET_SSE41(svt_av1_filter_intra_predictor, svt_av1_filter_intra_predictor_c, svt_av1_filter_intra_predictor_sse4_1);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
@@ -519,7 +533,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_SSSE3_AVX2(svt_av1_highbd_wiener_convolve_add_src, svt_av1_highbd_wiener_convolve_add_src_c, svt_av1_highbd_wiener_convolve_add_src_ssse3, svt_av1_highbd_wiener_convolve_add_src_avx2);
 #endif
-#if CONFIG_ENABLE_RESTORATION
+#if CONFIG_ENABLE_SGRPROJ
     SET_SSE41_AVX2(svt_apply_selfguided_restoration, svt_apply_selfguided_restoration_c, svt_apply_selfguided_restoration_sse4_1, svt_apply_selfguided_restoration_avx2);
     SET_SSE41_AVX2(svt_av1_selfguided_restoration, svt_av1_selfguided_restoration_c, svt_av1_selfguided_restoration_sse4_1, svt_av1_selfguided_restoration_avx2);
 #endif
@@ -528,6 +542,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_AVX2(svt_av1_inv_txfm2d_add_4x16, svt_av1_inv_txfm2d_add_4x16_c, svt_dav1d_inv_txfm2d_add_4x16_avx2);
     SET_AVX2(svt_av1_inv_txfm2d_add_8x4, svt_av1_inv_txfm2d_add_8x4_c, svt_dav1d_inv_txfm2d_add_8x4_avx2);
     SET_SSE41_AVX2(svt_av1_inv_txfm2d_add_8x8, svt_av1_inv_txfm2d_add_8x8_c, svt_av1_inv_txfm2d_add_8x8_sse4_1, svt_dav1d_inv_txfm2d_add_8x8_avx2);
+    SET_ONLY_C(svt_av1_highbd_inv_txfm_add, svt_av1_highbd_inv_txfm_add_c);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_SSE41_AVX2(svt_av1_inv_txfm2d_add_8x16, svt_av1_inv_txfm2d_add_8x16_c, svt_av1_highbd_inv_txfm_add_sse4_1, svt_dav1d_highbd_inv_txfm_add_avx2);
     SET_SSE41_AVX2(svt_av1_inv_txfm2d_add_8x32, svt_av1_inv_txfm2d_add_8x32_c, svt_av1_highbd_inv_txfm_add_sse4_1, svt_dav1d_highbd_inv_txfm_add_avx2);
@@ -567,6 +582,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2_AVX2(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d, svt_enc_msb_pack2d_sse2_intrin, svt_enc_msb_pack2d_avx2_intrin_al);
     SET_SSE2_AVX2(svt_aom_un_pack2d_16_bit_src_mul4, svt_enc_msb_un_pack2_d, svt_enc_msb_un_pack2d_sse2_intrin, svt_enc_msb_un_pack2d_avx2_intrin);
     SET_SSE41_AVX2(svt_full_distortion_kernel_cbf_zero32_bits, svt_full_distortion_kernel_cbf_zero32_bits_c, svt_full_distortion_kernel_cbf_zero32_bits_sse4_1, svt_full_distortion_kernel_cbf_zero32_bits_avx2);
+    SET_ONLY_C(svt_qm_full_distortion, svt_qm_full_distortion_c);
     SET_SSE41_AVX2(svt_full_distortion_kernel32_bits, svt_full_distortion_kernel32_bits_c, svt_full_distortion_kernel32_bits_sse4_1, svt_full_distortion_kernel32_bits_avx2);
     SET_SSE41_AVX2_AVX512(svt_spatial_full_distortion_kernel, svt_spatial_full_distortion_kernel_c, svt_spatial_full_distortion_kernel_sse4_1, svt_spatial_full_distortion_kernel_avx2, svt_spatial_full_distortion_kernel_avx512);
     SET_SSE41_AVX2(svt_full_distortion_kernel16_bits, svt_full_distortion_kernel16_bits_c, svt_full_distortion_kernel16_bits_sse4_1, svt_full_distortion_kernel16_bits_avx2);
@@ -634,7 +650,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2_AVX512(svt_aom_highbd_smooth_v_predictor_64x64, svt_aom_highbd_smooth_v_predictor_64x64_c, svt_aom_highbd_smooth_v_predictor_64x64_sse4_1, svt_aom_highbd_smooth_v_predictor_64x64_avx2, aom_highbd_smooth_v_predictor_64x64_avx512);
 #endif
     SET_SSE41_AVX2(svt_av1_dr_prediction_z1, svt_av1_dr_prediction_z1_c, svt_av1_dr_prediction_z1_sse4_1, svt_av1_dr_prediction_z1_avx2);
-    SET_SSE41_AVX2(svt_av1_dr_prediction_z2, svt_av1_dr_prediction_z2_c, svt_av1_dr_prediction_z2_sse4_1, svt_av1_dr_prediction_z2_avx2);
+    SET_SSE41_AVX2_AVX512(svt_av1_dr_prediction_z2, svt_av1_dr_prediction_z2_c, svt_av1_dr_prediction_z2_sse4_1, svt_av1_dr_prediction_z2_avx2, svt_av1_dr_prediction_z2_avx512);
     SET_SSE41_AVX2(svt_av1_dr_prediction_z3, svt_av1_dr_prediction_z3_c, svt_av1_dr_prediction_z3_sse4_1, svt_av1_dr_prediction_z3_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_SSE41_AVX2(svt_av1_highbd_dr_prediction_z1, svt_av1_highbd_dr_prediction_z1_c, svt_av1_highbd_dr_prediction_z1_sse4_1, svt_av1_highbd_dr_prediction_z1_avx2);
@@ -863,6 +879,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2(svt_aom_h_predictor_64x64, svt_aom_h_predictor_64x64_c, svt_aom_h_predictor_64x64_sse2);
     SET_SSE41_AVX2(svt_aom_cdef_find_dir, svt_aom_cdef_find_dir_c, svt_aom_cdef_find_dir_sse4_1, svt_aom_cdef_find_dir_avx2);
     SET_SSE41_AVX2(svt_aom_cdef_find_dir_dual, svt_aom_cdef_find_dir_dual_c, svt_aom_cdef_find_dir_dual_sse4_1, svt_aom_cdef_find_dir_dual_avx2);
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_ONLY_C(svt_cdef_search_block_10bit, svt_cdef_search_block_10bit_c);
+#endif
     SET_SSE41_AVX2(svt_cdef_filter_block, svt_cdef_filter_block_c, svt_av1_cdef_filter_block_sse4_1, svt_cdef_filter_block_avx2);
     SET_SSE41_AVX2(svt_cdef_filter_block_8bit, svt_cdef_filter_block_8bit_c, svt_cdef_filter_block_8bit_sse4_1, svt_cdef_filter_block_8bit_avx2);
     SET_SSE41_AVX2(svt_cdef_filter_block_8bit_bounded, svt_cdef_filter_block_8bit_bounded_c, svt_cdef_filter_block_8bit_bounded_sse4_1, svt_cdef_filter_block_8bit_bounded_avx2);
@@ -899,6 +918,22 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2(svt_aom_lpf_vertical_6, svt_aom_lpf_vertical_6_c, svt_aom_lpf_vertical_6_sse2);
     SET_SSE2(svt_aom_lpf_vertical_8, svt_aom_lpf_vertical_8_c, svt_aom_lpf_vertical_8_sse2);
     SET_SSE2(svt_aom_lpf_vertical_14, svt_aom_lpf_vertical_14_c, svt_aom_lpf_vertical_14_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_4_dual, svt_aom_lpf_horizontal_4_dual_c, svt_aom_lpf_horizontal_4_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_6_dual, svt_aom_lpf_horizontal_6_dual_c, svt_aom_lpf_horizontal_6_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_8_dual, svt_aom_lpf_horizontal_8_dual_c, svt_aom_lpf_horizontal_8_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_14_dual, svt_aom_lpf_horizontal_14_dual_c, svt_aom_lpf_horizontal_14_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_4_dual, svt_aom_lpf_vertical_4_dual_c, svt_aom_lpf_vertical_4_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_6_dual, svt_aom_lpf_vertical_6_dual_c, svt_aom_lpf_vertical_6_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_8_dual, svt_aom_lpf_vertical_8_dual_c, svt_aom_lpf_vertical_8_dual_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_14_dual, svt_aom_lpf_vertical_14_dual_c, svt_aom_lpf_vertical_14_dual_sse2);
+    SET_SSE2(svt_aom_lpf_horizontal_4_quad, svt_aom_lpf_horizontal_4_quad_c, svt_aom_lpf_horizontal_4_quad_sse2);
+    SET_SSE2_AVX2(svt_aom_lpf_horizontal_6_quad, svt_aom_lpf_horizontal_6_quad_c, svt_aom_lpf_horizontal_6_quad_sse2, svt_aom_lpf_horizontal_6_quad_avx2);
+    SET_SSE2_AVX2(svt_aom_lpf_horizontal_8_quad, svt_aom_lpf_horizontal_8_quad_c, svt_aom_lpf_horizontal_8_quad_sse2, svt_aom_lpf_horizontal_8_quad_avx2);
+    SET_SSE2_AVX2(svt_aom_lpf_horizontal_14_quad, svt_aom_lpf_horizontal_14_quad_c, svt_aom_lpf_horizontal_14_quad_sse2, svt_aom_lpf_horizontal_14_quad_avx2);
+    SET_SSE2(svt_aom_lpf_vertical_4_quad, svt_aom_lpf_vertical_4_quad_c, svt_aom_lpf_vertical_4_quad_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_6_quad, svt_aom_lpf_vertical_6_quad_c, svt_aom_lpf_vertical_6_quad_sse2);
+    SET_SSE2(svt_aom_lpf_vertical_8_quad, svt_aom_lpf_vertical_8_quad_c, svt_aom_lpf_vertical_8_quad_sse2);
+    SET_SSE2_AVX2(svt_aom_lpf_vertical_14_quad, svt_aom_lpf_vertical_14_quad_c, svt_aom_lpf_vertical_14_quad_sse2, svt_aom_lpf_vertical_14_quad_avx2);
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     // svt_aom_highbd_v_predictor
@@ -1098,7 +1133,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_aom_blend_a64_mask, svt_aom_blend_a64_mask_c, svt_aom_blend_a64_mask_neon);
     SET_NEON(svt_aom_blend_a64_hmask, svt_aom_blend_a64_hmask_c, svt_aom_blend_a64_hmask_neon);
     SET_NEON(svt_aom_blend_a64_vmask, svt_aom_blend_a64_vmask_c, svt_aom_blend_a64_vmask_neon);
+#if CONFIG_ENABLE_COMPOUND_TYPES
     SET_NEON(svt_aom_lowbd_blend_a64_d16_mask, svt_aom_lowbd_blend_a64_d16_mask_c, svt_aom_lowbd_blend_a64_d16_mask_neon);
+#endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_NEON(svt_aom_highbd_blend_a64_mask, svt_aom_highbd_blend_a64_mask_c, svt_aom_highbd_blend_a64_mask_neon);
     SET_NEON(svt_aom_highbd_blend_a64_vmask_16bit, svt_aom_highbd_blend_a64_vmask_16bit_c, svt_aom_highbd_blend_a64_vmask_16bit_neon);
@@ -1108,6 +1145,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_cfl_predict_lbd, svt_cfl_predict_lbd_c, svt_aom_cfl_predict_lbd_neon);
     SET_NEON(svt_cfl_predict_hbd, svt_cfl_predict_hbd_c, svt_cfl_predict_hbd_neon);
 #if CONFIG_ENABLE_FILTER_INTRA
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_NEON(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c, svt_aom_highbd_filter_intra_predictor_neon);
+#endif
     SET_NEON_NEON_I8MM(svt_av1_filter_intra_predictor, svt_av1_filter_intra_predictor_c, svt_av1_filter_intra_predictor_neon, svt_av1_filter_intra_predictor_neon_i8mm);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
@@ -1115,13 +1155,13 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 #endif
     SET_NEON(svt_av1_filter_intra_edge, svt_av1_filter_intra_edge_c, svt_av1_filter_intra_edge_neon);
     SET_NEON(svt_av1_upsample_intra_edge, svt_av1_upsample_intra_edge_c, svt_av1_upsample_intra_edge_neon);
-#if CONFIG_ENABLE_INTER_COMPOUND
+#if CONFIG_ENABLE_INTER_COMPOUND && CONFIG_ENABLE_COMPOUND_TYPES
     SET_NEON(svt_av1_build_compound_diffwtd_mask_d16, svt_av1_build_compound_diffwtd_mask_d16_c, svt_av1_build_compound_diffwtd_mask_d16_neon);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_NEON(svt_av1_highbd_wiener_convolve_add_src, svt_av1_highbd_wiener_convolve_add_src_c, svt_av1_highbd_wiener_convolve_add_src_neon);
 #endif
-#if CONFIG_ENABLE_RESTORATION
+#if CONFIG_ENABLE_SGRPROJ
     SET_NEON(svt_apply_selfguided_restoration, svt_apply_selfguided_restoration_c, svt_aom_apply_selfguided_restoration_neon);
     SET_NEON(svt_av1_selfguided_restoration, svt_av1_selfguided_restoration_c, svt_av1_selfguided_restoration_neon);
 #endif
@@ -1144,6 +1184,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_av1_inv_txfm2d_add_64x16, svt_av1_inv_txfm2d_add_64x16_c, svt_av1_inv_txfm2d_add_64x16_neon);
     SET_NEON(svt_av1_inv_txfm2d_add_64x32, svt_av1_inv_txfm2d_add_64x32_c, svt_av1_inv_txfm2d_add_64x32_neon);
     SET_NEON(svt_av1_inv_txfm2d_add_64x64, svt_av1_inv_txfm2d_add_64x64_c, svt_av1_inv_txfm2d_add_64x64_neon);
+    SET_NEON(svt_av1_highbd_inv_txfm_add, svt_av1_highbd_inv_txfm_add_c, svt_av1_highbd_inv_txfm_add_neon);
     SET_NEON(svt_av1_inv_txfm_add, svt_av1_inv_txfm_add_c, svt_dav1d_inv_txfm_add_neon);
 
     SET_NEON(svt_compressed_packmsb, svt_compressed_packmsb_c, svt_compressed_packmsb_neon);
@@ -1156,6 +1197,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d, svt_enc_msb_pack2d_neon);
     SET_NEON(svt_aom_un_pack2d_16_bit_src_mul4, svt_enc_msb_un_pack2_d, svt_enc_msb_un_pack2d_neon);
     SET_NEON(svt_full_distortion_kernel_cbf_zero32_bits, svt_full_distortion_kernel_cbf_zero32_bits_c, svt_full_distortion_kernel_cbf_zero32_bits_neon);
+    SET_NEON(svt_qm_full_distortion, svt_qm_full_distortion_c, svt_qm_full_distortion_neon);
     SET_NEON(svt_full_distortion_kernel32_bits, svt_full_distortion_kernel32_bits_c, svt_full_distortion_kernel32_bits_neon);
     SET_NEON_NEON_DOTPROD(svt_spatial_full_distortion_kernel, svt_spatial_full_distortion_kernel_c, svt_spatial_full_distortion_kernel_neon, svt_spatial_full_distortion_kernel_neon_dotprod);
     SET_NEON_SVE(svt_full_distortion_kernel16_bits, svt_full_distortion_kernel16_bits_c, svt_full_distortion_kernel16_bits_neon, svt_full_distortion_kernel16_bits_sve);
@@ -1183,10 +1225,10 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON_NEON_DOTPROD_NEON_I8MM(svt_av1_convolve_x_sr, svt_av1_convolve_x_sr_c, svt_av1_convolve_x_sr_neon, svt_av1_convolve_x_sr_neon_dotprod, svt_av1_convolve_x_sr_neon_i8mm);
     SET_NEON_NEON_DOTPROD_NEON_I8MM(svt_av1_convolve_y_sr, svt_av1_convolve_y_sr_c, svt_av1_convolve_y_sr_neon, svt_av1_convolve_y_sr_neon, svt_av1_convolve_y_sr_neon_i8mm);
 #if CONFIG_ENABLE_INTER_COMPOUND
-    SET_NEON_NEON_DOTPROD_NEON_I8MM(svt_av1_jnt_convolve_2d, svt_av1_jnt_convolve_2d_c, svt_av1_jnt_convolve_2d_neon, svt_av1_jnt_convolve_2d_neon_dotprod, svt_av1_jnt_convolve_2d_neon_i8mm);
+    SET_JNT_CONVOLVE(svt_av1_jnt_convolve_2d, svt_av1_jnt_convolve_2d_c, svt_av1_jnt_convolve_2d_neon, svt_av1_jnt_convolve_2d_neon_dotprod, svt_av1_jnt_convolve_2d_neon_i8mm);
     SET_NEON(svt_av1_jnt_convolve_2d_copy, svt_av1_jnt_convolve_2d_copy_c, svt_av1_jnt_convolve_2d_copy_neon);
-    SET_NEON_NEON_DOTPROD_NEON_I8MM(svt_av1_jnt_convolve_x, svt_av1_jnt_convolve_x_c, svt_av1_jnt_convolve_x_neon, svt_av1_jnt_convolve_x_neon_dotprod, svt_av1_jnt_convolve_x_neon_i8mm);
-    SET_NEON_NEON_DOTPROD_NEON_I8MM(svt_av1_jnt_convolve_y, svt_av1_jnt_convolve_y_c, svt_av1_jnt_convolve_y_neon, svt_av1_jnt_convolve_y_neon_dotprod, svt_av1_jnt_convolve_y_neon_i8mm);
+    SET_JNT_CONVOLVE(svt_av1_jnt_convolve_x, svt_av1_jnt_convolve_x_c, svt_av1_jnt_convolve_x_neon, svt_av1_jnt_convolve_x_neon_dotprod, svt_av1_jnt_convolve_x_neon_i8mm);
+    SET_JNT_CONVOLVE(svt_av1_jnt_convolve_y, svt_av1_jnt_convolve_y_c, svt_av1_jnt_convolve_y_neon, svt_av1_jnt_convolve_y_neon_dotprod, svt_av1_jnt_convolve_y_neon_i8mm);
 #endif // CONFIG_ENABLE_INTER_COMPOUND
     // convolve8 is reached only via the upsampled predictor (full subpel tree / OBMC); when both are off (RTC)
     // it is left unregistered (never called) so LTO drops all convolve8 kernels.
@@ -1194,13 +1236,13 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_NEON_NEON_DOTPROD_NEON_I8MM(svt_aom_convolve8_horiz, svt_aom_convolve8_horiz_c, svt_aom_convolve8_horiz_neon, svt_aom_convolve8_horiz_neon_dotprod, svt_aom_convolve8_horiz_neon_i8mm);
     SET_NEON_NEON_DOTPROD_NEON_I8MM(svt_aom_convolve8_vert, svt_aom_convolve8_vert_c, svt_aom_convolve8_vert_neon, svt_aom_convolve8_vert_neon_dotprod, svt_aom_convolve8_vert_neon_i8mm);
 #endif
-#if CONFIG_ENABLE_INTER_COMPOUND
+#if CONFIG_ENABLE_INTER_COMPOUND && CONFIG_ENABLE_COMPOUND_TYPES
     SET_NEON(svt_av1_build_compound_diffwtd_mask, svt_av1_build_compound_diffwtd_mask_c, svt_av1_build_compound_diffwtd_mask_neon);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_NEON(svt_av1_build_compound_diffwtd_mask_highbd, svt_av1_build_compound_diffwtd_mask_highbd_c, svt_av1_build_compound_diffwtd_mask_highbd_neon);
 #endif
-#if CONFIG_ENABLE_INTER_COMPOUND
+#if CONFIG_ENABLE_INTER_COMPOUND && CONFIG_ENABLE_COMPOUND_TYPES
     SET_NEON_SVE(svt_av1_wedge_sse_from_residuals, svt_av1_wedge_sse_from_residuals_c, svt_av1_wedge_sse_from_residuals_neon, svt_av1_wedge_sse_from_residuals_sve);
 #endif
     SET_NEON(svt_aom_subtract_block, svt_aom_subtract_block_c, svt_aom_subtract_block_neon);
@@ -1458,6 +1500,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 
     SET_NEON(svt_aom_cdef_find_dir, svt_aom_cdef_find_dir_c, svt_aom_cdef_find_dir_neon);
     SET_NEON(svt_aom_cdef_find_dir_dual, svt_aom_cdef_find_dir_dual_c, svt_aom_cdef_find_dir_dual_neon);
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_NEON(svt_cdef_search_block_10bit, svt_cdef_search_block_10bit_c, svt_cdef_search_block_10bit_neon);
+#endif
     SET_NEON(svt_cdef_filter_block, svt_cdef_filter_block_c, svt_cdef_filter_block_neon);
     SET_NEON(svt_cdef_filter_block_8bit, svt_cdef_filter_block_8bit_c, svt_cdef_filter_block_8bit_neon);
     SET_NEON(svt_cdef_filter_block_8bit_bounded, svt_cdef_filter_block_8bit_bounded_c, svt_cdef_filter_block_8bit_bounded_neon);
@@ -1466,7 +1511,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 
     SET_NEON(svt_aom_copy_rect8_8bit_to_16bit, svt_aom_copy_rect8_8bit_to_16bit_c, svt_aom_copy_rect8_8bit_to_16bit_neon);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_NEON_SVE(svt_av1_highbd_warp_affine, svt_av1_highbd_warp_affine_c, svt_av1_highbd_warp_affine_neon, svt_av1_highbd_warp_affine_sve);
+    SET_NEON_NEON_I8MM_SVE(svt_av1_highbd_warp_affine, svt_av1_highbd_warp_affine_c, svt_av1_highbd_warp_affine_neon, svt_av1_highbd_warp_affine_neon_i8mm, svt_av1_highbd_warp_affine_sve);
 #endif
 #if CONFIG_ENABLE_WARP
     SET_NEON_NEON_I8MM_SVE(svt_av1_warp_affine, svt_av1_warp_affine_c, svt_av1_warp_affine_neon, svt_av1_warp_affine_neon_i8mm, svt_av1_warp_affine_sve);
@@ -1697,6 +1742,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_cfl_predict_lbd, svt_cfl_predict_lbd_c);
     SET_ONLY_C(svt_cfl_predict_hbd, svt_cfl_predict_hbd_c);
 #if CONFIG_ENABLE_FILTER_INTRA
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_ONLY_C(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c);
+#endif
     SET_ONLY_C(svt_av1_filter_intra_predictor, svt_av1_filter_intra_predictor_c);
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
@@ -1710,7 +1758,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_ONLY_C(svt_av1_highbd_wiener_convolve_add_src, svt_av1_highbd_wiener_convolve_add_src_c);
 #endif
-#if CONFIG_ENABLE_RESTORATION
+#if CONFIG_ENABLE_SGRPROJ
     SET_ONLY_C(svt_apply_selfguided_restoration, svt_apply_selfguided_restoration_c);
     SET_ONLY_C(svt_av1_selfguided_restoration, svt_av1_selfguided_restoration_c);
 #endif
@@ -1733,6 +1781,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_av1_inv_txfm2d_add_64x16, svt_av1_inv_txfm2d_add_64x16_c);
     SET_ONLY_C(svt_av1_inv_txfm2d_add_64x32, svt_av1_inv_txfm2d_add_64x32_c);
     SET_ONLY_C(svt_av1_inv_txfm2d_add_64x64, svt_av1_inv_txfm2d_add_64x64_c);
+    SET_ONLY_C(svt_av1_highbd_inv_txfm_add, svt_av1_highbd_inv_txfm_add_c);
     SET_ONLY_C(svt_av1_inv_txfm_add, svt_av1_inv_txfm_add_c);
     SET_ONLY_C(svt_compressed_packmsb, svt_compressed_packmsb_c);
     SET_ONLY_C(svt_cfl_luma_subsampling_420_lbd, svt_cfl_luma_subsampling_420_lbd_c);
@@ -1744,6 +1793,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d);
     SET_ONLY_C(svt_aom_un_pack2d_16_bit_src_mul4, svt_enc_msb_un_pack2_d);
     SET_ONLY_C(svt_full_distortion_kernel_cbf_zero32_bits, svt_full_distortion_kernel_cbf_zero32_bits_c);
+    SET_ONLY_C(svt_qm_full_distortion, svt_qm_full_distortion_c);
     SET_ONLY_C(svt_full_distortion_kernel32_bits, svt_full_distortion_kernel32_bits_c);
     SET_ONLY_C(svt_spatial_full_distortion_kernel, svt_spatial_full_distortion_kernel_c);
     SET_ONLY_C(svt_full_distortion_kernel16_bits, svt_full_distortion_kernel16_bits_c);
@@ -2040,6 +2090,9 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_aom_h_predictor_64x64, svt_aom_h_predictor_64x64_c);
     SET_ONLY_C(svt_aom_cdef_find_dir, svt_aom_cdef_find_dir_c);
     SET_ONLY_C(svt_aom_cdef_find_dir_dual, svt_aom_cdef_find_dir_dual_c);
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    SET_ONLY_C(svt_cdef_search_block_10bit, svt_cdef_search_block_10bit_c);
+#endif
     SET_ONLY_C(svt_cdef_filter_block, svt_cdef_filter_block_c);
     SET_ONLY_C(svt_cdef_filter_block_8bit, svt_cdef_filter_block_8bit_c);
     SET_ONLY_C(svt_cdef_filter_block_8bit_bounded, svt_cdef_filter_block_8bit_bounded_c);

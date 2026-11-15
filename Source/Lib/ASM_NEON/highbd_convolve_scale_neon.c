@@ -468,13 +468,16 @@ void svt_av1_highbd_convolve_2d_scale_neon(const uint16_t* src, int src_stride, 
 
     // Do the compound averaging outside the loop, avoids branching within the
     // main loop
-    if (!conv_params->is_compound || !conv_params->do_average) {
+    if (!conv_params->is_compound) {
         highbd_convolve_correct_offset_neon(im_block2, im_stride, dst, dst_stride, w, h, bits, y_offset_correction, bd);
-    } else if (conv_params->use_dist_wtd_comp_avg) {
-        highbd_dist_wtd_comp_avg_neon(
-            im_block2, im_stride, dst, dst_stride, w, h, conv_params, bits, y_offset_correction, bd);
-    } else {
-        highbd_comp_avg_neon(im_block2, im_stride, dst, dst_stride, w, h, conv_params, bits, y_offset_correction, bd);
+    } else if (conv_params->do_average) {
+        if (conv_params->use_dist_wtd_comp_avg) {
+            highbd_dist_wtd_comp_avg_neon(
+                im_block2, im_stride, dst, dst_stride, w, h, conv_params, bits, y_offset_correction, bd);
+        } else {
+            highbd_comp_avg_neon(
+                im_block2, im_stride, dst, dst_stride, w, h, conv_params, bits, y_offset_correction, bd);
+        }
     }
     svt_aom_free(im_block);
     svt_aom_free(im_block2);

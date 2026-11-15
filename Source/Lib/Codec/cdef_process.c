@@ -245,7 +245,7 @@ EbErrorType svt_aom_cdef_context_ctor(EbThreadContext* thread_ctx, const EbEncHa
 
     // Input/Output System Resource Manager FIFOs
     cdef_ctx->cdef_input_fifo_ptr  = svt_system_resource_get_consumer_fifo(enc_handle_ptr->dlf_results_resource_ptr,
-                                                                          index);
+                                                                           index);
     cdef_ctx->cdef_output_fifo_ptr = svt_system_resource_get_producer_fifo(enc_handle_ptr->cdef_results_resource_ptr,
                                                                            index);
 
@@ -351,6 +351,26 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
     // buffer and will not use half of the buffer
     uint16_t* tmp_dst = ctx->tmp_dst;
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+    // Build from the actual lists: reference-frame reuse can replace nominal
+    // grids with sparse, arbitrary combined strengths even in the first pass.
+    CdefSearchPlan search_plan[2];
+    const int      search_count = first_pass_fs_num + default_second_pass_fs_num;
+    bool           use_grid     = is_16bit && coeff_shift == 2 && svt_cdef_search_block_10bit &&
+        svt_cdef_search_block_10bit != svt_cdef_search_block_10bit_c && first_pass_fs_num >= 0 &&
+        default_second_pass_fs_num >= 0 && search_count <= TOTAL_STRENGTHS;
+    if (use_grid) {
+        uint8_t strengths[TOTAL_STRENGTHS];
+        int8_t  enabled[TOTAL_STRENGTHS];
+        memcpy(strengths, cdef_ctrls->default_first_pass_fs, first_pass_fs_num);
+        memcpy(strengths + first_pass_fs_num, cdef_ctrls->default_second_pass_fs, default_second_pass_fs_num);
+        memcpy(enabled, cdef_ctrls->default_first_pass_fs_uv, first_pass_fs_num);
+        memcpy(enabled + first_pass_fs_num, cdef_ctrls->default_second_pass_fs_uv, default_second_pass_fs_num);
+        use_grid = svt_cdef_search_plan(&search_plan[0], strengths, NULL, search_count) &&
+            svt_cdef_search_plan(&search_plan[1], strengths, enabled, search_count);
+    }
+#endif
+
     EbPictureBufferDesc* input_pic = is_16bit ? pcs->input_frame16bit : ppcs->enhanced_pic;
     EbPictureBufferDesc* recon_pic;
     svt_aom_get_recon_pic(pcs, &recon_pic, is_16bit);
@@ -423,6 +443,17 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
             uint8_t (*dir)[CDEF_NBLOCKS][CDEF_NBLOCKS] = &pcs->cdef_dir_data[fb_idx].dir;
             int32_t (*var)[CDEF_NBLOCKS][CDEF_NBLOCKS] = &pcs->cdef_dir_data[fb_idx].var;
             for (int pli = 0; pli < num_planes; pli++) {
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+                if (use_grid && pli && !search_plan[1].strength_count) {
+                    // No chroma trial needs the input buffer; preserve the dirty
+                    // rectangle of the last plane actually copied into it.
+                    for (int gi = 0; gi < search_count; ++gi) {
+                        pcs->mse_seg[1][fb_idx][gi] = default_mse_uv * 64;
+                    }
+                    continue;
+                }
+#endif
+
 #if !CDEF_8BITS_PATH || CONFIG_ENABLE_HIGH_BIT_DEPTH
                 int32_t ysize = (nvb << mi_high_l2[pli]) + boff + toff;
                 int32_t xsize = (nhb << mi_wide_l2[pli]) + roff + loff;
@@ -442,8 +473,8 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
                    but it would add special cases for any future vectorization.
                    Avoid memset'ting when dirty rect is inside the new one.
                    TODO: this could be further optimized - fill out only borders, separate buffers for Y & UV */
-                    bool need_to_reset = toff_prev > toff || loff_prev > loff || ysize < ysize_prev ||
-                        xsize < xsize_prev;
+                    bool need_to_reset = toff_prev > toff || loff_prev > loff ||
+                        ysize - toff < ysize_prev - toff_prev || xsize - loff < xsize_prev - loff_prev;
                     if (need_to_reset) {
                         uint16_t* p = &in[(-toff_prev * CDEF_BSTRIDE - loff_prev)];
                         for (int r = 0; r < ysize_prev; r++) {
@@ -510,6 +541,44 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
                     subsampling_factor = MIN(subsampling_factor, 1);
                     break;
                 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+                const CdefSearchPlan* plan = &search_plan[pli != 0];
+                // With at most two primary-only trials and two sampled rows,
+                // planning/accumulation overhead exceeds the work shared by a grid.
+                const bool sparse_primary = use_grid && subsampling_factor == 4 && plan->strength_count <= 2 &&
+                    !(plan->secondary_mask | plan->zero_secondary_mask);
+                if (use_grid && !sparse_primary && (!pli || xdec[pli] == ydec[pli])) {
+                    uint64_t ssd[TOTAL_STRENGTHS];
+                    svt_cdef_search_fb_10bit(
+                        in,
+                        (const uint16_t*)ref[pli] + (lr << mi_high_l2[pli]) * stride_ref[pli] + (lc << mi_wide_l2[pli]),
+                        stride_ref[pli],
+                        *dir,
+                        &dirinit,
+                        *var,
+                        dlist,
+                        cdef_count,
+                        plan,
+                        xdec[pli],
+                        ydec[pli],
+                        pli,
+                        damping,
+                        subsampling_factor,
+                        ssd);
+                    for (int gi = 0; gi < search_count; ++gi) {
+                        const int slot = plan->slot_map[gi];
+                        if (slot == UINT8_MAX) {
+                            pcs->mse_seg[1][fb_idx][gi] = default_mse_uv * 64;
+                        } else if (pli < 2) {
+                            pcs->mse_seg[pli][fb_idx][gi] = ssd[slot];
+                        } else {
+                            pcs->mse_seg[1][fb_idx][gi] += ssd[slot];
+                        }
+                    }
+                    continue;
+                }
+#endif
 
                 /* first cdef stage
                  * Perform the pri_filter strength search for the current sub_block
@@ -729,7 +798,7 @@ EbErrorType svt_aom_cdef_kernel_iter(void* context) {
         }
 
         //restoration prep
-        bool is_lr = ppcs->enable_restoration && frm_hdr->allow_intrabc == 0;
+        bool is_lr = SVT_EFFECTIVE_RESTORATION(ppcs->enable_restoration) && frm_hdr->allow_intrabc == 0;
         if (is_lr) {
             svt_av1_loop_restoration_save_boundary_lines(cm->frame_to_show, cm, 1);
             if (is_16bit) {
@@ -799,13 +868,13 @@ EbErrorType svt_aom_cdef_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_cdef_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_cdef_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_cdef_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

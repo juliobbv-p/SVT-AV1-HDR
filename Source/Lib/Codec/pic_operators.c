@@ -160,20 +160,17 @@ void svt_aom_picture_full_distortion32_bits_single(int32_t* coeff, int32_t* reco
     }
 }
 
-void svt_qm_full_distortion(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t width,
-                            uint32_t height, uint64_t* distortion, uint32_t eob, const QmVal* qm, const int16_t* scan,
-                            uint32_t qm_height) {
+void svt_qm_full_distortion_c(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t width,
+                              uint32_t height, uint64_t* distortion, uint32_t eob, const QmVal* weights,
+                              uint32_t weight_stride) {
     uint64_t error = 0, energy = 0;
     for (uint32_t y = 0; y < height; ++y) {
         for (uint32_t x = 0; x < width; ++x) {
-            const uint32_t i = y * stride + x;
-            // Libaom's loop index addresses column-major coefficients. SVT's
-            // coefficients, matrices and scan values are transposed, but scan
-            // positions are not. Convert the loop index before looking it up.
-            const int qi = scan ? scan[x * qm_height + y] : i;
-            energy += svt_qm_coeff_dist(coeff[i], 0, 0, qm, qi);
+            const uint32_t i  = y * stride + x;
+            const uint32_t wi = y * weight_stride + x;
+            energy += svt_qm_coeff_dist(coeff[i], 0, 0, weights, wi);
             if (eob) {
-                error += svt_qm_coeff_dist(coeff[i], recon[i], 0, qm, qi);
+                error += svt_qm_coeff_dist(coeff[i], recon[i], 0, weights, wi);
             }
         }
     }
@@ -187,13 +184,13 @@ void svt_aom_picture_full_distortion32_bits_single_facade(int32_t* coeff, int32_
                                                           uint32_t area_height, uint64_t* distortion,
                                                           uint32_t cnt_nz_coeff, BlockModeInfo* block_mi,
                                                           bool is_chroma, uint8_t temporal_layer_index, double ac_bias,
-                                                          uint8_t tx_bias, const QmVal* qm, const int16_t* scan) {
+                                                          uint8_t tx_bias, const QmVal* qm) {
     PredictionMode   mode    = block_mi->mode;
     UvPredictionMode uv_mode = block_mi->uv_mode;
 
     if (qm) {
         svt_qm_full_distortion(
-            coeff, recon_coeff, stride, bwidth, bheight, distortion, cnt_nz_coeff, qm, scan, MIN(area_height, 32));
+            coeff, recon_coeff, stride, bwidth, bheight, distortion, cnt_nz_coeff, qm, MIN(area_width, 32));
     } else {
         svt_aom_picture_full_distortion32_bits_single(
             coeff, recon_coeff, stride, bwidth, bheight, distortion, cnt_nz_coeff);
@@ -455,6 +452,29 @@ void svt_aom_yv12_copy_v_c(const Yv12BufferConfig* src_bc, Yv12BufferConfig* dst
     }
 }
 
+// Fills n bytes with v using 8-byte stores (overlapping tail) instead of a memset call per padded run.
+static INLINE void pad_fill(uint8_t* dst, uint8_t v, uint32_t n) {
+    const uint64_t v8 = 0x0101010101010101ull * v;
+    if (n >= 16) {
+        uint32_t i = 0;
+        for (; i + 16 <= n; i += 16) {
+            memcpy(dst + i, &v8, 8);
+            memcpy(dst + i + 8, &v8, 8);
+        }
+        if (i < n) {
+            memcpy(dst + n - 16, &v8, 8);
+            memcpy(dst + n - 8, &v8, 8);
+        }
+    } else if (n >= 8) {
+        memcpy(dst, &v8, 8);
+        memcpy(dst + n - 8, &v8, 8);
+    } else {
+        for (uint32_t i = 0; i < n; i++) {
+            dst[i] = v;
+        }
+    }
+}
+
 /** svt_aom_generate_padding()
         is used to pad the target picture. The horizontal padding happens first and then the vertical padding.
  */
@@ -473,8 +493,8 @@ void svt_aom_generate_padding(EbByte src_pic, uint32_t src_stride, uint32_t orig
         const uint8_t left_pixel  = row[0];
         const uint8_t right_pixel = row[original_src_width - 1];
 
-        svt_memset(row - padding_width, left_pixel, padding_width);
-        svt_memset(row + original_src_width, right_pixel, padding_width);
+        pad_fill(row - padding_width, left_pixel, padding_width);
+        pad_fill(row + original_src_width, right_pixel, padding_width);
 
         row += src_stride;
     }
@@ -486,11 +506,13 @@ void svt_aom_generate_padding(EbByte src_pic, uint32_t src_stride, uint32_t orig
     EbByte top_dst_row    = top_src_row;
     EbByte bottom_dst_row = bottom_src_row;
 
+    // One store stream at a time (top block, then bottom block).
     for (uint32_t y = 0; y < padding_height; ++y) {
         top_dst_row -= src_stride;
-        bottom_dst_row += src_stride;
-
         svt_memcpy(top_dst_row, top_src_row, row_bytes);
+    }
+    for (uint32_t y = 0; y < padding_height; ++y) {
+        bottom_dst_row += src_stride;
         svt_memcpy(bottom_dst_row, bottom_src_row, row_bytes);
     }
 }

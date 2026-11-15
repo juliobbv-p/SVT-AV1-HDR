@@ -36,9 +36,9 @@ void svt_ext_sad_calculation_32x32_64x64_sse4_intrin(uint32_t* p_sad16x16, uint3
         xmm_p_best_sad_32x32, xmm_p_best_mv_32x32;
 
     sad_16x16_0_7_lo  = _mm_unpacklo_epi32(_mm_loadu_si128((__m128i*)p_sad16x16),
-                                          _mm_loadu_si128((__m128i*)(p_sad16x16 + 4)));
+                                           _mm_loadu_si128((__m128i*)(p_sad16x16 + 4)));
     sad_16x16_0_7_hi  = _mm_unpackhi_epi32(_mm_loadu_si128((__m128i*)p_sad16x16),
-                                          _mm_loadu_si128((__m128i*)(p_sad16x16 + 4)));
+                                           _mm_loadu_si128((__m128i*)(p_sad16x16 + 4)));
     sad_16x16_8_15_lo = _mm_unpacklo_epi32(_mm_loadu_si128((__m128i*)(p_sad16x16 + 8)),
                                            _mm_loadu_si128((__m128i*)(p_sad16x16 + 12)));
     sad_16x16_8_15_hi = _mm_unpackhi_epi32(_mm_loadu_si128((__m128i*)(p_sad16x16 + 8)),
@@ -69,7 +69,7 @@ void svt_ext_sad_calculation_32x32_64x64_sse4_intrin(uint32_t* p_sad16x16, uint3
         xmm_p_best_sad_32x32, xmm_sad64x64); // _mm_cmplt_epi32(xmm_p_best_sad_32x32, xmm_sad64x64);
 
     xmm_n1                           = _mm_cmpeq_epi8(xmm_mv,
-                            xmm_mv); // anything compared to itself is equal (get 0xFFFFFFFF)
+                                                      xmm_mv); // anything compared to itself is equal (get 0xFFFFFFFF)
     sad32x32_less_than_or_eq_bitmask = _mm_sub_epi32(xmm_n1, sad32x32_greater_than_bitmask);
 
     best_sad32x32 = _mm_or_si128(_mm_and_si128(xmm_p_best_sad_32x32, sad32x32_less_than_or_eq_bitmask),
@@ -3803,58 +3803,58 @@ void svt_ext_eight_sad_calculation_32x32_64x64_sse4_1(const uint32_t p_sad16x16[
                                                       uint32_t* p_best_mv64x64, uint32_t mv,
                                                       uint32_t p_sad32x32[4][8]) {
     __m128i       tmp0     = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[0]),
-                                 _mm_loadu_si128((__m128i const*)p_sad16x16[1]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[1]));
     __m128i       tmp1     = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[2]),
-                                 _mm_loadu_si128((__m128i const*)p_sad16x16[3]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[3]));
     const __m128i sad32_a1 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)p_sad32x32[0], sad32_a1);
 
     tmp0                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[0] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[1] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[1] + 4)));
     tmp1                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[2] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[3] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[3] + 4)));
     const __m128i sad32_a2 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)(p_sad32x32[0] + 4), sad32_a2);
 
     tmp0                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[4]),
-                         _mm_loadu_si128((__m128i const*)p_sad16x16[5]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[5]));
     tmp1                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[6]),
-                         _mm_loadu_si128((__m128i const*)p_sad16x16[7]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[7]));
     const __m128i sad32_b1 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)p_sad32x32[1], sad32_b1);
 
     tmp0                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[4] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[5] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[5] + 4)));
     tmp1                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[6] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[7] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[7] + 4)));
     const __m128i sad32_b2 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)(p_sad32x32[1] + 4), sad32_b2);
 
     tmp0                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[8]),
-                         _mm_loadu_si128((__m128i const*)p_sad16x16[9]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[9]));
     tmp1                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[10]),
-                         _mm_loadu_si128((__m128i const*)p_sad16x16[11]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[11]));
     const __m128i sad32_c1 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)p_sad32x32[2], sad32_c1);
 
     tmp0                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[8] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[9] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[9] + 4)));
     tmp1                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[10] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[11] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[11] + 4)));
     const __m128i sad32_c2 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)(p_sad32x32[2] + 4), sad32_c2);
 
     tmp0                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[12]),
-                         _mm_loadu_si128((__m128i const*)p_sad16x16[13]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[13]));
     tmp1                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)p_sad16x16[14]),
-                         _mm_loadu_si128((__m128i const*)p_sad16x16[15]));
+                                           _mm_loadu_si128((__m128i const*)p_sad16x16[15]));
     const __m128i sad32_d1 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)p_sad32x32[3], sad32_d1);
 
     tmp0                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[12] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[13] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[13] + 4)));
     tmp1                   = _mm_add_epi32(_mm_loadu_si128((__m128i const*)(p_sad16x16[14] + 4)),
-                         _mm_loadu_si128((__m128i const*)(p_sad16x16[15] + 4)));
+                                           _mm_loadu_si128((__m128i const*)(p_sad16x16[15] + 4)));
     const __m128i sad32_d2 = _mm_add_epi32(tmp0, tmp1);
     _mm_storeu_si128((__m128i*)(p_sad32x32[3] + 4), sad32_d2);
 

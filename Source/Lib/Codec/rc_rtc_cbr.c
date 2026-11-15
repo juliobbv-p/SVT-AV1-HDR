@@ -456,6 +456,64 @@ static uint8_t calculate_qindex(PictureControlSet* pcs, SequenceControlSet* scs)
     return clamp_qindex(scs, qindex);
 }
 
+bool svt_av1_rc_try_reserve_frame_skip(SequenceControlSet* scs, bool protected_input) {
+    const uint8_t max_skips = scs->static_config.max_allowed_consecutive_frames_skips;
+    if (max_skips == 0) {
+        return false;
+    }
+
+    RATE_CONTROL* rc = &scs->enc_ctx->rc;
+    svt_block_on_mutex(rc->rc_mutex);
+
+    bool skip = false;
+    if (protected_input || rc->consecutive_frame_skips >= max_skips) {
+        rc->consecutive_frame_skips = 0;
+    } else if (rc->frame_skip_credits > 0) {
+        rc->frame_skip_credits--;
+        rc->frame_skip_reservations++;
+        rc->consecutive_frame_skips++;
+        skip = true;
+    } else {
+        rc->consecutive_frame_skips = 0;
+    }
+
+    svt_release_mutex(rc->rc_mutex);
+    return skip;
+}
+
+void svt_av1_rc_publish_frame_skip_credits(const SequenceControlSet* scs, RATE_CONTROL* rc) {
+    const uint8_t max_skips = scs->static_config.max_allowed_consecutive_frames_skips;
+
+    svt_block_on_mutex(rc->rc_mutex);
+    if (max_skips == 0 || rc->frame_skip_reservations > 0 || rc->avg_frame_bandwidth <= 0 ||
+        rc->buffer_level < rc->maximum_buffer_size) {
+        svt_release_mutex(rc->rc_mutex);
+        return;
+    }
+
+    const int64_t required = (rc->buffer_level - rc->maximum_buffer_size) / rc->avg_frame_bandwidth + 1;
+    const uint8_t credits  = (uint8_t)AOMMIN(required, max_skips);
+    rc->frame_skip_credits = AOMMAX(rc->frame_skip_credits, credits);
+    svt_release_mutex(rc->rc_mutex);
+}
+
+void svt_av1_rc_apply_frame_skip_drain(RATE_CONTROL* rc, int64_t* drain_bits, uint32_t* drain_count) {
+    const int64_t  bits  = *drain_bits;
+    const uint32_t count = *drain_count;
+    *drain_bits          = 0;
+    *drain_count         = 0;
+
+    if (bits <= 0 && count == 0) {
+        return;
+    }
+
+    svt_block_on_mutex(rc->rc_mutex);
+    rc->buffer_level = AOMMAX(0, rc->buffer_level - bits);
+    assert(rc->frame_skip_reservations >= count);
+    rc->frame_skip_reservations = rc->frame_skip_reservations >= count ? rc->frame_skip_reservations - count : 0;
+    svt_release_mutex(rc->rc_mutex);
+}
+
 void svt_av1_rc_calc_qindex_rtc_cbr(PictureControlSet* pcs) {
     PictureParentControlSet* ppcs = pcs->ppcs;
     SequenceControlSet*      scs  = ppcs->scs;
@@ -525,6 +583,9 @@ void svt_av1_rc_calc_qindex_rtc_cbr(PictureControlSet* pcs) {
             rc->max_frame_bandwidth = AOMMAX(rc->avg_frame_bandwidth, rc->max_frame_bandwidth);
         }
     }
+
+    RATE_CONTROL* rc = &scs->enc_ctx->rc;
+    svt_av1_rc_apply_frame_skip_drain(rc, &ppcs->frame_skip_drain_bits, &ppcs->frame_skip_count);
 
     // Dynamic resolution resize (parity with libaom RT, which runs the resize decision in
     // its realtime RC path): the dedicated RTC-CBR controller must run the same decision as
@@ -699,6 +760,7 @@ void svt_av1_rc_postencode_update_rtc_cbr(PictureParentControlSet* ppcs) {
     rtc_update_rate_correction_factors(ppcs);
 
     rtc_update_buffer_level(ppcs, ppcs->projected_frame_size);
+    svt_av1_rc_publish_frame_skip_credits(ppcs->scs, rc);
 
     int qindex = frm_hdr->quantization_params.base_q_idx;
 

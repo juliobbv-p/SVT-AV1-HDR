@@ -25,6 +25,8 @@
 static void dlf_context_dctor(EbPtr p) {
     EbThreadContext* thread_ctx = (EbThreadContext*)p;
     DlfContext*      obj        = (DlfContext*)thread_ctx->priv;
+    EB_DELETE(obj->temp_lf_recon_pic);
+    EB_DELETE(obj->temp_lf_recon_pic_16bit);
     EB_FREE_ARRAY(obj);
 }
 
@@ -99,7 +101,13 @@ EbErrorType svt_aom_dlf_kernel_iter(void* context) {
         EbPictureBufferDesc* recon_buffer;
         svt_aom_get_recon_pic(pcs, &recon_buffer, is_16bit);
         svt_av1_loop_filter_init(pcs);
+        pcs->temp_lf_recon_pic       = context_ptr->temp_lf_recon_pic;
+        pcs->temp_lf_recon_pic_16bit = context_ptr->temp_lf_recon_pic_16bit;
         svt_av1_pick_filter_level((EbPictureBufferDesc*)pcs->ppcs->enhanced_pic, pcs);
+        context_ptr->temp_lf_recon_pic       = pcs->temp_lf_recon_pic;
+        context_ptr->temp_lf_recon_pic_16bit = pcs->temp_lf_recon_pic_16bit;
+        pcs->temp_lf_recon_pic               = NULL;
+        pcs->temp_lf_recon_pic_16bit         = NULL;
         if (pcs->zero_filt_sse == -1 &&
             (frm_hdr->loop_filter_params.filter_level[0] || frm_hdr->loop_filter_params.filter_level[1])) {
             pcs->zero_filt_sse = picture_sse_calculations(pcs, recon_buffer, /*plane*/ 0);
@@ -111,9 +119,15 @@ EbErrorType svt_aom_dlf_kernel_iter(void* context) {
             }
         }
 
-        svt_av1_loop_filter_frame(recon_buffer, pcs, 0, 3);
-        if (pcs->best_filt_sse == -1 &&
-            (frm_hdr->loop_filter_params.filter_level[0] || frm_hdr->loop_filter_params.filter_level[1])) {
+        // The search did not measure the filtered SSE (e.g. levels taken from the references), so it is
+        // computed below from the filtered recon
+        const bool need_filt_sse = pcs->best_filt_sse == -1 &&
+            (frm_hdr->loop_filter_params.filter_level[0] || frm_hdr->loop_filter_params.filter_level[1]);
+        // The levels are final; only filter the recon if something uses it
+        if (svt_av1_lf_recon_needed(pcs) || need_filt_sse) {
+            svt_av1_loop_filter_frame(recon_buffer, pcs, 0, 3);
+        }
+        if (need_filt_sse) {
             pcs->best_filt_sse = picture_sse_calculations(pcs, recon_buffer, /*plane*/ 0);
         }
         pcs->dlf_dist_dev = pcs->zero_filt_sse == 0 ||
@@ -128,7 +142,7 @@ EbErrorType svt_aom_dlf_kernel_iter(void* context) {
         svt_aom_get_recon_pic(pcs, &recon_pic, is_16bit);
 
         Av1Common* cm = pcs->ppcs->av1_cm;
-        if (ppcs->enable_restoration) {
+        if (SVT_EFFECTIVE_RESTORATION(ppcs->enable_restoration)) {
             svt_aom_link_eb_to_aom_buffer_desc(
                 recon_pic, cm->frame_to_show, scs->max_input_pad_right, scs->max_input_pad_bottom, is_16bit);
             svt_av1_loop_restoration_save_boundary_lines(cm->frame_to_show, cm, 0);
@@ -168,13 +182,13 @@ EbErrorType svt_aom_dlf_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_dlf_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_dlf_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_dlf_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

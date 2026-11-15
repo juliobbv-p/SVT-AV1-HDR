@@ -15,6 +15,18 @@
 #include "definitions.h"
 #include "inv_transforms.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Called after scan initialization under the encoder's global once guard.
+void         svt_av1_init_qmpsnr_weights(void);
+const QmVal* svt_av1_get_qmpsnr_weights(int level, int plane, TxSize tx_size);
+
+#ifdef __cplusplus
+}
+#endif
+
 // QM-PSNR metric, round each weighted square modulated by the quantizer matrix
 static INLINE int64_t svt_qm_coeff_dist(int32_t coeff, int32_t recon, int shift, const QmVal* qm, int index) {
     int64_t diff = ((int64_t)coeff - recon) * ((int64_t)1 << shift);

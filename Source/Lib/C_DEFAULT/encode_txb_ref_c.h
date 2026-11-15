@@ -21,6 +21,8 @@ extern "C" {
 
 void svt_av1_get_nz_map_contexts_c(const uint8_t* const levels, const int16_t* const scan, const uint16_t eob,
                                    const TxSize tx_size, const TxClass tx_class, int8_t* const coeff_contexts);
+void svt_av1_get_nz_map_contexts_2d_rows_c(const uint8_t* const levels, const TxSize tx_size, const int32_t rows,
+                                           int8_t* const coeff_contexts);
 #ifdef __cplusplus
 } // extern "C"
 #endif

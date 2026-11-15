@@ -217,9 +217,9 @@ static void svt_av1_apply_zz_based_temporal_filter_planewise_medium_partial_sse4
             frame2_array               = _mm_cvtepu8_epi16(frame2_array);
             __m128i frame2_array_u32_1 = _mm_cvtepi16_epi32(frame2_array);
             __m128i frame2_array_u32_2 = _mm_cvtepi16_epi32(_mm_srli_si128(frame2_array, 8));
-            frame2_array_u32_1         = _mm_mullo_epi32(frame2_array_u32_1,
+            frame2_array_u32_1 = _mm_mullo_epi32(frame2_array_u32_1,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
-            frame2_array_u32_2         = _mm_mullo_epi32(frame2_array_u32_2,
+            frame2_array_u32_2 = _mm_mullo_epi32(frame2_array_u32_2,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
 
             accumulator_array1 = _mm_add_epi32(accumulator_array1, frame2_array_u32_1);
@@ -376,9 +376,9 @@ static void svt_av1_apply_temporal_filter_planewise_medium_partial_sse4_1(
             frame2_array               = _mm_cvtepu8_epi16(frame2_array);
             __m128i frame2_array_u32_1 = _mm_cvtepi16_epi32(frame2_array);
             __m128i frame2_array_u32_2 = _mm_cvtepi16_epi32(_mm_srli_si128(frame2_array, 8));
-            frame2_array_u32_1         = _mm_mullo_epi32(frame2_array_u32_1,
+            frame2_array_u32_1 = _mm_mullo_epi32(frame2_array_u32_1,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
-            frame2_array_u32_2         = _mm_mullo_epi32(frame2_array_u32_2,
+            frame2_array_u32_2 = _mm_mullo_epi32(frame2_array_u32_2,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
 
             accumulator_array1 = _mm_add_epi32(accumulator_array1, frame2_array_u32_1);
@@ -489,9 +489,9 @@ static void svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_partial_
             __m128i frame2_array2      = _mm_loadl_epi64((__m128i*)(y_pre + k + 4));
             __m128i frame2_array_u32_1 = _mm_cvtepi16_epi32(frame2_array1);
             __m128i frame2_array_u32_2 = _mm_cvtepi16_epi32(frame2_array2);
-            frame2_array_u32_1         = _mm_mullo_epi32(frame2_array_u32_1,
+            frame2_array_u32_1 = _mm_mullo_epi32(frame2_array_u32_1,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
-            frame2_array_u32_2         = _mm_mullo_epi32(frame2_array_u32_2,
+            frame2_array_u32_2 = _mm_mullo_epi32(frame2_array_u32_2,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
 
             accumulator_array1 = _mm_add_epi32(accumulator_array1, frame2_array_u32_1);
@@ -663,9 +663,9 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_sse4_1(
             __m128i frame2_array2      = _mm_loadl_epi64((__m128i*)(y_pre + k + 4));
             __m128i frame2_array_u32_1 = _mm_cvtepi16_epi32(frame2_array1);
             __m128i frame2_array_u32_2 = _mm_cvtepi16_epi32(frame2_array2);
-            frame2_array_u32_1         = _mm_mullo_epi32(frame2_array_u32_1,
+            frame2_array_u32_1 = _mm_mullo_epi32(frame2_array_u32_1,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
-            frame2_array_u32_2         = _mm_mullo_epi32(frame2_array_u32_2,
+            frame2_array_u32_2 = _mm_mullo_epi32(frame2_array_u32_2,
                                                  adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
 
             accumulator_array1 = _mm_add_epi32(accumulator_array1, frame2_array_u32_1);

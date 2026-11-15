@@ -32,172 +32,167 @@ extern "C" {
  */
 #define AOM_IMAGE_ABI_VERSION (4) /**<\hideinitializer*/
 
-#define AOM_IMG_FMT_PLANAR 0x100       /**< Image is a planar format. */
-#define AOM_IMG_FMT_UV_FLIP 0x200      /**< V plane precedes U in memory. */
-#define AOM_IMG_FMT_HAS_ALPHA 0x400    /**< Image has an alpha channel. */
+#define AOM_IMG_FMT_PLANAR 0x100 /**< Image is a planar format. */
+#define AOM_IMG_FMT_UV_FLIP 0x200 /**< V plane precedes U in memory. */
+#define AOM_IMG_FMT_HAS_ALPHA 0x400 /**< Image has an alpha channel. */
 #define AOM_IMG_FMT_HIGHBITDEPTH 0x800 /**< Image uses 16bit framebuffer. */
 
 /*!\brief List of supported image formats */
 typedef enum aom_img_fmt {
-  AOM_IMG_FMT_NONE,
-  AOM_IMG_FMT_YV12 =
-      AOM_IMG_FMT_PLANAR | AOM_IMG_FMT_UV_FLIP | 1, /**< planar YVU */
-  AOM_IMG_FMT_I420 = AOM_IMG_FMT_PLANAR | 2,
-  AOM_IMG_FMT_AOMYV12 = AOM_IMG_FMT_PLANAR | AOM_IMG_FMT_UV_FLIP |
-                        3, /** < planar 4:2:0 format with aom color space */
-  AOM_IMG_FMT_AOMI420 = AOM_IMG_FMT_PLANAR | 4,
-  AOM_IMG_FMT_I422 = AOM_IMG_FMT_PLANAR | 5,
-  AOM_IMG_FMT_I444 = AOM_IMG_FMT_PLANAR | 6,
-  AOM_IMG_FMT_444A = AOM_IMG_FMT_PLANAR | AOM_IMG_FMT_HAS_ALPHA | 6,
-  AOM_IMG_FMT_I42016 = AOM_IMG_FMT_I420 | AOM_IMG_FMT_HIGHBITDEPTH,
-  AOM_IMG_FMT_I42216 = AOM_IMG_FMT_I422 | AOM_IMG_FMT_HIGHBITDEPTH,
-  AOM_IMG_FMT_I44416 = AOM_IMG_FMT_I444 | AOM_IMG_FMT_HIGHBITDEPTH,
+    AOM_IMG_FMT_NONE,
+    AOM_IMG_FMT_YV12    = AOM_IMG_FMT_PLANAR | AOM_IMG_FMT_UV_FLIP | 1, /**< planar YVU */
+    AOM_IMG_FMT_I420    = AOM_IMG_FMT_PLANAR | 2,
+    AOM_IMG_FMT_AOMYV12 = AOM_IMG_FMT_PLANAR | AOM_IMG_FMT_UV_FLIP |
+        3, /** < planar 4:2:0 format with aom color space */
+    AOM_IMG_FMT_AOMI420 = AOM_IMG_FMT_PLANAR | 4,
+    AOM_IMG_FMT_I422    = AOM_IMG_FMT_PLANAR | 5,
+    AOM_IMG_FMT_I444    = AOM_IMG_FMT_PLANAR | 6,
+    AOM_IMG_FMT_444A    = AOM_IMG_FMT_PLANAR | AOM_IMG_FMT_HAS_ALPHA | 6,
+    AOM_IMG_FMT_I42016  = AOM_IMG_FMT_I420 | AOM_IMG_FMT_HIGHBITDEPTH,
+    AOM_IMG_FMT_I42216  = AOM_IMG_FMT_I422 | AOM_IMG_FMT_HIGHBITDEPTH,
+    AOM_IMG_FMT_I44416  = AOM_IMG_FMT_I444 | AOM_IMG_FMT_HIGHBITDEPTH,
 } aom_img_fmt_t; /**< alias for enum aom_img_fmt */
 
 /*!\brief List of supported color primaries */
 typedef enum aom_color_primaries {
-  AOM_CICP_CP_RESERVED_0 = 0,  /**< For future use */
-  AOM_CICP_CP_BT_709 = 1,      /**< BT.709 */
-  AOM_CICP_CP_UNSPECIFIED = 2, /**< Unspecified */
-  AOM_CICP_CP_RESERVED_3 = 3,  /**< For future use */
-  AOM_CICP_CP_BT_470_M = 4,    /**< BT.470 System M (historical) */
-  AOM_CICP_CP_BT_470_B_G = 5,  /**< BT.470 System B, G (historical) */
-  AOM_CICP_CP_BT_601 = 6,      /**< BT.601 */
-  AOM_CICP_CP_SMPTE_240 = 7,   /**< SMPTE 240 */
-  AOM_CICP_CP_GENERIC_FILM =
-      8, /**< Generic film (color filters using illuminant C) */
-  AOM_CICP_CP_BT_2020 = 9,      /**< BT.2020, BT.2100 */
-  AOM_CICP_CP_XYZ = 10,         /**< SMPTE 428 (CIE 1921 XYZ) */
-  AOM_CICP_CP_SMPTE_431 = 11,   /**< SMPTE RP 431-2 */
-  AOM_CICP_CP_SMPTE_432 = 12,   /**< SMPTE EG 432-1  */
-  AOM_CICP_CP_RESERVED_13 = 13, /**< For future use (values 13 - 21)  */
-  AOM_CICP_CP_EBU_3213 = 22,    /**< EBU Tech. 3213-E  */
-  AOM_CICP_CP_RESERVED_23 = 23  /**< For future use (values 23 - 255)  */
-} aom_color_primaries_t;        /**< alias for enum aom_color_primaries */
+    AOM_CICP_CP_RESERVED_0   = 0, /**< For future use */
+    AOM_CICP_CP_BT_709       = 1, /**< BT.709 */
+    AOM_CICP_CP_UNSPECIFIED  = 2, /**< Unspecified */
+    AOM_CICP_CP_RESERVED_3   = 3, /**< For future use */
+    AOM_CICP_CP_BT_470_M     = 4, /**< BT.470 System M (historical) */
+    AOM_CICP_CP_BT_470_B_G   = 5, /**< BT.470 System B, G (historical) */
+    AOM_CICP_CP_BT_601       = 6, /**< BT.601 */
+    AOM_CICP_CP_SMPTE_240    = 7, /**< SMPTE 240 */
+    AOM_CICP_CP_GENERIC_FILM = 8, /**< Generic film (color filters using illuminant C) */
+    AOM_CICP_CP_BT_2020      = 9, /**< BT.2020, BT.2100 */
+    AOM_CICP_CP_XYZ          = 10, /**< SMPTE 428 (CIE 1921 XYZ) */
+    AOM_CICP_CP_SMPTE_431    = 11, /**< SMPTE RP 431-2 */
+    AOM_CICP_CP_SMPTE_432    = 12, /**< SMPTE EG 432-1  */
+    AOM_CICP_CP_RESERVED_13  = 13, /**< For future use (values 13 - 21)  */
+    AOM_CICP_CP_EBU_3213     = 22, /**< EBU Tech. 3213-E  */
+    AOM_CICP_CP_RESERVED_23  = 23 /**< For future use (values 23 - 255)  */
+} aom_color_primaries_t; /**< alias for enum aom_color_primaries */
 
 /*!\brief List of supported transfer functions */
 typedef enum aom_transfer_characteristics {
-  AOM_CICP_TC_RESERVED_0 = 0,  /**< For future use */
-  AOM_CICP_TC_BT_709 = 1,      /**< BT.709 */
-  AOM_CICP_TC_UNSPECIFIED = 2, /**< Unspecified */
-  AOM_CICP_TC_RESERVED_3 = 3,  /**< For future use */
-  AOM_CICP_TC_BT_470_M = 4,    /**< BT.470 System M (historical)  */
-  AOM_CICP_TC_BT_470_B_G = 5,  /**< BT.470 System B, G (historical) */
-  AOM_CICP_TC_BT_601 = 6,      /**< BT.601 */
-  AOM_CICP_TC_SMPTE_240 = 7,   /**< SMPTE 240 M */
-  AOM_CICP_TC_LINEAR = 8,      /**< Linear */
-  AOM_CICP_TC_LOG_100 = 9,     /**< Logarithmic (100 : 1 range) */
-  AOM_CICP_TC_LOG_100_SQRT10 =
-      10,                     /**< Logarithmic (100 * Sqrt(10) : 1 range) */
-  AOM_CICP_TC_IEC_61966 = 11, /**< IEC 61966-2-4 */
-  AOM_CICP_TC_BT_1361 = 12,   /**< BT.1361 */
-  AOM_CICP_TC_SRGB = 13,      /**< sRGB or sYCC*/
-  AOM_CICP_TC_BT_2020_10_BIT = 14, /**< BT.2020 10-bit systems */
-  AOM_CICP_TC_BT_2020_12_BIT = 15, /**< BT.2020 12-bit systems */
-  AOM_CICP_TC_SMPTE_2084 = 16,     /**< SMPTE ST 2084, ITU BT.2100 PQ */
-  AOM_CICP_TC_SMPTE_428 = 17,      /**< SMPTE ST 428 */
-  AOM_CICP_TC_HLG = 18,            /**< BT.2100 HLG, ARIB STD-B67 */
-  AOM_CICP_TC_RESERVED_19 = 19     /**< For future use (values 19-255) */
-} aom_transfer_characteristics_t;  /**< alias for enum aom_transfer_function */
+    AOM_CICP_TC_RESERVED_0     = 0, /**< For future use */
+    AOM_CICP_TC_BT_709         = 1, /**< BT.709 */
+    AOM_CICP_TC_UNSPECIFIED    = 2, /**< Unspecified */
+    AOM_CICP_TC_RESERVED_3     = 3, /**< For future use */
+    AOM_CICP_TC_BT_470_M       = 4, /**< BT.470 System M (historical)  */
+    AOM_CICP_TC_BT_470_B_G     = 5, /**< BT.470 System B, G (historical) */
+    AOM_CICP_TC_BT_601         = 6, /**< BT.601 */
+    AOM_CICP_TC_SMPTE_240      = 7, /**< SMPTE 240 M */
+    AOM_CICP_TC_LINEAR         = 8, /**< Linear */
+    AOM_CICP_TC_LOG_100        = 9, /**< Logarithmic (100 : 1 range) */
+    AOM_CICP_TC_LOG_100_SQRT10 = 10, /**< Logarithmic (100 * Sqrt(10) : 1 range) */
+    AOM_CICP_TC_IEC_61966      = 11, /**< IEC 61966-2-4 */
+    AOM_CICP_TC_BT_1361        = 12, /**< BT.1361 */
+    AOM_CICP_TC_SRGB           = 13, /**< sRGB or sYCC*/
+    AOM_CICP_TC_BT_2020_10_BIT = 14, /**< BT.2020 10-bit systems */
+    AOM_CICP_TC_BT_2020_12_BIT = 15, /**< BT.2020 12-bit systems */
+    AOM_CICP_TC_SMPTE_2084     = 16, /**< SMPTE ST 2084, ITU BT.2100 PQ */
+    AOM_CICP_TC_SMPTE_428      = 17, /**< SMPTE ST 428 */
+    AOM_CICP_TC_HLG            = 18, /**< BT.2100 HLG, ARIB STD-B67 */
+    AOM_CICP_TC_RESERVED_19    = 19 /**< For future use (values 19-255) */
+} aom_transfer_characteristics_t; /**< alias for enum aom_transfer_function */
 
 /*!\brief List of supported matrix coefficients */
 typedef enum aom_matrix_coefficients {
-  AOM_CICP_MC_IDENTITY = 0,    /**< Identity matrix */
-  AOM_CICP_MC_BT_709 = 1,      /**< BT.709 */
-  AOM_CICP_MC_UNSPECIFIED = 2, /**< Unspecified */
-  AOM_CICP_MC_RESERVED_3 = 3,  /**< For future use */
-  AOM_CICP_MC_FCC = 4,         /**< US FCC 73.628 */
-  AOM_CICP_MC_BT_470_B_G = 5,  /**< BT.470 System B, G (historical) */
-  AOM_CICP_MC_BT_601 = 6,      /**< BT.601 */
-  AOM_CICP_MC_SMPTE_240 = 7,   /**< SMPTE 240 M */
-  AOM_CICP_MC_SMPTE_YCGCO = 8, /**< YCgCo */
-  AOM_CICP_MC_BT_2020_NCL =
-      9, /**< BT.2020 non-constant luminance, BT.2100 YCbCr  */
-  AOM_CICP_MC_BT_2020_CL = 10, /**< BT.2020 constant luminance */
-  AOM_CICP_MC_SMPTE_2085 = 11, /**< SMPTE ST 2085 YDzDx */
-  AOM_CICP_MC_CHROMAT_NCL =
-      12, /**< Chromaticity-derived non-constant luminance */
-  AOM_CICP_MC_CHROMAT_CL = 13, /**< Chromaticity-derived constant luminance */
-  AOM_CICP_MC_ICTCP = 14,      /**< BT.2100 ICtCp */
-  AOM_CICP_MC_RESERVED_15 = 15 /**< For future use (values 15-255)  */
+    AOM_CICP_MC_IDENTITY    = 0, /**< Identity matrix */
+    AOM_CICP_MC_BT_709      = 1, /**< BT.709 */
+    AOM_CICP_MC_UNSPECIFIED = 2, /**< Unspecified */
+    AOM_CICP_MC_RESERVED_3  = 3, /**< For future use */
+    AOM_CICP_MC_FCC         = 4, /**< US FCC 73.628 */
+    AOM_CICP_MC_BT_470_B_G  = 5, /**< BT.470 System B, G (historical) */
+    AOM_CICP_MC_BT_601      = 6, /**< BT.601 */
+    AOM_CICP_MC_SMPTE_240   = 7, /**< SMPTE 240 M */
+    AOM_CICP_MC_SMPTE_YCGCO = 8, /**< YCgCo */
+    AOM_CICP_MC_BT_2020_NCL = 9, /**< BT.2020 non-constant luminance, BT.2100 YCbCr  */
+    AOM_CICP_MC_BT_2020_CL  = 10, /**< BT.2020 constant luminance */
+    AOM_CICP_MC_SMPTE_2085  = 11, /**< SMPTE ST 2085 YDzDx */
+    AOM_CICP_MC_CHROMAT_NCL = 12, /**< Chromaticity-derived non-constant luminance */
+    AOM_CICP_MC_CHROMAT_CL  = 13, /**< Chromaticity-derived constant luminance */
+    AOM_CICP_MC_ICTCP       = 14, /**< BT.2100 ICtCp */
+    AOM_CICP_MC_RESERVED_15 = 15 /**< For future use (values 15-255)  */
 } aom_matrix_coefficients_t;
 
 /*!\brief List of supported color range */
 typedef enum aom_color_range {
-  AOM_CR_STUDIO_RANGE = 0, /**< Y [16..235], UV [16..240] */
-  AOM_CR_FULL_RANGE = 1    /**< YUV/RGB [0..255] */
-} aom_color_range_t;       /**< alias for enum aom_color_range */
+    AOM_CR_STUDIO_RANGE = 0, /**< Y [16..235], UV [16..240] */
+    AOM_CR_FULL_RANGE   = 1 /**< YUV/RGB [0..255] */
+} aom_color_range_t; /**< alias for enum aom_color_range */
 
 /*!\brief List of chroma sample positions */
 typedef enum aom_chroma_sample_position {
-  AOM_CSP_UNKNOWN = 0,          /**< Unknown */
-  AOM_CSP_VERTICAL = 1,         /**< Horizontally co-located with luma(0, 0)*/
-                                /**< sample, between two vertical samples */
-  AOM_CSP_COLOCATED = 2,        /**< Co-located with luma(0, 0) sample */
-  AOM_CSP_RESERVED = 3          /**< Reserved value */
+    AOM_CSP_UNKNOWN  = 0, /**< Unknown */
+    AOM_CSP_VERTICAL = 1, /**< Horizontally co-located with luma(0, 0)*/
+    /**< sample, between two vertical samples */
+    AOM_CSP_COLOCATED = 2, /**< Co-located with luma(0, 0) sample */
+    AOM_CSP_RESERVED  = 3 /**< Reserved value */
 } aom_chroma_sample_position_t; /**< alias for enum aom_transfer_function */
 
 /**\brief Image Descriptor */
 typedef struct aom_image {
-  aom_img_fmt_t fmt;                 /**< Image Format */
-  aom_color_primaries_t cp;          /**< CICP Color Primaries */
-  aom_transfer_characteristics_t tc; /**< CICP Transfer Characteristics */
-  aom_matrix_coefficients_t mc;      /**< CICP Matrix Coefficients */
-  int monochrome;                    /**< Whether image is monochrome */
-  aom_chroma_sample_position_t csp;  /**< chroma sample position */
-  aom_color_range_t range;           /**< Color Range */
+    aom_img_fmt_t                  fmt; /**< Image Format */
+    aom_color_primaries_t          cp; /**< CICP Color Primaries */
+    aom_transfer_characteristics_t tc; /**< CICP Transfer Characteristics */
+    aom_matrix_coefficients_t      mc; /**< CICP Matrix Coefficients */
+    int                            monochrome; /**< Whether image is monochrome */
+    aom_chroma_sample_position_t   csp; /**< chroma sample position */
+    aom_color_range_t              range; /**< Color Range */
 
-  /* Image storage dimensions */
-  unsigned int w;         /**< Stored image width */
-  unsigned int h;         /**< Stored image height */
-  unsigned int bit_depth; /**< Stored image bit-depth */
+    /* Image storage dimensions */
+    unsigned int w; /**< Stored image width */
+    unsigned int h; /**< Stored image height */
+    unsigned int bit_depth; /**< Stored image bit-depth */
 
-  /* Image display dimensions */
-  unsigned int d_w; /**< Displayed image width */
-  unsigned int d_h; /**< Displayed image height */
+    /* Image display dimensions */
+    unsigned int d_w; /**< Displayed image width */
+    unsigned int d_h; /**< Displayed image height */
 
-  /* Image intended rendering dimensions */
-  unsigned int r_w; /**< Intended rendering image width */
-  unsigned int r_h; /**< Intended rendering image height */
+    /* Image intended rendering dimensions */
+    unsigned int r_w; /**< Intended rendering image width */
+    unsigned int r_h; /**< Intended rendering image height */
 
-  /* Chroma subsampling info */
-  unsigned int x_chroma_shift; /**< subsampling order, X */
-  unsigned int y_chroma_shift; /**< subsampling order, Y */
+    /* Chroma subsampling info */
+    unsigned int x_chroma_shift; /**< subsampling order, X */
+    unsigned int y_chroma_shift; /**< subsampling order, Y */
 
 /* Image data pointers. */
-#define AOM_PLANE_PACKED 0  /**< To be used for all packed formats */
-#define AOM_PLANE_Y 0       /**< Y (Luminance) plane */
-#define AOM_PLANE_U 1       /**< U (Chroma) plane */
-#define AOM_PLANE_V 2       /**< V (Chroma) plane */
-#define AOM_PLANE_ALPHA 3   /**< A (Transparency) plane */
-  unsigned char *planes[4]; /**< pointer to the top left pixel for each plane */
-  int stride[4];            /**< stride between rows for each plane */
-  size_t sz;                /**< data size */
+#define AOM_PLANE_PACKED 0 /**< To be used for all packed formats */
+#define AOM_PLANE_Y 0 /**< Y (Luminance) plane */
+#define AOM_PLANE_U 1 /**< U (Chroma) plane */
+#define AOM_PLANE_V 2 /**< V (Chroma) plane */
+#define AOM_PLANE_ALPHA 3 /**< A (Transparency) plane */
+    unsigned char* planes[4]; /**< pointer to the top left pixel for each plane */
+    int            stride[4]; /**< stride between rows for each plane */
+    size_t         sz; /**< data size */
 
-  int bps; /**< bits per sample (for packed formats) */
+    int bps; /**< bits per sample (for packed formats) */
 
-  int temporal_id; /**< Temporal layer Id of image */
-  int spatial_id;  /**< Spatial layer Id of image */
+    int temporal_id; /**< Temporal layer Id of image */
+    int spatial_id; /**< Spatial layer Id of image */
 
-  /*!\brief The following member may be set by the application to associate
+    /*!\brief The following member may be set by the application to associate
    * data with this image.
    */
-  void *user_priv;
+    void* user_priv;
 
-  /* The following members should be treated as private. */
-  unsigned char *img_data; /**< private */
-  int img_data_owner;      /**< private */
-  int self_allocd;         /**< private */
+    /* The following members should be treated as private. */
+    unsigned char* img_data; /**< private */
+    int            img_data_owner; /**< private */
+    int            self_allocd; /**< private */
 
-  void *fb_priv; /**< Frame buffer data associated with the image. */
-} aom_image_t;   /**< alias for struct aom_image */
+    void* fb_priv; /**< Frame buffer data associated with the image. */
+} aom_image_t; /**< alias for struct aom_image */
 
 /**\brief Representation of a rectangle on a surface */
 typedef struct aom_image_rect {
-  unsigned int x;   /**< leftmost column */
-  unsigned int y;   /**< topmost row */
-  unsigned int w;   /**< width */
-  unsigned int h;   /**< height */
+    unsigned int x; /**< leftmost column */
+    unsigned int y; /**< topmost row */
+    unsigned int w; /**< width */
+    unsigned int h; /**< height */
 } aom_image_rect_t; /**< alias for struct aom_image_rect */
 
 /*!\brief Open a descriptor, allocating storage for the underlying image
@@ -218,9 +213,7 @@ typedef struct aom_image_rect {
  *         parameter is non-null, the value of the img parameter will be
  *         returned.
  */
-aom_image_t *aom_img_alloc(aom_image_t *img, aom_img_fmt_t fmt,
-                           unsigned int d_w, unsigned int d_h,
-                           unsigned int align);
+aom_image_t* aom_img_alloc(aom_image_t* img, aom_img_fmt_t fmt, unsigned int d_w, unsigned int d_h, unsigned int align);
 
 /*!\brief Open a descriptor, using existing storage for the underlying image
  *
@@ -241,9 +234,8 @@ aom_image_t *aom_img_alloc(aom_image_t *img, aom_img_fmt_t fmt,
  *         parameter is non-null, the value of the img parameter will be
  *         returned.
  */
-aom_image_t *aom_img_wrap(aom_image_t *img, aom_img_fmt_t fmt, unsigned int d_w,
-                          unsigned int d_h, unsigned int align,
-                          unsigned char *img_data);
+aom_image_t* aom_img_wrap(aom_image_t* img, aom_img_fmt_t fmt, unsigned int d_w, unsigned int d_h, unsigned int align,
+                          unsigned char* img_data);
 
 /*!\brief Open a descriptor, allocating storage for the underlying image with a
  * border
@@ -266,11 +258,8 @@ aom_image_t *aom_img_wrap(aom_image_t *img, aom_img_fmt_t fmt, unsigned int d_w,
  *         parameter is non-null, the value of the img parameter will be
  *         returned.
  */
-aom_image_t *aom_img_alloc_with_border(aom_image_t *img, aom_img_fmt_t fmt,
-                                       unsigned int d_w, unsigned int d_h,
-                                       unsigned int align,
-                                       unsigned int size_align,
-                                       unsigned int border);
+aom_image_t* aom_img_alloc_with_border(aom_image_t* img, aom_img_fmt_t fmt, unsigned int d_w, unsigned int d_h,
+                                       unsigned int align, unsigned int size_align, unsigned int border);
 
 /*!\brief Set the rectangle identifying the displayed portion of the image
  *
@@ -286,8 +275,8 @@ aom_image_t *aom_img_alloc_with_border(aom_image_t *img, aom_img_fmt_t fmt,
  *
  * \return 0 if the requested rectangle is valid, nonzero otherwise.
  */
-int aom_img_set_rect(aom_image_t *img, unsigned int x, unsigned int y,
-                     unsigned int w, unsigned int h, unsigned int border);
+int aom_img_set_rect(aom_image_t* img, unsigned int x, unsigned int y, unsigned int w, unsigned int h,
+                     unsigned int border);
 
 /*!\brief Flip the image vertically (top for bottom)
  *
@@ -296,7 +285,7 @@ int aom_img_set_rect(aom_image_t *img, unsigned int x, unsigned int y,
  *
  * \param[in]    img       Image descriptor
  */
-void aom_img_flip(aom_image_t *img);
+void aom_img_flip(aom_image_t* img);
 
 /*!\brief Close an image descriptor
  *
@@ -304,7 +293,7 @@ void aom_img_flip(aom_image_t *img);
  *
  * \param[in]    img       Image descriptor
  */
-void aom_img_free(aom_image_t *img);
+void aom_img_free(aom_image_t* img);
 
 /*!\brief Get the width of a plane
  *
@@ -313,7 +302,7 @@ void aom_img_free(aom_image_t *img);
  * \param[in]    img       Image descriptor
  * \param[in]    plane     Plane index
  */
-int aom_img_plane_width(const aom_image_t *img, int plane);
+int aom_img_plane_width(const aom_image_t* img, int plane);
 
 /*!\brief Get the height of a plane
  *
@@ -322,10 +311,10 @@ int aom_img_plane_width(const aom_image_t *img, int plane);
  * \param[in]    img       Image descriptor
  * \param[in]    plane     Plane index
  */
-int aom_img_plane_height(const aom_image_t *img, int plane);
+int aom_img_plane_height(const aom_image_t* img, int plane);
 
 #ifdef __cplusplus
-}  // extern "C"
+} // extern "C"
 #endif
 
-#endif  // AOM_AOM_IMAGE_H_
+#endif // AOM_AOM_IMAGE_H_

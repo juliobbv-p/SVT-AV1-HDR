@@ -92,6 +92,11 @@ void svt_cfl_luma_subsampling_444_hbd_c(const uint16_t *input, int32_t input_str
 void svt_cfl_luma_subsampling_444_hbd_avx2(const uint16_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
 RTCD_EXTERN void(*svt_cfl_luma_subsampling_444_hbd)(const uint16_t *input, int32_t input_stride, int16_t *output_q3, int32_t width, int32_t height);
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+void svt_aom_highbd_filter_intra_predictor_c(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
+void svt_aom_highbd_filter_intra_predictor_neon(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
+RTCD_EXTERN void(*svt_aom_highbd_filter_intra_predictor)(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
+#endif
 void svt_av1_filter_intra_predictor_c(uint8_t *dst, ptrdiff_t stride, TxSize tx_size, const uint8_t *above, const uint8_t *left, int32_t mode);
 RTCD_EXTERN void(*svt_av1_filter_intra_predictor) (uint8_t *dst, ptrdiff_t stride, TxSize tx_size, const uint8_t *above, const uint8_t *left, int32_t mode);
 void svt_av1_filter_intra_edge_c(uint8_t *p, int32_t sz, int32_t strength);
@@ -147,6 +152,9 @@ void svt_av1_inv_txfm2d_add_4x16_c(const int32_t *input, uint16_t *output_r, int
 RTCD_EXTERN void(*svt_av1_inv_txfm2d_add_4x16)(const int32_t *input, uint16_t *output_r, int32_t stride_r, uint16_t *output_w, int32_t stride_w, TxType tx_type, TxSize tx_size, int32_t bd);
 void svt_av1_inv_txfm2d_add_16x4_c(const int32_t *input, uint16_t *output_r, int32_t stride_r, uint16_t *output_w, int32_t stride_w, TxType tx_type, TxSize tx_size, int32_t bd);
 RTCD_EXTERN void(*svt_av1_inv_txfm2d_add_16x4)(const int32_t *input, uint16_t *output_r, int32_t stride_r, uint16_t *output_w, int32_t stride_w, TxType tx_type, TxSize tx_size, int32_t bd);
+void svt_av1_highbd_inv_txfm_add_c(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
+void svt_av1_highbd_inv_txfm_add_neon(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
+RTCD_EXTERN void(*svt_av1_highbd_inv_txfm_add)(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
 void svt_av1_inv_txfm_add_c(const TranLow *dqcoeff, uint8_t *dst_r, int32_t stride_r, uint8_t *dst_w, int32_t stride_w, const TxfmParam *txfm_param);
 RTCD_EXTERN void(*svt_av1_inv_txfm_add)(const TranLow *dqcoeff, uint8_t *dst_r, int32_t stride_r, uint8_t *dst_w, int32_t stride_w, const TxfmParam *txfm_param);
 RTCD_EXTERN void(*svt_compressed_packmsb)(uint8_t *in8_bit_buffer, uint32_t in8_stride, uint8_t *inn_bit_buffer, uint32_t inn_stride, uint16_t *out16_bit_buffer, uint32_t out_stride, uint32_t width, uint32_t height);
@@ -165,6 +173,8 @@ RTCD_EXTERN void(*svt_residual_kernel8bit)(uint8_t *input, uint32_t input_stride
 RTCD_EXTERN uint64_t(*compute8x8_satd_u8)(uint8_t *diff, uint64_t *dc_value, uint32_t src_stride);
 RTCD_EXTERN int32_t(*sum_residual8bit)(int16_t *in_ptr, uint32_t size, uint32_t stride_in);
 RTCD_EXTERN void(*svt_full_distortion_kernel_cbf_zero32_bits)(int32_t *coeff, uint32_t coeff_stride, uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width, uint32_t area_height);
+void svt_qm_full_distortion_c(const int32_t *coeff, const int32_t *recon, uint32_t stride, uint32_t width, uint32_t height, uint64_t *distortion, uint32_t eob, const QmVal *weights, uint32_t weight_stride);
+RTCD_EXTERN void(*svt_qm_full_distortion)(const int32_t *coeff, const int32_t *recon, uint32_t stride, uint32_t width, uint32_t height, uint64_t *distortion, uint32_t eob, const QmVal *weights, uint32_t weight_stride);
 RTCD_EXTERN void(*svt_full_distortion_kernel32_bits)(int32_t *coeff, int32_t *recon_coeff, uint32_t stride, uint32_t area_width, uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]);
 uint64_t svt_spatial_full_distortion_kernel_c(uint8_t *input, uint32_t input_offset, uint32_t input_stride, uint8_t *recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
 RTCD_EXTERN uint64_t(*svt_spatial_full_distortion_kernel)(uint8_t *input, uint32_t input_offset, uint32_t input_stride, uint8_t *recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
@@ -1036,6 +1046,12 @@ void svt_aom_cdef_find_dir_dual_sse4_1(const uint16_t *img1, const uint16_t *img
 void svt_aom_cdef_find_dir_dual_avx2(const uint16_t *img1, const uint16_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
 RTCD_EXTERN void(*svt_aom_cdef_find_dir_dual)(const uint16_t *img1, const uint16_t *img2, int stride, int32_t *var1, int32_t *var2, int32_t coeff_shift, uint8_t *out1, uint8_t *out2);
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Raw 10-bit SSE in compact plan order; configured primary zero uses direction zero.
+struct CdefSearchPlan;
+void svt_cdef_search_block_10bit_c(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
+RTCD_EXTERN void(*svt_cdef_search_block_10bit)(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
+#endif
 void svt_cdef_filter_block_c(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 RTCD_EXTERN void(*svt_cdef_filter_block)(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 RTCD_EXTERN void(*svt_cdef_filter_block_8xn_16)(const uint16_t *const in, const int32_t pri_strength, const int32_t sec_strength, const int32_t dir, int32_t pri_damping, int32_t sec_damping, const int32_t coeff_shift, uint16_t *const dst, const int32_t dstride, uint8_t height, uint8_t subsampling_factor);
@@ -1086,6 +1102,38 @@ void svt_aom_lpf_horizontal_8_c(uint8_t *s, int32_t pitch, const uint8_t *blimit
 RTCD_EXTERN void(*svt_aom_lpf_horizontal_8)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 void svt_aom_lpf_vertical_14_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 RTCD_EXTERN void(*svt_aom_lpf_vertical_14)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_4_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_4_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_6_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_6_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_8_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_8_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_14_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_14_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_4_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_4_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_6_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_6_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_8_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_8_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_14_dual_c(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_14_dual)(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_4_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_4_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_6_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_6_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_8_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_8_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_14_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_horizontal_14_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_4_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_4_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_6_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_6_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_8_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_8_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_14_quad_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+RTCD_EXTERN void(*svt_aom_lpf_vertical_14_quad)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 void svt_aom_lpf_vertical_4_c(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 RTCD_EXTERN void(*svt_aom_lpf_vertical_4)(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 void svt_aom_lpf_vertical_6_c(uint8_t* s, int32_t pitch, const uint8_t* blimit, const uint8_t* limit, const uint8_t* thresh);
@@ -1252,6 +1300,9 @@ void svt_av1_warp_affine_neon_i8mm(const int32_t *mat, const uint8_t *ref, int w
 void svt_av1_warp_affine_sve(const int32_t *mat, const uint8_t *ref, int width, int height, int stride, uint8_t *pred, int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x, int subsampling_y, ConvolveParams *conv_params, int16_t alpha, int16_t beta, int16_t gamma, int16_t delta);
 
 void svt_av1_highbd_warp_affine_neon(const int32_t *mat, const uint8_t *ref8b, const uint8_t *ref2b,  int width, int height, int stride8b, int stride2b, uint16_t *pred, int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x, int subsampling_y, int bd, ConvolveParams *conv_params, int16_t alpha, int16_t beta, int16_t gamma, int16_t delta);
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && HAVE_NEON_I8MM
+void svt_av1_highbd_warp_affine_neon_i8mm(const int32_t *mat, const uint8_t *ref8b, const uint8_t *ref2b,  int width, int height, int stride8b, int stride2b, uint16_t *pred, int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x, int subsampling_y, int bd, ConvolveParams *conv_params, int16_t alpha, int16_t beta, int16_t gamma, int16_t delta);
+#endif
 
 void svt_av1_highbd_warp_affine_sve(const int32_t *mat, const uint8_t *ref8b, const uint8_t *ref2b,  int width, int height, int stride8b, int stride2b, uint16_t *pred, int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x, int subsampling_y, int bd, ConvolveParams *conv_params, int16_t alpha, int16_t beta, int16_t gamma, int16_t delta);
 
@@ -1304,6 +1355,9 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow *dqcoeff, uint8_t *dst_r, int32_t
 void svt_residual_kernel8bit_neon(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 void svt_residual_kernel16bit_neon(uint16_t *input, uint32_t input_stride, uint16_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+void svt_cdef_search_block_10bit_neon(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
+#endif
 void svt_cdef_filter_block_neon(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 void svt_cdef_filter_block_8bit_neon(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
 void svt_cdef_filter_block_8bit_bounded_neon(uint8_t *dst, int32_t dstride, const uint8_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor, int edge_top, int edge_left, int edge_bottom, int edge_right);
@@ -1773,6 +1827,7 @@ void svt_aom_paeth_predictor_64x64_neon(uint8_t *dst, ptrdiff_t stride, const ui
 
 uint64_t svt_full_distortion_kernel16_bits_neon(uint8_t* input, uint32_t input_offset, uint32_t input_stride, uint8_t* recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
 uint64_t svt_full_distortion_kernel16_bits_sve(uint8_t* input, uint32_t input_offset, uint32_t input_stride, uint8_t* recon, int32_t recon_offset, uint32_t recon_stride, uint32_t area_width, uint32_t area_height);
+void svt_qm_full_distortion_neon(const int32_t *coeff, const int32_t *recon, uint32_t stride, uint32_t width, uint32_t height, uint64_t *distortion, uint32_t eob, const QmVal *weights, uint32_t weight_stride);
 void svt_full_distortion_kernel32_bits_neon(int32_t *coeff, int32_t *recon_coeff, uint32_t stride, uint32_t area_width, uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]);
 
 void svt_full_distortion_kernel_cbf_zero32_bits_neon(int32_t *coeff, uint32_t coeff_stride,
@@ -1796,6 +1851,7 @@ void svt_av1_highbd_jnt_convolve_2d_sve2(const uint16_t *src, int32_t src_stride
                                         const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 void svt_av1_highbd_jnt_convolve_y_neon(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 void svt_av1_highbd_jnt_convolve_y_sve2(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
+void svt_aom_highbd_10_fullpel_split_neon(const uint8_t *msb, int msb_stride, const uint8_t *lsb, int lsb_stride, uint16_t *dst, int dst_stride, int w, int h, ConvolveParams *params);
 void svt_av1_highbd_jnt_convolve_2d_copy_neon( const uint16_t *src, int32_t src_stride, uint16_t *dst0, int32_t dst_stride0, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 void svt_av1_highbd_convolve_x_sr_neon(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 void svt_av1_highbd_convolve_x_sr_sve(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
@@ -2629,6 +2685,7 @@ void svt_av1_dr_prediction_z1_avx2(uint8_t *dst, ptrdiff_t stride, int32_t bw, i
 void svt_av1_dr_prediction_z1_sse4_1(uint8_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint8_t *above, const uint8_t *left, int32_t upsample_above, int32_t dx, int32_t dy);
 
 void svt_av1_dr_prediction_z2_avx2(uint8_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint8_t *above, const uint8_t *left, int32_t upsample_above, int32_t upsample_left, int32_t dx, int32_t dy);
+void svt_av1_dr_prediction_z2_avx512(uint8_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint8_t *above, const uint8_t *left, int32_t upsample_above, int32_t upsample_left, int32_t dx, int32_t dy);
 void svt_av1_dr_prediction_z2_sse4_1(uint8_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint8_t *above, const uint8_t *left, int32_t upsample_above, int32_t upsample_left, int32_t dx, int32_t dy);
 
 void svt_av1_dr_prediction_z3_avx2(uint8_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint8_t *above, const uint8_t *left, int32_t upsample_left, int32_t dx, int32_t dy);
@@ -3180,6 +3237,26 @@ void svt_aom_lpf_horizontal_6_sse2(uint8_t *s, int32_t pitch, const uint8_t *bli
 void svt_aom_lpf_horizontal_8_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 
 void svt_aom_lpf_vertical_14_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_4_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_6_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_8_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_14_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_4_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_6_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_8_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_vertical_14_dual_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
+void svt_aom_lpf_horizontal_4_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_6_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_8_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_14_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_4_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_6_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_8_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_14_quad_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_6_quad_avx2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_8_quad_avx2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_horizontal_14_quad_avx2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
+void svt_aom_lpf_vertical_14_quad_avx2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 
 void svt_aom_lpf_vertical_4_sse2(uint8_t *s, int32_t pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
 

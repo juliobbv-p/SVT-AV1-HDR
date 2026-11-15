@@ -12,7 +12,7 @@
   dependencies: []
   tags:
     - gitlab-org
-  image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2404-bsd
+  image: registry.gitlab.com/aomediacodec/aom-testing/ubuntu2604-bsd
   before_script:
     - |
       case $CROSS_TARGET in

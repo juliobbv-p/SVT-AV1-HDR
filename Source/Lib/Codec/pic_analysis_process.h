@@ -13,6 +13,7 @@
 #define EbPictureAnalysis_h
 
 #include "definitions.h"
+#include "svt_threads.h"
 
 #include "pcs.h"
 #include "sequence_control_set.h"
@@ -23,7 +24,7 @@
 EbErrorType svt_aom_picture_analysis_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                                   int index);
 
-void* svt_aom_picture_analysis_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_picture_analysis_kernel(void* input_ptr);
 
 void svt_aom_downsample_filtering_input_picture(PictureParentControlSet* pcs, EbPictureBufferDesc* input_padded_pic,
                                                 EbPictureBufferDesc* quarter_picture_ptr,

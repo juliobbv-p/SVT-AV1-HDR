@@ -99,6 +99,7 @@ class RefDecoder {
     typedef struct StreamInfo {
         std::vector<int> frame_type_list;
         uint32_t profile;
+        uint32_t tier;
         int monochrome;  // Monochorme video
         VideoColorFormat format;
         uint32_t bit_depth;
@@ -134,8 +135,11 @@ class RefDecoder {
         // were refreshed). frame_corrupted_list[i] is 0 on a clean decode.
         std::vector<uint8_t> refresh_frame_flags_list;
         std::vector<int> frame_corrupted_list;
+        // Sequence-header frame_id_numbers_present_flag, parsed by ParseUtil.
+        int frame_id_numbers_present_flag;
         StreamInfo() {
             format = IMG_FMT_420;
+            tier = 0;
             tile_rows = 0;
             tile_cols = 0;
             min_block_size = 128;
@@ -147,6 +151,7 @@ class RefDecoder {
             qindex_list.clear();
             refresh_frame_flags_list.clear();
             frame_corrupted_list.clear();
+            frame_id_numbers_present_flag = -1;
         }
     } StreamInfo;
 

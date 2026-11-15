@@ -39,19 +39,19 @@ using testing::Test;
 // ContainerTest will be instantiated in both gtest-typed-test_test.cc
 // and gtest-typed-test2_test.cc.
 
-template <typename T>
-class ContainerTest : public Test {};
+template <typename T> class ContainerTest : public Test {};
 
 TYPED_TEST_SUITE_P(ContainerTest);
 
-TYPED_TEST_P(ContainerTest, CanBeDefaultConstructed) { TypeParam container; }
-
-TYPED_TEST_P(ContainerTest, InitialSizeIsZero) {
-  TypeParam container;
-  EXPECT_EQ(0U, container.size());
+TYPED_TEST_P(ContainerTest, CanBeDefaultConstructed) {
+    TypeParam container;
 }
 
-REGISTER_TYPED_TEST_SUITE_P(ContainerTest, CanBeDefaultConstructed,
-                            InitialSizeIsZero);
+TYPED_TEST_P(ContainerTest, InitialSizeIsZero) {
+    TypeParam container;
+    EXPECT_EQ(0U, container.size());
+}
 
-#endif  // GOOGLETEST_TEST_GTEST_TYPED_TEST_TEST_H_
+REGISTER_TYPED_TEST_SUITE_P(ContainerTest, CanBeDefaultConstructed, InitialSizeIsZero);
+
+#endif // GOOGLETEST_TEST_GTEST_TYPED_TEST_TEST_H_

@@ -196,11 +196,17 @@
 #define SET_NEON_NEON_DOTPROD(ptr, c, neon, neon_dotprod)             SET_FUNCTIONS_NEON(ptr, c, neon, neon_dotprod, 0, 0, 0, 0)
 #define SET_NEON_NEON_DOTPROD_NEON_I8MM(ptr, c, neon, neon_dotprod, neon_i8mm) SET_FUNCTIONS_NEON(ptr, c, neon, neon_dotprod, neon_i8mm, 0, 0, 0)
 // RTC size lever: cold rect/large variance, sse, mse and ssim kernels are never dispatched to dotprod in
-// RTC, so register neon-only there. Non-RTC keeps SET_NEON_NEON_DOTPROD byte-for-byte.
-#if RTC_BUILD
+// RTC, so register neon-only there. MOBILE does the same except for the two its VOD/AVIF encodes do
+// dispatch (SET_NEON_MOBILE_NEON_DOTPROD). Other builds keep SET_NEON_NEON_DOTPROD byte-for-byte.
+#if RTC_BUILD || MOBILE_BUILD
 #define SET_NEON_MAYBE_NEON_DOTPROD(ptr, c, neon, neon_dotprod) SET_NEON(ptr, c, neon)
 #else
 #define SET_NEON_MAYBE_NEON_DOTPROD(ptr, c, neon, neon_dotprod) SET_NEON_NEON_DOTPROD(ptr, c, neon, neon_dotprod)
+#endif
+#if RTC_BUILD
+#define SET_NEON_MOBILE_NEON_DOTPROD(ptr, c, neon, neon_dotprod) SET_NEON(ptr, c, neon)
+#else
+#define SET_NEON_MOBILE_NEON_DOTPROD(ptr, c, neon, neon_dotprod) SET_NEON_NEON_DOTPROD(ptr, c, neon, neon_dotprod)
 #endif
 #define SET_NEON_NEON_DOTPROD_SVE_NEOVERSE_V2(ptr, c, neon, neon_dotprod, sve, neoverse_v2)    SET_FUNCTIONS_NEON(ptr, c, neon, neon_dotprod, 0, sve, 0, neoverse_v2)
 #define SET_NEON_NEON_DOTPROD_SVE(ptr, c, neon, neon_dotprod, sve)    SET_FUNCTIONS_NEON(ptr, c, neon, neon_dotprod, 0, sve, 0, 0)
@@ -238,6 +244,9 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #endif
 
 #if defined ARCH_X86_64
+#if EN_AVX512_SUPPORT
+    svt_aom_use_avx512 = (flags & EB_CPU_FLAGS_AVX512F) != 0;
+#endif
     SET_AVX2(svt_aom_sse, svt_aom_sse_c, svt_aom_sse_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_AVX2(svt_aom_highbd_sse, svt_aom_highbd_sse_c, svt_aom_highbd_sse_avx2);
@@ -254,13 +263,15 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_SSE41_AVX2_AVX512(svt_av1_compute_stats_highbd, svt_av1_compute_stats_highbd_c, svt_av1_compute_stats_highbd_sse4_1, svt_av1_compute_stats_highbd_avx2, svt_av1_compute_stats_highbd_avx512);
 #endif
+#if CONFIG_ENABLE_SGRPROJ
     SET_SSE41_AVX2_AVX512(svt_av1_lowbd_pixel_proj_error, svt_av1_lowbd_pixel_proj_error_c, svt_av1_lowbd_pixel_proj_error_sse4_1, svt_av1_lowbd_pixel_proj_error_avx2, svt_av1_lowbd_pixel_proj_error_avx512);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_SSE41_AVX2(svt_av1_highbd_pixel_proj_error, svt_av1_highbd_pixel_proj_error_c, svt_av1_highbd_pixel_proj_error_sse4_1, svt_av1_highbd_pixel_proj_error_avx2);
 #endif
+#endif
 #endif // CONFIG_ENABLE_RESTORATION
     SET_AVX2(svt_subtract_average, svt_subtract_average_c, svt_subtract_average_avx2);
-#if CONFIG_ENABLE_RESTORATION
+#if CONFIG_ENABLE_SGRPROJ
     SET_AVX2(svt_get_proj_subspace, svt_get_proj_subspace_c, svt_get_proj_subspace_avx2);
 #endif
     SET_SSE41_AVX2(svt_aom_quantize_b, svt_aom_quantize_b_c, svt_aom_quantize_b_sse4_1, svt_aom_quantize_b_avx2);
@@ -419,6 +430,14 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2_AVX2(svt_aom_variance16x4, svt_aom_variance16x4_c, svt_aom_variance16x4_sse2, svt_aom_variance16x4_avx2);
     SET_SSE2_AVX2(svt_aom_variance16x8, svt_aom_variance16x8_c, svt_aom_variance16x8_sse2, svt_aom_variance16x8_avx2);
     SET_SSE2_AVX2(svt_aom_variance16x16, svt_aom_variance16x16_c, svt_aom_variance16x16_sse2, svt_aom_variance16x16_avx2);
+    SET_ONLY_C(svt_aom_variance_window, svt_aom_variance_window_c);
+    SET_ONLY_C(svt_aom_src_var_prep, svt_aom_src_var_prep_c);
+    SET_ONLY_C(svt_aom_src_var, svt_aom_src_var_c);
+#if EN_AVX512_SUPPORT
+    SET_FUNCTION(svt_aom_variance_window, svt_aom_variance_window_avx512icl, EB_CPU_FLAGS_AVX512ICL);
+    SET_FUNCTION(svt_aom_src_var_prep, svt_aom_src_var_prep_avx512icl, EB_CPU_FLAGS_AVX512ICL);
+    SET_FUNCTION(svt_aom_src_var, svt_aom_src_var_avx512icl, EB_CPU_FLAGS_AVX512ICL);
+#endif
     SET_SSE2_AVX2(svt_aom_variance16x32, svt_aom_variance16x32_c, svt_aom_variance16x32_sse2, svt_aom_variance16x32_avx2);
     SET_SSE2_AVX2(svt_aom_variance16x64, svt_aom_variance16x64_c, svt_aom_variance16x64_sse2, svt_aom_variance16x64_avx2);
     SET_SSE2_AVX2_AVX512(svt_aom_variance32x8, svt_aom_variance32x8_c, svt_aom_variance32x8_sse2, svt_aom_variance32x8_avx2, svt_aom_variance32x8_avx512);
@@ -506,6 +525,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2(svt_handle_transform64x16, svt_handle_transform64x16_c, svt_handle_transform64x16_sse4_1, svt_handle_transform64x16_avx2);
     SET_SSE41_AVX2(svt_handle_transform64x32, svt_handle_transform64x32_c, svt_handle_transform64x32_sse4_1, svt_handle_transform64x32_avx2);
     SET_SSE41_AVX2(svt_handle_transform64x64, svt_handle_transform64x64_c, svt_handle_transform64x64_sse4_1, svt_handle_transform64x64_avx2);
+    SET_FUNCTIONS(svt_av1_fwd_txfm2d_64x64_energy, svt_av1_fwd_txfm2d_64x64_energy_c, 0, 0, 0, 0, 0, 0, 0, 0, 0, svt_av1_fwd_txfm2d_64x64_energy_avx512);
     SET_SSE41_AVX2(svt_handle_transform16x64_N2_N4, svt_handle_transform16x64_N2_N4_c, svt_handle_transform16x64_N2_N4_sse4_1, svt_handle_transform16x64_N2_N4_avx2);
     SET_SSE41_AVX2(svt_handle_transform32x64_N2_N4, svt_handle_transform32x64_N2_N4_c, svt_handle_transform32x64_N2_N4_sse4_1, svt_handle_transform32x64_N2_N4_avx2);
     SET_SSE41_AVX2(svt_handle_transform64x16_N2_N4, svt_handle_transform64x16_N2_N4_c, svt_handle_transform64x16_N2_N4_sse4_1, svt_handle_transform64x16_N2_N4_avx2);
@@ -542,6 +562,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x4_N4, svt_av1_fwd_txfm2d_16x4_N4_c, svt_av1_fwd_txfm2d_16x4_N4_sse4_1, svt_av1_fwd_txfm2d_16x4_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x8_N4, svt_av1_fwd_txfm2d_16x8_N4_c, svt_av1_fwd_txfm2d_16x8_N4_sse4_1, svt_av1_fwd_txfm2d_16x8_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x16_N4, svt_aom_transform_two_d_16x16_N4_c, svt_av1_fwd_txfm2d_16x16_N4_sse4_1, svt_av1_fwd_txfm2d_16x16_N4_avx2);
+    SET_AVX2(svt_av1_fwd_txfm2d_16x16_N4_sub_dct, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x32_N4, svt_av1_fwd_txfm2d_16x32_N4_c, svt_av1_fwd_txfm2d_16x32_N4_sse4_1, svt_av1_fwd_txfm2d_16x32_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_16x64_N4, svt_av1_fwd_txfm2d_16x64_N4_c, svt_av1_fwd_txfm2d_16x64_N4_sse4_1, svt_av1_fwd_txfm2d_16x64_N4_avx2);
     SET_SSE41_AVX2(svt_av1_fwd_txfm2d_32x8_N4, svt_av1_fwd_txfm2d_32x8_N4_c, svt_av1_fwd_txfm2d_32x8_N4_sse4_1, svt_av1_fwd_txfm2d_32x8_N4_avx2);
@@ -564,7 +585,9 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_SSE2(svt_aom_ifft4x4_float, svt_aom_ifft4x4_float_c, svt_aom_ifft4x4_float_sse2);
 #endif // CONFIG_ENABLE_FILM_GRAIN
     SET_SSE2_AVX2(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c, svt_av1_get_nz_map_contexts_sse2, svt_av1_get_nz_map_contexts_avx2);
+    SET_AVX2(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c, svt_av1_get_nz_map_contexts_2d_rows_avx2);
     SET_AVX2_AVX512(svt_search_one_dual, svt_search_one_dual_c, svt_search_one_dual_avx2, svt_search_one_dual_avx512);
+    SET_ONLY_C(svt_sad_loop_16xh_sea, svt_sad_loop_16xh_sea_c);
     SET_SSE41_AVX2_AVX512(svt_sad_loop_kernel, svt_sad_loop_kernel_c, svt_sad_loop_kernel_sse4_1_intrin, svt_sad_loop_kernel_avx2_intrin, svt_sad_loop_kernel_avx512_intrin);
     SET_SSE41_AVX2(svt_av1_apply_zz_based_temporal_filter_planewise_medium, svt_av1_apply_zz_based_temporal_filter_planewise_medium_c, svt_av1_apply_zz_based_temporal_filter_planewise_medium_sse4_1, svt_av1_apply_zz_based_temporal_filter_planewise_medium_avx2);
     SET_SSE41_AVX2(svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_sse4_1, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_avx2);
@@ -647,7 +670,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_NEON_SVE(svt_aom_highbd_sse, svt_aom_highbd_sse_c, svt_aom_highbd_sse_neon, svt_aom_highbd_sse_sve);
 #endif
     SET_ARM_CRC32(svt_av1_get_crc32c_value, svt_av1_get_crc32c_value_c, svt_av1_get_crc32c_value_arm_crc32);
-#if CONFIG_ENABLE_INTER_COMPOUND
+#if CONFIG_ENABLE_INTER_COMPOUND && CONFIG_ENABLE_COMPOUND_TYPES
     SET_NEON(svt_av1_wedge_compute_delta_squares, svt_av1_wedge_compute_delta_squares_c, svt_av1_wedge_compute_delta_squares_neon);
     SET_NEON_SVE(svt_av1_wedge_sign_from_residuals, svt_av1_wedge_sign_from_residuals_c, svt_av1_wedge_sign_from_residuals_neon, svt_av1_wedge_sign_from_residuals_sve);
 #endif
@@ -658,13 +681,15 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_NEON_SVE(svt_av1_compute_stats_highbd, svt_av1_compute_stats_highbd_c, svt_av1_compute_stats_highbd_neon, svt_av1_compute_stats_highbd_sve);
 #endif
+#if CONFIG_ENABLE_SGRPROJ
     SET_NEON_SVE(svt_av1_lowbd_pixel_proj_error, svt_av1_lowbd_pixel_proj_error_c, svt_av1_lowbd_pixel_proj_error_neon, svt_av1_lowbd_pixel_proj_error_sve);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_NEON_SVE(svt_av1_highbd_pixel_proj_error, svt_av1_highbd_pixel_proj_error_c, svt_av1_highbd_pixel_proj_error_neon, svt_av1_highbd_pixel_proj_error_sve);
 #endif
+#endif
 #endif // CONFIG_ENABLE_RESTORATION
     SET_NEON(svt_subtract_average, svt_subtract_average_c, svt_subtract_average_neon);
-#if CONFIG_ENABLE_RESTORATION
+#if CONFIG_ENABLE_SGRPROJ
     SET_NEON(svt_get_proj_subspace, svt_get_proj_subspace_c, svt_get_proj_subspace_neon);
 #endif
     SET_NEON(svt_aom_quantize_b, svt_aom_quantize_b_c, svt_aom_quantize_b_neon);
@@ -688,7 +713,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #endif
 
     //SAD
-    SET_NEON_MAYBE_NEON_DOTPROD(svt_aom_mse16x16, svt_aom_mse16x16_c, svt_aom_mse16x16_neon, svt_aom_mse16x16_neon_dotprod);
+    SET_NEON_MOBILE_NEON_DOTPROD(svt_aom_mse16x16, svt_aom_mse16x16_c, svt_aom_mse16x16_neon, svt_aom_mse16x16_neon_dotprod);
     SET_NEON(svt_aom_sad4x4, svt_aom_sad4x4_c, svt_aom_sad4x4_neon);
     SET_NEON(svt_aom_sad4x4x4d, svt_aom_sad4x4x4d_c, svt_aom_sad4x4x4d_neon);
     SET_NEON(svt_aom_sad4x16, svt_aom_sad4x16_c, svt_aom_sad4x16_neon);
@@ -835,7 +860,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_NEON_NEON_DOTPROD(svt_aom_variance32x32, svt_aom_variance32x32_c,svt_aom_variance32x32_neon, svt_aom_variance32x32_neon_dotprod);
     SET_NEON_MAYBE_NEON_DOTPROD(svt_aom_variance32x64, svt_aom_variance32x64_c, svt_aom_variance32x64_neon, svt_aom_variance32x64_neon_dotprod);
     SET_NEON_MAYBE_NEON_DOTPROD(svt_aom_variance64x16, svt_aom_variance64x16_c, svt_aom_variance64x16_neon, svt_aom_variance64x16_neon_dotprod);
-    SET_NEON_MAYBE_NEON_DOTPROD(svt_aom_variance64x32, svt_aom_variance64x32_c,svt_aom_variance64x32_neon, svt_aom_variance64x32_neon_dotprod);
+    SET_NEON_MOBILE_NEON_DOTPROD(svt_aom_variance64x32, svt_aom_variance64x32_c,svt_aom_variance64x32_neon, svt_aom_variance64x32_neon_dotprod);
     SET_NEON_NEON_DOTPROD(svt_aom_variance64x64, svt_aom_variance64x64_c,svt_aom_variance64x64_neon, svt_aom_variance64x64_neon_dotprod);
 #if !CONFIG_RTC_SB64
     SET_NEON_NEON_DOTPROD(svt_aom_variance64x128, svt_aom_variance64x128_c,svt_aom_variance64x128_neon, svt_aom_variance64x128_neon_dotprod);
@@ -900,16 +925,22 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     //transform
     SET_NEON(svt_av1_fwd_txfm2d_4x4, svt_av1_transform_two_d_4x4_c, svt_av1_fwd_txfm2d_4x4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_4x8, svt_av1_fwd_txfm2d_4x8_c, svt_av1_fwd_txfm2d_4x8_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_4x16, svt_av1_fwd_txfm2d_4x16_c, svt_av1_fwd_txfm2d_4x16_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_8x4, svt_av1_fwd_txfm2d_8x4_c, svt_av1_fwd_txfm2d_8x4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_8x8, svt_av1_transform_two_d_8x8_c, svt_av1_fwd_txfm2d_8x8_neon);
     SET_NEON(svt_av1_fwd_txfm2d_8x16, svt_av1_fwd_txfm2d_8x16_c, svt_av1_fwd_txfm2d_8x16_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_8x32, svt_av1_fwd_txfm2d_8x32_c, svt_av1_fwd_txfm2d_8x32_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_16x4, svt_av1_fwd_txfm2d_16x4_c, svt_av1_fwd_txfm2d_16x4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_16x8, svt_av1_fwd_txfm2d_16x8_c, svt_av1_fwd_txfm2d_16x8_neon);
     SET_NEON(svt_av1_fwd_txfm2d_16x16, svt_av1_transform_two_d_16x16_c, svt_av1_fwd_txfm2d_16x16_neon);
     SET_NEON(svt_av1_fwd_txfm2d_16x32, svt_av1_fwd_txfm2d_16x32_c, svt_av1_fwd_txfm2d_16x32_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_16x64, svt_av1_fwd_txfm2d_16x64_c, svt_av1_fwd_txfm2d_16x64_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_32x8, svt_av1_fwd_txfm2d_32x8_c, svt_av1_fwd_txfm2d_32x8_neon);
     SET_NEON(svt_av1_fwd_txfm2d_32x16, svt_av1_fwd_txfm2d_32x16_c, svt_av1_fwd_txfm2d_32x16_neon);
     SET_NEON(svt_av1_fwd_txfm2d_32x32, svt_av1_transform_two_d_32x32_c, svt_av1_fwd_txfm2d_32x32_neon);
@@ -918,49 +949,75 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(svt_av1_fwd_txfm2d_64x32, svt_av1_fwd_txfm2d_64x32_c, svt_av1_fwd_txfm2d_64x32_neon);
     SET_NEON(svt_av1_fwd_txfm2d_64x64, svt_av1_transform_two_d_64x64_c, svt_av1_fwd_txfm2d_64x64_neon);
 
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_handle_transform16x64, svt_handle_transform16x64_c, svt_handle_transform16x64_neon);
+#endif
     SET_NEON(svt_handle_transform32x64, svt_handle_transform32x64_c, svt_handle_transform32x64_neon);
     SET_NEON(svt_handle_transform64x16, svt_handle_transform64x16_c, svt_handle_transform64x16_neon);
     SET_NEON(svt_handle_transform64x32, svt_handle_transform64x32_c, svt_handle_transform64x32_neon);
     SET_NEON(svt_handle_transform64x64, svt_handle_transform64x64_c, svt_handle_transform64x64_neon);
+    SET_NEON(svt_av1_fwd_txfm2d_64x64_energy, svt_av1_fwd_txfm2d_64x64_energy_c, svt_av1_fwd_txfm2d_64x64_energy_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_handle_transform16x64_N2_N4, svt_handle_transform16x64_N2_N4_c, svt_handle_transform16x64_N2_N4_neon);
+#endif
     SET_NEON(svt_handle_transform32x64_N2_N4, svt_handle_transform32x64_N2_N4_c, svt_handle_transform32x64_N2_N4_neon);
     SET_NEON(svt_handle_transform64x16_N2_N4, svt_handle_transform64x16_N2_N4_c, svt_handle_transform64x16_N2_N4_neon);
     SET_NEON(svt_handle_transform64x32_N2_N4, svt_handle_transform64x32_N2_N4_c, svt_handle_transform64x32_N2_N4_neon);
     SET_NEON(svt_handle_transform64x64_N2_N4, svt_handle_transform64x64_N2_N4_c, svt_handle_transform64x64_N2_N4_neon);
 #if CONFIG_ENABLE_TX_PF_N2
+#if CONFIG_ENABLE_TX_PF_ALL
     SET_NEON(svt_av1_fwd_txfm2d_4x4_N2, svt_aom_transform_two_d_4x4_N2_c, svt_av1_fwd_txfm2d_4x4_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_4x8_N2, svt_av1_fwd_txfm2d_4x8_N2_c, svt_av1_fwd_txfm2d_4x8_N2_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_4x16_N2, svt_av1_fwd_txfm2d_4x16_N2_c, svt_av1_fwd_txfm2d_4x16_N2_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_8x4_N2, svt_av1_fwd_txfm2d_8x4_N2_c, svt_av1_fwd_txfm2d_8x4_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_8x8_N2, svt_aom_transform_two_d_8x8_N2_c, svt_av1_fwd_txfm2d_8x8_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_8x16_N2, svt_av1_fwd_txfm2d_8x16_N2_c, svt_av1_fwd_txfm2d_8x16_N2_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_8x32_N2, svt_av1_fwd_txfm2d_8x32_N2_c, svt_av1_fwd_txfm2d_8x32_N2_neon);
+#endif
+#endif // CONFIG_ENABLE_TX_PF_ALL
     SET_NEON(svt_av1_fwd_txfm2d_16x4_N2, svt_av1_fwd_txfm2d_16x4_N2_c, svt_av1_fwd_txfm2d_16x4_N2_neon);
+#if CONFIG_ENABLE_TX_PF_ALL
     SET_NEON(svt_av1_fwd_txfm2d_16x8_N2, svt_av1_fwd_txfm2d_16x8_N2_c, svt_av1_fwd_txfm2d_16x8_N2_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_16x16_N2, svt_aom_transform_two_d_16x16_N2_c, svt_av1_fwd_txfm2d_16x16_N2_neon);
+#if CONFIG_ENABLE_TX_PF_ALL
     SET_NEON(svt_av1_fwd_txfm2d_16x32_N2, svt_av1_fwd_txfm2d_16x32_N2_c, svt_av1_fwd_txfm2d_16x32_N2_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_16x64_N2, svt_av1_fwd_txfm2d_16x64_N2_c, svt_av1_fwd_txfm2d_16x64_N2_neon);
+#endif
+#endif // CONFIG_ENABLE_TX_PF_ALL
     SET_NEON(svt_av1_fwd_txfm2d_32x8_N2, svt_av1_fwd_txfm2d_32x8_N2_c, svt_av1_fwd_txfm2d_32x8_N2_neon);
+#if CONFIG_ENABLE_TX_PF_ALL
     SET_NEON(svt_av1_fwd_txfm2d_32x16_N2, svt_av1_fwd_txfm2d_32x16_N2_c, svt_av1_fwd_txfm2d_32x16_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_32x32_N2, svt_aom_transform_two_d_32x32_N2_c, svt_av1_fwd_txfm2d_32x32_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_32x64_N2, svt_av1_fwd_txfm2d_32x64_N2_c, svt_av1_fwd_txfm2d_32x64_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_64x16_N2, svt_av1_fwd_txfm2d_64x16_N2_c, svt_av1_fwd_txfm2d_64x16_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_64x32_N2, svt_av1_fwd_txfm2d_64x32_N2_c, svt_av1_fwd_txfm2d_64x32_N2_neon);
     SET_NEON(svt_av1_fwd_txfm2d_64x64_N2, svt_aom_transform_two_d_64x64_N2_c, svt_av1_fwd_txfm2d_64x64_N2_neon);
+#endif // CONFIG_ENABLE_TX_PF_ALL
 #endif // CONFIG_ENABLE_TX_PF_N2
     SET_NEON(svt_av1_fwd_txfm2d_4x4_N4, svt_aom_transform_two_d_4x4_N4_c, svt_av1_fwd_txfm2d_4x4_N4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_4x8_N4, svt_av1_fwd_txfm2d_4x8_N4_c, svt_av1_fwd_txfm2d_4x8_N4_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_4x16_N4, svt_av1_fwd_txfm2d_4x16_N4_c, svt_av1_fwd_txfm2d_4x16_N4_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_8x4_N4, svt_av1_fwd_txfm2d_8x4_N4_c, svt_av1_fwd_txfm2d_8x4_N4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_8x8_N4, svt_aom_transform_two_d_8x8_N4_c, svt_av1_fwd_txfm2d_8x8_N4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_8x16_N4, svt_av1_fwd_txfm2d_8x16_N4_c, svt_av1_fwd_txfm2d_8x16_N4_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_8x32_N4, svt_av1_fwd_txfm2d_8x32_N4_c, svt_av1_fwd_txfm2d_8x32_N4_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_16x4_N4, svt_av1_fwd_txfm2d_16x4_N4_c, svt_av1_fwd_txfm2d_16x4_N4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_16x8_N4, svt_av1_fwd_txfm2d_16x8_N4_c, svt_av1_fwd_txfm2d_16x8_N4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_16x16_N4, svt_aom_transform_two_d_16x16_N4_c, svt_av1_fwd_txfm2d_16x16_N4_neon);
+    SET_NEON(svt_av1_fwd_txfm2d_16x16_N4_sub_dct, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_neon);
     SET_NEON(svt_av1_fwd_txfm2d_16x32_N4, svt_av1_fwd_txfm2d_16x32_N4_c, svt_av1_fwd_txfm2d_16x32_N4_neon);
+#if CONFIG_ENABLE_HV4
     SET_NEON(svt_av1_fwd_txfm2d_16x64_N4, svt_av1_fwd_txfm2d_16x64_N4_c, svt_av1_fwd_txfm2d_16x64_N4_neon);
+#endif
     SET_NEON(svt_av1_fwd_txfm2d_32x8_N4, svt_av1_fwd_txfm2d_32x8_N4_c, svt_av1_fwd_txfm2d_32x8_N4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_32x16_N4, svt_av1_fwd_txfm2d_32x16_N4_c, svt_av1_fwd_txfm2d_32x16_N4_neon);
     SET_NEON(svt_av1_fwd_txfm2d_32x32_N4, svt_aom_transform_two_d_32x32_N4_c, svt_av1_fwd_txfm2d_32x32_N4_neon);
@@ -983,12 +1040,18 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_aom_ifft2x2_float, svt_aom_ifft2x2_float_c);
     SET_ONLY_C(svt_aom_ifft4x4_float, svt_aom_ifft4x4_float_c);
 #endif // CONFIG_ENABLE_FILM_GRAIN
+    SET_NEON(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c, svt_av1_get_nz_map_contexts_2d_rows_neon);
     SET_NEON(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c, svt_av1_get_nz_map_contexts_neon);
     SET_NEON(svt_search_one_dual, svt_search_one_dual_c, svt_search_one_dual_neon);
+    SET_NEON(svt_sad_loop_16xh_sea, svt_sad_loop_16xh_sea_c, svt_sad_loop_16xh_sea_neon);
     SET_NEON_NEON_DOTPROD_SVE_NEOVERSE_V2(svt_sad_loop_kernel, svt_sad_loop_kernel_c, svt_sad_loop_kernel_neon, svt_sad_loop_kernel_neon_dotprod, svt_sad_loop_kernel_sve, svt_sad_loop_kernel_neoverse_v2);
+#if CONFIG_ENABLE_PSAD_SEARCH
     SET_NEON(svt_pme_sad_loop_kernel, svt_pme_sad_loop_kernel_c, svt_pme_sad_loop_kernel_neon);
+#endif
+#if CONFIG_ENABLE_TF_ZZ_FILTER
     SET_NEON(svt_av1_apply_zz_based_temporal_filter_planewise_medium, svt_av1_apply_zz_based_temporal_filter_planewise_medium_c, svt_av1_apply_zz_based_temporal_filter_planewise_medium_neon);
     SET_NEON(svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_neon);
+#endif
     SET_NEON(svt_av1_apply_temporal_filter_planewise_medium, svt_av1_apply_temporal_filter_planewise_medium_c, svt_av1_apply_temporal_filter_planewise_medium_neon);
     SET_NEON(svt_av1_apply_temporal_filter_planewise_medium_hbd, svt_av1_apply_temporal_filter_planewise_medium_hbd_c, svt_av1_apply_temporal_filter_planewise_medium_hbd_neon);
 #if CONFIG_ENABLE_TEMPORAL_FILTERING
@@ -1001,7 +1064,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_NEON(downsample_2d, svt_aom_downsample_2d_c, svt_aom_downsample_2d_neon);
     SET_NEON_NEON_DOTPROD(svt_ext_sad_calculation_8x8_16x16, svt_ext_sad_calculation_8x8_16x16_c, svt_ext_sad_calculation_8x8_16x16_neon, svt_ext_sad_calculation_8x8_16x16_neon_dotprod);
     SET_NEON(svt_ext_sad_calculation_32x32_64x64, svt_ext_sad_calculation_32x32_64x64_c, svt_ext_sad_calculation_32x32_64x64_neon);
-    SET_NEON(svt_ext_all_sad_calculation_8x8_16x16, svt_ext_all_sad_calculation_8x8_16x16_c, svt_ext_all_sad_calculation_8x8_16x16_neon);
+    SET_NEON_NEON_DOTPROD(svt_ext_all_sad_calculation_8x8_16x16, svt_ext_all_sad_calculation_8x8_16x16_c, svt_ext_all_sad_calculation_8x8_16x16_neon, svt_ext_all_sad_calculation_8x8_16x16_neon_dotprod);
     SET_NEON(svt_ext_eight_sad_calculation_32x32_64x64, svt_ext_eight_sad_calculation_32x32_64x64_c, svt_ext_eight_sad_calculation_32x32_64x64_neon);
     SET_ONLY_C(svt_initialize_buffer_32bits, svt_initialize_buffer_32bits_c);
     SET_NEON(svt_nxm_sad_kernel, svt_nxm_sad_kernel_helper_c, svt_nxm_sad_kernel_helper_neon);
@@ -1078,13 +1141,15 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_ONLY_C(svt_av1_compute_stats_highbd, svt_av1_compute_stats_highbd_c);
 #endif
+#if CONFIG_ENABLE_SGRPROJ
     SET_ONLY_C(svt_av1_lowbd_pixel_proj_error, svt_av1_lowbd_pixel_proj_error_c);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_ONLY_C(svt_av1_highbd_pixel_proj_error, svt_av1_highbd_pixel_proj_error_c);
 #endif
+#endif
 #endif // CONFIG_ENABLE_RESTORATION
     SET_ONLY_C(svt_subtract_average, svt_subtract_average_c);
-#if CONFIG_ENABLE_RESTORATION
+#if CONFIG_ENABLE_SGRPROJ
     SET_ONLY_C(svt_get_proj_subspace, svt_get_proj_subspace_c);
 #endif
     SET_ONLY_C(svt_aom_quantize_b, svt_aom_quantize_b_c);
@@ -1327,6 +1392,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_handle_transform64x16, svt_handle_transform64x16_c);
     SET_ONLY_C(svt_handle_transform64x32, svt_handle_transform64x32_c);
     SET_ONLY_C(svt_handle_transform64x64, svt_handle_transform64x64_c);
+    SET_ONLY_C(svt_av1_fwd_txfm2d_64x64_energy, svt_av1_fwd_txfm2d_64x64_energy_c);
     SET_ONLY_C(svt_handle_transform16x64_N2_N4, svt_handle_transform16x64_N2_N4_c);
     SET_ONLY_C(svt_handle_transform32x64_N2_N4, svt_handle_transform32x64_N2_N4_c);
     SET_ONLY_C(svt_handle_transform64x16_N2_N4, svt_handle_transform64x16_N2_N4_c);
@@ -1363,6 +1429,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x4_N4, svt_av1_fwd_txfm2d_16x4_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x8_N4, svt_av1_fwd_txfm2d_16x8_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x16_N4, svt_aom_transform_two_d_16x16_N4_c);
+    SET_ONLY_C(svt_av1_fwd_txfm2d_16x16_N4_sub_dct, svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x32_N4, svt_av1_fwd_txfm2d_16x32_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_16x64_N4, svt_av1_fwd_txfm2d_16x64_N4_c);
     SET_ONLY_C(svt_av1_fwd_txfm2d_32x8_N4, svt_av1_fwd_txfm2d_32x8_N4_c);
@@ -1387,8 +1454,10 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
     SET_ONLY_C(svt_aom_ifft2x2_float, svt_aom_ifft2x2_float_c);
     SET_ONLY_C(svt_aom_ifft4x4_float, svt_aom_ifft4x4_float_c);
 #endif // CONFIG_ENABLE_FILM_GRAIN
+    SET_ONLY_C(svt_av1_get_nz_map_contexts_2d_rows, svt_av1_get_nz_map_contexts_2d_rows_c);
     SET_ONLY_C(svt_av1_get_nz_map_contexts, svt_av1_get_nz_map_contexts_c);
     SET_ONLY_C(svt_search_one_dual, svt_search_one_dual_c);
+    SET_ONLY_C(svt_sad_loop_16xh_sea, svt_sad_loop_16xh_sea_c);
     SET_ONLY_C(svt_sad_loop_kernel, svt_sad_loop_kernel_c);
     SET_ONLY_C(svt_av1_apply_zz_based_temporal_filter_planewise_medium, svt_av1_apply_zz_based_temporal_filter_planewise_medium_c);
     SET_ONLY_C(svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd, svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c);

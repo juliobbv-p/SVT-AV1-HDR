@@ -71,6 +71,8 @@ typedef struct ResourceCoordinationContext {
     uint32_t runtime_target_bit_rate;
     uint32_t runtime_frame_rate_numerator;
     uint32_t runtime_frame_rate_denominator;
+    int64_t  pending_frame_skip_drain_bits;
+    uint32_t pending_frame_skip_count;
 
     // Runtime preset for on-the-fly PRESET_CHANGE_EVENT (init from static_config.enc_mode)
     EncMode runtime_enc_mode;
@@ -140,6 +142,8 @@ EbErrorType svt_aom_resource_coordination_context_ctor(EbThreadContext* thread_c
     context_ptr->runtime_target_bit_rate        = init_scs->static_config.target_bit_rate;
     context_ptr->runtime_frame_rate_numerator   = init_scs->static_config.frame_rate_numerator;
     context_ptr->runtime_frame_rate_denominator = init_scs->static_config.frame_rate_denominator;
+    context_ptr->pending_frame_skip_drain_bits  = 0;
+    context_ptr->pending_frame_skip_count       = 0;
     context_ptr->new_hierarchical_layers        = init_scs->static_config.hierarchical_levels;
 
     return EB_ErrorNone;
@@ -440,7 +444,12 @@ static EbErrorType reset_pcs_av1(PictureParentControlSet* pcs) {
     frm_hdr->delta_lf_params.delta_lf_res     = 0;
     frm_hdr->delta_lf_params.delta_lf_multi   = 0;
 
-    frm_hdr->current_frame_id           = 0;
+    if (pcs->scs->seq_header.frame_id_numbers_present_flag) {
+        // LOW_DELAY: decode order == input order, so picture_number is a stable id.
+        frm_hdr->current_frame_id = svt_aom_frame_id_from_pic_num(pcs->picture_number);
+    } else {
+        frm_hdr->current_frame_id = 0;
+    }
     frm_hdr->frame_refs_short_signaling = 0;
     pcs->allow_comp_inter_inter         = 0;
     //  int32_t all_one_sided_refs;
@@ -572,7 +581,9 @@ static void copy_input_buffer_overlay(SequenceControlSet* sequenceControlSet, Eb
     dst->qp           = src->qp;
     dst->pic_type     = src->pic_type;
 
-    // Copy the metadata array
+    // Copy the metadata array. Most overlay candidates are dropped without being coded, so this
+    // pooled buffer may still hold an earlier picture's metadata, which the copy would append to.
+    svt_metadata_array_free(&dst->metadata);
     if (svt_aom_copy_metadata_buffer(dst, src->metadata) != EB_ErrorNone) {
         dst->metadata = NULL;
     }
@@ -732,9 +743,9 @@ static void update_new_param(SequenceControlSet* scs, int8_t enc_mode) {
     scs->static_config.source_width  = scs->max_input_luma_width;
     scs->static_config.source_height = scs->max_input_luma_height;
     scs->seq_header.max_frame_width  = scs->static_config.forced_max_frame_width > 0
-         ? scs->static_config.forced_max_frame_width
-         : scs->static_config.sframe_dist > 0 || scs->static_config.sframe_posi.sframe_posis ? 16384
-                                                                                             : scs->max_input_luma_width;
+        ? scs->static_config.forced_max_frame_width
+        : scs->static_config.sframe_dist > 0 || scs->static_config.sframe_posi.sframe_posis ? 16384
+                                                                                            : scs->max_input_luma_width;
     scs->seq_header.max_frame_height = scs->static_config.forced_max_frame_height > 0
         ? scs->static_config.forced_max_frame_height
         : scs->static_config.sframe_dist > 0 || scs->static_config.sframe_posi.sframe_posis
@@ -829,6 +840,18 @@ static void update_mg_size_info(ResourceCoordinationContext* ctx, EbBufferHeader
     }
 }
 
+static void update_roi_map_event(EbBufferHeaderType* input_ptr, SequenceControlSet* scs) {
+    EbPrivDataNode* node = (EbPrivDataNode*)input_ptr->p_app_private;
+    while (node) {
+        if (node->node_type == ROI_MAP_EVENT) {
+            svt_aom_assert_err(node->size == sizeof(SvtAv1RoiMapEvt*) && node->data,
+                               "invalid private data of type ROI_MAP_EVENT");
+            scs->enc_ctx->roi_map_evt = (SvtAv1RoiMapEvt*)node->data;
+        }
+        node = node->next;
+    }
+}
+
 // Update the encoder preset (enc_mode) from PRESET_CHANGE_EVENT
 // NOTE:
 // 1. Value must be within [EbSvtAv1EncConfiguration.enc_mode, MAX_ENC_PRESET],
@@ -858,9 +881,10 @@ static void update_frame_event(PictureParentControlSet* pcs, uint64_t pic_num) {
     SequenceControlSet* scs  = pcs->scs;
     EbPrivDataNode*     node = (EbPrivDataNode*)pcs->input_ptr->p_app_private;
     // Ref-frame management: default to "no event" each frame (0 is reserved).
-    pcs->ref_mgmt.store_id = 0;
-    pcs->ref_mgmt.clear_id = 0;
-    pcs->ref_mgmt.use_id   = 0;
+    pcs->ref_mgmt.store_id    = 0;
+    pcs->ref_mgmt.clear_id    = 0;
+    pcs->ref_mgmt.use_id      = 0;
+    pcs->has_film_grain_event = false;
     while (node) {
         if (node->node_type == REF_FRAME_SCALING_EVENT) {
             // update resize denominator by input event
@@ -870,10 +894,13 @@ static void update_frame_event(PictureParentControlSet* pcs, uint64_t pic_num) {
             scs->enc_ctx->resize_evt = *(EbRefFrameScale*)node->data;
             // set reset flag of rate control
             pcs->rc_reset_flag = true;
-        } else if (node->node_type == ROI_MAP_EVENT) {
-            svt_aom_assert_err(node->size == sizeof(SvtAv1RoiMapEvt*) && node->data,
-                               "invalid private data of type ROI_MAP_EVENT");
-            scs->enc_ctx->roi_map_evt = (SvtAv1RoiMapEvt*)node->data;
+        } else if (node->node_type == FILM_GRAIN_EVENT) {
+            svt_aom_assert_err(node->size == sizeof(AomFilmGrain) && node->data,
+                               "invalid private data of type FILM_GRAIN_EVENT");
+            if (node->size == sizeof(AomFilmGrain) && node->data) {
+                pcs->film_grain_event     = *(AomFilmGrain*)node->data;
+                pcs->has_film_grain_event = true;
+            }
         } else if (node->node_type == COMPUTE_QUALITY_EVENT) {
             svt_aom_assert_err(node->size == sizeof(SvtAv1ComputeQualityInfo) && node->data,
                                "invalid private data of type COMPUTE_QUALITY_EVENT");
@@ -892,7 +919,7 @@ static void update_frame_event(PictureParentControlSet* pcs, uint64_t pic_num) {
             } else {
                 const uint32_t pid    = ((const SvtAv1RefFrameCmd*)node->data)->pic_id;
                 uint32_t*      target = (node->node_type == REF_STORE_EVENT) ? &pcs->ref_mgmt.store_id
-                         : (node->node_type == REF_CLEAR_EVENT)              ? &pcs->ref_mgmt.clear_id
+                    : (node->node_type == REF_CLEAR_EVENT)                   ? &pcs->ref_mgmt.clear_id
                                                                              : &pcs->ref_mgmt.use_id;
                 if (*target != 0) {
                     // Duplicate same-type events are caught synchronously
@@ -989,6 +1016,22 @@ static void set_eos_terminating_signals(PictureParentControlSet* pcs) {
  *picture type ...
  *
  ********************************************************************************/
+static void release_skipped_input(EbBufferHeaderType* input_ptr) {
+    EbPrivDataNode* node = (EbPrivDataNode*)input_ptr->p_app_private;
+    while (node) {
+        if (node->node_type != PRIVATE_DATA && node->node_type != ROI_MAP_EVENT) {
+            EB_FREE(node->data);
+        }
+        EbPrivDataNode* next = node->next;
+        EB_FREE(node);
+        node = next;
+    }
+    input_ptr->p_app_private = NULL;
+    if (input_ptr->metadata) {
+        svt_metadata_array_free(&input_ptr->metadata);
+    }
+}
+
 EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
     ResourceCoordinationContext* context_ptr = (ResourceCoordinationContext*)context;
 
@@ -1029,6 +1072,8 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
     update_preset_info(context_ptr, eb_input_ptr, scs);
     // Update the minigop size
     update_mg_size_info(context_ptr, eb_input_ptr);
+    // Update sticky ROI state before a frame can exit through the skip path.
+    update_roi_map_event(eb_input_ptr, scs);
     // If config changes occurred since the last picture began encoding, then
     //   prepare a new scs containing the new changes and update the state
     //   of the previous Active scs
@@ -1102,6 +1147,26 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
         }
     }
     svt_release_mutex(context_ptr->scs_instance->config_mutex);
+
+    if (input_cmd_obj->skip_frame) {
+        int64_t drain_bits = 0;
+        if (context_ptr->runtime_frame_rate_numerator > 0) {
+            drain_bits = (int64_t)context_ptr->runtime_target_bit_rate * context_ptr->runtime_frame_rate_denominator /
+                context_ptr->runtime_frame_rate_numerator;
+        }
+        const int64_t skipped_drain_bits           = AOMMAX(0, drain_bits);
+        context_ptr->pending_frame_skip_drain_bits = skipped_drain_bits >
+                INT64_MAX - context_ptr->pending_frame_skip_drain_bits
+            ? INT64_MAX
+            : context_ptr->pending_frame_skip_drain_bits + skipped_drain_bits;
+        context_ptr->pending_frame_skip_count++;
+        release_skipped_input(eb_input_ptr);
+        svt_release_object(y8b_wrapper);
+        svt_release_object(eb_input_wrapper_ptr);
+        svt_release_object(eb_input_cmd_wrapper);
+        return EB_ErrorNone;
+    }
+
     // Sequence Control Set is released by Rate Control after passing through MDC->MD->ENCDEC->Packetization->RateControl
     //   and in the PictureManager
     svt_object_inc_live_count( //EbObjectIncLiveCount(
@@ -1114,10 +1179,14 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
     // pictures, for every picture (except first picture), we allocate two: 1. original
     // picture, 2. potential Overlay picture. In Picture Decision Process, where the overlay
     // frames are known, they extra pictures are released
-    uint8_t has_overlay = (scs->static_config.enable_overlays == false ||
-                           context_ptr->scs_instance->enc_ctx->initial_picture)
+    uint8_t        has_overlay                 = (scs->static_config.enable_overlays == false ||
+                                                  context_ptr->scs_instance->enc_ctx->initial_picture)
         ? 0
         : 1;
+    const int64_t  frame_skip_drain_bits       = context_ptr->pending_frame_skip_drain_bits;
+    const uint32_t frame_skip_count            = context_ptr->pending_frame_skip_count;
+    context_ptr->pending_frame_skip_drain_bits = 0;
+    context_ptr->pending_frame_skip_count      = 0;
     for (uint8_t loop_index = 0; loop_index <= has_overlay && !context_ptr->end_of_sequence_flag; loop_index++) {
         // Get a New ParentPCS where we will hold the new input_picture
         svt_get_empty_object(context_ptr->picture_control_set_fifo_ptr, &pcs_wrapper);
@@ -1163,6 +1232,7 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
         pcs->is_alt_ref         = 0;
         pcs->transition_present = -1;
         pcs->is_noise_level     = 0;
+        pcs->r0                 = 1.0;
         if (loop_index) {
             pcs->is_overlay = 1;
             // set the overlay_ppcs_ptr in the original (ALT_REF) ppcs to the current ppcs
@@ -1208,6 +1278,8 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
         pcs->target_bit_rate        = context_ptr->runtime_target_bit_rate;
         pcs->frame_rate_numerator   = context_ptr->runtime_frame_rate_numerator;
         pcs->frame_rate_denominator = context_ptr->runtime_frame_rate_denominator;
+        pcs->frame_skip_drain_bits  = loop_index == 0 ? frame_skip_drain_bits : 0;
+        pcs->frame_skip_count       = loop_index == 0 ? frame_skip_count : 0;
         // set the scs wrapper to be released after the picture is done
         pcs->scs_wrapper = context_ptr->scs_active;
         // Set the hierarchical layers
@@ -1292,6 +1364,9 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
                 pcs->qp_on_the_fly = false;
             }
             pcs->picture_qp = (uint8_t)pcs->input_ptr->qp;
+            if (!CONFIG_ENABLE_LOSSLESS || SVT_RTC_TUNE(scs)) {
+                pcs->picture_qp = AOMMAX(pcs->picture_qp, 1); // no qindex 0 (lossless), as in copy_api_from_app()
+            }
         } else {
             pcs->qp_on_the_fly = false;
             pcs->picture_qp    = (uint8_t)scs->static_config.qp;
@@ -1395,13 +1470,13 @@ EbErrorType svt_aom_resource_coordination_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_resource_coordination_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_resource_coordination_kernel(void* input_ptr) {
     EbThreadContext* enc_contxt_ptr = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_resource_coordination_kernel_iter(enc_contxt_ptr->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

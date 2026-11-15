@@ -21,29 +21,6 @@ void svt_aom_largest_coding_unit_dctor(EbPtr p) {
     (void)p;
 }
 
-static void setup_ptree(PARTITION_TREE* pc_tree, int index, BlockSize bsize, const int min_sq_size) {
-    pc_tree->bsize = bsize;
-    pc_tree->index = index;
-
-    // If applicable, add split depths
-    const int sq_size = block_size_wide[bsize];
-    if (sq_size > min_sq_size) {
-        const BlockSize subsize             = get_partition_subsize(bsize, PARTITION_SPLIT);
-        const int       sq_subsize          = block_size_wide[subsize];
-        int             blocks_per_subdepth = (sq_subsize / min_sq_size) * (sq_subsize / min_sq_size);
-        int             blocks_to_skip      = 0;
-
-        for (int i = min_sq_size; i <= sq_subsize; i <<= 1, blocks_per_subdepth >>= 2) {
-            blocks_to_skip += blocks_per_subdepth;
-        }
-
-        for (int i = 0; i < SUB_PARTITIONS_SPLIT; ++i) {
-            pc_tree->sub_tree[i] = pc_tree + i * blocks_to_skip + 1;
-            setup_ptree(pc_tree->sub_tree[i], i, subsize, min_sq_size);
-        }
-    }
-}
-
 /*
 Tasks & Questions
     -Need a GetEmptyChain function for testing sub partitions.  Tie it to an Itr?
@@ -86,12 +63,12 @@ EbErrorType svt_aom_largest_coding_unit_ctor(SuperBlock* larget_coding_unit_ptr,
             }
         }
     }
-    bool     disallow_4x4 = allintra ? svt_aom_get_disallow_4x4_allintra(enc_mode)
-            : rtc                    ? svt_aom_get_disallow_4x4_rtc()
-                                     : svt_aom_get_disallow_4x4_default(enc_mode);
-    bool     disallow_8x8 = allintra ? svt_aom_get_disallow_8x8_allintra()
-            : rtc                    ? svt_aom_get_disallow_8x8_rtc(enc_mode, pcs->frame_width, pcs->frame_height)
-                                     : svt_aom_get_disallow_8x8_default();
+    bool disallow_4x4 = allintra ? svt_aom_get_disallow_4x4_allintra(enc_mode)
+        : rtc                    ? svt_aom_get_disallow_4x4_rtc()
+                                 : svt_aom_get_disallow_4x4_default(enc_mode);
+    bool disallow_8x8 = allintra ? svt_aom_get_disallow_8x8_allintra()
+        : rtc                    ? svt_aom_get_disallow_8x8_rtc(enc_mode, pcs->frame_width, pcs->frame_height)
+                                 : svt_aom_get_disallow_8x8_default();
     if (pcs->color_format == EB_YUV444) {
         disallow_4x4 = disallow_8x8 = false;
     }
@@ -138,13 +115,13 @@ EbErrorType svt_aom_largest_coding_unit_ctor(SuperBlock* larget_coding_unit_ptr,
         EB_FREE_ARRAY(pcs->sb_av1xd_pool);
         EB_FREE_ARRAY(pcs->sb_ptree_pool);
         EB_MALLOC_ARRAY(pcs->sb_final_blk_arr_pool, (size_t)all_sb * tot_blk_num);
+        pcs->sb_final_blk_arr_used = 0;
         EB_MALLOC_ARRAY(pcs->sb_av1xd_pool, all_sb);
         EB_CALLOC_ARRAY(pcs->sb_ptree_pool, (size_t)all_sb * blocks_to_alloc);
     }
     larget_coding_unit_ptr->final_blk_arr = pcs->sb_final_blk_arr_pool + (size_t)sb_index * tot_blk_num;
     larget_coding_unit_ptr->av1xd         = pcs->sb_av1xd_pool + sb_index;
     larget_coding_unit_ptr->ptree         = pcs->sb_ptree_pool + (size_t)sb_index * blocks_to_alloc;
-    setup_ptree(larget_coding_unit_ptr->ptree, 0, sb_size_pix == 128 ? BLOCK_128X128 : BLOCK_64X64, min_bsize);
 
     return EB_ErrorNone;
 }

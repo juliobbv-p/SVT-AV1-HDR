@@ -403,7 +403,7 @@ static AOM_FORCE_INLINE void final_filter(int32_t* dst, int32_t dst_stride, cons
                 const __m256i src = _mm256_cvtepu8_epi32(raw);
                 const __m256i v   = _mm256_add_epi32(_mm256_madd_epi16(a, src), b);
                 const __m256i w   = _mm256_srai_epi32(_mm256_add_epi32(v, rounding),
-                                                    SGRPROJ_SGR_BITS + nb - SGRPROJ_RST_BITS);
+                                                      SGRPROJ_SGR_BITS + nb - SGRPROJ_RST_BITS);
                 yy_storeu_256(dst + j, w);
                 j += 8;
             } while (j < width);
@@ -425,7 +425,7 @@ static AOM_FORCE_INLINE void final_filter(int32_t* dst, int32_t dst_stride, cons
                 const __m256i src = _mm256_cvtepu16_epi32(raw);
                 const __m256i v   = _mm256_add_epi32(_mm256_madd_epi16(a, src), b);
                 const __m256i w   = _mm256_srai_epi32(_mm256_add_epi32(v, rounding),
-                                                    SGRPROJ_SGR_BITS + nb - SGRPROJ_RST_BITS);
+                                                      SGRPROJ_SGR_BITS + nb - SGRPROJ_RST_BITS);
                 yy_storeu_256(dst + j, w);
                 j += 8;
             } while (j < width);
@@ -607,7 +607,7 @@ static AOM_FORCE_INLINE void final_filter_fast(int32_t* dst, int32_t dst_stride,
                     const __m256i src = _mm256_cvtepu8_epi32(raw);
                     const __m256i v   = _mm256_add_epi32(_mm256_madd_epi16(a, src), b);
                     const __m256i w   = _mm256_srai_epi32(_mm256_add_epi32(v, rounding0),
-                                                        SGRPROJ_SGR_BITS + nb0 - SGRPROJ_RST_BITS);
+                                                          SGRPROJ_SGR_BITS + nb0 - SGRPROJ_RST_BITS);
                     yy_storeu_256(dst + j, w);
                     j += 8;
                 } while (j < width);
@@ -620,7 +620,7 @@ static AOM_FORCE_INLINE void final_filter_fast(int32_t* dst, int32_t dst_stride,
                     const __m256i src = _mm256_cvtepu8_epi32(raw);
                     const __m256i v   = _mm256_add_epi32(_mm256_madd_epi16(a, src), b);
                     const __m256i w   = _mm256_srai_epi32(_mm256_add_epi32(v, rounding1),
-                                                        SGRPROJ_SGR_BITS + nb1 - SGRPROJ_RST_BITS);
+                                                          SGRPROJ_SGR_BITS + nb1 - SGRPROJ_RST_BITS);
                     yy_storeu_256(dst + j, w);
                     j += 8;
                 } while (j < width);
@@ -644,7 +644,7 @@ static AOM_FORCE_INLINE void final_filter_fast(int32_t* dst, int32_t dst_stride,
                     const __m256i src = _mm256_cvtepu16_epi32(raw);
                     const __m256i v   = _mm256_add_epi32(_mm256_madd_epi16(a, src), b);
                     const __m256i w   = _mm256_srai_epi32(_mm256_add_epi32(v, rounding0),
-                                                        SGRPROJ_SGR_BITS + nb0 - SGRPROJ_RST_BITS);
+                                                          SGRPROJ_SGR_BITS + nb0 - SGRPROJ_RST_BITS);
                     yy_storeu_256(dst + j, w);
                     j += 8;
                 } while (j < width);
@@ -657,7 +657,7 @@ static AOM_FORCE_INLINE void final_filter_fast(int32_t* dst, int32_t dst_stride,
                     const __m256i src = _mm256_cvtepu16_epi32(raw);
                     const __m256i v   = _mm256_add_epi32(_mm256_madd_epi16(a, src), b);
                     const __m256i w   = _mm256_srai_epi32(_mm256_add_epi32(v, rounding1),
-                                                        SGRPROJ_SGR_BITS + nb1 - SGRPROJ_RST_BITS);
+                                                          SGRPROJ_SGR_BITS + nb1 - SGRPROJ_RST_BITS);
                     yy_storeu_256(dst + j, w);
                     j += 8;
                 } while (j < width);

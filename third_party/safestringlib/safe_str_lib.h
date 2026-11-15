@@ -51,7 +51,7 @@ extern errno_t strcmpfld_s(const char *dest, rsize_t dmax, const char *src, int 
 
 #ifndef HAVE_STRCPY_S
 /* string copy */
-extern errno_t strcpy_s(char *dest, rsize_t dmax, const char *src);
+extern errno_t strcpy_s(char* dest, rsize_t dmax, const char* src);
 #endif
 
 #if 0
@@ -120,12 +120,12 @@ extern errno_t strncat_s(char *dest, rsize_t dmax, const char *src, rsize_t slen
 
 #ifndef HAVE_STRNCPY_S
 /* fitted string copy */
-extern errno_t strncpy_s(char *dest, rsize_t dmax, const char *src, rsize_t slen);
+extern errno_t strncpy_s(char* dest, rsize_t dmax, const char* src, rsize_t slen);
 #endif
 
 #ifndef HAVE_STRNLEN_S
 /* string length */
-extern rsize_t strnlen_s(const char *s, rsize_t smax);
+extern rsize_t strnlen_s(const char* s, rsize_t smax);
 #endif
 
 #if 0

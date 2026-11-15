@@ -1045,7 +1045,7 @@ static int64_t finer_tile_search_wiener_seg(const RestSearchCtxt* rsc, const Res
     int64_t                err          = try_restoration_unit_seg(rsc, limits, tile, rui);
     WienerInfo*            plane_wiener = &rui->wiener_info;
 
-    if (cm->wn_filter_ctrls.use_refinement) {
+    if (SVT_EFFECTIVE_WIENER_HQ(cm->wn_filter_ctrls.use_refinement)) {
         const int32_t start_step = 4;
         const int32_t end_step   = cm->wn_filter_ctrls.max_one_refinement_step ? 4 : 1;
         int64_t       err2;
@@ -1310,7 +1310,7 @@ static void search_wiener_seg(const RestorationTileLimits* limits, const Av1Pixe
     const Av1Common* const     cm       = rsc->cm;
     const WnFilterCtrls* const wn_ctrls = &cm->wn_filter_ctrls;
     assert(wn_ctrls->filter_tap_lvl == 1 || wn_ctrls->filter_tap_lvl == 2);
-    const int32_t wn_luma = wn_ctrls->filter_tap_lvl == 1 ? WIENER_WIN : WIENER_WIN_CHROMA;
+    const int32_t wn_luma = SVT_EFFECTIVE_WIENER_HQ(wn_ctrls->filter_tap_lvl == 1) ? WIENER_WIN : WIENER_WIN_CHROMA;
 
     const int32_t wiener_win = rsc->plane == PLANE_Y ? wn_luma : WIENER_WIN_CHROMA;
 
@@ -1456,8 +1456,10 @@ static void search_norestore_finish(const RestorationTileLimits* limits, const A
 
 /* Get the cost/SSE/rate for the entire frame associated with using the passed restoration filter type. */
 static double search_rest_type_finish(RestSearchCtxt* rsc, RestorationType rtype) {
-    static const RestUnitVisitor funs[RESTORE_TYPES] = {
-        search_norestore_finish, search_wiener_finish, search_sgrproj_finish, search_switchable};
+    static const RestUnitVisitor funs[RESTORE_TYPES] = {search_norestore_finish,
+                                                        search_wiener_finish,
+                                                        SVT_EFFECTIVE_SGRPROJ(1) ? search_sgrproj_finish : NULL,
+                                                        SVT_EFFECTIVE_SGRPROJ(1) ? search_switchable : NULL};
 
     reset_rsc(rsc);
 
@@ -1487,9 +1489,9 @@ void restoration_seg_search(int32_t* rst_tmpbuf, Yv12BufferConfig* org_fts, cons
 
     const int32_t plane_start = PLANE_Y;
     const int32_t plane_end   = ((cm->wn_filter_ctrls.enabled && cm->wn_filter_ctrls.use_chroma) ||
-                               (cm->sg_filter_ctrls.enabled && cm->sg_filter_ctrls.use_chroma))
-          ? PLANE_V
-          : PLANE_Y;
+                                 (SVT_EFFECTIVE_SGRPROJ(cm->sg_filter_ctrls.enabled) && cm->sg_filter_ctrls.use_chroma))
+        ? PLANE_V
+        : PLANE_Y;
 
     for (int32_t plane = plane_start; plane <= plane_end; ++plane) {
         RestUnitSearchInfo* rusi = pcs->rusi_picture[plane];
@@ -1542,7 +1544,7 @@ void restoration_seg_search(int32_t* rst_tmpbuf, Yv12BufferConfig* org_fts, cons
                                                    segment_index);
         }
 
-        if (cm->sg_filter_ctrls.enabled && (!plane || cm->sg_filter_ctrls.use_chroma)) {
+        if (SVT_EFFECTIVE_SGRPROJ(cm->sg_filter_ctrls.enabled) && (!plane || cm->sg_filter_ctrls.use_chroma)) {
             svt_aom_foreach_rest_unit_in_frame_seg(rsc_p->cm,
                                                    rsc_p->plane,
                                                    rsc_on_tile,
@@ -1563,8 +1565,8 @@ void rest_finish_search(PictureControlSet* pcs) {
     Av1Common* const         cm                   = pcs->ppcs->av1_cm;
     PictureParentControlSet* p_pcs_ptr            = pcs->ppcs;
     RestorationType          force_restore_type_d = (cm->wn_filter_ctrls.enabled)
-                 ? ((cm->sg_filter_ctrls.enabled) ? RESTORE_TYPES : RESTORE_WIENER)
-                 : ((cm->sg_filter_ctrls.enabled) ? RESTORE_SGRPROJ : RESTORE_NONE);
+        ? (SVT_EFFECTIVE_SGRPROJ(cm->sg_filter_ctrls.enabled) ? RESTORE_TYPES : RESTORE_WIENER)
+        : (SVT_EFFECTIVE_SGRPROJ(cm->sg_filter_ctrls.enabled) ? RESTORE_SGRPROJ : RESTORE_NONE);
     int32_t                  ntiles[2];
     for (int32_t is_uv = 0; is_uv < 2; ++is_uv) {
         ntiles[is_uv] = rest_tiles_in_plane(cm, is_uv);
@@ -1582,10 +1584,10 @@ void rest_finish_search(PictureControlSet* pcs) {
 
     RestSearchCtxt rsc;
     const int32_t  plane_start = PLANE_Y;
-    const int32_t  plane_end   = ((cm->wn_filter_ctrls.enabled && cm->wn_filter_ctrls.use_chroma) ||
-                               (cm->sg_filter_ctrls.enabled && cm->sg_filter_ctrls.use_chroma))
-           ? PLANE_V
-           : PLANE_Y;
+    const int32_t  plane_end = ((cm->wn_filter_ctrls.enabled && cm->wn_filter_ctrls.use_chroma) ||
+                                (SVT_EFFECTIVE_SGRPROJ(cm->sg_filter_ctrls.enabled) && cm->sg_filter_ctrls.use_chroma))
+        ? PLANE_V
+        : PLANE_Y;
 
     for (int32_t plane = plane_start; plane <= plane_end; ++plane) {
         //init rsc context for this plane

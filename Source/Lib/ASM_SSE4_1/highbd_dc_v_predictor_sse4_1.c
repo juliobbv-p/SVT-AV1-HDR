@@ -42,60 +42,62 @@ static INLINE uint32_t hbd_sum_u16(const uint16_t* p, int32_t n) {
 // Broadcast-fill a w x h block (w a multiple of 8) with a constant.
 static INLINE void hbd_fill(uint16_t* dst, ptrdiff_t stride, int32_t w, int32_t h, uint16_t val) {
     const __m128i v = _mm_set1_epi16((int16_t)val);
-    for (int32_t r = 0; r < h; r++, dst += stride)
-        for (int32_t c = 0; c < w; c += 8) _mm_storeu_si128((__m128i*)(dst + c), v);
+    for (int32_t r = 0; r < h; r++, dst += stride) {
+        for (int32_t c = 0; c < w; c += 8) {
+            _mm_storeu_si128((__m128i*)(dst + c), v);
+        }
+    }
 }
 
 // Copy the top row to every row (w a multiple of 8).
 static INLINE void hbd_v(uint16_t* dst, ptrdiff_t stride, int32_t w, int32_t h, const uint16_t* above) {
-    for (int32_t r = 0; r < h; r++, dst += stride)
-        for (int32_t c = 0; c < w; c += 8)
+    for (int32_t r = 0; r < h; r++, dst += stride) {
+        for (int32_t c = 0; c < w; c += 8) {
             _mm_storeu_si128((__m128i*)(dst + c), _mm_loadu_si128((const __m128i*)(above + c)));
+        }
+    }
 }
 
-#define HBD_V_FN(w, h)                                                                                       \
-    void svt_aom_highbd_v_predictor_##w##x##h##_sse4_1(uint16_t* dst, ptrdiff_t stride, const uint16_t* above,\
-                                                       const uint16_t* left, int32_t bd) {                    \
-        (void)left;                                                                                          \
-        (void)bd;                                                                                            \
-        hbd_v(dst, stride, w, h, above);                                                                     \
+#define HBD_V_FN(w, h)                                                                              \
+    void svt_aom_highbd_v_predictor_##w##x##h##_sse4_1(                                             \
+        uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int32_t bd) { \
+        (void)left;                                                                                 \
+        (void)bd;                                                                                   \
+        hbd_v(dst, stride, w, h, above);                                                            \
     }
 
-#define HBD_DC128_FN(w, h)                                                                                    \
-    void svt_aom_highbd_dc_128_predictor_##w##x##h##_sse4_1(uint16_t* dst, ptrdiff_t stride,                  \
-                                                            const uint16_t* above, const uint16_t* left,      \
-                                                            int32_t bd) {                                     \
-        (void)above;                                                                                          \
-        (void)left;                                                                                           \
-        hbd_fill(dst, stride, w, h, (uint16_t)(128 << (bd - 8)));                                             \
+#define HBD_DC128_FN(w, h)                                                                          \
+    void svt_aom_highbd_dc_128_predictor_##w##x##h##_sse4_1(                                        \
+        uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int32_t bd) { \
+        (void)above;                                                                                \
+        (void)left;                                                                                 \
+        hbd_fill(dst, stride, w, h, (uint16_t)(128 << (bd - 8)));                                   \
     }
 
-#define HBD_DCL_FN(w, h)                                                                                      \
-    void svt_aom_highbd_dc_left_predictor_##w##x##h##_sse4_1(uint16_t* dst, ptrdiff_t stride,                 \
-                                                             const uint16_t* above, const uint16_t* left,     \
-                                                             int32_t bd) {                                    \
-        (void)above;                                                                                          \
-        (void)bd;                                                                                             \
-        const uint32_t s = hbd_sum_u16(left, h);                                                              \
-        hbd_fill(dst, stride, w, h, (uint16_t)((s + (h >> 1)) / h));                                          \
+#define HBD_DCL_FN(w, h)                                                                            \
+    void svt_aom_highbd_dc_left_predictor_##w##x##h##_sse4_1(                                       \
+        uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int32_t bd) { \
+        (void)above;                                                                                \
+        (void)bd;                                                                                   \
+        const uint32_t s = hbd_sum_u16(left, h);                                                    \
+        hbd_fill(dst, stride, w, h, (uint16_t)((s + (h >> 1)) / h));                                \
     }
 
-#define HBD_DCT_FN(w, h)                                                                                      \
-    void svt_aom_highbd_dc_top_predictor_##w##x##h##_sse4_1(uint16_t* dst, ptrdiff_t stride,                  \
-                                                            const uint16_t* above, const uint16_t* left,      \
-                                                            int32_t bd) {                                     \
-        (void)left;                                                                                           \
-        (void)bd;                                                                                             \
-        const uint32_t s = hbd_sum_u16(above, w);                                                             \
-        hbd_fill(dst, stride, w, h, (uint16_t)((s + (w >> 1)) / w));                                          \
+#define HBD_DCT_FN(w, h)                                                                            \
+    void svt_aom_highbd_dc_top_predictor_##w##x##h##_sse4_1(                                        \
+        uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int32_t bd) { \
+        (void)left;                                                                                 \
+        (void)bd;                                                                                   \
+        const uint32_t s = hbd_sum_u16(above, w);                                                   \
+        hbd_fill(dst, stride, w, h, (uint16_t)((s + (w >> 1)) / w));                                \
     }
 
-#define HBD_DC_FN(w, h)                                                                                       \
-    void svt_aom_highbd_dc_predictor_##w##x##h##_sse4_1(uint16_t* dst, ptrdiff_t stride, const uint16_t* above,\
-                                                        const uint16_t* left, int32_t bd) {                   \
-        (void)bd;                                                                                             \
-        const uint32_t s = hbd_sum_u16(above, w) + hbd_sum_u16(left, h);                                      \
-        hbd_fill(dst, stride, w, h, (uint16_t)((s + ((w + h) >> 1)) / (w + h)));                              \
+#define HBD_DC_FN(w, h)                                                                             \
+    void svt_aom_highbd_dc_predictor_##w##x##h##_sse4_1(                                            \
+        uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int32_t bd) { \
+        (void)bd;                                                                                   \
+        const uint32_t s = hbd_sum_u16(above, w) + hbd_sum_u16(left, h);                            \
+        hbd_fill(dst, stride, w, h, (uint16_t)((s + ((w + h) >> 1)) / (w + h)));                    \
     }
 
 #define HBD_SIZES(X) \
@@ -111,16 +113,18 @@ HBD_SIZES(HBD_DC_FN)
 static INLINE void hbd_h(uint16_t* dst, ptrdiff_t stride, int32_t w, int32_t h, const uint16_t* left) {
     for (int32_t r = 0; r < h; r++, dst += stride) {
         const __m128i v = _mm_set1_epi16((int16_t)left[r]);
-        for (int32_t c = 0; c < w; c += 8) _mm_storeu_si128((__m128i*)(dst + c), v);
+        for (int32_t c = 0; c < w; c += 8) {
+            _mm_storeu_si128((__m128i*)(dst + c), v);
+        }
     }
 }
 
-#define HBD_H_FN(w, h)                                                                                        \
-    void svt_aom_highbd_h_predictor_##w##x##h##_sse4_1(uint16_t* dst, ptrdiff_t stride, const uint16_t* above,\
-                                                       const uint16_t* left, int32_t bd) {                    \
-        (void)above;                                                                                         \
-        (void)bd;                                                                                            \
-        hbd_h(dst, stride, w, h, left);                                                                       \
+#define HBD_H_FN(w, h)                                                                              \
+    void svt_aom_highbd_h_predictor_##w##x##h##_sse4_1(                                             \
+        uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int32_t bd) { \
+        (void)above;                                                                                \
+        (void)bd;                                                                                   \
+        hbd_h(dst, stride, w, h, left);                                                             \
     }
 
 HBD_H_FN(16, 4) HBD_H_FN(16, 64) HBD_H_FN(32, 8) HBD_H_FN(32, 64) HBD_H_FN(64, 16) HBD_H_FN(64, 32) HBD_H_FN(64, 64)

@@ -870,18 +870,13 @@ typedef struct MdScan {
     bool     is_child; // does is it belong to the child depth(s); relative to PRED (the output of PD0)
 } MdScan;
 
-/* Stores partition structure of the current block. */
+/* Stores partition structure of the current block. EncDec stores the nodes of an SB it codes in coding (depth-first)
+   order, and EC reads them back in the same order along with the blocks of the SB's final_blk_arr. */
 typedef struct PARTITION_TREE {
-    // Pointers to the children if the current block is further split.
-    struct PARTITION_TREE* sub_tree[4];
-    // Pointers to the EcBlkStruct holding the block's data for entropy coding
-    EcBlkStruct* blk_data[4];
     // The partition type used to split the current block.
     PartitionType partition;
     // Block size of the current depth.
-    BlockSize bsize; // should be written once when struct is initialized, then never overwritten
-    // The index of current node among its siblings
-    int index; // should be written once when struct is initialized, then never overwritten
+    BlockSize bsize;
 } PARTITION_TREE;
 
 typedef struct RD_STATS {
@@ -908,6 +903,55 @@ typedef struct PC_TREE {
     PartitionContextType above_part_ctx;
 } PC_TREE;
 
+// Luma variance and SSE of a block at a full-pel MV, computed by VLPD0 for its first ME candidate and reused by
+// LPD1 when it evaluates the same reference and MV for the same block. Valid while sb_epoch equals
+// ModeDecisionContext.sb_epoch.
+typedef struct Pd0FullpelVar {
+    uint32_t         sb_epoch;
+    Mv               mv;
+    uint32_t         var;
+    uint32_t         sse;
+    MvReferenceFrame ref_frame;
+} Pd0FullpelVar;
+
+static INLINE uint32_t get_rdoq_rate_key(TxSize tx_size, TxType tx_type, PlaneType plane_type, int16_t txb_skip_ctx,
+                                         int16_t dc_sign_ctx) {
+    return tx_size | (tx_type << 5) | (plane_type << 10) | ((uint32_t)(uint8_t)txb_skip_ctx << 12) |
+        ((uint32_t)(uint8_t)dc_sign_ctx << 20);
+}
+
+// txb skip/dc-sign contexts of a block-level transform: the MD neighbour arrays do not change while md_encode_block
+// evaluates the block's candidates
+typedef struct TxbCtxCache {
+    uint32_t    gen;
+    const void* na;
+    uint32_t    x, y;
+    TxSize      tx_size;
+    BlockSize   bsize;
+    int16_t     skip_ctx, dc_sign_ctx;
+} TxbCtxCache;
+
+#define DR_EDGE_SLOTS 8
+
+// Filtered/upsampled directional-intra edges, keyed by everything their preparation depends on within a block
+typedef struct DrEdgeSlot {
+    DECLARE_ALIGNED(32, uint8_t, above_data[64 * 2 + 48]);
+    DECLARE_ALIGNED(32, uint8_t, left_data[64 * 2 + 48]);
+    uint16_t key;
+} DrEdgeSlot;
+
+// 8-bit luma intra edge of the current block, shared by its MDS0 intra candidates (see svt_av1_intra_prediction)
+typedef struct IntraEdgeCache {
+    bool       on;
+    bool       valid;
+    TxSize     tx_size;
+    int32_t    n_top_px, n_topright_px, n_left_px, n_bottomleft_px;
+    uint8_t    top[64 * 2 + 1];
+    uint8_t    left[64 * 2 + 1];
+    uint8_t    dr_count;
+    DrEdgeSlot dr[DR_EDGE_SLOTS];
+} IntraEdgeCache;
+
 typedef struct ModeDecisionContext {
     EbDctor dctor;
     uint8_t subsampling_x;
@@ -932,6 +976,13 @@ typedef struct ModeDecisionContext {
     SvtPicBufDescPool cand_pred_pool;
     SvtPicBufDescPool cand_rec_coeff_pool;
     SvtPicBufDescPool cand_quant_pool;
+    int32_t*          cand_dct_dct_coeff; // MAX_TX_SQUARE per luma candidate, backs cand_bf->dct_dct_coeff
+    // Coefficient rate (eob + levels + signs) of the last RDOQ result; svt_av1_cost_coeffs_txb reuses it for the
+    // same coefficients instead of recounting them. Valid for rdoq_rate_qcoeff/rdoq_rate_eob/rdoq_rate_key.
+    const TranLow*    rdoq_rate_qcoeff;
+    int32_t           rdoq_rate;
+    uint32_t          rdoq_rate_key;
+    uint16_t          rdoq_rate_eob;
     SvtPicBufDescPool tx_recon_coeff_pool;
     SvtPicBufDescPool tx_recon_pool;
     SvtPicBufDescPool tx_quant_coeff_pool;
@@ -1008,6 +1059,9 @@ typedef struct ModeDecisionContext {
     uint64_t         three_quad_energy;
     uint32_t         txb_1d_offset;
     bool             uv_intra_comp_only;
+    IntraEdgeCache   intra_edge;
+    TxbCtxCache      txb_ctx_cache[MAX_PLANES];
+    uint32_t         txb_ctx_gen;
     bool             ind_uv_avail; // True if independent chroma search data is available
     UvPredictionMode best_uv_mode[UV_PAETH_PRED + 1];
     int8_t           best_uv_angle[UV_PAETH_PRED + 1];
@@ -1022,7 +1076,7 @@ typedef struct ModeDecisionContext {
     WarpSampleInfo wm_sample_info[REF_FRAMES];
     int16_t*       pred_buf_q3;
     // Track all MVs that are prepared for candidates prior to MDS0. Used to avoid MV duplication.
-    Mv** injected_mvs;
+    Mv (*injected_mvs)[2];
     // Track the reference types for each MV
     MvReferenceFrame* injected_ref_types;
     uint16_t          injected_mv_count;
@@ -1100,11 +1154,11 @@ typedef struct ModeDecisionContext {
     // Store intra prediction for inter-intra
     uint8_t** intrapred_buf;
     // Store OBMC pre-computed data
-    uint8_t*       obmc_buff_0;
-    uint8_t*       obmc_buff_1;
-    uint16_t*      obmc_conv_buf;
-    int32_t*       wsrc_buf;
-    int32_t*       mask_buf;
+    uint8_t*  obmc_buff_0;
+    uint8_t*  obmc_buff_1;
+    uint16_t* obmc_conv_buf;
+    int32_t*  wsrc_buf;
+    int32_t*  mask_buf;
     // Hoisted inter-prediction scratch (were large on-stack arrays). Per-thread via ctx.
     uint16_t*      tmp_conv_buf; // conv accumulation buffer (>= 128x128 uint16)
     uint8_t*       seg_mask_buf; // masked-compound segmentation mask (2 * MAX_SB_SQUARE)
@@ -1117,9 +1171,10 @@ typedef struct ModeDecisionContext {
     // Control fast_coeff_est_level per mds
     uint8_t mds_fast_coeff_est_level;
     // Control subres_step per mds
-    uint8_t              mds_subres_step;
-    FilterIntraCtrls     filter_intra_ctrls;
-    uint8_t              md_allow_intrabc;
+    uint8_t          mds_subres_step;
+    FilterIntraCtrls filter_intra_ctrls;
+    uint8_t          md_allow_intrabc;
+    Mv intrabc_last_dv; // Last DV chosen by the IntraBC search in the current segment; seeds the BVP fallback (dominant-offset predictor). 0 = none.
     uint8_t              md_palette_level;
     DepthRemovalCtrls    depth_removal_ctrls;
     DepthRefinementCtrls depth_refinement_ctrls;
@@ -1140,15 +1195,18 @@ typedef struct ModeDecisionContext {
     RefResults             ref_filtering_res[TOT_INTER_GROUP][MAX_NUM_OF_REF_PIC_LIST][REF_LIST_MAX_DEPTH];
     RefPruningControls     ref_pruning_ctrls;
     // Signal to control initial and final pass PD setting(s)
-    PdPass               pd_pass;
-    CflCtrls             cfl_ctrls;
-    TxsControls          txs_ctrls;
-    TxtControls          txt_ctrls;
-    CandReductionCtrls   cand_reduction_ctrls;
-    NsqGeomCtrls         nsq_geom_ctrls;
-    NsqSearchCtrls       nsq_search_ctrls;
-    DepthEarlyExitCtrls  depth_early_exit_ctrls;
-    RdoqCtrls            rdoq_ctrls;
+    PdPass              pd_pass;
+    CflCtrls            cfl_ctrls;
+    TxsControls         txs_ctrls;
+    TxtControls         txt_ctrls;
+    CandReductionCtrls  cand_reduction_ctrls;
+    NsqGeomCtrls        nsq_geom_ctrls;
+    NsqSearchCtrls      nsq_search_ctrls;
+    DepthEarlyExitCtrls depth_early_exit_ctrls;
+    RdoqCtrls           rdoq_ctrls;
+#if CONFIG_ENABLE_FAST_DECODE_3
+    DecCostCtrls dec_cost_ctrls;
+#endif
     CoeffShavingCtrls    coeff_shaving_ctrls;
     uint8_t              disallow_8x8;
     uint8_t              disallow_4x4;
@@ -1275,13 +1333,12 @@ typedef struct ModeDecisionContext {
     // when plane_residual_sad < th * blk_area_uv -> skip that plane's TX/Q/RDOQ. Evaluated
     // per-plane; can collapse to whole-block SKIP if luma also has zero coeffs. 0: OFF.
     uint16_t lpd1_chroma_skip_energy_th; // skip chroma via chroma residual energy
-    // Per-pixel residual-cost threshold for the LPD1 GLOBALMV (MDS0-2) bypass.
-    // 0: OFF. Otherwise: bypass fires when pd0_mds0_best_cost[mds_idx] < th * blk_area.
-    uint8_t lpd1_globalmv_bypass_th;
-    // Parallel-to-md_blk_arr_nsq array of PD0 MDS0 best costs, consumed by the LPD1
-    // GLOBALMV-bypass classifier. Reset to UINT32_MAX per SB via a single memset; PD0 storage
-    // sites overwrite per block. UINT32_MAX => "not available" => bypass declines (safe fallback).
-    uint32_t* pd0_mds0_best_cost;
+    // Parallel-to-md_blk_arr_nsq array of VLPD0 full-pel variances, consumed by LPD1.
+    Pd0FullpelVar* pd0_fullpel_var;
+    // Incremented per SB so that pd0_fullpel_var entries written for previous SBs never match.
+    uint32_t sb_epoch;
+    // Candidate whose full loop last wrote the shared candidate recon buffer with the spatial SSE recon.
+    ModeDecisionCandidateBuffer* spatial_sse_recon_cand;
     // chroma components to compensate at MDS3 of LPD1
     COMPONENT_TYPE lpd1_chroma_comp;
     uint8_t        corrupted_mv_check;
@@ -1304,8 +1361,31 @@ typedef struct ModeDecisionContext {
     // Persistent buffers for svt_av1_cost_coeffs_txb() / svt_av1_optimize_b()
     // (moved from the stack to avoid repeated tail-zeroing).
     uint8_t md_levels_buf[TX_PAD_2D];
+    // MDS0 luma variances of the current block against its prepared source terms
+    SrcVarCtx src_var;
+    bool      src_var_on;
     DECLARE_ALIGNED(16, int8_t, md_coeff_contexts[MAX_TX_SQUARE]);
 } ModeDecisionContext;
+
+// Returns the VLPD0 full-pel variance/SSE of the current block if VLPD0 evaluated the same reference and MV.
+static INLINE bool get_pd0_fullpel_var(const ModeDecisionContext* ctx, MvReferenceFrame ref_frame, Mv mv, uint32_t* var,
+                                       uint32_t* sse) {
+    const Pd0FullpelVar* e = &ctx->pd0_fullpel_var[ctx->blk_ptr->mds_idx];
+    if (e->sb_epoch != ctx->sb_epoch || e->ref_frame != ref_frame || e->mv.as_int != mv.as_int) {
+        return false;
+    }
+    *var = e->var;
+    *sse = e->sse;
+    return true;
+}
+
+#if CONFIG_ENABLE_FAST_DECODE_3
+// Decoder-complexity rate of the coarse luma coefficient-rate estimates that only use the eob.
+// Only call when ctx->dec_cost_ctrls.enabled.
+static INLINE uint64_t svt_aom_dec_cost_eob_rate(const ModeDecisionContext* ctx, uint32_t eob) {
+    return (uint64_t)ctx->dec_cost_ctrls.pos_rate * eob;
+}
+#endif
 
 /**************************************
  * Extern Function Declarations

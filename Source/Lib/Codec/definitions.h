@@ -1449,6 +1449,31 @@ typedef enum ATTRIBUTE_PACKED {
 #define FRAME_ID_LENGTH 15
 #define DELTA_FRAME_ID_LENGTH 14
 
+// AV1 current_frame_id from a monotonic decode-order picture_number.
+//
+// The decoder requires consecutive ids to differ, and to differ by less than
+// 2^(FRAME_ID_LENGTH-1) in the forward modular direction. Stepping by one per
+// picture over the full span satisfies both, wrap included, and makes the
+// modular id difference equal the picture age for any age below one period.
+static INLINE uint32_t svt_aom_frame_id_from_pic_num(uint64_t picture_number) {
+    return (uint32_t)(picture_number % (1u << FRAME_ID_LENGTH));
+}
+
+// True when a reference of this picture age can no longer be addressed. The
+// decoder clears a slot's RefValid once the reference is older than
+// 2^delta_frame_id_len (mark_ref_frames), and only a refresh restores it.
+// Age is counted on picture_number rather than on frame ids, which wrap: an id
+// difference reads an anchor held past a full id period as recent again.
+static INLINE bool svt_aom_frame_id_age_unusable(uint64_t age, uint32_t delta_frame_id_len) {
+    return age == 0 || age > (1ull << delta_frame_id_len);
+}
+
+// The delta_frame_id_minus1 the header writer emits for a reference.
+static INLINE int32_t svt_aom_frame_id_delta_minus1(uint32_t current_id, uint32_t ref_id, uint32_t frame_id_len) {
+    const int32_t span = (int32_t)(1u << frame_id_len);
+    return (int32_t)((((int32_t)current_id - (int32_t)ref_id + span) % span)) - 1;
+}
+
 #define PRIMARY_REF_BITS 3
 #define PRIMARY_REF_NONE 7
 
@@ -2188,6 +2213,25 @@ typedef enum {
 // Both SFRAME_FLEXIBLE_BASE and SFRAME_DEC_POSI_BASE use flexible insertion
 #define IS_SFRAME_FLEXIBLE_INSERT(mode) (mode == SFRAME_FLEXIBLE_BASE || mode == SFRAME_DEC_POSI_BASE)
 
+#if CONFIG_ENABLE_FAST_DECODE_3
+// Decoder-complexity rate terms added to RD costs, in rate units (1 bit = 1 << AV1_PROB_COST_SHIFT).
+// All zero when disabled.
+typedef struct DecCostCtrls {
+    bool     enabled;
+    int32_t  pos_rate;     // per coded coefficient scan position (all positions before eob)
+    uint64_t blk_rate;     // per coded block
+    uint64_t txsplit_rate; // per additional luma transform block of a transform split
+} DecCostCtrls;
+#endif
+
+// Source block terms shared by the variances of many predictions of one block (svt_aom_src_var)
+typedef struct SrcVarCtx {
+    uint8_t        sx[64 * 64]; // source ^ 0x80, 64 bytes per step
+    const uint8_t* src;
+    int32_t        stride, bw, bh;
+    int64_t        ss, ss2;
+    unsigned int (*vf)(const uint8_t* a, int a_stride, const uint8_t* b, int b_stride, unsigned int* sse);
+} SrcVarCtx;
 #define CONVERT_TO_STR_COMPILE_TIME_HELPER(x) #x
 #define CONVERT_TO_STR_COMPILE_TIME(x) CONVERT_TO_STR_COMPILE_TIME_HELPER(x)
 

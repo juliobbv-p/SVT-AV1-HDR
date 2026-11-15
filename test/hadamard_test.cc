@@ -139,7 +139,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     SSE4_1, HadamardLowbdTest,
     ::testing::Values(HadamardFuncWithSize(&svt_aom_hadamard_16x16_sse4_1, 16),
-                      HadamardFuncWithSize(&svt_aom_hadamard_32x32_sse4_1, 32)));
+                      HadamardFuncWithSize(&svt_aom_hadamard_32x32_sse4_1,
+                                           32)));
 #endif  // ARCH_X86_64
 
 #ifdef ARCH_AARCH64

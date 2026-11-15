@@ -13,6 +13,7 @@
 #include "common_dsp_rtcd.h"
 
 #include "av1_inv_txfm_neon.h"
+#include "highbd_inv_txfm_neon.h"
 #include "inv_transforms.h"
 #include "itx_lbd_neon.h"
 #include "mem_neon.h"
@@ -30,11 +31,13 @@ static inline void pack_and_load_buffer_4x8(const int32_t* input, int16x4_t* in)
     }
 }
 
+#if CONFIG_ENABLE_HV4
 static inline void pack_and_load_buffer_4x16(const int32_t* input, int16x4_t* in) {
     for (int i = 0; i < 16; ++i) {
         in[i] = vmovn_s32(vld1q_s32(input + i * 4));
     }
 }
+#endif // CONFIG_ENABLE_HV4
 
 static inline void pack_and_load_buffer_8x4(const int32_t* input, int16x4_t* in) {
     for (int i = 0; i < 4; ++i) {
@@ -44,74 +47,10 @@ static inline void pack_and_load_buffer_8x4(const int32_t* input, int16x4_t* in)
     }
 }
 
-static inline void pack_and_load_buffer_8x8(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 8; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            in[i + j * 8] = vmovn_s32(vld1q_s32(input + i * 8 + j * 4));
-        }
-    }
-}
-
-static inline void pack_and_load_buffer_8x16(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 16; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            in[i + j * 16] = vmovn_s32(vld1q_s32(input + i * 8 + j * 4));
-        }
-    }
-}
-
 static inline void pack_and_load_buffer_16x4(const int32_t* input, int16x4_t* in) {
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
             in[i + j * 4] = vmovn_s32(vld1q_s32(input + i * 16 + j * 4));
-        }
-    }
-}
-
-static inline void pack_and_load_buffer_16x8(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 8; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            in[i + j * 8] = vmovn_s32(vld1q_s32(input + i * 16 + j * 4));
-        }
-    }
-}
-
-static inline void pack_and_load_buffer_16x16(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 16; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            in[i + j * 16] = vmovn_s32(vld1q_s32(input + i * 16 + j * 4));
-        }
-    }
-}
-
-static inline void pack_and_load_buffer_16x32(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 32; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            in[i + j * 32] = vmovn_s32(vld1q_s32(input + i * 16 + j * 4));
-        }
-    }
-}
-
-static inline void pack_and_load_buffer_32x8(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 8; ++i) {
-        for (int j = 0; j < 8; ++j) {
-            in[i + j * 8] = vmovn_s32(vld1q_s32(input + i * 32 + j * 4));
-        }
-    }
-}
-
-static inline void pack_and_load_buffer_32x16(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 16; ++i) {
-        for (int j = 0; j < 8; ++j) {
-            in[i + j * 16] = vmovn_s32(vld1q_s32(input + i * 32 + j * 4));
-        }
-    }
-}
-
-static inline void pack_and_load_buffer_32x32(const int32_t* input, int16x4_t* in) {
-    for (int i = 0; i < 32; ++i) {
-        for (int j = 0; j < 8; ++j) {
-            in[i + j * 32] = vmovn_s32(vld1q_s32(input + i * 32 + j * 4));
         }
     }
 }
@@ -130,6 +69,7 @@ static inline void store_buffer_s16_4x8(const int16x4_t* in, int16_t* out) {
     }
 }
 
+#if CONFIG_ENABLE_HV4
 static inline void store_buffer_s16_4x16(const int16x4_t* in, int16_t* out) {
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
@@ -137,6 +77,7 @@ static inline void store_buffer_s16_4x16(const int16x4_t* in, int16_t* out) {
         }
     }
 }
+#endif // CONFIG_ENABLE_HV4
 
 static inline void store_buffer_s16_8x4(const int16x4_t* in, int16_t* out) {
     for (int i = 0; i < 8; ++i) {
@@ -144,73 +85,9 @@ static inline void store_buffer_s16_8x4(const int16x4_t* in, int16_t* out) {
     }
 }
 
-static inline void store_buffer_s16_8x8(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 8; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            vst1_s16(&out[i * 8 + j * 4], in[i + j * 8]);
-        }
-    }
-}
-
-static inline void store_buffer_s16_8x16(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 8; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            vst1_s16(&out[i * 16 + j * 4], in[i + j * 8]);
-        }
-    }
-}
-
 static inline void store_buffer_s16_16x4(const int16x4_t* in, int16_t* out) {
     for (int i = 0; i < 16; ++i) {
         vst1_s16(&out[i * 4], in[i]);
-    }
-}
-
-static inline void store_buffer_s16_16x8(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 16; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            vst1_s16(&out[i * 8 + j * 4], in[i + j * 16]);
-        }
-    }
-}
-
-static inline void store_buffer_s16_16x16(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 16; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            vst1_s16(&out[i * 16 + j * 4], in[i + j * 16]);
-        }
-    }
-}
-
-static inline void store_buffer_s16_16x32(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 16; ++i) {
-        for (int j = 0; j < 8; ++j) {
-            vst1_s16(&out[i * 32 + j * 4], in[i + j * 16]);
-        }
-    }
-}
-
-static inline void store_buffer_s16_32x8(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 32; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            vst1_s16(&out[i * 8 + j * 4], in[i + j * 32]);
-        }
-    }
-}
-
-static inline void store_buffer_s16_32x16(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 32; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            vst1_s16(&out[i * 16 + j * 4], in[i + j * 32]);
-        }
-    }
-}
-
-static inline void store_buffer_s16_32x32(const int16x4_t* in, int16_t* out) {
-    for (int i = 0; i < 32; ++i) {
-        for (int j = 0; j < 8; ++j) {
-            vst1_s16(&out[i * 32 + j * 4], in[i + j * 32]);
-        }
     }
 }
 
@@ -392,6 +269,52 @@ static inline void get_eobx_eoby_scan_h_identity(int* eobx, int* eoby, TxSize tx
     *eoby = eob_fill[temp_eoby];
 }
 
+// Narrows a w x h block of coded coefficients (raster, stride w) to int16 and transposes it to dav1d's column-major
+// order (stride h), one 8x8 tile at a time; w and h are multiples of 8.
+static void pack_transpose(const int32_t* input, int16_t* out, int w, int h) {
+    for (int r = 0; r < h; r += 8) {
+        for (int c = 0; c < w; c += 8) {
+            int16x8_t t[8];
+            for (int i = 0; i < 8; i++) {
+                const int32_t* p = input + (r + i) * w + c;
+                t[i]             = vcombine_s16(vmovn_s32(vld1q_s32(p)), vmovn_s32(vld1q_s32(p + 4)));
+            }
+            transpose_elems_inplace_s16_8x8(&t[0], &t[1], &t[2], &t[3], &t[4], &t[5], &t[6], &t[7]);
+            for (int i = 0; i < 8; i++) {
+                vst1q_s16(out + (c + i) * h + r, t[i]);
+            }
+        }
+    }
+}
+
+// pack_transpose for a dim x dim DCT_DCT block (dim 16 or 32), writing only what dav1d reads. Its first pass reads
+// 8-row strips of the coefficients and skips strips 2, 3 and 4 below a last scan index (eob) of 36, 136 and 300.
+// The default scan walks anti-diagonals, so those eobs also confine the nonzero coefficients to r + c < 8, 16 and
+// 24: tiles of 8x8 past that band are stored as zeros instead of being loaded and transposed.
+static void pack_dct_dct(const int32_t* input, int16_t* out, int dim, int eob) {
+    const int band   = eob < 36 ? 0 : eob < 136 ? 1 : eob < 300 ? 2 : dim;
+    const int strips = AOMMIN(band + 1, dim >> 3);
+    for (int s = 0; s < strips; s++) {
+        for (int t = 0; t < dim >> 3; t++) {
+            int16x8_t v[8];
+            if (s + t <= band) {
+                for (int i = 0; i < 8; i++) {
+                    const int32_t* p = input + (8 * s + i) * dim + 8 * t;
+                    v[i]             = vcombine_s16(vmovn_s32(vld1q_s32(p)), vmovn_s32(vld1q_s32(p + 4)));
+                }
+                transpose_elems_inplace_s16_8x8(&v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
+            } else {
+                for (int i = 0; i < 8; i++) {
+                    v[i] = vdupq_n_s16(0);
+                }
+            }
+            for (int i = 0; i < 8; i++) {
+                vst1q_s16(out + (8 * t + i) * dim + 8 * s, v[i]);
+            }
+        }
+    }
+}
+
 static void inv_txf_add_4x4_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t stride, TxType tx_type, int eob) {
     switch (tx_type) {
     case DCT_DCT:
@@ -502,6 +425,7 @@ static void inv_txf_add_4x8_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t stride
     }
 }
 
+#if CONFIG_ENABLE_HV4
 static void inv_txf_add_4x16_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t stride, TxType tx_type, int eob) {
     switch (tx_type) {
     case DCT_DCT:
@@ -556,6 +480,7 @@ static void inv_txf_add_4x16_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t strid
         assert(0);
     }
 }
+#endif // CONFIG_ENABLE_HV4
 
 static void inv_txf_add_8x4_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t stride, TxType tx_type, int eob) {
     switch (tx_type) {
@@ -832,43 +757,43 @@ static void inv_txf_add_16x8_dav1d(int16_t* dqcoeff, uint8_t* dst, int32_t strid
     }
 }
 
-static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_w, int32_t stride_w, const TxfmParam* txfm_param) {
-    switch (txfm_param->tx_type) {
+static void inv_txf_add_16x16_dav1d(int16_t* dqcoeff, uint8_t* dst_w, int32_t stride_w, TxType tx_type, int eob) {
+    switch (tx_type) {
     case DCT_DCT:
-        svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case DCT_ADST:
-        svt_dav1d_inv_txfm_add_adst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_DCT:
-        svt_dav1d_inv_txfm_add_dct_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_ADST:
-        svt_dav1d_inv_txfm_add_adst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case DCT_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_DCT:
-        svt_dav1d_inv_txfm_add_dct_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case FLIPADST_ADST:
-        svt_dav1d_inv_txfm_add_adst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_adst_flipadst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case ADST_FLIPADST:
-        svt_dav1d_inv_txfm_add_flipadst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_flipadst_adst_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case IDTX:
-        svt_dav1d_inv_txfm_add_identity_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_identity_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case H_DCT:
-        svt_dav1d_inv_txfm_add_dct_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_dct_identity_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     case V_DCT:
-        svt_dav1d_inv_txfm_add_identity_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, txfm_param->eob);
+        svt_dav1d_inv_txfm_add_identity_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff, eob);
         break;
     default:
         assert(0);
@@ -4306,6 +4231,96 @@ static inline void idct64_low16_neon(int16x8_t* in, int16x8_t* out, int8_t cos_b
     out[63] = vqsubq_s16(step2[0], step2[63]);
 }
 
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static void narrow_idct_rows(int16x8_t* in, int16x8_t* out, unsigned size, unsigned band) {
+    switch (size) {
+    case 16:
+        if (band <= 8) {
+            idct16_low8_neon(in, out, INV_COS_BIT);
+        } else {
+            idct16_neon(in, out, INV_COS_BIT);
+        }
+        break;
+    case 32:
+        if (band <= 8) {
+            idct32_low8_neon(in, out, INV_COS_BIT);
+        } else {
+            idct32_low16_neon(in, out, INV_COS_BIT);
+        }
+        break;
+    case 64:
+        if (band <= 8) {
+            idct64_low8_neon(in, out, INV_COS_BIT);
+        } else {
+            idct64_low16_neon(in, out, INV_COS_BIT);
+        }
+        break;
+    default:
+        assert(0);
+    }
+}
+
+// These limits cover every sign pattern in the full nonzero square, not
+// just the triangular default scan. Conservative Q12 stage bounds (including
+// rounding) are at most 30332 in pass one and 30082 in pass two. Products fit
+// int32_t, so both passes can use eight int16_t lanes without losing precision.
+// All three sizes use the same intermediate >>2 and final >>4 rounding.
+int svt_av1_highbd_inv_txfm_try_narrow_neon(const int32_t* input, const uint16_t* pred, int sp, uint16_t* dest, int dp,
+                                            TxSize tx_size, unsigned band) {
+    assert(tx_size >= TX_16X16 && tx_size <= TX_64X64);
+    assert(band == 4 || band == 8 || band == 16);
+    const unsigned size         = tx_size_wide[tx_size];
+    const unsigned coded_stride = AOMMIN(size, 32);
+    const unsigned limit        = band == 4 ? 8191 : band == 8 ? 2047 : size == 16 ? 1023 : 511;
+    int16x8_t      rows[16 * 64 / 8], in[16], out[64];
+    // The sparse kernels read only 8 or 16 inputs. Each transpose supplies
+    // eight initialized vectors, including zero padding for band == 4.
+    // Verify each loaded row group before any narrow arithmetic. A later
+    // rejection discards temporary rows; destination pixels are untouched.
+    for (unsigned y = 0; y < band; y += 8) {
+        uint32x4_t bits0 = vdupq_n_u32(0), bits1 = bits0;
+        for (unsigned x = 0; x < band; x += 8) {
+            int16x8_t tile[8];
+            for (unsigned r = 0; r < 8; ++r) {
+                int32x4_t lo = vdupq_n_s32(0), hi = lo;
+                if (y + r < band) {
+                    lo = vld1q_s32(input + (y + r) * coded_stride + x);
+                    if (x + 4 < band) {
+                        hi = vld1q_s32(input + (y + r) * coded_stride + x + 4);
+                    }
+                }
+                bits0   = vorrq_u32(bits0, vreinterpretq_u32_s32(vabsq_s32(lo)));
+                bits1   = vorrq_u32(bits1, vreinterpretq_u32_s32(vabsq_s32(hi)));
+                tile[r] = vcombine_s16(vmovn_s32(lo), vmovn_s32(hi));
+            }
+            transpose_arrays_s16_8x8(tile, in + x);
+        }
+        if (vmaxvq_u32(vorrq_u32(bits0, bits1)) > limit) {
+            return 0;
+        }
+        narrow_idct_rows(in, out, size, band);
+        for (unsigned x = 0; x < size; ++x) {
+            rows[y * size / 8 + x] = vrshrq_n_s16(out[x], 2);
+        }
+    }
+    for (unsigned x = 0; x < size; x += 8) {
+        for (unsigned y = 0; y < band; y += 8) {
+            transpose_arrays_s16_8x8(rows + y * size / 8 + x, in + y);
+        }
+        narrow_idct_rows(in, out, size, band);
+        for (unsigned y = 0; y < size; ++y) {
+            // Final shift bounds residuals to +/-2048, so adding 10-bit
+            // prediction cannot overflow int16_t before clipping.
+            int16x8_t sum = vaddq_s16(vreinterpretq_s16_u16(vld1q_u16(pred + y * sp + x)), vrshrq_n_s16(out[y], 4));
+            sum           = vmaxq_s16(sum, vdupq_n_s16(0));
+            sum           = vminq_s16(sum, vdupq_n_s16(1023));
+            vst1q_u16(dest + y * dp + x, vreinterpretq_u16_s16(sum));
+        }
+    }
+    return 1;
+}
+#endif
+
 // Functions for blocks with eob at DC and within
 // topleft 8x8, 16x16, 32x32 corner
 static const transform_neon lowbd_txfm_all_1d_zeros_w_arr[TX_SIZES][ITX_TYPES_1D][4] = {
@@ -4585,10 +4600,24 @@ static inline void lowbd_inv_txfm2d_add_no_identity_neon(const int32_t* input, u
 void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t stride_r, uint8_t* dst_w,
                                  int32_t stride_w, const TxfmParam* txfm_param) {
 #if CONFIG_ENABLE_LOSSLESS
+#if MOBILE_BUILD
+    // MOBILE codes lossless blocks (8-bit 4x4 WHT) with dav1d's kernel in the TX_4X4 case below: the C fallback links
+    // every C inverse transform size. Unit-test builds keep it for the other sizes and bit depths the tests drive with
+    // lossless set.
+#ifdef SVT_AV1_UNIT_TEST_BUILD
+    if (txfm_param->lossless && (txfm_param->tx_size != TX_4X4 || txfm_param->bd != EB_EIGHT_BIT)) {
+        svt_av1_inv_txfm_add_c(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
+        return;
+    }
+#else
+    assert(!txfm_param->lossless || txfm_param->tx_size == TX_4X4);
+#endif
+#else
     if (txfm_param->lossless) {
         svt_av1_inv_txfm_add_c(dqcoeff, dst_r, stride_r, dst_w, stride_w, txfm_param);
         return;
     }
+#endif
 #endif
 
     const TxSize tx_size = txfm_param->tx_size;
@@ -4645,15 +4674,43 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
     }
 
     const TxType tx_type = txfm_param->tx_type;
-    const int    eob     = txfm_param->eob;
-    int16x4_t    in[512];
-    int16x4_t    out[512];
+    // dav1d's eob is the last nonzero scan index (0 = DC only); SVT's eob is a count.
+    const int eob = txfm_param->eob > 0 ? txfm_param->eob - 1 : 0;
+
+    if (eob == 0 && tx_type == DCT_DCT && !txfm_param->lossless) {
+        // DC only: dav1d's dct_dct kernels read just the first coefficient, so the block is not packed.
+        dqcoeff_16[0] = (int16_t)dqcoeff[0];
+        switch (tx_size) {
+        case TX_4X4:
+            svt_dav1d_inv_txfm_add_dct_dct_4x4_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_8X8:
+            svt_dav1d_inv_txfm_add_dct_dct_8x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_16X16:
+            svt_dav1d_inv_txfm_add_dct_dct_16x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_32X32:
+            svt_dav1d_inv_txfm_add_dct_dct_32x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        case TX_64X64:
+            svt_dav1d_inv_txfm_add_dct_dct_64x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, 0);
+            return;
+        default:
+            break;
+        }
+    }
+    // Register-array staging for the sizes with a side of 4 (at most 4x16 coefficients).
+    int16x4_t in[16];
+    int16x4_t out[16];
 
     switch (txfm_param->tx_size) {
     case TX_32X32:
-        pack_and_load_buffer_32x32(dqcoeff, in);
-        transpose_s16_32x32(in, out);
-        store_buffer_s16_32x32(out, dqcoeff_16);
+        if (tx_type == DCT_DCT) {
+            pack_dct_dct(dqcoeff, dqcoeff_16, 32, eob);
+        } else {
+            pack_transpose(dqcoeff, dqcoeff_16, 32, 32);
+        }
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
@@ -4665,20 +4722,27 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         }
 #else
         // Non-DCT at large tx (only IDTX per ext-tx set) is unused in RTC; aom fallback compiled out.
+#if MOBILE_BUILD
+        // MOBILE (VOD/AVIF) can code IDTX here: dav1d identity kernel, as the x86 path does (normative inverse).
+        if (tx_type == IDTX) {
+            svt_dav1d_inv_txfm_add_identity_identity_32x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+            break;
+        }
+#endif
         assert(tx_type == DCT_DCT);
         svt_dav1d_inv_txfm_add_dct_dct_32x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
 #endif
         break;
     case TX_16X16:
-        pack_and_load_buffer_16x16(dqcoeff, in);
-        transpose_s16_16x16(in, out);
-        store_buffer_s16_16x16(out, dqcoeff_16);
-        inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, txfm_param);
+        if (tx_type == DCT_DCT) {
+            pack_dct_dct(dqcoeff, dqcoeff_16, 16, eob);
+        } else {
+            pack_transpose(dqcoeff, dqcoeff_16, 16, 16);
+        }
+        inv_txf_add_16x16_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_8X8:
-        pack_and_load_buffer_8x8(dqcoeff, in);
-        transpose_s16_8x8(in, out);
-        store_buffer_s16_8x8(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 8, 8);
         inv_txf_add_8x8_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_4X8:
@@ -4694,21 +4758,15 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         inv_txf_add_8x4_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_8X16:
-        pack_and_load_buffer_8x16(dqcoeff, in);
-        transpose_s16_8x16(in, out);
-        store_buffer_s16_8x16(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 8, 16);
         inv_txf_add_8x16_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_16X8:
-        pack_and_load_buffer_16x8(dqcoeff, in);
-        transpose_s16_16x8(in, out);
-        store_buffer_s16_16x8(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 16, 8);
         inv_txf_add_16x8_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_16X32:
-        pack_and_load_buffer_16x32(dqcoeff, in);
-        transpose_s16_16x32(in, out);
-        store_buffer_s16_16x32(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 16, 32);
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
@@ -4719,14 +4777,19 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
 #else
+#if MOBILE_BUILD
+        // MOBILE: IDTX via dav1d, see TX_32X32.
+        if (tx_type == IDTX) {
+            svt_dav1d_inv_txfm_add_identity_identity_16x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+            break;
+        }
+#endif
         assert(tx_type == DCT_DCT);
         svt_dav1d_inv_txfm_add_dct_dct_16x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
 #endif
         break;
     case TX_32X16:
-        pack_and_load_buffer_32x16(dqcoeff, in);
-        transpose_s16_32x16(in, out);
-        store_buffer_s16_32x16(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 32, 16);
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
@@ -4737,14 +4800,23 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
 #else
+#if MOBILE_BUILD
+        // MOBILE: IDTX via dav1d, see TX_32X32.
+        if (tx_type == IDTX) {
+            svt_dav1d_inv_txfm_add_identity_identity_32x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+            break;
+        }
+#endif
         assert(tx_type == DCT_DCT);
         svt_dav1d_inv_txfm_add_dct_dct_32x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
 #endif
         break;
     case TX_64X64:
-        pack_and_load_buffer_32x32(dqcoeff, in);
-        transpose_s16_32x32(in, out);
-        store_buffer_s16_32x32(out, dqcoeff_16);
+        if (tx_type == DCT_DCT) {
+            pack_dct_dct(dqcoeff, dqcoeff_16, 32, eob);
+        } else {
+            pack_transpose(dqcoeff, dqcoeff_16, 32, 32);
+        }
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4758,9 +4830,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #endif
         break;
     case TX_32X64:
-        pack_and_load_buffer_32x32(dqcoeff, in);
-        transpose_s16_32x32(in, out);
-        store_buffer_s16_32x32(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 32, 32);
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_32x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4774,9 +4844,7 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
 #endif
         break;
     case TX_64X32:
-        pack_and_load_buffer_32x32(dqcoeff, in);
-        transpose_s16_32x32(in, out);
-        store_buffer_s16_32x32(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 32, 32);
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4789,10 +4857,9 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         svt_dav1d_inv_txfm_add_dct_dct_64x32_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
 #endif
         break;
+#if CONFIG_ENABLE_HV4
     case TX_16X64:
-        pack_and_load_buffer_16x32(dqcoeff, in);
-        transpose_s16_16x32(in, out);
-        store_buffer_s16_16x32(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 16, 32);
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_16x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4805,10 +4872,9 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         svt_dav1d_inv_txfm_add_dct_dct_16x64_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
 #endif
         break;
+#endif // CONFIG_ENABLE_HV4
     case TX_64X16:
-        pack_and_load_buffer_32x16(dqcoeff, in);
-        transpose_s16_32x16(in, out);
-        store_buffer_s16_32x16(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 32, 16);
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         if (tx_type == DCT_DCT) {
             svt_dav1d_inv_txfm_add_dct_dct_64x16_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
@@ -4825,6 +4891,12 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         pack_and_load_buffer_4x4(dqcoeff, in);
         transpose_s16_4x4(in, out);
         store_buffer_s16_4x4(out, dqcoeff_16);
+#if CONFIG_ENABLE_LOSSLESS && MOBILE_BUILD
+        if (txfm_param->lossless) {
+            svt_dav1d_inv_txfm_add_wht_wht_4x4_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+            break;
+        }
+#endif
         inv_txf_add_4x4_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
     case TX_16X4:
@@ -4833,16 +4905,16 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
         store_buffer_s16_16x4(out, dqcoeff_16);
         inv_txf_add_16x4_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
+#if CONFIG_ENABLE_HV4
     case TX_4X16:
         pack_and_load_buffer_4x16(dqcoeff, in);
         transpose_s16_4x16(in, out);
         store_buffer_s16_4x16(out, dqcoeff_16);
         inv_txf_add_4x16_dav1d(dqcoeff_16, dst_w, stride_w, tx_type, eob);
         break;
+#endif // CONFIG_ENABLE_HV4
     case TX_32X8:
-        pack_and_load_buffer_32x8(dqcoeff, in);
-        transpose_s16_32x8(in, out);
-        store_buffer_s16_32x8(out, dqcoeff_16);
+        pack_transpose(dqcoeff, dqcoeff_16, 32, 8);
 #if CONFIG_ENABLE_NON_DCT_LARGE_TX
         switch (tx_type) {
         case DCT_DCT:
@@ -4853,6 +4925,13 @@ void svt_dav1d_inv_txfm_add_neon(const TranLow* dqcoeff, uint8_t* dst_r, int32_t
                 dqcoeff, dst_r, stride_r, dst_w, stride_w, tx_type, txfm_param->tx_size, txfm_param->eob);
         }
 #else
+#if MOBILE_BUILD
+        // MOBILE: IDTX via dav1d, see TX_32X32.
+        if (tx_type == IDTX) {
+            svt_dav1d_inv_txfm_add_identity_identity_32x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
+            break;
+        }
+#endif
         assert(tx_type == DCT_DCT);
         svt_dav1d_inv_txfm_add_dct_dct_32x8_8bpc_neon(dst_w, stride_w, dqcoeff_16, eob);
 #endif

@@ -24,13 +24,13 @@
 #endif
 
 #if defined(AOM_EMULATE_INTTYPES)
-typedef signed char int8_t;
+typedef signed char  int8_t;
 typedef signed short int16_t;
-typedef signed int int32_t;
+typedef signed int   int32_t;
 
-typedef unsigned char uint8_t;
+typedef unsigned char  uint8_t;
 typedef unsigned short uint16_t;
-typedef unsigned int uint32_t;
+typedef unsigned int   uint32_t;
 
 #ifndef _UINTPTR_T_DEFINED
 typedef size_t uintptr_t;
@@ -47,7 +47,7 @@ typedef size_t uintptr_t;
 #if !defined(__STDC_LIMIT_MACROS)
 #define __STDC_LIMIT_MACROS
 #endif
-#endif  // __cplusplus
+#endif // __cplusplus
 
 #include <stdint.h>
 
@@ -76,7 +76,7 @@ typedef size_t uintptr_t;
 
 #if defined(__cplusplus)
 extern "C" {
-#endif  // __cplusplus
+#endif // __cplusplus
 
 // Returns size of uint64_t when encoded using LEB128.
 size_t eb_aom_uleb_size_in_bytes(uint64_t value);
@@ -84,23 +84,20 @@ size_t eb_aom_uleb_size_in_bytes(uint64_t value);
 // Returns 0 on success, -1 on decode failure.
 // On success, 'value' stores the decoded LEB128 value and 'length' stores
 // the number of bytes decoded.
-int aom_uleb_decode(const uint8_t *buffer, size_t available, uint64_t *value,
-                    size_t *length);
+int aom_uleb_decode(const uint8_t* buffer, size_t available, uint64_t* value, size_t* length);
 
 // Encodes LEB128 integer. Returns 0 when successful, and -1 upon failure.
-int eb_aom_uleb_encode(uint64_t value, size_t available, uint8_t *coded_value,
-                    size_t *coded_size);
+int eb_aom_uleb_encode(uint64_t value, size_t available, uint8_t* coded_value, size_t* coded_size);
 
 // Encodes LEB128 integer to size specified. Returns 0 when successful, and -1
 // upon failure.
 // Note: This will write exactly pad_to_size bytes; if the value cannot be
 // encoded in this many bytes, then this will fail.
-int aom_uleb_encode_fixed_size(uint64_t value, size_t available,
-                               size_t pad_to_size, uint8_t *coded_value,
-                               size_t *coded_size);
+int aom_uleb_encode_fixed_size(uint64_t value, size_t available, size_t pad_to_size, uint8_t* coded_value,
+                               size_t* coded_size);
 
 #if defined(__cplusplus)
-}  // extern "C"
-#endif  // __cplusplus
+} // extern "C"
+#endif // __cplusplus
 
-#endif  // AOM_AOM_INTEGER_H_
+#endif // AOM_AOM_INTEGER_H_

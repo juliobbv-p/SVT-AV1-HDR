@@ -702,6 +702,12 @@ static EbErrorType set_cdef_enable(EbConfig* cfg, const char* token, const char*
     int32_t     cdef_enable = DEFAULT;
     EbErrorType err         = str_to_int(token, value, &cdef_enable);
     cfg->config.cdef_level  = (cdef_enable == 0) ? 0 : DEFAULT;
+#if CONFIG_ENABLE_FAST_DECODE_3
+    if (err == EB_ErrorNone) {
+        // Lets fast-decode 3 see that CDEF was set explicitly
+        err = svt_av1_enc_parse_parameter(&cfg->config, "enable-cdef", cdef_enable == 0 ? "0" : "-1");
+    }
+#endif
     return err;
 };
 
@@ -817,6 +823,7 @@ ConfigDescription config_entry_global_options[] = {
     {ENCODER_COLOR_FORMAT, "Color format, default is 1 [1 or 420: yuv420, 3 or 444: yuv444]"},
     {PROFILE_TOKEN,
      "Bitstream profile [0: main (default; automatically selects high for 4:4:4), 1: high, 2: professional]"},
+    {TIER_TOKEN, "Bitstream tier, default is 0 [0: main, 1: high]"},
     {LEVEL_TOKEN,
      "Bitstream level, defined in A.3 of the av1 spec, default is 0 [0: autodetect from input, "
      "2.0-7.3]"},
@@ -986,7 +993,11 @@ ConfigDescription config_entry_specific[] = {
     {ENABLE_RESTORATION_TOKEN, "Enable loop restoration filter, default is 1 [0-1]"},
     {MFMV_ENABLE_NEW_TOKEN, "Motion Field Motion Vector control, default is -1 [-1: auto, 0-1]"},
     {DG_ENABLE_NEW_TOKEN, "Dynamic GoP control, default is 1 [0-1]"},
+#if CONFIG_ENABLE_FAST_DECODE_3
+    {FAST_DECODE_TOKEN, "Fast Decoder levels, default is 0 [0-3, 3: 2 plus still-image (avif) decode-speed settings]"},
+#else
     {FAST_DECODE_TOKEN, "Fast Decoder levels, default is 0 [0-2]"},
+#endif
     // --- start: ALTREF_FILTERING_SUPPORT
     {ENABLE_TF_TOKEN, "Enable ALT-REF (temporally filtered) frames, default is 1 [0-2]"},
     {ENABLE_TF_KEY_TOKEN, "Enable MCTF for key frames, default is 1 [0-1]"},
@@ -1498,6 +1509,8 @@ void svt_config_dtor(EbConfig* app_cfg) {
         free(app_cfg->fgs_table_path);
         app_cfg->fgs_table_path = NULL;
     }
+
+    free_film_grain_table(&app_cfg->fgs_table);
 
     for (size_t i = 0; i < app_cfg->forced_keyframes.count; ++i) {
         free(app_cfg->forced_keyframes.specifiers[i]);
@@ -2392,146 +2405,19 @@ static bool warn_legacy_token(const char* const token) {
 
 #if CONFIG_ENABLE_FILM_GRAIN
 static EbErrorType read_fgs_table(EbConfig* cfg) {
-    EbErrorType   ret = EB_ErrorBadParameter;
-    AomFilmGrain* film_grain;
-    FILE*         file;
+    FILE* file;
     FOPEN(file, cfg->fgs_table_path, "r");
-
     if (!file) {
         return EB_ErrorBadParameter;
     }
-
-    // Read in one extra character as there should be a newline
-    char magic[9];
-    if (!fread(magic, 9, 1, file) || strncmp(magic, "filmgrn1", 8)) {
-        fprintf(stderr, "invalid grain table magic %s\n", cfg->fgs_table_path);
-        fclose(file);
-        return ret;
-    }
-
-    film_grain = (AomFilmGrain*)calloc(1, sizeof(AomFilmGrain));
-
-    while (!feof(file)) {
-        int num_read = fscanf(file,
-                              "E %*d %*d %d %hu %d\n",
-                              &film_grain->apply_grain,
-                              &film_grain->random_seed,
-                              &film_grain->update_parameters);
-
-        if (num_read == 0 && feof(file)) {
-            fprintf(stderr, "invalid grain table %s\n", cfg->fgs_table_path);
-            goto fail;
-        }
-        if (num_read != 3) {
-            fprintf(stderr, "Unable to read entry header. Read %d != 3\n", num_read);
-            goto fail;
-        }
-
-        if (film_grain->update_parameters) {
-            num_read = fscanf(file,
-                              "p %d %d %d %d %d %d %d %d %d %d %d %d\n",
-                              &film_grain->ar_coeff_lag,
-                              &film_grain->ar_coeff_shift,
-                              &film_grain->grain_scale_shift,
-                              &film_grain->scaling_shift,
-                              &film_grain->chroma_scaling_from_luma,
-                              &film_grain->overlap_flag,
-                              &film_grain->cb_mult,
-                              &film_grain->cb_luma_mult,
-                              &film_grain->cb_offset,
-                              &film_grain->cr_mult,
-                              &film_grain->cr_luma_mult,
-                              &film_grain->cr_offset);
-            if (num_read != 12) {
-                fprintf(stderr, "Unable to read entry header. Read %d != 12\n", num_read);
-                goto fail;
-            }
-            if (!fscanf(file, "\tsY %d ", &film_grain->num_y_points)) {
-                fprintf(stderr, "Unable to read num y points\n");
-                goto fail;
-            }
-            for (int i = 0; i < film_grain->num_y_points; ++i) {
-                if (2 !=
-                    fscanf(file, "%d %d", &film_grain->scaling_points_y[i][0], &film_grain->scaling_points_y[i][1])) {
-                    fprintf(stderr, "Unable to read y scaling points\n");
-                    goto fail;
-                }
-            }
-            if (!fscanf(file, "\n\tsCb %d", &film_grain->num_cb_points)) {
-                fprintf(stderr, "Unable to read num cb points\n");
-                goto fail;
-            }
-            for (int i = 0; i < film_grain->num_cb_points; ++i) {
-                if (2 !=
-                    fscanf(file, "%d %d", &film_grain->scaling_points_cb[i][0], &film_grain->scaling_points_cb[i][1])) {
-                    fprintf(stderr, "Unable to read cb scaling points\n");
-                    goto fail;
-                }
-            }
-            if (!fscanf(file, "\n\tsCr %d", &film_grain->num_cr_points)) {
-                fprintf(stderr, "Unable to read num cr points\n");
-                goto fail;
-            }
-            for (int i = 0; i < film_grain->num_cr_points; ++i) {
-                if (2 !=
-                    fscanf(file, "%d %d", &film_grain->scaling_points_cr[i][0], &film_grain->scaling_points_cr[i][1])) {
-                    fprintf(stderr, "Unable to read cr scaling points\n");
-                    goto fail;
-                }
-            }
-
-            if (fscanf(file, "\n\tcY")) {
-                fprintf(stderr, "Unable to read Y coeffs header (cY)\n");
-                goto fail;
-            }
-            const int n = 2 * film_grain->ar_coeff_lag * (film_grain->ar_coeff_lag + 1);
-            for (int i = 0; i < n; ++i) {
-                if (1 != fscanf(file, "%d", &film_grain->ar_coeffs_y[i])) {
-                    fprintf(stderr, "Unable to read Y coeffs\n");
-                    goto fail;
-                }
-            }
-            if (fscanf(file, "\n\tcCb")) {
-                fprintf(stderr, "Unable to read Cb coeffs header (cCb)\n");
-                goto fail;
-            }
-            for (int i = 0; i <= n; ++i) {
-                if (1 != fscanf(file, "%d", &film_grain->ar_coeffs_cb[i])) {
-                    fprintf(stderr, "Unable to read Cb coeffs\n");
-                    goto fail;
-                }
-            }
-            if (fscanf(file, "\n\tcCr")) {
-                fprintf(stderr, "Unable read to Cr coeffs header (cCr)\n");
-                goto fail;
-            }
-            for (int i = 0; i <= n; ++i) {
-                if (1 != fscanf(file, "%d", &film_grain->ar_coeffs_cr[i])) {
-                    fprintf(stderr, "Unable to read Cr coeffs\n");
-                    goto fail;
-                }
-            }
-            if (fscanf(file, "\n")) {
-                // optional newline at end of file,
-            }
-        }
-
-        // TODO Add functionality to read multiple grain table entries
-        break;
-    }
-
+    EbErrorType status = read_film_grain_table(file, &cfg->fgs_table);
     fclose(file);
-
-    film_grain->apply_grain = 1;
-    film_grain->ignore_ref  = 1;
-    cfg->config.fgs_table   = film_grain;
-
-    return EB_ErrorNone;
-fail:
-    free(film_grain);
-
-    fclose(file);
-    return ret;
+    if (status == EB_ErrorNone) {
+        cfg->config.fgs_table = &cfg->fgs_table.head->grain;
+    } else {
+        fprintf(stderr, "Invalid film grain table: %s\n", cfg->fgs_table_path);
+    }
+    return status;
 }
 #endif
 

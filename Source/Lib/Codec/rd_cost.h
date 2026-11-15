@@ -53,9 +53,9 @@ void        svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                               uint64_t cb_distortion[DIST_TOTAL][DIST_CALC_TOTAL],
                               uint64_t cr_distortion[DIST_TOTAL][DIST_CALC_TOTAL], uint64_t* y_coeff_bits,
                               uint64_t* cb_coeff_bits, uint64_t* cr_coeff_bits);
-uint64_t    svt_aom_tx_size_bits(PictureControlSet* pcs, uint8_t segment_id, MdRateEstimationContext* md_rate_est_ctx,
-                                 MacroBlockD* xd, const MbModeInfo* mbmi, TxSize tx_size, TxMode tx_mode, BlockSize bsize,
-                                 uint8_t skip, FRAME_CONTEXT* ec_ctx, uint8_t allow_update_cdf);
+uint64_t svt_aom_tx_size_bits(PictureControlSet* pcs, uint8_t segment_id, MdRateEstimationContext* md_rate_est_ctx,
+                              MacroBlockD* xd, const MbModeInfo* mbmi, TxSize tx_size, TxMode tx_mode, BlockSize bsize,
+                              uint8_t skip, FRAME_CONTEXT* ec_ctx, uint8_t allow_update_cdf);
 
 uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, ModeDecisionContext* ctx,
                                   PictureControlSet* pcs, uint8_t tx_depth, bool block_has_coeff);

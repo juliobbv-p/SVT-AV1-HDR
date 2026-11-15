@@ -11,6 +11,7 @@
 
 #include "definitions.h"
 #include "aom_dsp_rtcd.h"
+#include "variance_sse2.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -95,13 +96,23 @@ VAR_FN(64, 16, 16, 10);
 
 uint32_t svt_aom_highbd_mse16x16_sse2(const uint8_t* src8, int32_t src_stride, const uint8_t* ref8,
                                       int32_t ref_stride) {
-    uint16_t* src = CONVERT_TO_SHORTPTR(src8);
-    uint16_t* ref = CONVERT_TO_SHORTPTR(ref8);
+    const uint16_t* src  = CONVERT_TO_SHORTPTR(src8);
+    const uint16_t* ref  = CONVERT_TO_SHORTPTR(ref8);
+    __m128i         sse0 = _mm_setzero_si128();
+    __m128i         sse1 = _mm_setzero_si128();
 
-    /*TODO: Remove calculate unused sum.*/
-    int32_t  sum;
-    uint32_t sse;
-    svt_aom_highbd_calc16x16var_sse2(src, src_stride, ref, ref_stride, &sse, &sum);
+    for (int i = 0; i < 16; ++i) {
+        const __m128i src0  = _mm_loadu_si128((const __m128i*)src);
+        const __m128i ref0  = _mm_loadu_si128((const __m128i*)ref);
+        const __m128i src1  = _mm_loadu_si128((const __m128i*)(src + 8));
+        const __m128i ref1  = _mm_loadu_si128((const __m128i*)(ref + 8));
+        const __m128i diff0 = _mm_sub_epi16(src0, ref0);
+        const __m128i diff1 = _mm_sub_epi16(src1, ref1);
+        sse0                = _mm_add_epi32(sse0, _mm_madd_epi16(diff0, diff0));
+        sse1                = _mm_add_epi32(sse1, _mm_madd_epi16(diff1, diff1));
+        src += src_stride;
+        ref += ref_stride;
+    }
 
-    return sse;
+    return add32x4_sse2(_mm_add_epi32(sse0, sse1));
 }

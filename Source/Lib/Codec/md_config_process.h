@@ -13,6 +13,7 @@
 #define EbModeDecisionConfigurationProcess_h
 
 #include "definitions.h"
+#include "svt_threads.h"
 #include "mode_decision.h"
 #include "sys_resource_manager.h"
 #include "md_rate_estimation.h"
@@ -41,7 +42,7 @@ void svt_av1_build_quantizer(PictureParentControlSet* pcs, EbBitDepth bit_depth,
                              int32_t u_dc_delta_q, int32_t u_ac_delta_q, int32_t v_dc_delta_q, int32_t v_ac_delta_q,
                              Quants* const quants, Dequants* const deq);
 
-void* svt_aom_mode_decision_configuration_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_mode_decision_configuration_kernel(void* input_ptr);
 
 #ifdef __cplusplus
 }

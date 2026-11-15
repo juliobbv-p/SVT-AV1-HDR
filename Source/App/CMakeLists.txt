@@ -124,6 +124,8 @@ set(all_files
     ../API/EbSvtAv1Metadata.h
     app_config.c
     app_config.h
+    app_film_grain.c
+    app_film_grain.h
     app_context.c
     app_context.h
     app_input_y4m.c

@@ -246,8 +246,8 @@ static void correspondence_from_mvs(PictureParentControlSet* pcs, Correspondence
     const int      blocks_per_line   = 1 << mv_search_lvl;
     const int      num_blocks_per_sb = blocks_per_line * blocks_per_line;
     const int      starting_n_idx    = mv_search_lvl == MV_64x64 ? 0
-                : mv_search_lvl == MV_32x32                      ? 1
-                : mv_search_lvl == MV_16x16                      ? 5
+        : mv_search_lvl == MV_32x32                              ? 1
+        : mv_search_lvl == MV_16x16                              ? 5
                                                                  : 21 /*MV_8x8*/;
     const uint16_t pic_b64_width     = (uint16_t)((pcs->aligned_width + pcs->scs->b64_size - 1) / pcs->scs->b64_size);
     const uint16_t pic_b64_height    = (uint16_t)((pcs->aligned_height + pcs->scs->b64_size - 1) / pcs->scs->b64_size);
@@ -297,7 +297,7 @@ static void correspondence_from_mvs(PictureParentControlSet* pcs, Correspondence
                                             ->me_mv_array[n_idx * pcs->pa_me_data->max_refs +
                                                           (list_idx ? pcs->pa_me_data->max_l0 : 0) + ref_idx]
                                             .as_int;
-                            found_mv = true;
+                            found_mv  = true;
                             break;
                         }
                     }
@@ -307,7 +307,7 @@ static void correspondence_from_mvs(PictureParentControlSet* pcs, Correspondence
                                             ->me_mv_array[n_idx * pcs->pa_me_data->max_refs +
                                                           (list_idx ? pcs->pa_me_data->max_l0 : 0) + ref_idx]
                                             .as_int;
-                            found_mv = true;
+                            found_mv  = true;
                             break;
                         }
                     }

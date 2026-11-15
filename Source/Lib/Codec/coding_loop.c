@@ -69,7 +69,7 @@ typedef void (*EbAv1GenerateReconFuncPtr)(EncDecContext* ed_ctx, uint32_t org_x,
 void svt_aom_residual_kernel(uint8_t* input, uint32_t input_offset, uint32_t input_stride, uint8_t* pred,
                              uint32_t pred_offset, uint32_t pred_stride, int16_t* residual, uint32_t residual_offset,
                              uint32_t residual_stride, bool hbd, uint32_t area_width, uint32_t area_height) {
-    if (hbd) {
+    if (SVT_EFFECTIVE_IS_16BIT_PIPELINE(hbd)) {
         svt_residual_kernel16bit(((uint16_t*)input) + input_offset,
                                  input_stride,
                                  ((uint16_t*)pred) + pred_offset,
@@ -331,8 +331,8 @@ static void av1_encode_loop(PictureControlSet* pcs, EncDecContext* ed_ctx, uint3
     const uint16_t tx_org_x = org_x - md_ctx->sb_origin_x;
     const uint16_t tx_org_y = org_y - md_ctx->sb_origin_y;
     const int32_t  seg_qp   = pcs->ppcs->frm_hdr.segmentation_params.segmentation_enabled
-           ? pcs->ppcs->frm_hdr.segmentation_params.feature_data[ed_ctx->blk_ptr->segment_id][SEG_LVL_ALT_Q]
-           : 0;
+        ? pcs->ppcs->frm_hdr.segmentation_params.feature_data[ed_ctx->blk_ptr->segment_id][SEG_LVL_ALT_Q]
+        : 0;
 
     uint32_t input_luma_offset, input_cb_offset, input_cr_offset;
     uint32_t pred_luma_offset, pred_cb_offset, pred_cr_offset;
@@ -1468,28 +1468,28 @@ static void copy_qcoeffs(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* 
     int32_t* md_coeff = ((int32_t*)blk_ptr->coeff_tmp->y_buffer) + blk_coded_area;
 
     if ((blk_ptr->y_has_coeff & (1 << txb_itr))) {
-        const TxSize tx_size   = tx_depth_to_tx_size[tx_depth][blk_geom->bsize];
-        const int    tx_width  = tx_size_wide[tx_size];
-        const int    tx_height = tx_size_high[tx_size];
-        memcpy(ep_coeff, md_coeff, sizeof(int32_t) * tx_height * tx_width);
+        const TxSize tx_size = tx_depth_to_tx_size[tx_depth][blk_geom->bsize];
+        memcpy(ep_coeff, md_coeff, sizeof(int32_t) * get_txb_coded_coeff_count(tx_size, blk_ptr->eob.y[txb_itr]));
     }
 
     if (ctx->md_ctx->has_uv && uv_pass) {
-        const TxSize tx_size_uv   = av1_get_max_uv_txsize(blk_geom->bsize, chroma_ss, chroma_ss);
-        const int    tx_width_uv  = tx_size_wide[tx_size_uv];
-        const int    tx_height_uv = tx_size_high[tx_size_uv];
-        int32_t*     ep_coeff_cb  = ((int32_t*)coeff_buffer_sb->u_buffer) + ctx->coded_area_sb_uv_update;
-        int32_t*     md_coeff_cb  = ((int32_t*)blk_ptr->coeff_tmp->u_buffer) + blk_coded_area_uv;
+        const TxSize tx_size_uv  = av1_get_max_uv_txsize(blk_geom->bsize, chroma_ss, chroma_ss);
+        int32_t*     ep_coeff_cb = ((int32_t*)coeff_buffer_sb->u_buffer) + ctx->coded_area_sb_uv_update;
+        int32_t*     md_coeff_cb = ((int32_t*)blk_ptr->coeff_tmp->u_buffer) + blk_coded_area_uv;
 
         if ((blk_ptr->u_has_coeff & (1 << txb_itr))) {
-            memcpy(ep_coeff_cb, md_coeff_cb, sizeof(int32_t) * tx_height_uv * tx_width_uv);
+            memcpy(ep_coeff_cb,
+                   md_coeff_cb,
+                   sizeof(int32_t) * get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.u[txb_itr]));
         }
 
         int32_t* ep_coeff_cr = ((int32_t*)coeff_buffer_sb->v_buffer) + ctx->coded_area_sb_uv_update;
         int32_t* md_coeff_cr = ((int32_t*)blk_ptr->coeff_tmp->v_buffer) + blk_coded_area_uv;
 
         if ((blk_ptr->v_has_coeff & (1 << txb_itr))) {
-            memcpy(ep_coeff_cr, md_coeff_cr, sizeof(int32_t) * tx_height_uv * tx_width_uv);
+            memcpy(ep_coeff_cr,
+                   md_coeff_cr,
+                   sizeof(int32_t) * get_txb_coded_coeff_count(tx_size_uv, blk_ptr->eob.v[txb_itr]));
         }
     }
 }
@@ -1626,7 +1626,7 @@ void update_coeff_cdf(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk
 
 // Update encode-related data for the passed block
 // expects ctx->blk_geom, ctx->blk_ptr, ctx->blk_org_x, ctx->blk_org_y to be set
-static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr, EcBlkStruct** output_blk_ptr) {
+static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr) {
     const int            chroma_ss = pcs->scs->subsampling_x;
     ModeDecisionContext* md_ctx    = ctx->md_ctx;
     const BlockGeom*     blk_geom  = ctx->blk_geom;
@@ -1752,7 +1752,7 @@ static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
         blk_ptr->av1xd->above_txfm_context = (TXFM_CONTEXT*)svt_aom_na_top_ptr_pu(pcs->ep_txfm_context_na[tile_idx],
                                                                                   ctx->blk_org_x);
         blk_ptr->av1xd->left_txfm_context  = (TXFM_CONTEXT*)svt_aom_na_left_ptr_pu(pcs->ep_txfm_context_na[tile_idx],
-                                                                                  ctx->blk_org_y);
+                                                                                   ctx->blk_org_y);
         svt_aom_tx_size_bits(pcs,
                              ctx->blk_ptr->segment_id,
                              md_ctx->md_rate_est_ctx,
@@ -1781,7 +1781,6 @@ static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
     }
     BlkStruct*   src_cu = blk_ptr;
     EcBlkStruct* dst_cu = &sb_ptr->final_blk_arr[sb_ptr->final_blk_cnt];
-    *output_blk_ptr     = &sb_ptr->final_blk_arr[sb_ptr->final_blk_cnt];
     svt_aom_move_blk_data(pcs, ctx, src_cu, dst_cu);
     sb_ptr->final_blk_arr[sb_ptr->final_blk_cnt++].av1xd = sb_ptr->av1xd;
     // MFMV Update
@@ -1817,8 +1816,8 @@ static void update_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
 *   Coefficient Samples
 *
 *******************************************/
-static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr, EcBlkStruct** output_blk_ptr,
-                     const int mi_row, const int mi_col) {
+static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_ptr, const int mi_row,
+                     const int mi_col) {
     const int            chroma_ss = pcs->scs->subsampling_x;
     ModeDecisionContext* md_ctx    = ctx->md_ctx;
     ctx->blk_geom = md_ctx->blk_geom = get_blk_geom_mds(pcs->scs->blk_geom_mds, blk_ptr->mds_idx);
@@ -1826,10 +1825,10 @@ static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
     ctx->blk_org_x = md_ctx->blk_org_x = mi_col << MI_SIZE_LOG2;
     ctx->blk_org_y = md_ctx->blk_org_y = mi_row << MI_SIZE_LOG2;
     md_ctx->has_uv = is_chroma_reference(mi_row, mi_col, md_ctx->blk_geom->bsize, chroma_ss, chroma_ss);
-    // bypass_encdec is structurally 1 (8-bit, enc_mode>=M7 > M2) -> the ED encode path below is
-    // dead and gets DCE'd via the RTC_BUILD compile constant.
-    if (RTC_BUILD || ctx->md_ctx->bypass_encdec) {
-        update_b(pcs, ctx, blk_ptr, output_blk_ptr);
+    // bypass_encdec is 1 in RTC and MOBILE builds (enc_mode >= M6 > M3; verify rejects segmentation and 10-bit at
+    // M7) -> the ED encode path below is dead and gets DCE'd via the SVT_RTC_OR_MOBILE_BUILD compile constant.
+    if (SVT_RTC_OR_MOBILE_BUILD || ctx->md_ctx->bypass_encdec) {
+        update_b(pcs, ctx, blk_ptr);
         return;
     }
 
@@ -1863,13 +1862,14 @@ static void encode_b(PictureControlSet* pcs, EncDecContext* ctx, BlkStruct* blk_
     }
 
     // Update block info and neighbour arrays needed for future blocks/pictures
-    update_b(pcs, ctx, blk_ptr, output_blk_ptr);
+    update_b(pcs, ctx, blk_ptr);
 }
 
-void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecContext* ctx, SuperBlock* sb_ptr,
-                       PC_TREE* pc_tree, PARTITION_TREE* ptree, int mi_row, int mi_col) {
+// Stores the partition of each node coded in ptree onwards (coding order); returns the node after the last one stored
+PARTITION_TREE* svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecContext* ctx, PC_TREE* pc_tree,
+                                  PARTITION_TREE* ptree, int mi_row, int mi_col) {
     if (mi_row >= pcs->ppcs->av1_cm->mi_rows || mi_col >= pcs->ppcs->av1_cm->mi_cols) {
-        return;
+        return ptree;
     }
 
     const BlockSize bsize = pc_tree->bsize;
@@ -1878,9 +1878,10 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
     const PartitionType partition    = pc_tree->partition;
     const int           quarter_step = mi_size_wide[bsize] >> 2;
 
-    ptree->partition   = partition;
-    ptree->bsize       = bsize;
-    ctx->md_ctx->shape = from_part_to_shape[partition];
+    ptree->partition          = partition;
+    ptree->bsize              = bsize;
+    PARTITION_TREE* next_node = ptree + 1;
+    ctx->md_ctx->shape        = from_part_to_shape[partition];
     if (pcs->cdf_ctrl.update_se) {
         // Update the partition stats
         svt_aom_update_part_stats(pcs, partition, bsize, ctx->tile_index, ctx->sb_index, mi_row, mi_col);
@@ -1888,18 +1889,18 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
 
     switch (partition) {
     case PARTITION_NONE:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_N][0], &ptree->blk_data[0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_N][0], mi_row, mi_col);
         break;
     case PARTITION_HORZ:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_H][0], &ptree->blk_data[0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_H][0], mi_row, mi_col);
         if (mi_row + hbs < pcs->ppcs->av1_cm->mi_rows) {
-            encode_b(pcs, ctx, pc_tree->block_data[PART_H][1], &ptree->blk_data[1], mi_row + hbs, mi_col);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_H][1], mi_row + hbs, mi_col);
         }
         break;
     case PARTITION_VERT:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_V][0], &ptree->blk_data[0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_V][0], mi_row, mi_col);
         if (mi_col + hbs < pcs->ppcs->av1_cm->mi_cols) {
-            encode_b(pcs, ctx, pc_tree->block_data[PART_V][1], &ptree->blk_data[1], mi_row, mi_col + hbs);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_V][1], mi_row, mi_col + hbs);
         }
         break;
     case PARTITION_SPLIT:
@@ -1909,29 +1910,28 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
             if (mi_row + y_idx >= pcs->ppcs->av1_cm->mi_rows || mi_col + x_idx >= pcs->ppcs->av1_cm->mi_cols) {
                 continue;
             }
-            svt_aom_encode_sb(
-                scs, pcs, ctx, sb_ptr, pc_tree->split[i], ptree->sub_tree[i], mi_row + y_idx, mi_col + x_idx);
+            next_node = svt_aom_encode_sb(scs, pcs, ctx, pc_tree->split[i], next_node, mi_row + y_idx, mi_col + x_idx);
         }
         break;
     case PARTITION_HORZ_A:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][1], &ptree->blk_data[1], mi_row, mi_col + hbs);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][2], &ptree->blk_data[2], mi_row + hbs, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][1], mi_row, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HA][2], mi_row + hbs, mi_col);
         break;
     case PARTITION_HORZ_B:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][1], &ptree->blk_data[1], mi_row + hbs, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][2], &ptree->blk_data[2], mi_row + hbs, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][1], mi_row + hbs, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_HB][2], mi_row + hbs, mi_col + hbs);
         break;
     case PARTITION_VERT_A:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][1], &ptree->blk_data[1], mi_row + hbs, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][2], &ptree->blk_data[2], mi_row, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][1], mi_row + hbs, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VA][2], mi_row, mi_col + hbs);
         break;
     case PARTITION_VERT_B:
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][0], &ptree->blk_data[0], mi_row, mi_col);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][1], &ptree->blk_data[1], mi_row, mi_col + hbs);
-        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][2], &ptree->blk_data[2], mi_row + hbs, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][0], mi_row, mi_col);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][1], mi_row, mi_col + hbs);
+        encode_b(pcs, ctx, pc_tree->block_data[PART_VB][2], mi_row + hbs, mi_col + hbs);
         break;
     case PARTITION_HORZ_4:
         for (int i = 0; i < SUB_PARTITIONS_PART4; ++i) {
@@ -1942,7 +1942,7 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
                 assert(i == 3);
                 break;
             }
-            encode_b(pcs, ctx, pc_tree->block_data[PART_H4][i], &ptree->blk_data[i], this_mi_row, mi_col);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_H4][i], this_mi_row, mi_col);
         }
         break;
     case PARTITION_VERT_4:
@@ -1954,11 +1954,12 @@ void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecCo
                 assert(i == 3);
                 break;
             }
-            encode_b(pcs, ctx, pc_tree->block_data[PART_V4][i], &ptree->blk_data[i], mi_row, this_mi_col);
+            encode_b(pcs, ctx, pc_tree->block_data[PART_V4][i], mi_row, this_mi_col);
         }
         break;
     default:
         assert(0 && "Invalid partition type.");
         break;
     }
+    return next_node;
 }

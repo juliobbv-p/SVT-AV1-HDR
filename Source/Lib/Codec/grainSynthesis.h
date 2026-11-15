@@ -23,6 +23,49 @@
 extern "C" {
 #endif
 
+static inline bool svt_aom_film_grain_params_valid(const AomFilmGrain* grain, bool is_yuv420) {
+    if (grain->apply_grain == 0) {
+        return true;
+    }
+    if (grain->apply_grain != 1 || (grain->bit_depth != 8 && grain->bit_depth != 10) ||
+        (uint32_t)grain->update_parameters > 1 || (uint32_t)grain->ignore_ref > 1 ||
+        (uint32_t)grain->chroma_scaling_from_luma > 1 || (uint32_t)grain->overlap_flag > 1 ||
+        (uint32_t)grain->clip_to_restricted_range > 1 || grain->scaling_shift < 8 || grain->scaling_shift > 11 ||
+        (uint32_t)grain->ar_coeff_lag > 3 || grain->ar_coeff_shift < 6 || grain->ar_coeff_shift > 9 ||
+        (uint32_t)grain->grain_scale_shift > 3 || (uint32_t)grain->num_y_points > 14 ||
+        (uint32_t)grain->num_cb_points > 10 || (uint32_t)grain->num_cr_points > 10 ||
+        (is_yuv420 && !grain->chroma_scaling_from_luma && grain->num_y_points &&
+         (!grain->num_cb_points != !grain->num_cr_points))) {
+        return false;
+    }
+    const int counts[]           = {grain->num_y_points, grain->num_cb_points, grain->num_cr_points};
+    const int32_t (*points[])[2] = {grain->scaling_points_y, grain->scaling_points_cb, grain->scaling_points_cr};
+    const int32_t* coeffs[]      = {grain->ar_coeffs_y, grain->ar_coeffs_cb, grain->ar_coeffs_cr};
+    for (int plane = 0; plane < 3; ++plane) {
+        for (int i = 0; i < counts[plane]; ++i) {
+            if ((uint32_t)points[plane][i][0] > 255 || (uint32_t)points[plane][i][1] > 255 ||
+                (i && points[plane][i][0] <= points[plane][i - 1][0])) {
+                return false;
+            }
+        }
+        const int n = 2 * grain->ar_coeff_lag * (grain->ar_coeff_lag + 1) + (plane && grain->num_y_points > 0);
+        if (counts[plane] || (plane && grain->chroma_scaling_from_luma)) {
+            for (int i = 0; i < n; ++i) {
+                if (coeffs[plane][i] < -128 || coeffs[plane][i] > 127) {
+                    return false;
+                }
+            }
+        }
+    }
+    if ((grain->num_cb_points &&
+         ((uint32_t)grain->cb_mult > 255 || (uint32_t)grain->cb_luma_mult > 255 || (uint32_t)grain->cb_offset > 511)) ||
+        (grain->num_cr_points &&
+         ((uint32_t)grain->cr_mult > 255 || (uint32_t)grain->cr_luma_mult > 255 || (uint32_t)grain->cr_offset > 511))) {
+        return false;
+    }
+    return true;
+}
+
 int32_t svt_aom_film_grain_params_equal(const AomFilmGrain* pars_a, const AomFilmGrain* pars_b);
 
 /*!\brief Add film grain

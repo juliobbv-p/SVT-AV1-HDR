@@ -14,12 +14,12 @@
  * Function used by the libraries to invoke the registered
  * runtime-constraint handler. Always needed.
  */
-extern void invoke_safe_str_constraint_handler(const char *msg, void *ptr, errno_t error);
+extern void invoke_safe_str_constraint_handler(const char* msg, void* ptr, errno_t error);
 
 /*
  * Safe C Lib internal string routine to consolidate error handling
  */
-static inline void handle_error(char *orig_dest, rsize_t orig_dmax, char *err_msg, errno_t err_code) {
+static inline void handle_error(char* orig_dest, rsize_t orig_dmax, char* err_msg, errno_t err_code) {
 #ifdef SAFECLIB_STR_NULL_SLACK
     /* null string to eliminate partial copy */
     while (orig_dmax) {
@@ -35,7 +35,7 @@ static inline void handle_error(char *orig_dest, rsize_t orig_dmax, char *err_ms
     return;
 }
 
-static inline void handle_wc_error(wchar_t *orig_dest, rsize_t orig_dmax, char *err_msg, errno_t err_code) {
+static inline void handle_wc_error(wchar_t* orig_dest, rsize_t orig_dmax, char* err_msg, errno_t err_code) {
 #ifdef SAFECLIB_STR_NULL_SLACK
     /* null string to eliminate partial copy */
     while (orig_dmax) {

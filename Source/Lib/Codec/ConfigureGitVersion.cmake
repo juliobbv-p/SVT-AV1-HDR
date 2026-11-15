@@ -12,7 +12,8 @@
 # Get the current version from the git repo to generate a version header
 #
 # Following variables should be set by the caller:
-# PACKAGE_VERSION_STRING: Initial value used if not a git checkout
+# PROJECT_VERSION: Base version declared by the top-level CMakeLists.txt
+# VERSION_TAG: Optional suffix to append to the project version
 # GIT_ROOT_DIR: Project root
 # INPUT_FILE: Input file to replace version in
 # OUTPUT_FILE: Output file to write the version header to
@@ -24,10 +25,11 @@
 # 2. The most recent tag reachable from the current HEAD matching the following:
 #     - v[0-9]*.[0-9]*.[0-9]
 #     - v[0-9]*.[0-9]*.[0-9]-rc*
+# 3. In the case that the version declared by CMake is larger than the most recent tag, the CMake version will be preferred, but it will have the current commit appended to it.
 # In the case of a tie, the preference will be given to the tag with the highest version, and for
 # equal versions, the stable tag will be preferred over the rc tag.
 
-set(PACKAGE_VERSION_STRING "v${PACKAGE_VERSION_STRING}")
+set(PACKAGE_VERSION_STRING "v${PROJECT_VERSION}${VERSION_TAG}")
 
 macro(configure_version)
     message(STATUS "Configured version: ${PACKAGE_VERSION_STRING}")
@@ -207,6 +209,24 @@ function(run_git_describe_fallback git_root_dir out_result out_output out_error)
     set(${out_error} "${err}" PARENT_SCOPE)
 endfunction()
 
+function(append_git_hash version out_version)
+    execute_process(COMMAND
+        ${GIT_EXECUTABLE} -C ${GIT_ROOT_DIR}
+            rev-parse --short HEAD
+        RESULT_VARIABLE res
+        OUTPUT_VARIABLE hash
+        ERROR_VARIABLE err
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE)
+
+    if(res OR NOT hash)
+        message(WARNING "Failure to get Git hash: ${err}")
+        set(${out_version} "${version}" PARENT_SCOPE)
+    else()
+        set(${out_version} "${version}-g${hash}" PARENT_SCOPE)
+    endif()
+endfunction()
+
 execute_process(COMMAND
     ${GIT_EXECUTABLE} -C ${GIT_ROOT_DIR}
         tag --points-at HEAD
@@ -219,7 +239,12 @@ if(NOT res AND out)
     select_preferred_head_tag("${out}" preferred_head_tag)
 
     if(preferred_head_tag)
-        set(PACKAGE_VERSION_STRING "${preferred_head_tag}")
+        select_preferred_tag("v${PROJECT_VERSION}" "${preferred_head_tag}" project_version_preferred)
+        if(project_version_preferred)
+            append_git_hash("${PACKAGE_VERSION_STRING}" PACKAGE_VERSION_STRING)
+        else()
+            set(PACKAGE_VERSION_STRING "${preferred_head_tag}")
+        endif()
         configure_version()
     endif()
 endif()
@@ -277,6 +302,13 @@ endif()
 
 if(describe_result)
     message(WARNING "Failure to get version from Git: ${describe_error}")
+    configure_version()
+endif()
+
+extract_describe_tag("${describe_output}" describe_tag)
+select_preferred_tag("v${PROJECT_VERSION}" "${describe_tag}" project_version_preferred)
+if(project_version_preferred)
+    append_git_hash("${PACKAGE_VERSION_STRING}" PACKAGE_VERSION_STRING)
 else()
     set(PACKAGE_VERSION_STRING "${describe_output}")
 endif()

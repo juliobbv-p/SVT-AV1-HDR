@@ -8,18 +8,19 @@
 # License 1.0 was not distributed with this source code in the PATENTS file, you
 # can obtain it at https://www.aomedia.org/license/patent-license.
 #
-include("${SVT_AV1_E2E_ROOT}/test_data_util.cmake")
 
 # https://github.com/cheshirekow/cmake_format/issues/34
 # cmake-format: off
 if(NOT SVT_AV1_E2E_ROOT
     OR NOT SVT_AV1_TEST_FILE
-    OR NOT AVT_AV1_TEST_CHECKSUM)
+    OR NOT SVT_AV1_TEST_CHECKSUM)
     message(FATAL_ERROR
-        "SVT_AV1_E2E_ROOT, SVT_AV1_TEST_FILE and AVT_AV1_TEST_CHECKSUM must be
+        "SVT_AV1_E2E_ROOT, SVT_AV1_TEST_FILE and SVT_AV1_TEST_CHECKSUM must be
         defined.")
 endif()
 # cmake-format: on
+
+include("${SVT_AV1_E2E_ROOT}/test_data_util.cmake")
 
 set(SVT_AV1_TEST_DATA_URL "storage.googleapis.com/aom-test-data")
 
@@ -41,7 +42,7 @@ endif()
 expand_test_file_paths("SVT_AV1_TEST_FILE" "${SVT_AV1_STORE_PATH}" "filepath")
 expand_test_file_paths("SVT_AV1_TEST_FILE" "${SVT_AV1_TEST_DATA_URL}" "url")
 
-check_file("${filepath}" "${AVT_AV1_TEST_CHECKSUM}" "needs_download")
+check_file("${filepath}" "${SVT_AV1_TEST_CHECKSUM}" "needs_download")
 if(needs_download)
-    download_test_file("${url}" "${AVT_AV1_TEST_CHECKSUM}" "${filepath}")
+    download_test_file("${url}" "${SVT_AV1_TEST_CHECKSUM}" "${filepath}")
 endif()

@@ -34,6 +34,8 @@
 extern "C" {
 #endif // __cplusplus
 
+#define RTC_INTRABC                 1 // Enable a light, screen-content-gated IntraBC on RTC I-slices (intra-frame-only per AV1 spec)
+#define RTC_INTRABC_PRED_FIRST      1 // Clean-room predictor-first DV early-exit + local search window for the RTC IntraBC level
 #define FTR_RTC_INTER_PALETTE       1 // Palette on RTC inter-frame intra blocks (screen content, M7-M8); libaom-RT force_palette_test parity. Frame-idle gated post-ME (md-config stage) plus a per-block ME-residual floor at candidate injection.
 
 //FOR DEBUGGING - Do not remove

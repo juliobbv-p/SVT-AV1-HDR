@@ -195,7 +195,15 @@ HAVE_WXWIDGETS equ 0
     %define PRIVATE :private_extern
   %endif
 %else
-  %define PRIVATE
+  %ifidn   __OUTPUT_FORMAT__,elf32
+    %define PRIVATE :function
+  %elifidn __OUTPUT_FORMAT__,elf64
+    %define PRIVATE :function
+  %elifidn __OUTPUT_FORMAT__,elfx32
+    %define PRIVATE :function
+  %else
+    %define PRIVATE
+  %endif
 %endif
 
 ; arg()

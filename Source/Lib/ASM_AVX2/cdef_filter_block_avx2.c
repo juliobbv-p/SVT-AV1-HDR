@@ -144,7 +144,7 @@ static INLINE void store_nrows_x8(uint8_t* dst, const int32_t dstride, const int
                      int32_t        dir,                                                                              \
                      int32_t        damping,                                                                          \
                      int32_t        coeff_shift,                                                                      \
-                     uint8_t        height) {                                                                                \
+                     uint8_t        height) {                                                                         \
         const int*      pri_taps    = svt_aom_eb_cdef_pri_taps[(pri_strength >> coeff_shift) & 1];                    \
         const int*      sec_taps    = svt_aom_eb_cdef_sec_taps[(pri_strength >> coeff_shift) & 1];                    \
         const int32_t   pri_damping = pri_strength ? AOMMAX(0, damping - get_msb(pri_strength)) : 0;                  \
@@ -236,7 +236,7 @@ static INLINE void store_nrows_x8(uint8_t* dst, const int32_t dstride, const int
             const __m256i mno  = _mm256_permute4x64_epi64(mn, _MM_SHUFFLE(3, 1, 2, 0));                               \
             const __m256i mxo  = _mm256_permute4x64_epi64(mx, _MM_SHUFFLE(3, 1, 2, 0));                               \
             const __m256i plo  = cdef_finalize8_avx2(                                                                 \
-                suma, _mm256_castsi256_si128(rowo), _mm256_castsi256_si128(mno), _mm256_castsi256_si128(mxo));       \
+                suma, _mm256_castsi256_si128(rowo), _mm256_castsi256_si128(mno), _mm256_castsi256_si128(mxo));        \
             const __m256i phi = cdef_finalize8_avx2(sumb,                                                             \
                                                     _mm256_extracti128_si256(rowo, 1),                                \
                                                     _mm256_extracti128_si256(mno, 1),                                 \
@@ -723,25 +723,25 @@ static void cdef_filter_block_8xn_8_bounded_avx2(uint8_t* dst, int32_t dstride, 
         __m256i       suma = _mm256_setzero_si256();
         __m256i       sumb = _mm256_setzero_si256();
 
-#define BND_TAP(B, SGN, THR, DAMP, MASK, CACC)                                                                                     \
-    do {                                                                                                                           \
-        const int _o    = (SGN) * cfg.off[B];                                                                                      \
-        const int _need = (SGN) > 0 ? cfg.needp[B] : cfg.needn[B];                                                                 \
-        const int _rs   = (SGN) > 0 ? cfg.rsensp[B] : cfg.rsensn[B];                                                               \
-        tap             = BND_LOAD(_o);                                                                                            \
-        if (!_need) {                                                                                                              \
-            mn     = _mm256_min_epu8(mn, tap);                                                                                     \
-            mx     = _mm256_max_epu8(mx, tap);                                                                                     \
-            (CACC) = constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK));                                                          \
-        } else {                                                                                                                   \
-            const __m256i _col = (SGN) > 0 ? cfg.colp[B] : cfg.coln[B];                                                            \
-            av                 = _rs                                                                                               \
-                                ? _mm256_and_si256(_col, bnd_row32_w8(i, sub, (SGN) * cfg.dr[B], edge_top, edge_bottom, rows, nr)) \
-                                : _col;                                                                                            \
-            mn                 = _mm256_min_epu8(mn, _mm256_or_si256(tap, _mm256_xor_si256(av, ones)));                            \
-            mx                 = _mm256_max_epu8(mx, _mm256_and_si256(tap, av));                                                   \
-            (CACC)             = _mm256_and_si256(constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK)), av);                        \
-        }                                                                                                                          \
+#define BND_TAP(B, SGN, THR, DAMP, MASK, CACC)                                                                     \
+    do {                                                                                                           \
+        const int _o    = (SGN) * cfg.off[B];                                                                      \
+        const int _need = (SGN) > 0 ? cfg.needp[B] : cfg.needn[B];                                                 \
+        const int _rs   = (SGN) > 0 ? cfg.rsensp[B] : cfg.rsensn[B];                                               \
+        tap             = BND_LOAD(_o);                                                                            \
+        if (!_need) {                                                                                              \
+            mn     = _mm256_min_epu8(mn, tap);                                                                     \
+            mx     = _mm256_max_epu8(mx, tap);                                                                     \
+            (CACC) = constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK));                                          \
+        } else {                                                                                                   \
+            const __m256i _col = (SGN) > 0 ? cfg.colp[B] : cfg.coln[B];                                            \
+            av                 = _rs                                                                               \
+                ? _mm256_and_si256(_col, bnd_row32_w8(i, sub, (SGN) * cfg.dr[B], edge_top, edge_bottom, rows, nr)) \
+                : _col;                                                                                            \
+            mn                 = _mm256_min_epu8(mn, _mm256_or_si256(tap, _mm256_xor_si256(av, ones)));            \
+            mx                 = _mm256_max_epu8(mx, _mm256_and_si256(tap, av));                                   \
+            (CACC)             = _mm256_and_si256(constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK)), av);        \
+        }                                                                                                          \
     } while (0)
 
         if (pri_strength) {
@@ -832,25 +832,25 @@ static void cdef_filter_block_4xn_8_bounded_avx2(uint8_t* dst, int32_t dstride, 
         __m256i       suma = _mm256_setzero_si256();
         __m256i       sumb = _mm256_setzero_si256();
 
-#define BND_TAP4(B, SGN, THR, DAMP, MASK, CACC)                                                                                    \
-    do {                                                                                                                           \
-        const int _o    = (SGN) * cfg.off[B];                                                                                      \
-        const int _need = (SGN) > 0 ? cfg.needp[B] : cfg.needn[B];                                                                 \
-        const int _rs   = (SGN) > 0 ? cfg.rsensp[B] : cfg.rsensn[B];                                                               \
-        tap             = LOAD4P(_o);                                                                                              \
-        if (!_need) {                                                                                                              \
-            mn     = _mm256_min_epu8(mn, tap);                                                                                     \
-            mx     = _mm256_max_epu8(mx, tap);                                                                                     \
-            (CACC) = constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK));                                                          \
-        } else {                                                                                                                   \
-            const __m256i _col = (SGN) > 0 ? cfg.colp[B] : cfg.coln[B];                                                            \
-            av                 = _rs                                                                                               \
-                                ? _mm256_and_si256(_col, bnd_row32_w4(i, sub, (SGN) * cfg.dr[B], edge_top, edge_bottom, rows, nr)) \
-                                : _col;                                                                                            \
-            mn                 = _mm256_min_epu8(mn, _mm256_or_si256(tap, _mm256_xor_si256(av, ones)));                            \
-            mx                 = _mm256_max_epu8(mx, _mm256_and_si256(tap, av));                                                   \
-            (CACC)             = _mm256_and_si256(constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK)), av);                        \
-        }                                                                                                                          \
+#define BND_TAP4(B, SGN, THR, DAMP, MASK, CACC)                                                                    \
+    do {                                                                                                           \
+        const int _o    = (SGN) * cfg.off[B];                                                                      \
+        const int _need = (SGN) > 0 ? cfg.needp[B] : cfg.needn[B];                                                 \
+        const int _rs   = (SGN) > 0 ? cfg.rsensp[B] : cfg.rsensn[B];                                               \
+        tap             = LOAD4P(_o);                                                                              \
+        if (!_need) {                                                                                              \
+            mn     = _mm256_min_epu8(mn, tap);                                                                     \
+            mx     = _mm256_max_epu8(mx, tap);                                                                     \
+            (CACC) = constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK));                                          \
+        } else {                                                                                                   \
+            const __m256i _col = (SGN) > 0 ? cfg.colp[B] : cfg.coln[B];                                            \
+            av                 = _rs                                                                               \
+                ? _mm256_and_si256(_col, bnd_row32_w4(i, sub, (SGN) * cfg.dr[B], edge_top, edge_bottom, rows, nr)) \
+                : _col;                                                                                            \
+            mn                 = _mm256_min_epu8(mn, _mm256_or_si256(tap, _mm256_xor_si256(av, ones)));            \
+            mx                 = _mm256_max_epu8(mx, _mm256_and_si256(tap, av));                                   \
+            (CACC)             = _mm256_and_si256(constrain8x32_avx2(tap, row, (THR), (DAMP), (MASK)), av);        \
+        }                                                                                                          \
     } while (0)
 
         if (pri_strength) {

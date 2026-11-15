@@ -110,7 +110,7 @@
 
 SECTION .text
 
-global sym(svt_aom_filter_block1d4_v2_ssse3) PRIVATE
+global sym(svt_aom_filter_block1d4_v2_ssse3)PRIVATE
 sym(svt_aom_filter_block1d4_v2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -134,7 +134,7 @@ sym(svt_aom_filter_block1d4_v2_ssse3):
     pop         rbp
     ret
 
-global sym(svt_aom_filter_block1d8_v2_ssse3) PRIVATE
+global sym(svt_aom_filter_block1d8_v2_ssse3)PRIVATE
 sym(svt_aom_filter_block1d8_v2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -160,7 +160,7 @@ sym(svt_aom_filter_block1d8_v2_ssse3):
     pop         rbp
     ret
 
-global sym(svt_aom_filter_block1d16_v2_ssse3) PRIVATE
+global sym(svt_aom_filter_block1d16_v2_ssse3)PRIVATE
 sym(svt_aom_filter_block1d16_v2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -187,7 +187,7 @@ sym(svt_aom_filter_block1d16_v2_ssse3):
     pop         rbp
     ret
 
-global sym(svt_aom_filter_block1d4_h2_ssse3) PRIVATE
+global sym(svt_aom_filter_block1d4_h2_ssse3)PRIVATE
 sym(svt_aom_filter_block1d4_h2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -212,7 +212,7 @@ sym(svt_aom_filter_block1d4_h2_ssse3):
     pop         rbp
     ret
 
-global sym(svt_aom_filter_block1d8_h2_ssse3) PRIVATE
+global sym(svt_aom_filter_block1d8_h2_ssse3)PRIVATE
 sym(svt_aom_filter_block1d8_h2_ssse3):
     push        rbp
     mov         rbp, rsp
@@ -239,7 +239,7 @@ sym(svt_aom_filter_block1d8_h2_ssse3):
     pop         rbp
     ret
 
-global sym(svt_aom_filter_block1d16_h2_ssse3) PRIVATE
+global sym(svt_aom_filter_block1d16_h2_ssse3)PRIVATE
 sym(svt_aom_filter_block1d16_h2_ssse3):
     push        rbp
     mov         rbp, rsp

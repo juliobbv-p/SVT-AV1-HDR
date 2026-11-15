@@ -2807,9 +2807,9 @@ int64_t svt_av1_lowbd_pixel_proj_error_sse4_1(const uint8_t* src8, int32_t width
                 const __m128i d0           = _mm_cvtepu8_epi16(_mm_loadl_epi64((__m128i*)(dat + j)));
                 const __m128i s0           = _mm_cvtepu8_epi16(_mm_loadl_epi64((__m128i*)(src + j)));
                 const __m128i flt0_16b     = _mm_packs_epi32(_mm_loadu_si128((__m128i*)(flt0 + j)),
-                                                         _mm_loadu_si128((__m128i*)(flt0 + j + 4)));
+                                                             _mm_loadu_si128((__m128i*)(flt0 + j + 4)));
                 const __m128i flt1_16b     = _mm_packs_epi32(_mm_loadu_si128((__m128i*)(flt1 + j)),
-                                                         _mm_loadu_si128((__m128i*)(flt1 + j + 4)));
+                                                             _mm_loadu_si128((__m128i*)(flt1 + j + 4)));
                 const __m128i u0           = _mm_slli_epi16(d0, SGRPROJ_RST_BITS);
                 const __m128i flt0_0_sub_u = _mm_sub_epi16(flt0_16b, u0);
                 const __m128i flt1_0_sub_u = _mm_sub_epi16(flt1_16b, u0);

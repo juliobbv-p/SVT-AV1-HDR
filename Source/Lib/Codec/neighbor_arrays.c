@@ -30,11 +30,11 @@ EbErrorType svt_aom_neighbor_array_unit_ctor(NeighborArrayUnit* na_unit_ptr, uin
     na_unit_ptr->granularity_log2 = (uint8_t)(svt_log2f(granularity_normal));
 
     na_unit_ptr->left_array_size     = (type_mask & NEIGHBOR_ARRAY_UNIT_LEFT_MASK)
-            ? max_picture_height >> na_unit_ptr->granularity_log2
-            : 0;
+        ? max_picture_height >> na_unit_ptr->granularity_log2
+        : 0;
     na_unit_ptr->top_array_size      = (type_mask & NEIGHBOR_ARRAY_UNIT_TOP_MASK)
-             ? max_picture_width >> na_unit_ptr->granularity_log2
-             : 0;
+        ? max_picture_width >> na_unit_ptr->granularity_log2
+        : 0;
     na_unit_ptr->top_left_array_size = (type_mask & NEIGHBOR_ARRAY_UNIT_TOPLEFT_MASK)
         ? (max_picture_width + max_picture_height) >> na_unit_ptr->granularity_log2
         : 0;

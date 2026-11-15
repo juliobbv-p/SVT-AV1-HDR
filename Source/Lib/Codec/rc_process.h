@@ -13,7 +13,7 @@
 #define EbRateControl_h
 
 #include "EbDebugMacros.h"
-#include "definitions.h"
+#include "svt_threads.h"
 #include "sys_resource_manager.h"
 #include "EbSvtAv1Enc.h"
 #include "pcs.h"
@@ -188,6 +188,10 @@ typedef struct RATE_CONTROL {
     uint32_t prev_avg_base_me_dist;
 
     // RTC CBR
+    uint8_t  frame_skip_credits;
+    uint8_t  consecutive_frame_skips;
+    uint32_t frame_skip_reservations;
+
     int    mini_qop_size;
     int    min_ref_base_q_idx;
     int    rc_mini_gop_pos; // RC virtual mini-GoP position (0..mini_qop_size-1)
@@ -269,6 +273,9 @@ void svt_aom_dynamic_resize_decision(struct PictureParentControlSet* pcs);
 void svt_av1_rc_calc_qindex_rtc_cbr(struct PictureControlSet* pcs);
 void svt_av1_rc_postencode_update_rtc_cbr(struct PictureParentControlSet* ppcs);
 bool svt_av1_rc_recode_decision_rtc_cbr(struct PictureControlSet* pcs);
+bool svt_av1_rc_try_reserve_frame_skip(struct SequenceControlSet* scs, bool protected_input);
+void svt_av1_rc_apply_frame_skip_drain(RATE_CONTROL* rc, int64_t* drain_bits, uint32_t* drain_count);
+void svt_av1_rc_publish_frame_skip_credits(const struct SequenceControlSet* scs, RATE_CONTROL* rc);
 
 // common stuff
 void    svt_av1_rc_init(struct SequenceControlSet* scs);
@@ -304,6 +311,6 @@ void recode_loop_update_q(struct PictureParentControlSet* ppcs, bool* const loop
 EbErrorType svt_aom_rate_control_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                               int me_port_index);
 
-void* svt_aom_rate_control_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_rate_control_kernel(void* input_ptr);
 
 #endif // EbRateControl_h

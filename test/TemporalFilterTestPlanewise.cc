@@ -2241,3 +2241,39 @@ class EstimateNoiseTestDbl
     uint32_t encoder_bit_depth;
     int stride;
 };
+
+// svt_estimate_noise_fp16() returns -1 (fp16) when there are too few smooth
+// pixels, and svt_aom_noise_log1p_fp16(-1) is INT32_MIN (-inf). The decay
+// strength must treat that as no noise instead of overflowing.
+TEST(TemporalFilterNoiseDecay, UnreliableNoiseEstimate) {
+    const int32_t unreliable_log1p = svt_aom_noise_log1p_fp16(-65536);
+    ASSERT_LT(unreliable_log1p, 0);
+    for (int32_t decay_control = 1; decay_control <= 7; ++decay_control) {
+        const int32_t n_decay =
+            svt_aom_tf_n_decay_fp10(decay_control, unreliable_log1p);
+        EXPECT_EQ(n_decay, svt_aom_tf_n_decay_fp10(decay_control, 0))
+            << "decay_control " << decay_control;
+        EXPECT_EQ(n_decay, decay_control * 45875 / 64)
+            << "decay_control " << decay_control;
+    }
+}
+
+// For real noise estimates, the result must match
+// decay_control * (0.7 + log1p(noise)) in fp10 and grow with the noise level.
+TEST(TemporalFilterNoiseDecay, ValidNoiseEstimate) {
+    for (int32_t decay_control = 1; decay_control <= 7; ++decay_control) {
+        int32_t prev = 0;
+        for (int32_t noise_fp16 = 0; noise_fp16 <= (1000 << 16);
+             noise_fp16 += 997) {
+            const int32_t log1p = svt_aom_noise_log1p_fp16(noise_fp16);
+            const int32_t n_decay =
+                svt_aom_tf_n_decay_fp10(decay_control, log1p);
+            const int64_t expected =
+                (int64_t)decay_control * (45875 + (int64_t)log1p) / 64;
+            ASSERT_EQ(n_decay, expected)
+                << "decay_control " << decay_control << " noise " << noise_fp16;
+            ASSERT_GE(n_decay, prev);
+            prev = n_decay;
+        }
+    }
+}

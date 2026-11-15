@@ -35,9 +35,13 @@
 #if GTEST_OS_ESP8266
 extern "C" {
 #endif
-void setup() { testing::InitGoogleTest(); }
+void setup() {
+    testing::InitGoogleTest();
+}
 
-void loop() { RUN_ALL_TESTS(); }
+void loop() {
+    RUN_ALL_TESTS();
+}
 
 #if GTEST_OS_ESP8266
 }
@@ -45,8 +49,8 @@ void loop() { RUN_ALL_TESTS(); }
 
 #else
 
-GTEST_API_ int main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+GTEST_API_ int main(int argc, char** argv) {
+    testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }
 #endif

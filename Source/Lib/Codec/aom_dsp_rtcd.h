@@ -43,6 +43,8 @@ extern "C" {
 
 // Helper Functions
 void svt_aom_setup_rtcd_internal(EbCpuFlags flags);
+// AVX-512 enabled for the call sites that use an AVX-512 kernel directly instead of a function pointer
+RTCD_EXTERN bool svt_aom_use_avx512;
 
 int64_t svt_aom_sse_c(const uint8_t *a, int a_stride, const uint8_t *b, int b_stride, int width, int height);
 RTCD_EXTERN int64_t(*svt_aom_sse)(const uint8_t *a, int a_stride, const uint8_t *b, int b_stride, int width, int height);
@@ -118,6 +120,8 @@ void svt_av1_fwd_txfm2d_64x16_c(int16_t *input, int32_t *output, uint32_t input_
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_64x16)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_transform_two_d_64x64_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_64x64)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
+RTCD_EXTERN uint64_t(*svt_av1_fwd_txfm2d_64x64_energy)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
 void svt_av1_transform_two_d_32x32_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_32x32)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_transform_two_d_16x16_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
@@ -198,6 +202,8 @@ void svt_aom_transform_two_d_32x32_N4_c(int16_t *input, int32_t *output, uint32_
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_32x32_N4)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_aom_transform_two_d_16x16_N4_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_16x16_N4)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_c(const uint8_t *src, uint32_t src_stride, const uint8_t *pred, uint32_t pred_stride, int32_t *coeff);
+RTCD_EXTERN void(*svt_av1_fwd_txfm2d_16x16_N4_sub_dct)(const uint8_t *src, uint32_t src_stride, const uint8_t *pred, uint32_t pred_stride, int32_t *coeff);
 void svt_aom_transform_two_d_8x8_N4_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_8x8_N4)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_aom_transform_two_d_4x4_N4_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
@@ -554,6 +560,12 @@ unsigned int svt_aom_variance16x8_c(const uint8_t *src_ptr, int source_stride, c
 RTCD_EXTERN unsigned int(*svt_aom_variance16x8)(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 unsigned int svt_aom_variance16x16_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 RTCD_EXTERN unsigned int(*svt_aom_variance16x16)(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
+void svt_aom_variance_window_c(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int bw, int bh, int nx, int ny, uint32_t *var);
+void svt_aom_src_var_prep_c(SrcVarCtx *c, const uint8_t *src, int stride, int bw, int bh);
+RTCD_EXTERN void(*svt_aom_src_var_prep)(SrcVarCtx *c, const uint8_t *src, int stride, int bw, int bh);
+uint32_t svt_aom_src_var_c(const SrcVarCtx *c, const uint8_t *pred, int pred_stride);
+RTCD_EXTERN uint32_t(*svt_aom_src_var)(const SrcVarCtx *c, const uint8_t *pred, int pred_stride);
+RTCD_EXTERN void(*svt_aom_variance_window)(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int bw, int bh, int nx, int ny, uint32_t *var);
 unsigned int svt_aom_variance16x32_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 RTCD_EXTERN unsigned int(*svt_aom_variance16x32)(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
 unsigned int svt_aom_variance16x64_c(const uint8_t *src_ptr, int source_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
@@ -826,6 +838,12 @@ void svt_aom_fft8x8_float_c(const float *input, float *temp, float *output);
 RTCD_EXTERN void(*svt_aom_fft8x8_float)(const float *input, float *temp, float *output);
 void svt_av1_get_nz_map_contexts_c(const uint8_t *const levels, const int16_t *const scan, const uint16_t eob, const TxSize tx_size, const TxClass tx_class, int8_t *const coeff_contexts);
 RTCD_EXTERN void(*svt_av1_get_nz_map_contexts)(const uint8_t *const levels, const int16_t *const scan, const uint16_t eob, const TxSize tx_size, const TxClass tx_class, int8_t *const coeff_contexts);
+void svt_av1_get_nz_map_contexts_2d_rows_c(const uint8_t *const levels, const TxSize tx_size, const int32_t rows, int8_t *const coeff_contexts);
+void svt_av1_get_nz_map_contexts_2d_rows_neon(const uint8_t *const levels, const TxSize tx_size, const int32_t rows, int8_t *const coeff_contexts);
+RTCD_EXTERN void(*svt_av1_get_nz_map_contexts_2d_rows)(const uint8_t *const levels, const TxSize tx_size, const int32_t rows, int8_t *const coeff_contexts);
+void svt_sad_loop_16xh_sea_c(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride, uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad, int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw, uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
+void svt_sad_loop_16xh_sea_neon(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride, uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad, int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw, uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
+RTCD_EXTERN void(*svt_sad_loop_16xh_sea)(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride, uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad, int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw, uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
 RTCD_EXTERN void(*svt_sad_loop_kernel)(uint8_t *src, uint32_t src_stride, uint8_t *ref, uint32_t ref_stride, uint32_t block_height, uint32_t block_width, uint64_t *best_sad, int16_t *x_search_center, int16_t *y_search_center, uint32_t src_stride_raw, uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
 void svt_av1_txb_init_levels_c(const TranLow *const coeff, const int32_t width, const int32_t height, uint8_t *const levels);
 RTCD_EXTERN void(*svt_av1_txb_init_levels)(const TranLow *const coeff, const int32_t width, const int32_t height, uint8_t *const levels);
@@ -1336,6 +1354,11 @@ void svt_lbd_fwd_txfm2d_4x4_neon(int16_t *input, int32_t *coeff, uint32_t stride
 void svt_lbd_fwd_txfm2d_8x8_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_16x16_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_32x32_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
+void svt_lbd_fdct64x64_col_neon(const int16_t *input, uint32_t stride, int32_t *output);
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+void svt_fdct64_col_narrow_neon(const int16_t *input, int16_t *output);
+void svt_fdct64_row_narrow_neon(const int16_t *input, int16_t *output);
+#endif
 void svt_lbd_fwd_txfm2d_8x16_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_16x8_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
 void svt_lbd_fwd_txfm2d_8x32_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type);
@@ -1363,6 +1386,7 @@ void svt_av1_fwd_txfm2d_32x64_neon(int16_t *input, int32_t *coeff, uint32_t stri
 void svt_av1_fwd_txfm2d_64x16_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
 void svt_av1_fwd_txfm2d_64x32_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
 void svt_av1_fwd_txfm2d_64x64_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_neon(int16_t *input, int32_t *coeff, uint32_t stride, TxType tx_type, uint8_t bd);
 
 void svt_av1_quantize_fp_neon(const TranLow *coeff_ptr, intptr_t count, const int16_t *zbin_ptr, const int16_t *round_ptr, const int16_t *quant_ptr, const int16_t *quant_shift_ptr, TranLow *qcoeff_ptr, TranLow *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const int16_t *scan, const int16_t *iscan);
 void svt_av1_quantize_fp_32x32_neon(const TranLow *coeff_ptr, intptr_t count, const int16_t *zbin_ptr, const int16_t *round_ptr, const int16_t *quant_ptr, const int16_t *quant_shift_ptr, TranLow *qcoeff_ptr, TranLow *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const int16_t *scan, const int16_t *iscan);
@@ -1442,6 +1466,7 @@ void svt_av1_fwd_txfm2d_8x32_N4_neon(int16_t *input, int32_t *output, uint32_t i
 void svt_av1_fwd_txfm2d_16x4_N4_neon(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_16x8_N4_neon(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_16x16_N4_neon(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_neon(const uint8_t *src, uint32_t src_stride, const uint8_t *pred, uint32_t pred_stride, int32_t *coeff);
 void svt_av1_fwd_txfm2d_16x32_N4_neon(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_16x64_N4_neon(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_32x8_N4_neon(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
@@ -1610,6 +1635,7 @@ void svt_av1_fwd_txfm2d_64x16_avx512(int16_t *input, int32_t *output, uint32_t i
 
 void svt_av1_fwd_txfm2d_64x64_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_64x64_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
 
 void svt_av1_fwd_txfm2d_32x32_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_32x32_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
@@ -1686,6 +1712,10 @@ void svt_av1_fwd_txfm2d_64x16_N4_avx2(int16_t *input, int32_t *output, uint32_t 
 void svt_av1_fwd_txfm2d_64x64_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_32x32_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_16x16_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
+void svt_aom_src_var_prep_avx512icl(SrcVarCtx *c, const uint8_t *src, int stride, int bw, int bh);
+uint32_t svt_aom_src_var_avx512icl(const SrcVarCtx *c, const uint8_t *pred, int pred_stride);
+void svt_aom_variance_window_avx512icl(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int bw, int bh, int nx, int ny, uint32_t *var);
+void svt_av1_fwd_txfm2d_16x16_N4_sub_dct_avx2(const uint8_t *src, uint32_t src_stride, const uint8_t *pred, uint32_t pred_stride, int32_t *coeff);
 void svt_av1_fwd_txfm2d_8x8_N4_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void svt_av1_fwd_txfm2d_4x4_N4_sse4_1(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 void av1_fwd_txfm2d_32x32_N2_avx512(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
@@ -1796,7 +1826,7 @@ uint32_t svt_aom_sad128x128_avx2(const uint8_t *src_ptr, int src_stride, const u
 uint32_t svt_aom_sad128x128_avx512(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
 
 void svt_aom_sad128x128x4d_avx2(const uint8_t *src_ptr, int src_stride, const uint8_t * const ref_ptr[4], int ref_stride, uint32_t sad_array[4]);
-void svt_aom_sad128x128x4d_avx512(const uint8_t *src_ptr, int src_stride, const uint8_t * const ref_ptr[], int ref_stride, uint32_t *sad_array);
+void svt_aom_sad128x128x4d_avx512(const uint8_t *src_ptr, int src_stride, const uint8_t * const ref_ptr[4], int ref_stride, uint32_t sad_array[4]);
 
 uint32_t svt_aom_sad128x64_avx2(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
 uint32_t svt_aom_sad128x64_avx512(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
@@ -2261,6 +2291,7 @@ void svt_aom_fft8x8_float_avx2(const float *input, float *temp, float *output);
 
 void svt_av1_get_nz_map_contexts_sse2(const uint8_t *const levels, const int16_t *const scan, const uint16_t eob, const TxSize tx_size, const TxClass tx_class, int8_t *const coeff_contexts);
 void svt_av1_get_nz_map_contexts_avx2(const uint8_t *const levels, const int16_t *const scan, const uint16_t eob, const TxSize tx_size, const TxClass tx_class, int8_t *const coeff_contexts);
+void svt_av1_get_nz_map_contexts_2d_rows_avx2(const uint8_t *const levels, const TxSize tx_size, const int32_t rows, int8_t *const coeff_contexts);
 
 void svt_residual_kernel8bit_avx2(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 void svt_residual_kernel8bit_avx512(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);

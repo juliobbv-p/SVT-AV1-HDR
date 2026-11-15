@@ -64,7 +64,7 @@ namespace svt_av1_test_params {
  *
  */
 static const vector<uint8_t> default_enc_mode = {
-    ENC_M8,
+    ENC_M4,
 };
 static const vector<uint8_t> valid_enc_mode = {
     ENC_M0, /**< highest quality mode */
@@ -79,8 +79,8 @@ static const vector<uint8_t> valid_enc_mode = {
 };
 static const vector<uint8_t> invalid_enc_mode = {
     // Presets above MAX_ENC_PRESET are clamped down in copy_api_from_app, so
-    // the only rejected values are those below MIN_ENC_PRESET (ENC_MR).
-    (uint8_t)(ENC_MR - 1),
+    // the only rejected values are those below MIN_ENC_PRESET (ENC_MRS).
+    (uint8_t)(ENC_MRS - 1),
 };
 
 /* The intra period defines the interval of frames after which you insert an
@@ -285,7 +285,7 @@ static const vector<uint32_t> special_frame_rate_denominator = {
  *
  * Default is 8. */
 static const vector<uint32_t> default_encoder_bit_depth = {
-    8,
+    10,
 };
 static const vector<uint32_t> valid_encoder_bit_depth = {
     8,   // 8 bit.
@@ -744,9 +744,7 @@ static const vector<uint32_t> valid_tier = {
     1,
 };
 static const vector<uint32_t> invalid_tier = {
-    /* tier override in code
     2,
-    */
 };
 
 /* Constraints for Bitstream in terms of max bitrate and max buffer size.
@@ -926,6 +924,16 @@ static const vector<uint8_t> invalid_altref_nframes = {11};
 static const vector<bool> default_enable_overlays = {false};
 static const vector<bool> valid_enable_overlays = {false, true};
 static const vector<bool> invalid_enable_overlays = {/*none*/};
+
+/* Decoder-speed-targeted optimization level */
+static const vector<uint8_t> default_fast_decode = {0};
+#if CONFIG_ENABLE_FAST_DECODE_3
+static const vector<uint8_t> valid_fast_decode = {0, 1, 2, 3};
+static const vector<uint8_t> invalid_fast_decode = {4, 255};
+#else
+static const vector<uint8_t> valid_fast_decode = {0, 1, 2};
+static const vector<uint8_t> invalid_fast_decode = {3, 4, 255};
+#endif
 
 /* Variables to control the super-resolution tool
  */

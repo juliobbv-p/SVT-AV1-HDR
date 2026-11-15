@@ -62,6 +62,8 @@ type, only the FIRST is kept and the rest are dropped with a warning.
 | `rate_control_mode` | `CBR` | LD-CRF has a different DPB layout (shifted `lay1_offset`) that has not been audited for STORE-pool safety. `enc_settings.c` rejects non-CBR. |
 | `hierarchical_levels` | 0 (L1T1) or 1/2 (L1T2/L1T3) | hier >= 3 has not been validated. |
 | `max_managed_refs` | 1..4 | ABI cap; matches buffer-pool sizing in `enc_handle.c`. |
+| `sframe_dist` / `sframe_posi` | unset | An S-frame must refresh all eight DPB slots, which evicts every anchor on the decoder side only. Rejected in combination -- see section 3's S-frame note. |
+| preset | one whose reference counts are all <= 2 | The anchor pool is the top 4 DPB slots, so the encoder's own references must fit in the bottom 4. Rejected otherwise -- see section 5. |
 | `force_key_frames` | true (recommended) | Required for per-frame `pic_type=KEY` requests in LD; the USE-fallback path depends on it. |
 
 `pic_id` is opaque to the encoder. The application is responsible for
@@ -78,10 +80,13 @@ With `hierarchical_levels = 1` or `2` in LD-CBR mode the application
 must track which input frames are base-layer and only attach events to
 those — events attached to non-base frames are dropped with a warning.
 
-S-frame interaction: S-frames are NOT treated as automatic anchor resets
-by the ref-mgmt layer. If the application emits an S-frame without first
-CLEARing its anchors, those anchors remain valid for future USE; whether
-that is desirable depends on the application's resync protocol.
+S-frame interaction: the two features are mutually exclusive and the
+combination is rejected at configuration time. An S-frame refreshes all
+eight DPB slots and carries no `refresh_frame_flags`, so a decoder always
+evicts every anchor, while the encoder's Phase-3 guard keeps the anchor
+slots out of the refresh. The two DPB views would diverge from the
+S-frame onwards, and a later USE would predict from a different picture
+at each end.
 
 ## 4. Error handling
 
@@ -119,83 +124,69 @@ API path cannot detect (they depend on per-frame internal state):
 The application is expected to maintain its own anchor-state model and
 avoid sending events that would hit any ERROR + DROP path.
 
-## 5. Encoder-side mechanics (mrp_level override)
+## 5. Encoder-side mechanics (DPB slot split)
 
-When `max_managed_refs > 0`, the encoder must reserve enough DPB slots
-for the app's anchors. The STORE-safe slot pool is a function of
-`ld_reduce_ref_buffs` (derived from `mrp_level`'s ref counts in
-`set_mrp_ctrl`):
+The DPB is partitioned rather than negotiated. The encoder's own
+references own slots {0..3}; application anchors own {4..7}. The pool is
+a fixed `0xF0`, returned by `svt_aom_ref_mgmt_storeable_slots_mask` in
+`pd_process.c`, and STORE never selects outside it.
 
-| `ld_reduce_ref_buffs` | Triggered when (LD-CBR) | Safe pool in L1T3 | Effective STOREs |
-|---|---|---|---|
-| 0 | any list0 count > 2 | {6, 7} | 2 |
-| 1 | all list0 counts <= 2 | {0,1,2,4,5,6,7} | 7 (capped at 4) |
-| 2 | all list0 counts <= 1 | {0,2,3,4,5,6,7} | 7 (capped at 4) |
+That split is only representable while the encoder's references stay in
+the bottom 4, which holds exactly when every reference-list count is
+<= 2 -- i.e. `mrp_ctrls.ld_reduce_ref_buffs >= 1`. At `ld_reduce == 0`
+the encoder uses 3 references, `prune_refs` no longer collapses `LAST3`
+onto `LAST`, and `LAST3 = long_base_idx = 7` is a live reference inside
+the anchor pool.
 
-The encoder picks its `mrp_level` per-preset before considering LTR. For
-the RTC-tuned non-flat-IPP path:
+`ld_reduce_ref_buffs` is derived from the preset's `mrp_level` in
+`set_mrp_ctrl` and is fixed for the session. Rather than override the
+preset to make LTR fit, `svt_av1_enc_set_parameter` rejects the
+combination:
 
-- M9   -> mrp_level 6 (list0 3/3) -> ld_reduce 0 -> 2 safe slots
-- M10  -> mrp_level 9 (list0 3/1) -> ld_reduce 0 -> 2 safe slots
-- M11+ -> mrp_level 0 (list0 1/1) -> ld_reduce 2 -> 7 safe slots
+```
+if (max_managed_refs > 0 && mrp_ctrls.ld_reduce_ref_buffs == 0)
+    return EB_ErrorBadParameter;
+```
 
-When the natural pool is insufficient for `max_managed_refs`, the
-encoder switches to the cheapest fallback `mrp_level` that satisfies
-the constraint, preferring to preserve the `non_base_ref_list0_count`
-(non-base refs are consulted by every TID>0 frame — the bulk of an
-L1T3 encode):
+Which low-delay CBR presets qualify:
 
-- M11+ : NO override. Native pool already holds 4 STOREs.
-- M10 (level 9) -> level 10 (list0 2/1): base drops 3->2, non_base unchanged.
-- M9  (level 6) -> level 8  (list0 2/2): base and non_base each drop by 1.
+| Config | `mrp_level` | list counts | `ld_reduce` | LTR |
+|---|---|---|---|---|
+| `rtc`, M9+ | 0 | 1/0/1/0 | 2 | accepted |
+| non-`rtc`, M10+ | 0 or 11 | 1/0/1/0 | 2 | accepted |
+| non-`rtc`, M9 | 9 | 3/2/1/1 | 0 | rejected |
+| `rtc`, M7/M8 | 6 | 3/2/3/2 | 0 | rejected |
+| non-`rtc`, <= M8 | 1/2/4 | 4/3/4/3 | 0 | rejected |
 
-The override fires once at `svt_av1_enc_init` time and the encoder
-snapshots the resulting `mrp_ctrls` to `scs->mrp_ctrls_init`.
+So in practice an LTR session runs single-reference, because that is
+what the qualifying presets select -- not because LTR constrains it.
+The anchors occupy slots the RPS was already using only as its per-frame
+`| 0xf0` / `| 0xfc` scrub-and-backup bits, never as prediction
+references, so the split costs the encoder no usable reference capacity.
 
-Mid-stream `PRESET_CHANGE_EVENT` does NOT re-run `set_mrp_ctrl` — the
-DPB layout (`ld_reduce_ref_buffs`, lay0/lay1_toggle ranges, buffer
-allocations) stays locked at init values. But the per-frame ref counts
-that mode-decision consumes (`mrp_ctrls.base_ref_list0_count` /
-`non_base_ref_list0_count`) ARE updated, via
-`svt_aom_clamp_mrp_ctrls_to_runtime_preset`:
+Mid-stream `PRESET_CHANGE_EVENT` does NOT re-run `set_mrp_ctrl`. The DPB
+layout (`ld_reduce_ref_buffs`, `flat_max_refs`, lay0/lay1 toggle ranges,
+buffer allocations) stays locked at init, which is what keeps the gate's
+verdict valid for the life of the session. The per-frame ref counts that
+mode decision consumes ARE updated, via
+`svt_aom_clamp_mrp_ctrls_to_runtime_preset`, clamped against the init
+snapshot `scs->mrp_ctrls_init`:
 
 ```
 mrp_ctrls.base_ref_list0_count =
     MIN(mrp_ctrls_init.base_ref_list0_count,
         runtime_preset_natural_base_list0);
-mrp_ctrls.non_base_ref_list0_count =
-    MIN(mrp_ctrls_init.non_base_ref_list0_count,
-        runtime_preset_natural_non_base_list0);
 ```
 
-The clamp is against the INIT snapshot (not the previous runtime
-value), so list counts bounce freely up and down within the init
-envelope. Example sequence with init at M9 + LTR
-(snapshot = list0 2/2):
+**Caller contract: initialize at the slowest preset you will ever reach
+mid-stream.** The init snapshot is the upper envelope; runtime presets
+shrink within it but cannot grow past it, because pools and toggle
+ranges are sized at init.
 
-| step | runtime preset | natural list0 | clamped list0 | matches native? |
-|---|---|---|---|---|
-| init M9 + LTR | (M9) | 2/2 (mrp_level=8 override) | 2/2 | ✓ |
-| -> M10 | M10 | 2/1 (mrp_level=10 natural) | MIN(2/2, 2/1) = 2/1 | ✓ |
-| -> M11 | M11 | 1/1 (mrp_level=0 natural) | MIN(2/2, 1/1) = 1/1 | ✓ |
-| -> M9 | M9 | 2/2 | MIN(2/2, 2/2) = 2/2 | ✓ — restored |
-
-**Caller contract: initialize at the slowest preset you'll ever reach
-mid-stream.** The init snapshot is the upper envelope on ref counts;
-runtime presets can shrink within it but cannot grow past it (buffer
-pools and DPB toggle ranges are sized at init). If you init at M11
-and later switch to M9, the clamp will keep list0 at 1/1 — M9 won't
-get its natural 2/2.
-
-Resize-driven encoder reinits (`svt_av1_enc_deinit_handle` +
-`svt_av1_enc_init_handle` + `svt_av1_enc_init`) re-run the entire
-init path — including a fresh `mrp_ctrls_init` snapshot for the new
-init preset — so a deinit/init cycle resets the envelope. Only
-`PRESET_CHANGE_EVENT` in isolation is bounded by the snapshot.
-
-The STORE-safe pool itself is derived directly from the LD branch's
-exclusive-write slot set — see `svt_aom_ref_mgmt_storeable_slots_mask`
-in `pd_process.c`.
+Resize-driven reinits (`svt_av1_enc_deinit_handle` +
+`svt_av1_enc_init_handle` + `svt_av1_enc_init`) re-run the whole init
+path, including a fresh snapshot, so a deinit/init cycle resets the
+envelope. Only `PRESET_CHANGE_EVENT` in isolation is bounded by it.
 
 ## 6. Memory overhead
 

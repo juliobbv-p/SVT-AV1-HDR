@@ -38,7 +38,7 @@
  *
  */
 
-void ignore_handler_s(const char *msg, void *ptr, errno_t error) {
+void ignore_handler_s(const char* msg, void* ptr, errno_t error) {
     UNUSED(ptr);
     UNUSED(msg);
     UNUSED(error);

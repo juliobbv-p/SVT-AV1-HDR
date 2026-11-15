@@ -46,7 +46,9 @@ class FooTest : public testing::Test {};
 
 TEST_F(FooTest, Abc) {}
 
-TEST_F(FooTest, Xyz) { FAIL() << "Expected failure."; }
+TEST_F(FooTest, Xyz) {
+    FAIL() << "Expected failure.";
+}
 
 // Test case BarTest.
 
@@ -56,37 +58,55 @@ TEST(BarTest, TestTwo) {}
 
 TEST(BarTest, TestThree) {}
 
-TEST(BarTest, DISABLED_TestFour) { FAIL() << "Expected failure."; }
+TEST(BarTest, DISABLED_TestFour) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(BarTest, DISABLED_TestFive) { FAIL() << "Expected failure."; }
+TEST(BarTest, DISABLED_TestFive) {
+    FAIL() << "Expected failure.";
+}
 
 // Test case BazTest.
 
-TEST(BazTest, TestOne) { FAIL() << "Expected failure."; }
+TEST(BazTest, TestOne) {
+    FAIL() << "Expected failure.";
+}
 
 TEST(BazTest, TestA) {}
 
 TEST(BazTest, TestB) {}
 
-TEST(BazTest, DISABLED_TestC) { FAIL() << "Expected failure."; }
+TEST(BazTest, DISABLED_TestC) {
+    FAIL() << "Expected failure.";
+}
 
 // Test case HasDeathTest
 
-TEST(HasDeathTest, Test1) { EXPECT_DEATH_IF_SUPPORTED(exit(1), ".*"); }
+TEST(HasDeathTest, Test1) {
+    EXPECT_DEATH_IF_SUPPORTED(exit(1), ".*");
+}
 
 // We need at least two death tests to make sure that the all death tests
 // aren't on the first shard.
-TEST(HasDeathTest, Test2) { EXPECT_DEATH_IF_SUPPORTED(exit(1), ".*"); }
+TEST(HasDeathTest, Test2) {
+    EXPECT_DEATH_IF_SUPPORTED(exit(1), ".*");
+}
 
 // Test case FoobarTest
 
-TEST(DISABLED_FoobarTest, Test1) { FAIL() << "Expected failure."; }
+TEST(DISABLED_FoobarTest, Test1) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(DISABLED_FoobarTest, DISABLED_Test2) { FAIL() << "Expected failure."; }
+TEST(DISABLED_FoobarTest, DISABLED_Test2) {
+    FAIL() << "Expected failure.";
+}
 
 // Test case FoobarbazTest
 
-TEST(DISABLED_FoobarbazTest, TestA) { FAIL() << "Expected failure."; }
+TEST(DISABLED_FoobarbazTest, TestA) {
+    FAIL() << "Expected failure.";
+}
 
 class ParamTest : public testing::TestWithParam<int> {};
 
@@ -97,10 +117,10 @@ TEST_P(ParamTest, TestY) {}
 INSTANTIATE_TEST_SUITE_P(SeqP, ParamTest, testing::Values(1, 2));
 INSTANTIATE_TEST_SUITE_P(SeqQ, ParamTest, testing::Values(5, 6));
 
-}  // namespace
+} // namespace
 
-int main(int argc, char **argv) {
-  ::testing::InitGoogleTest(&argc, argv);
+int main(int argc, char** argv) {
+    ::testing::InitGoogleTest(&argc, argv);
 
-  return RUN_ALL_TESTS();
+    return RUN_ALL_TESTS();
 }

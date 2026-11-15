@@ -53,7 +53,7 @@ filter8_1dfunction svt_aom_filter_block1d4_h2_ssse3;
                                           const int16_t* filter_y,                                               \
                                           int            y_step_q4,                                              \
                                           int            w,                                                      \
-                                          int            h) {                                                               \
+                                          int            h) {                                                    \
         (void)filter_x;                                                                                          \
         (void)x_step_q4;                                                                                         \
         (void)filter_y;                                                                                          \

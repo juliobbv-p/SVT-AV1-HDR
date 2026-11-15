@@ -164,7 +164,7 @@ OBMCVARWXH(64, 16)
                                                                int            yoffset,                             \
                                                                const int32_t* wsrc,                                \
                                                                const int32_t* mask,                                \
-                                                               unsigned int*  sse) {                                \
+                                                               unsigned int*  sse) {                               \
         uint16_t fdata3[(H + 1) * W];                                                                              \
         uint8_t  temp2[H * W];                                                                                     \
                                                                                                                    \

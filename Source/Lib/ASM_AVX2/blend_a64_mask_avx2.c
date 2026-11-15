@@ -905,13 +905,13 @@ static INLINE void highbd_blend_a64_d16_mask_subw1_subh1_w4_avx2(
         // (saturating) add together rows then use madd to add adjacent pixels
         // Finally, divide each value by 4 (with rounding)
         const __m256i m0246    = _mm256_set_epi64x(*(uint64_t*)(mask + 6 * mask_stride),
-                                                *(uint64_t*)(mask + 4 * mask_stride),
-                                                *(uint64_t*)(mask + 2 * mask_stride),
-                                                *(uint64_t*)(mask + 0 * mask_stride));
+                                                   *(uint64_t*)(mask + 4 * mask_stride),
+                                                   *(uint64_t*)(mask + 2 * mask_stride),
+                                                   *(uint64_t*)(mask + 0 * mask_stride));
         const __m256i m1357    = _mm256_set_epi64x(*(uint64_t*)(mask + 7 * mask_stride),
-                                                *(uint64_t*)(mask + 5 * mask_stride),
-                                                *(uint64_t*)(mask + 3 * mask_stride),
-                                                *(uint64_t*)(mask + 1 * mask_stride));
+                                                   *(uint64_t*)(mask + 5 * mask_stride),
+                                                   *(uint64_t*)(mask + 3 * mask_stride),
+                                                   *(uint64_t*)(mask + 1 * mask_stride));
         const __m256i addrows  = _mm256_adds_epu8(m0246, m1357);
         const __m256i adjacent = _mm256_maddubs_epi16(addrows, one_b);
         const __m256i mask0    = _mm256_srli_epi16(_mm256_add_epi16(adjacent, two_w), 2);

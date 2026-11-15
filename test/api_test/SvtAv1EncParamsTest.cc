@@ -318,6 +318,10 @@ PARAM_TEST(EncParamEnableAltRefsTest);
 DEFINE_PARAM_TEST_CLASS(EncParamEnableOverlaysTest, enable_overlays);
 PARAM_TEST(EncParamEnableOverlaysTest);
 
+/** Test case for fast_decode*/
+DEFINE_PARAM_TEST_CLASS(EncParamFastDecodeTest, fast_decode);
+PARAM_TEST(EncParamFastDecodeTest);
+
 /** Test case for color_range*/
 DEFINE_PARAM_TEST_CLASS(EncParamColorRangeTest, color_range);
 PARAM_TEST(EncParamColorRangeTest);

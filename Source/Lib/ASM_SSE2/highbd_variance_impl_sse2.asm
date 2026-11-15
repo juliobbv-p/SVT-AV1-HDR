@@ -27,7 +27,7 @@ SECTION .text
 ;)
 
 
-global sym(svt_aom_highbd_calc16x16var_sse2) PRIVATE
+global sym(svt_aom_highbd_calc16x16var_sse2)PRIVATE
 sym(svt_aom_highbd_calc16x16var_sse2):
     push        rbp
     mov         rbp, rsp
@@ -180,7 +180,7 @@ sym(svt_aom_highbd_calc16x16var_sse2):
 ;    uint32_t    *  SSE,
 ;    int32_t             *  Sum
 ;)
-global sym(svt_aom_highbd_calc8x8var_sse2) PRIVATE
+global sym(svt_aom_highbd_calc8x8var_sse2)PRIVATE
 sym(svt_aom_highbd_calc8x8var_sse2):
     push        rbp
     mov         rbp, rsp
@@ -329,7 +329,7 @@ sym(svt_aom_highbd_calc8x8var_sse2):
 ;    uint32_t    *  SSE,
 ;    int32_t             *  Sum
 ;)
-global sym(svt_aom_highbd_calc4x4var_sse2) PRIVATE
+global sym(svt_aom_highbd_calc4x4var_sse2)PRIVATE
 sym(svt_aom_highbd_calc4x4var_sse2):
     push        rbp
     mov         rbp, rsp

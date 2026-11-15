@@ -41,10 +41,10 @@ typedef size_t rsize_t;
 #define RSIZE_MAX (256UL << 20) /* 256MB */
 #endif
 
-typedef void (*constraint_handler_t)(const char * /* msg */, void * /* ptr */, errno_t /* error */);
+typedef void (*constraint_handler_t)(const char* /* msg */, void* /* ptr */, errno_t /* error */);
 
-extern void abort_handler_s(const char *msg, void *ptr, errno_t error);
-extern void ignore_handler_s(const char *msg, void *ptr, errno_t error);
+extern void abort_handler_s(const char* msg, void* ptr, errno_t error);
+extern void ignore_handler_s(const char* msg, void* ptr, errno_t error);
 
 #define sl_default_handler ignore_handler_s
 

@@ -81,9 +81,11 @@ typedef struct EbPictureBufferDesc {
     };
 
     // Buffer Parameters
-    // Save the pointer to the actual allocated memory, to use for copies and freeing
+    // Start of the plane layout, to use for copies. It may sit up to 63 bytes into buffer_alloc_raw, which keeps the
+    // origin of the first plane 64-byte aligned.
     uint8_t* buffer_alloc;
     size_t   buffer_alloc_sz;
+    uint8_t* buffer_alloc_raw; // the actual allocated memory, to use for freeing
     uint32_t luma_size; // Allocated size of the luma buffer
     uint32_t chroma_size; // Allocated size of the chroma buffers
     bool     packed_flag; // Indicates if sample buffers are packed or not
@@ -98,6 +100,12 @@ typedef struct EbPictureBufferDesc {
     EbColorFormat color_format; // Chroma Subsumpling
 
     uint32_t buffer_enable_mask;
+    // Luma box sums of the sixteenth-resolution ME pictures for successive elimination (NULL otherwise), same
+    // origin and stride as y_buffer: 8 columns x rows 0,2,4,6 (sub-sampled SAD) and 8 columns x 8 rows.
+    uint16_t* sea_sub;
+    uint16_t* sea_full;
+    uint16_t* sea_alloc;
+    size_t    sea_alloc_size;
 } EbPictureBufferDesc;
 
 #define YV12_FLAG_HIGHBITDEPTH 8

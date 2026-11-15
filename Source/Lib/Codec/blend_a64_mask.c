@@ -54,8 +54,8 @@ void svt_aom_lowbd_blend_a64_d16_mask_c(uint8_t* dst, uint32_t dst_stride, const
                 int32_t   res;
                 const int m = mask[i * mask_stride + j];
                 res         = ((m * (int32_t)src0[i * src0_stride + j] +
-                        (AOM_BLEND_A64_MAX_ALPHA - m) * (int32_t)src1[i * src1_stride + j]) >>
-                       AOM_BLEND_A64_ROUND_BITS);
+                                (AOM_BLEND_A64_MAX_ALPHA - m) * (int32_t)src1[i * src1_stride + j]) >>
+                               AOM_BLEND_A64_ROUND_BITS);
                 res -= round_offset;
                 dst[i * dst_stride + j] = clip_pixel(ROUND_POWER_OF_TWO(res, round_bits));
             }
@@ -81,8 +81,8 @@ void svt_aom_lowbd_blend_a64_d16_mask_c(uint8_t* dst, uint32_t dst_stride, const
                 int32_t   res;
                 const int m = AOM_BLEND_AVG(mask[i * mask_stride + (2 * j)], mask[i * mask_stride + (2 * j + 1)]);
                 res         = ((m * (int32_t)src0[i * src0_stride + j] +
-                        (AOM_BLEND_A64_MAX_ALPHA - m) * (int32_t)src1[i * src1_stride + j]) >>
-                       AOM_BLEND_A64_ROUND_BITS);
+                                (AOM_BLEND_A64_MAX_ALPHA - m) * (int32_t)src1[i * src1_stride + j]) >>
+                               AOM_BLEND_A64_ROUND_BITS);
                 res -= round_offset;
                 dst[i * dst_stride + j] = clip_pixel(ROUND_POWER_OF_TWO(res, round_bits));
             }
@@ -93,8 +93,8 @@ void svt_aom_lowbd_blend_a64_d16_mask_c(uint8_t* dst, uint32_t dst_stride, const
                 int32_t   res;
                 const int m = AOM_BLEND_AVG(mask[(2 * i) * mask_stride + j], mask[(2 * i + 1) * mask_stride + j]);
                 res         = ((int32_t)(m * (int32_t)src0[i * src0_stride + j] +
-                                 (AOM_BLEND_A64_MAX_ALPHA - m) * (int32_t)src1[i * src1_stride + j]) >>
-                       AOM_BLEND_A64_ROUND_BITS);
+                                         (AOM_BLEND_A64_MAX_ALPHA - m) * (int32_t)src1[i * src1_stride + j]) >>
+                               AOM_BLEND_A64_ROUND_BITS);
                 res -= round_offset;
                 dst[i * dst_stride + j] = clip_pixel(ROUND_POWER_OF_TWO(res, round_bits));
             }

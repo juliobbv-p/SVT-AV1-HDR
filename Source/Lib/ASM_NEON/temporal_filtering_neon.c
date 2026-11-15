@@ -406,7 +406,7 @@ void svt_aom_get_final_filtered_pixels_neon(MeContext* me_ctx, EbByte* src_cente
     assert(blk_width_ch % 16 == 0);
     assert(TF_BW % 16 == 0);
 
-    if (!is_highbd) {
+    if (!SVT_EFFECTIVE_IS_16BIT_PIPELINE(is_highbd)) {
         //Process luma
         process_block_lbd_neon(TF_BH,
                                TF_BW,
@@ -873,9 +873,9 @@ static void svt_av1_apply_temporal_filter_planewise_medium_hbd_partial_neon(
             const uint16x8_t frame2_array       = vld1q_u16(y_pre + k);
             uint32x4_t       frame2_array_u32_1 = vmovl_u16(vget_low_u16(frame2_array));
             uint32x4_t       frame2_array_u32_2 = vmovl_u16(vget_high_u16(frame2_array));
-            frame2_array_u32_1                  = vmulq_u32(frame2_array_u32_1,
+            frame2_array_u32_1 = vmulq_u32(frame2_array_u32_1,
                                            adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
-            frame2_array_u32_2                  = vmulq_u32(frame2_array_u32_2,
+            frame2_array_u32_2 = vmulq_u32(frame2_array_u32_2,
                                            adjusted_weight_int32[subblock_idx_h + (j >= block_width / 2)]);
 
             accumulator_array1 = vaddq_u32(accumulator_array1, frame2_array_u32_1);

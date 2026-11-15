@@ -174,6 +174,22 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
                   (unsigned)config->rate_control_mode);
         return_error = EB_ErrorBadParameter;
     }
+    if (config->max_managed_refs > 0 && (config->sframe_dist > 0 || config->sframe_posi.sframe_posis)) {
+        // An S-frame refreshes all 8 DPB slots and signals no refresh_frame_flags,
+        // so a decoder unconditionally evicts every anchor. The encoder keeps them
+        // (the STORE guard masks held slots out of the refresh), and the two DPB
+        // views diverge from that point on.
+        SVT_ERROR(
+            "max_managed_refs > 0 is not supported with switch frames "
+            "(sframe_dist=%d sframe_num=%u)\n",
+            config->sframe_dist,
+            (unsigned)config->sframe_posi.sframe_num);
+        return_error = EB_ErrorBadParameter;
+    }
+    if (scs->allintra && (config->sframe_dist > 0 || config->sframe_posi.sframe_posis)) {
+        SVT_ERROR("Switch frames are not supported with all-intra or AVIF coding\n");
+        return_error = EB_ErrorBadParameter;
+    }
     // Runtime MG-size change: ABI cap, restricted to where MG_SIZE_CHANGE_EVENT
     // is accepted, and never below the level count already configured.
     if (config->max_hierarchical_levels > 2) {
@@ -191,6 +207,11 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
                   (unsigned)config->hierarchical_levels);
         return_error = EB_ErrorBadParameter;
     }
+    if (config->max_allowed_consecutive_frames_skips > 0 &&
+        !(config->rtc && config->pred_structure == LOW_DELAY && config->rate_control_mode == SVT_AV1_RC_MODE_CBR)) {
+        SVT_ERROR("max_allowed_consecutive_frames_skips > 0 requires RTC low-delay CBR\n");
+        return_error = EB_ErrorBadParameter;
+    }
     if (config->rate_control_mode == SVT_AV1_RC_MODE_VBR && config->pred_structure == LOW_DELAY) {
         SVT_ERROR("VBR Rate control is currently not supported for LOW_DELAY, use CBR mode\n");
         return_error = EB_ErrorBadParameter;
@@ -198,6 +219,11 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
     if (config->rate_control_mode == SVT_AV1_RC_MODE_CQP_OR_CRF && config->target_bit_rate != DEFAULT_TBR) {
         SVT_ERROR("Target Bitrate only supported when --rc is  1/2 (VBR/CBR). Current --rc: %d\n",
                   config->rate_control_mode);
+        return_error = EB_ErrorBadParameter;
+    }
+
+    if (config->tier > 1) {
+        SVT_ERROR("Tier must be 0 (Main tier) or 1 (High tier)\n");
         return_error = EB_ErrorBadParameter;
     }
 
@@ -473,12 +499,42 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
         SVT_ERROR("Invalid adaptive quantization (AQ) mode. AQ mode must be [0-2]\n");
         return_error = EB_ErrorBadParameter;
     }
+#if SVT_RTC_OR_MOBILE_BUILD
+    // RTC and MOBILE builds code the MD decisions without the EncDec pass (encode_b()): reject what turns the bypass
+    // off, segmentation (AQ mode 1, ROI maps) and 10-bit input at M7 (svt_aom_get_bypass_encdec_rtc()).
+    if (config->aq_mode == 1 || config->enable_roi_map) {
+        SVT_ERROR("AQ mode 1 and ROI maps (segmentation) are not supported by this build\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) > 8 && config->enc_mode <= ENC_M7) {
+        SVT_ERROR("10-bit input at presets 7 and below is not supported by this build\n");
+        return_error = EB_ErrorBadParameter;
+    }
+#endif
 
     if ((SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) != 8) &&
         (SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) != 10)) {
         SVT_ERROR("Encoder Bit Depth shall be only 8 or 10 \n");
         return_error = EB_ErrorBadParameter;
     }
+#if !CONFIG_ENABLE_HIGH_BIT_DEPTH
+    if (config->encoder_bit_depth != 8) {
+        SVT_ERROR("Encoder bit depth %u is not supported by this 8-bit build\n", config->encoder_bit_depth);
+        return_error = EB_ErrorBadParameter;
+    }
+#endif
+#if !CONFIG_ENABLE_LOSSLESS
+    if (config->lossless) {
+        SVT_ERROR("Lossless coding is not supported by this build\n");
+        return_error = EB_ErrorBadParameter;
+    }
+#else
+    // RTC coding is not lossless at M9 and has no 8x8 blocks at M10+, which lossless frames need.
+    if (config->lossless && SVT_RTC_TUNE(scs)) {
+        SVT_ERROR("Lossless coding is not supported in RTC mode\n");
+        return_error = EB_ErrorBadParameter;
+    }
+#endif
     // Check if the EncoderBitDepth is conformant with the Profile constraint
     if ((config->profile == 0 || config->profile == 1) && SVT_EFFECTIVE_BIT_DEPTH(config->encoder_bit_depth) > 10) {
         SVT_ERROR("The encoder bit depth shall be equal to 8 or 10 for Main/High Profile\n");
@@ -547,13 +603,27 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
             config->enable_mfmv);
         return_error = EB_ErrorBadParameter;
     }
+#if CONFIG_ENABLE_FAST_DECODE_3
+    // fast_decode 3 is mapped to 2 in copy_api_from_app()
     if (config->fast_decode > 2) {
+        SVT_ERROR(
+            "Invalid fast decode flag [0 - 3, 0 for no decoder-targeted optimization], your "
+            "input: %d\n",
+            config->fast_decode);
+        return_error = EB_ErrorBadParameter;
+    }
+#else
+    if (config->fast_decode == 3) {
+        SVT_ERROR("fast decode 3 is experimental and requires building with -DENABLE_FAST_DECODE_3=ON\n");
+        return_error = EB_ErrorBadParameter;
+    } else if (config->fast_decode > 2) {
         SVT_ERROR(
             "Invalid fast decode flag [0 - 2, 0 for no decoder-targeted optimization], your "
             "input: %d\n",
             config->fast_decode);
         return_error = EB_ErrorBadParameter;
     }
+#endif
     if (config->tune > TUNE_FILM_GRAIN) {
         SVT_ERROR(
             "Invalid tune flag [0 - 6, 0 for VQ, 1 for PSNR, 2 for SSIM, 3 for IQ, 4 for MS_SSIM, 5 for VMAF, and 6 "
@@ -713,6 +783,10 @@ EbErrorType svt_av1_verify_settings(SequenceControlSet* scs) {
 
     if (config->intra_refresh_type != 2 && pass > 0) {
         SVT_ERROR("Multi-pass encode only supports closed-gop configurations.\n");
+        return_error = EB_ErrorBadParameter;
+    }
+    if (config->intra_refresh_type == SVT_AV1_FWDKF_REFRESH && config->rate_control_mode == SVT_AV1_RC_MODE_CBR) {
+        SVT_ERROR("Forward key frames (intra refresh type 1) are not supported with CBR.\n");
         return_error = EB_ErrorBadParameter;
     }
     if (config->pass > 1 && config->rate_control_mode == SVT_AV1_RC_MODE_CQP_OR_CRF) {
@@ -1061,6 +1135,7 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     config_ptr->enable_mfmv                  = DEFAULT;
     config_ptr->enable_dg                    = 1;
     config_ptr->fast_decode                  = 0;
+    config_ptr->fast_decode_user_opts        = 0;
     config_ptr->encoder_color_format         = EB_YUV420;
     config_ptr->rtc                          = 0;
     // Rate control options
@@ -1180,6 +1255,8 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
     // MG size fixed for the session by default → legacy pool sizing.
     config_ptr->max_hierarchical_levels = 0;
 
+    config_ptr->max_allowed_consecutive_frames_skips = 0;
+
     config_ptr->noise_norm_strength      = 1;
     config_ptr->kf_tf_strength           = 1;
     config_ptr->alt_lambda_factors       = 0;
@@ -1194,12 +1271,17 @@ EbErrorType svt_av1_set_default_params(EbSvtAv1EncConfiguration* config_ptr) {
 }
 
 static const char* tier_to_str(unsigned in) {
-    if (!in) {
-        return "(auto)";
+    switch (in) {
+    case 0:
+        return "Main";
+    case 1:
+        return "High";
+    default: {
+        static char ret[11];
+        snprintf(ret, sizeof(ret), "%u", in);
+        return ret;
     }
-    static char ret[11];
-    snprintf(ret, 11, "%u", in);
-    return ret;
+    }
 }
 
 static const char* level_to_str(unsigned in) {
@@ -2261,8 +2343,12 @@ static EbErrorType str_to_sframe_qp_offset(const char* nptr, SvtAv1SFramePositio
             return svt_aom_parse_##opt(&config_struct->opt, value) ? EB_ErrorNone : EB_ErrorBadParameter; \
     } while (0)
 
+#if CONFIG_ENABLE_FAST_DECODE_3
+static EbErrorType enc_parse_parameter(EbSvtAv1EncConfiguration* config_struct, const char* name, const char* value) {
+#else
 EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_struct, const char* name,
                                                const char* value) {
+#endif
     if (config_struct == NULL || name == NULL || value == NULL) {
         return EB_ErrorBadParameter;
     }
@@ -2622,3 +2708,34 @@ EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_
 
     return return_error;
 }
+
+#if CONFIG_ENABLE_FAST_DECODE_3
+EB_API EbErrorType svt_av1_enc_parse_parameter(EbSvtAv1EncConfiguration* config_struct, const char* name,
+                                               const char* value) {
+    // Options that fast_decode 3 must leave as set by the caller
+    static const struct {
+        const char* name;
+        uint8_t     bit;
+    } fd_user_opts[] = {
+        {"enable-cdef", SVT_AV1_FD_USER_CDEF},
+        {"enable-restoration", SVT_AV1_FD_USER_RESTORATION},
+        {"enable-qm", SVT_AV1_FD_USER_QM},
+        {"qm-min", SVT_AV1_FD_USER_QM_MIN},
+        {"qm-max", SVT_AV1_FD_USER_QM_MAX},
+        {"chroma-qm-min", SVT_AV1_FD_USER_CHROMA_QM_MIN},
+        {"chroma-qm-max", SVT_AV1_FD_USER_CHROMA_QM_MAX},
+        {"lambda-scale-factors", SVT_AV1_FD_USER_LAMBDA},
+    };
+
+    const EbErrorType err = enc_parse_parameter(config_struct, name, value);
+    if (err != EB_ErrorNone) {
+        return err;
+    }
+    for (size_t i = 0; i < sizeof(fd_user_opts) / sizeof(fd_user_opts[0]); i++) {
+        if (!strcmp(name, fd_user_opts[i].name)) {
+            config_struct->fast_decode_user_opts |= fd_user_opts[i].bit;
+        }
+    }
+    return err;
+}
+#endif

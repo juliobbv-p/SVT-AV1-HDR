@@ -14,18 +14,19 @@
 #define EbSourceBasedOperations_h
 
 #include "definitions.h"
+#include "svt_threads.h"
 
 /***************************************
  * Extern Function Declaration
  ***************************************/
 EbErrorType svt_aom_tpl_disp_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr, int index,
                                           int tasks_index);
-void*       svt_aom_tpl_disp_kernel(void* input_ptr);
-void        generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep_cost_base);
-void        svt_aom_generate_r0beta(PictureParentControlSet* pcs);
+THREAD_FUNC_RETURN svt_aom_tpl_disp_kernel(void* input_ptr);
+void               generate_lambda_scaling_factor(PictureParentControlSet* pcs, int64_t mc_dep_cost_base);
+void               svt_aom_generate_r0beta(PictureParentControlSet* pcs);
 EbErrorType svt_aom_source_based_operations_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                                          int tpl_index, int index);
 
-void*        svt_aom_source_based_operations_kernel(void* input_ptr);
-unsigned int svt_aom_get_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size);
+THREAD_FUNC_RETURN svt_aom_source_based_operations_kernel(void* input_ptr);
+unsigned int       svt_aom_get_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size);
 #endif // EbSourceBasedOperations_h

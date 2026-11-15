@@ -16,8 +16,17 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
                     "Please use the Build folder or create your own.")
 endif()
 
-project(svt-av1 VERSION 4.2.0
-    LANGUAGES C CXX)
+project(svt-av1 VERSION 4.3.0
+    LANGUAGES NONE)
+
+option(SVT_AV1_TEST_VECTORS_ONLY "Configure only the TestVectors download target" OFF)
+if(SVT_AV1_TEST_VECTORS_ONLY)
+    message(STATUS "SVT_AV1_TEST_VECTORS_ONLY: configuring only TestVectors")
+    add_subdirectory(test/e2e_test)
+    return()
+endif()
+
+enable_language(C CXX)
 
 set(VERSION_TAG "")
 
@@ -83,9 +92,22 @@ if(LOG_QUIET)
     add_definitions(-DCONFIG_LOG_QUIET=1)
 endif()
 
+option(ENABLE_FAST_DECODE_3 "Build the experimental fast-decode 3 level (decode-speed settings for still images)" OFF)
+if(ENABLE_FAST_DECODE_3)
+    add_definitions(-DCONFIG_ENABLE_FAST_DECODE_3=1)
+endif()
+
 option(RTC_BUILD "Optimize build for RTC by disabling unused features and logging" OFF)
 if(RTC_BUILD)
     add_definitions(-DRTC_BUILD=1)
+endif()
+
+option(MOBILE_BUILD "Optimize build for mobile (8-bit RTC and VOD at M9+, AVIF at M6+) by disabling unused features and logging" OFF)
+if(MOBILE_BUILD)
+    if(RTC_BUILD)
+        message(FATAL_ERROR "RTC_BUILD and MOBILE_BUILD are mutually exclusive")
+    endif()
+    add_definitions(-DMOBILE_BUILD=1)
 endif()
 
 if(NOT COMPILE_C_ONLY AND HAVE_X86_PLATFORM)

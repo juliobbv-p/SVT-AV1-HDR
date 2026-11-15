@@ -1270,7 +1270,7 @@ void svt_av1_build_compound_diffwtd_mask_highbd_avx2(uint8_t* mask, DIFFWTD_MASK
                         __m256i s1   = _mm256_loadu_si256((const __m256i*)&ssrc1[j]);
                         __m256i diff = _mm256_srai_epi16(_mm256_abs_epi16(_mm256_sub_epi16(s0, s1)), DIFF_FACTOR_LOG2);
                         __m256i m    = _mm256_min_epi16(_mm256_max_epi16(y0, _mm256_add_epi16(diff, ymask_base)),
-                                                     y_aom_blend_a64_max_alpha);
+                                                        y_aom_blend_a64_max_alpha);
                         m            = _mm256_sub_epi16(y_aom_blend_a64_max_alpha, m);
                         m            = _mm256_packus_epi16(m, m);
                         m            = _mm256_permute4x64_epi64(m, _MM_SHUFFLE(0, 0, 2, 0));
@@ -1288,7 +1288,7 @@ void svt_av1_build_compound_diffwtd_mask_highbd_avx2(uint8_t* mask, DIFFWTD_MASK
                         __m256i s1   = _mm256_loadu_si256((const __m256i*)&ssrc1[j]);
                         __m256i diff = _mm256_srai_epi16(_mm256_abs_epi16(_mm256_sub_epi16(s0, s1)), DIFF_FACTOR_LOG2);
                         __m256i m    = _mm256_min_epi16(_mm256_max_epi16(y0, _mm256_add_epi16(diff, ymask_base)),
-                                                     y_aom_blend_a64_max_alpha);
+                                                        y_aom_blend_a64_max_alpha);
                         m            = _mm256_packus_epi16(m, m);
                         m            = _mm256_permute4x64_epi64(m, _MM_SHUFFLE(0, 0, 2, 0));
                         __m128i m0   = _mm256_castsi256_si128(m);
@@ -1308,7 +1308,7 @@ void svt_av1_build_compound_diffwtd_mask_highbd_avx2(uint8_t* mask, DIFFWTD_MASK
                         __m256i s1   = _mm256_loadu_si256((const __m256i*)&ssrc1[j]);
                         __m256i diff = _mm256_sra_epi16(_mm256_abs_epi16(_mm256_sub_epi16(s0, s1)), xshift);
                         __m256i m    = _mm256_min_epi16(_mm256_max_epi16(y0, _mm256_add_epi16(diff, ymask_base)),
-                                                     y_aom_blend_a64_max_alpha);
+                                                        y_aom_blend_a64_max_alpha);
                         m            = _mm256_sub_epi16(y_aom_blend_a64_max_alpha, m);
                         m            = _mm256_packus_epi16(m, m);
                         m            = _mm256_permute4x64_epi64(m, _MM_SHUFFLE(0, 0, 2, 0));
@@ -1326,7 +1326,7 @@ void svt_av1_build_compound_diffwtd_mask_highbd_avx2(uint8_t* mask, DIFFWTD_MASK
                         __m256i s1   = _mm256_loadu_si256((const __m256i*)&ssrc1[j]);
                         __m256i diff = _mm256_sra_epi16(_mm256_abs_epi16(_mm256_sub_epi16(s0, s1)), xshift);
                         __m256i m    = _mm256_min_epi16(_mm256_max_epi16(y0, _mm256_add_epi16(diff, ymask_base)),
-                                                     y_aom_blend_a64_max_alpha);
+                                                        y_aom_blend_a64_max_alpha);
                         m            = _mm256_packus_epi16(m, m);
                         m            = _mm256_permute4x64_epi64(m, _MM_SHUFFLE(0, 0, 2, 0));
                         __m128i m0   = _mm256_castsi256_si128(m);

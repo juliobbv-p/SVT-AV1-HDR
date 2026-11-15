@@ -194,13 +194,13 @@ void svt_av1_jnt_convolve_2d_sse2(const uint8_t* src, int32_t src_stride, uint8_
                 // Filter even-index pixels
                 const int16_t* data  = &im_block[i * im_stride + j];
                 const __m128i  src_0 = _mm_unpacklo_epi16(*(__m128i*)(data + 0 * im_stride),
-                                                         *(__m128i*)(data + 1 * im_stride));
+                                                          *(__m128i*)(data + 1 * im_stride));
                 const __m128i  src_2 = _mm_unpacklo_epi16(*(__m128i*)(data + 2 * im_stride),
-                                                         *(__m128i*)(data + 3 * im_stride));
+                                                          *(__m128i*)(data + 3 * im_stride));
                 const __m128i  src_4 = _mm_unpacklo_epi16(*(__m128i*)(data + 4 * im_stride),
-                                                         *(__m128i*)(data + 5 * im_stride));
+                                                          *(__m128i*)(data + 5 * im_stride));
                 const __m128i  src_6 = _mm_unpacklo_epi16(*(__m128i*)(data + 6 * im_stride),
-                                                         *(__m128i*)(data + 7 * im_stride));
+                                                          *(__m128i*)(data + 7 * im_stride));
 
                 const __m128i res_0 = _mm_madd_epi16(src_0, coeff_01);
                 const __m128i res_2 = _mm_madd_epi16(src_2, coeff_23);

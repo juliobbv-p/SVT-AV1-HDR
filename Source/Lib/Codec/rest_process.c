@@ -81,7 +81,7 @@ EbErrorType svt_aom_rest_context_ctor(EbThreadContext* thread_ctx, const EbEncHa
 
     // Input/Output System Resource Manager FIFOs
     context_ptr->rest_input_fifo_ptr  = svt_system_resource_get_consumer_fifo(enc_handle_ptr->cdef_results_resource_ptr,
-                                                                             index);
+                                                                              index);
     context_ptr->rest_output_fifo_ptr = svt_system_resource_get_producer_fifo(enc_handle_ptr->rest_results_resource_ptr,
                                                                               index);
     context_ptr->picture_demux_fifo_ptr = svt_system_resource_get_producer_fifo(
@@ -97,7 +97,7 @@ EbErrorType svt_aom_rest_context_ctor(EbThreadContext* thread_ctx, const EbEncHa
               config->enc_mode, config->enable_restoration_filtering, scs->input_resolution, config->fast_decode);
 
     uint8_t enable_sg = allintra ? svt_aom_get_enable_sg_allintra(config->enc_mode)
-        : rtc_tune               ? svt_aom_get_enable_sg_rtc(scs->input_resolution, config->fast_decode)
+        : rtc_tune ? svt_aom_get_enable_sg_rtc(scs->input_resolution, config->fast_decode)
                    : svt_aom_get_enable_sg_default(config->enc_mode, scs->input_resolution, config->fast_decode);
 
     if (enable_restoration) {
@@ -469,10 +469,10 @@ EbErrorType svt_aom_rest_kernel_iter(void* context) {
 
                 PictureDemuxResults* picture_demux_results_rtr = (PictureDemuxResults*)
                                                                      picture_demux_results_wrapper_ptr->object_ptr;
-                picture_demux_results_rtr->ref_pic_wrapper = ppcs->ref_pic_wrapper;
-                picture_demux_results_rtr->scs             = pcs->scs;
-                picture_demux_results_rtr->picture_number  = pcs->picture_number;
-                picture_demux_results_rtr->picture_type    = EB_PIC_REFERENCE;
+                picture_demux_results_rtr->ref_pic_wrapper     = ppcs->ref_pic_wrapper;
+                picture_demux_results_rtr->scs                 = pcs->scs;
+                picture_demux_results_rtr->picture_number      = pcs->picture_number;
+                picture_demux_results_rtr->picture_type        = EB_PIC_REFERENCE;
 
                 // Post Reference Picture
                 svt_post_full_object(picture_demux_results_wrapper_ptr);
@@ -502,13 +502,13 @@ EbErrorType svt_aom_rest_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_rest_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_rest_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_rest_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

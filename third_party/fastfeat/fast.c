@@ -19,4 +19,5 @@ xy* svt_aom_fast9_detect_nonmax(const byte* im, int xsize, int ysize, int stride
 
     return nonmax;
 }
+
 // clang-format on

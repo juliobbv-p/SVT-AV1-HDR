@@ -468,6 +468,9 @@ int main(int argc, char* argv[]) {
 
     enc_app_ctor(&enc_app);
     passes = get_passes(argc, argv, enc_pass);
+    if (passes == 0) {
+        return_error = EB_ErrorBadParameter; // get_passes() printed the reason
+    }
     for (uint8_t pass_idx = 0; pass_idx < passes; pass_idx++) {
         return_error = enc_context_ctor(&enc_app, &enc_context, argc, argv, enc_pass[pass_idx], passes, color);
 

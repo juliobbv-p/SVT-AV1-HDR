@@ -178,7 +178,7 @@ void svt_format_thread_name(char* buf, size_t size, const char* prefix, uint32_t
 /****************************************
  * svt_create_thread
  ****************************************/
-EbHandle svt_create_thread(void* thread_function(void*), void* thread_context, const char* name) {
+EbHandle svt_create_thread(THREAD_FUNC_RETURN thread_function(void*), void* thread_context, const char* name) {
     EbHandle thread_handle = NULL;
 
     // Drop the `svt_aom_` prefix that EB_CREATE_THREAD pulls in via
@@ -215,8 +215,8 @@ EbHandle svt_create_thread(void* thread_function(void*), void* thread_context, c
             HMODULE kernel_base_handle = GetModuleHandle("KernelBase.dll");
             if (kernel_base_handle != NULL) {
                 typedef HRESULT (*set_thread_description_t)(HANDLE hThread, PCWSTR lpThreadDescription);
-                set_thread_description_t set_thread_description = (set_thread_description_t)GetProcAddress(
-                    kernel_base_handle, "SetThreadDescription");
+                set_thread_description_t set_thread_description = (void*)GetProcAddress(kernel_base_handle,
+                                                                                        "SetThreadDescription");
                 if (set_thread_description != NULL) {
                     set_thread_description((HANDLE)thread_handle, wname);
                 }
@@ -319,7 +319,14 @@ EbHandle svt_create_semaphore(uint32_t initial_count, uint32_t max_count) {
                                                  NULL); // semaphore is not named
 #elif defined(__APPLE__)
     UNUSED(max_count);
-    semaphore_handle = (EbHandle)dispatch_semaphore_create(initial_count);
+    // libdispatch traps when a semaphore is freed with a lower count than it was
+    // created with, and the encoder can end a stream one count short (#2251).
+    // Start at 0 and signal up to the initial count, so only the count matters,
+    // as on the other platforms.
+    semaphore_handle = (EbHandle)dispatch_semaphore_create(0);
+    for (uint32_t i = 0; semaphore_handle != NULL && i < initial_count; i++) {
+        dispatch_semaphore_signal((dispatch_semaphore_t)semaphore_handle);
+    }
 #else
     UNUSED(max_count);
 
@@ -460,7 +467,7 @@ EbErrorType svt_destroy_mutex(EbHandle mutex_handle) {
     EbErrorType return_error;
 
 #ifdef _WIN32
-    return_error = CloseHandle((HANDLE)mutex_handle) ? EB_ErrorDestroyMutexFailed : EB_ErrorNone;
+    return_error = !CloseHandle((HANDLE)mutex_handle) ? EB_ErrorDestroyMutexFailed : EB_ErrorNone;
 #else
     return_error = pthread_mutex_destroy((pthread_mutex_t*)mutex_handle) ? EB_ErrorDestroyMutexFailed : EB_ErrorNone;
     free(mutex_handle);

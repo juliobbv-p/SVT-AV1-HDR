@@ -23,19 +23,24 @@
 void svt_aom_hadamard_8x8_sse2(const int16_t* src_diff, ptrdiff_t src_stride, int32_t* coeff);
 
 /* 8-point Walsh-Hadamard butterfly with SVT's output permutation, int16 lanes. */
-#define WHT8_16(i0, i1, i2, i3, i4, i5, i6, i7, o0, o1, o2, o3, o4, o5, o6, o7)                    \
-    do {                                                                                          \
-        __m128i b0 = _mm_add_epi16(i0, i1), b1 = _mm_sub_epi16(i0, i1);                            \
-        __m128i b2 = _mm_add_epi16(i2, i3), b3 = _mm_sub_epi16(i2, i3);                            \
-        __m128i b4 = _mm_add_epi16(i4, i5), b5 = _mm_sub_epi16(i4, i5);                            \
-        __m128i b6 = _mm_add_epi16(i6, i7), b7 = _mm_sub_epi16(i6, i7);                            \
-        __m128i c0 = _mm_add_epi16(b0, b2), c1 = _mm_add_epi16(b1, b3);                            \
-        __m128i c2 = _mm_sub_epi16(b0, b2), c3 = _mm_sub_epi16(b1, b3);                            \
-        __m128i c4 = _mm_add_epi16(b4, b6), c5 = _mm_add_epi16(b5, b7);                            \
-        __m128i c6 = _mm_sub_epi16(b4, b6), c7 = _mm_sub_epi16(b5, b7);                            \
-        o0 = _mm_add_epi16(c0, c4); o7 = _mm_add_epi16(c1, c5); o3 = _mm_add_epi16(c2, c6);        \
-        o4 = _mm_add_epi16(c3, c7); o2 = _mm_sub_epi16(c0, c4); o6 = _mm_sub_epi16(c1, c5);        \
-        o1 = _mm_sub_epi16(c2, c6); o5 = _mm_sub_epi16(c3, c7);                                    \
+#define WHT8_16(i0, i1, i2, i3, i4, i5, i6, i7, o0, o1, o2, o3, o4, o5, o6, o7) \
+    do {                                                                        \
+        __m128i b0 = _mm_add_epi16(i0, i1), b1 = _mm_sub_epi16(i0, i1);         \
+        __m128i b2 = _mm_add_epi16(i2, i3), b3 = _mm_sub_epi16(i2, i3);         \
+        __m128i b4 = _mm_add_epi16(i4, i5), b5 = _mm_sub_epi16(i4, i5);         \
+        __m128i b6 = _mm_add_epi16(i6, i7), b7 = _mm_sub_epi16(i6, i7);         \
+        __m128i c0 = _mm_add_epi16(b0, b2), c1 = _mm_add_epi16(b1, b3);         \
+        __m128i c2 = _mm_sub_epi16(b0, b2), c3 = _mm_sub_epi16(b1, b3);         \
+        __m128i c4 = _mm_add_epi16(b4, b6), c5 = _mm_add_epi16(b5, b7);         \
+        __m128i c6 = _mm_sub_epi16(b4, b6), c7 = _mm_sub_epi16(b5, b7);         \
+        o0 = _mm_add_epi16(c0, c4);                                             \
+        o7 = _mm_add_epi16(c1, c5);                                             \
+        o3 = _mm_add_epi16(c2, c6);                                             \
+        o4 = _mm_add_epi16(c3, c7);                                             \
+        o2 = _mm_sub_epi16(c0, c4);                                             \
+        o6 = _mm_sub_epi16(c1, c5);                                             \
+        o1 = _mm_sub_epi16(c2, c6);                                             \
+        o5 = _mm_sub_epi16(c3, c7);                                             \
     } while (0)
 
 void svt_aom_highbd_hadamard_8x8_sse4_1(const int16_t* src_diff, ptrdiff_t src_stride, int32_t* coeff) {
@@ -88,9 +93,15 @@ void svt_aom_highbd_hadamard_8x8_sse4_1(const int16_t* src_diff, ptrdiff_t src_s
         int32_t        d6 = s[6 * 8] + s[7 * 8], d7 = s[6 * 8] - s[7 * 8];
         int32_t        e0 = d0 + d2, e1 = d1 + d3, e2 = d0 - d2, e3 = d1 - d3;
         int32_t        e4 = d4 + d6, e5 = d5 + d7, e6 = d4 - d6, e7 = d5 - d7;
-        int32_t*       o  = coeff + 8 * idx;
-        o[0] = e0 + e4; o[7] = e1 + e5; o[3] = e2 + e6; o[4] = e3 + e7;
-        o[2] = e0 - e4; o[6] = e1 - e5; o[1] = e2 - e6; o[5] = e3 - e7;
+        int32_t*       o = coeff + 8 * idx;
+        o[0]             = e0 + e4;
+        o[7]             = e1 + e5;
+        o[3]             = e2 + e6;
+        o[4]             = e3 + e7;
+        o[2]             = e0 - e4;
+        o[6]             = e1 - e5;
+        o[1]             = e2 - e6;
+        o[5]             = e3 - e7;
     }
 }
 

@@ -46,7 +46,7 @@ static inline int16x8_t horizontal_filter_4x1_f4(const uint8x16_t in, int sx, in
     return vreinterpretq_s16_u16(res);
 }
 
-static inline int16x8_t horizontal_filter_8x1_f8(const uint8x16_t in, int sx, int alpha) {
+static AOM_FORCE_INLINE int16x8_t horizontal_filter_8x1_f8(const uint8x16_t in, int sx, int alpha) {
     const int32x4_t add_const = vdupq_n_s32(1 << (8 + FILTER_BITS - 1));
 
     // Loading the 8 filter taps

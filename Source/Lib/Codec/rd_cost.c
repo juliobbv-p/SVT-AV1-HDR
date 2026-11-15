@@ -236,13 +236,117 @@ static INLINE int32_t av1_cost_coeffs_txb_loop_cost_one_eob(const TranLow* const
     return cost;
 }
 
+// Rate of scan positions [1, c_start]. Instantiated per tx class in the NOINLINE copies below: inlined into its
+// caller the loop runs out of registers.
+static AOM_FORCE_INLINE int32_t cost_coeffs_mid(const int16_t* const scan, const TranLow* const qcoeff,
+                                                const int8_t* const coeff_contexts, const LvMapCoeffCost* coeff_costs,
+                                                const uint8_t* const levels, const int32_t bwl, TxClass tx_class,
+                                                int32_t c_start) {
+    int32_t cost = 0;
+    int32_t nz   = 0;
+    for (int32_t c = c_start; c >= 1; --c) {
+        const int32_t pos   = scan[c];
+        const int32_t level = abs(qcoeff[pos]);
+        nz += level != 0;
+        cost += coeff_costs->base_cost[coeff_contexts[pos]][AOMMIN(level, 3)];
+        if (level > NUM_BASE_LEVELS) {
+            const int32_t ctx        = get_br_ctx(levels, pos, bwl, tx_class);
+            const int32_t base_range = level - 1 - NUM_BASE_LEVELS;
+            if (base_range < COEFF_BASE_RANGE) {
+                cost += coeff_costs->lps_cost[ctx][base_range];
+            } else {
+                cost += get_golomb_cost(level) + coeff_costs->lps_cost[ctx][COEFF_BASE_RANGE];
+            }
+        }
+    }
+    return cost + nz * av1_cost_literal(1);
+}
+
+#define COST_COEFFS_MID(tx_class_literal)                                                                          \
+    static NOINLINE int32_t cost_coeffs_mid_##tx_class_literal(const int16_t* const  scan,                         \
+                                                               const TranLow* const  qcoeff,                       \
+                                                               const int8_t* const   coeff_contexts,               \
+                                                               const LvMapCoeffCost* coeff_costs,                  \
+                                                               const uint8_t* const  levels,                       \
+                                                               const int32_t         bwl,                          \
+                                                               int32_t               c_start) {                    \
+        return cost_coeffs_mid(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, tx_class_literal, c_start); \
+    }
+COST_COEFFS_MID(TX_CLASS_2D)
+COST_COEFFS_MID(TX_CLASS_HORIZ)
+COST_COEFFS_MID(TX_CLASS_VERT)
+#undef COST_COEFFS_MID
+
+#if EN_AVX512_SUPPORT
+#include <immintrin.h>
+
+#if defined(__GNUC__)
+#define TARGET_AVX512 __attribute__((target("avx512f,avx512bw,avx512vl,popcnt")))
+#else
+#define TARGET_AVX512
+#endif
+
+// Rate of the 2D-class scan positions [1, eob - 2], visited in raster order: a position is in range iff its
+// iscan is, so no gathers are needed and the base cost comes from in-register int16 tables. AVX-512 CPUs only.
+static NOINLINE TARGET_AVX512 int32_t cost_coeffs_mid_raster_2d(const int16_t* const iscan, const TranLow* const qcoeff,
+                                                                const int8_t* const   coeff_contexts,
+                                                                const LvMapCoeffCost* coeff_costs,
+                                                                const uint8_t* const levels, const int32_t bwl,
+                                                                int32_t n_pos, int32_t eob) {
+    const __m512i t0a = _mm512_loadu_si512(coeff_costs->base_cost16[0]),
+                  t0b = _mm512_loadu_si512(coeff_costs->base_cost16[0] + 32);
+    const __m512i t1a = _mm512_loadu_si512(coeff_costs->base_cost16[1]),
+                  t1b = _mm512_loadu_si512(coeff_costs->base_cost16[1] + 32);
+    const __m512i t2a = _mm512_loadu_si512(coeff_costs->base_cost16[2]),
+                  t2b = _mm512_loadu_si512(coeff_costs->base_cost16[2] + 32);
+    const __m512i t3a = _mm512_loadu_si512(coeff_costs->base_cost16[3]),
+                  t3b = _mm512_loadu_si512(coeff_costs->base_cost16[3] + 32);
+    const __m512i one = _mm512_set1_epi16(1), two = _mm512_set1_epi16(2), three = _mm512_set1_epi16(3);
+    const __m512i last = _mm512_set1_epi16((int16_t)(eob - 2)), zero = _mm512_setzero_si512();
+    const __m512i perm = _mm512_setr_epi64(0, 2, 4, 6, 1, 3, 5, 7);
+    __m512i       acc  = _mm512_setzero_si512();
+    int32_t       cost = 0, nz = 0;
+    for (int32_t p = 0; p < n_pos; p += 32) {
+        const __mmask32 lm = n_pos - p >= 32 ? 0xFFFFFFFFu : (__mmask32)((1u << (n_pos - p)) - 1);
+        const __m512i   is = _mm512_maskz_loadu_epi16(lm, iscan + p);
+        const __mmask32 m  = _mm512_cmpgt_epi16_mask(is, zero) & _mm512_cmple_epi16_mask(is, last);
+        if (!m) {
+            continue;
+        }
+        const __m512i q0  = _mm512_maskz_loadu_epi32((__mmask16)lm, qcoeff + p);
+        const __m512i q1  = _mm512_maskz_loadu_epi32((__mmask16)(lm >> 16), qcoeff + p + 16);
+        const __m512i lvl = _mm512_abs_epi16(_mm512_permutexvar_epi64(perm, _mm512_packs_epi32(q0, q1)));
+        const __m512i l3  = _mm512_min_epu16(lvl, three);
+        const __m512i cx  = _mm512_cvtepu8_epi16(_mm256_maskz_loadu_epi8(lm, coeff_contexts + p));
+        __m512i       c   = _mm512_permutex2var_epi16(t0a, cx, t0b);
+        c   = _mm512_mask_mov_epi16(c, _mm512_cmpeq_epi16_mask(l3, one), _mm512_permutex2var_epi16(t1a, cx, t1b));
+        c   = _mm512_mask_mov_epi16(c, _mm512_cmpeq_epi16_mask(l3, two), _mm512_permutex2var_epi16(t2a, cx, t2b));
+        c   = _mm512_mask_mov_epi16(c, _mm512_cmpeq_epi16_mask(l3, three), _mm512_permutex2var_epi16(t3a, cx, t3b));
+        acc = _mm512_add_epi32(acc, _mm512_madd_epi16(_mm512_maskz_mov_epi16(m, c), one));
+        nz += _mm_popcnt_u32(m & _mm512_test_epi16_mask(lvl, lvl));
+        uint32_t big = m & _mm512_cmpgt_epu16_mask(lvl, two);
+        while (big) {
+            const int32_t pos        = p + svt_ctz(big);
+            const int32_t level      = abs(qcoeff[pos]);
+            const int32_t ctx        = get_br_ctx(levels, pos, bwl, TX_CLASS_2D);
+            const int32_t base_range = level - 1 - NUM_BASE_LEVELS;
+            cost += base_range < COEFF_BASE_RANGE
+                ? coeff_costs->lps_cost[ctx][base_range]
+                : get_golomb_cost(level) + coeff_costs->lps_cost[ctx][COEFF_BASE_RANGE];
+            big &= big - 1;
+        }
+    }
+    return cost + _mm512_reduce_add_epi32(acc) + nz * av1_cost_literal(1);
+}
+#endif // EN_AVX512_SUPPORT
+
 // Takes TxClass rather than TxType and is force-inlined, so the switch at the
 // call site instantiates one copy per class with tx_class a compile-time
 // constant, letting get_br_ctx() fold its class dispatch away in the loop.
 static AOM_FORCE_INLINE int32_t av1_cost_coeffs_txb_loop_cost_eob(
     ModeDecisionContext* md_ctx, uint16_t eob, const int16_t* const scan, const TranLow* const qcoeff,
     int8_t* const coeff_contexts, const LvMapCoeffCost* coeff_costs, int16_t dc_sign_ctx, uint8_t* const levels,
-    const int32_t bwl, TxClass tx_class) {
+    const int32_t bwl, TxClass tx_class, const int16_t* const iscan, int32_t height) {
     const uint32_t cost_literal = av1_cost_literal(1);
     int32_t        cost         = 0;
 
@@ -309,33 +413,55 @@ static AOM_FORCE_INLINE int32_t av1_cost_coeffs_txb_loop_cost_eob(
             }
         }
     }
-    int32_t c;
     /* Optimized Loop, omitted first (eob - 1) and last (0) index */
     // Estimate the rate of the first(eob / fast_coeff_est_level) coeff(s), DC and last coeff only
-    int32_t  c_start = MIN(eob - 2, eob / MAX(1, (int)(md_ctx->mds_fast_coeff_est_level - md_ctx->mds_subres_step)));
-    uint32_t cost_literal_cnt = 0;
-    for (c = c_start; c >= 1; --c) {
-        const int32_t pos = scan[c];
-        cost_literal_cnt += !!(qcoeff[pos]);
-        const int32_t level = abs(qcoeff[pos]);
-        if (level > NUM_BASE_LEVELS) {
-            int32_t       ctx        = get_br_ctx(levels, pos, bwl, tx_class);
-            const int32_t base_range = level - 1 - NUM_BASE_LEVELS;
-
-            cost += coeff_costs->base_cost[coeff_contexts[pos]][3];
-            if (base_range < COEFF_BASE_RANGE) {
-                cost += coeff_costs->lps_cost[ctx][base_range];
-            } else {
-                cost += get_golomb_cost(level) + coeff_costs->lps_cost[ctx][COEFF_BASE_RANGE];
-            }
-        } else {
-            cost += coeff_costs->base_cost[coeff_contexts[pos]][level];
-        }
+    int32_t c_start = MIN(eob - 2, eob / MAX(1, (int)(md_ctx->mds_fast_coeff_est_level - md_ctx->mds_subres_step)));
+#if CONFIG_ENABLE_FAST_DECODE_3
+    // Decoder-complexity rate of the positions this estimate skips (c_start + 1 .. eob - 2)
+    if (md_ctx->dec_cost_ctrls.enabled && c_start < eob - 2) {
+        cost += md_ctx->dec_cost_ctrls.pos_rate * (eob - 2 - c_start);
     }
-    cost += cost_literal_cnt * cost_literal;
+#endif
+    if (c_start < 1) {
+        return cost;
+    }
+    switch (tx_class) {
+    case TX_CLASS_2D:
+#if EN_AVX512_SUPPORT
+        if (svt_aom_use_avx512 && c_start == eob - 2 && coeff_costs->base_cost16_ok) {
+            cost += cost_coeffs_mid_raster_2d(iscan,
+                                              qcoeff,
+                                              coeff_contexts,
+                                              coeff_costs,
+                                              levels,
+                                              bwl,
+                                              get_levels_rows(scan, eob, bwl, height, TX_CLASS_2D) << bwl,
+                                              eob);
+            break;
+        }
+#else
+        (void)iscan;
+        (void)height;
+#endif
+        cost += cost_coeffs_mid_TX_CLASS_2D(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, c_start);
+        break;
+    case TX_CLASS_HORIZ:
+        cost += cost_coeffs_mid_TX_CLASS_HORIZ(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, c_start);
+        break;
+    default:
+        cost += cost_coeffs_mid_TX_CLASS_VERT(scan, qcoeff, coeff_contexts, coeff_costs, levels, bwl, c_start);
+        break;
+    }
 
     return cost;
 }
+
+// Debug builds recount a reused RDOQ rate and check it
+#ifdef NDEBUG
+#define CHECK_RDOQ_RATE_REUSE 0
+#else
+#define CHECK_RDOQ_RATE_REUSE 1
+#endif
 
 // Note: don't call this function when eob is 0.
 uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_cdf, FRAME_CONTEXT* ec_ctx,
@@ -371,11 +497,11 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
         update_cdf(ec_ctx->txb_skip_cdf[txs_ctx][txb_skip_ctx], eob == 0, 2);
     }
 
-    if (eob > 1) {
-        svt_av1_txb_init_levels(qcoeff,
-                                width,
-                                height,
-                                levels); // NM - Needs to be optimized - to be combined with the quantisation.
+    // RDOQ already counted the eob, level and sign bits of these coefficients
+    const bool reuse_rdoq_rate = !allow_update_cdf && qcoeff == ctx->rdoq_rate_qcoeff && eob == ctx->rdoq_rate_eob &&
+        ctx->rdoq_rate_key == get_rdoq_rate_key(transform_size, transform_type, plane_type, txb_skip_ctx, dc_sign_ctx);
+    if (eob > 1 && (!reuse_rdoq_rate || CHECK_RDOQ_RATE_REUSE)) {
+        svt_av1_txb_init_levels(qcoeff, width, get_levels_rows(scan, eob, bwl, height, tx_class), levels);
     }
     const bool is_inter = is_inter_mode(cand_bf->cand->block_mi.mode);
     // Transform type bit estimation
@@ -388,6 +514,10 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
                                                                            transform_size,
                                                                            transform_type,
                                                                            reduced_transform_set_flag);
+    if (reuse_rdoq_rate && !CHECK_RDOQ_RATE_REUSE) {
+        return cost + ctx->rdoq_rate;
+    }
+    const int32_t cost_before_coeffs = cost;
 
     // Transform eob bit estimation
     cost += get_eob_cost(eob, eob_bits, coeff_costs, tx_class);
@@ -454,10 +584,20 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
         return 0;
     }
 
-#define COST_TXB_EOB_CASE(tx_class_literal)                                                                   \
-    case tx_class_literal:                                                                                    \
-        cost += av1_cost_coeffs_txb_loop_cost_eob(                                                            \
-            ctx, eob, scan, qcoeff, coeff_contexts, coeff_costs, dc_sign_ctx, levels, bwl, tx_class_literal); \
+#define COST_TXB_EOB_CASE(tx_class_literal)                          \
+    case tx_class_literal:                                           \
+        cost += av1_cost_coeffs_txb_loop_cost_eob(ctx,               \
+                                                  eob,               \
+                                                  scan,              \
+                                                  qcoeff,            \
+                                                  coeff_contexts,    \
+                                                  coeff_costs,       \
+                                                  dc_sign_ctx,       \
+                                                  levels,            \
+                                                  bwl,               \
+                                                  tx_class_literal,  \
+                                                  scan_order->iscan, \
+                                                  height);           \
         break;
     switch (tx_class) {
         COST_TXB_EOB_CASE(TX_CLASS_2D);
@@ -468,6 +608,8 @@ uint64_t svt_av1_cost_coeffs_txb(ModeDecisionContext* ctx, uint8_t allow_update_
         assert(false);
         break;
     }
+    assert(!reuse_rdoq_rate || cost == cost_before_coeffs + ctx->rdoq_rate);
+    (void)cost_before_coeffs;
     return cost;
 }
 
@@ -529,12 +671,10 @@ uint64_t svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ct
     if (svt_aom_allow_intrabc(&pcs->ppcs->frm_hdr, pcs->ppcs->slice_type) && cand->block_mi.use_intrabc) {
         uint64_t rate = 0;
 
-        Mv         mv        = {.as_int = cand->block_mi.mv[0].as_int};
-        Mv         ref_mv    = {.as_int = cand->pred_mv[0].as_int};
-        const int* dvcost[2] = {(int*)&ctx->md_rate_est_ctx->dv_cost[0][MV_MAX],
-                                (int*)&ctx->md_rate_est_ctx->dv_cost[1][MV_MAX]};
-        int32_t    mv_rate   = svt_av1_mv_bit_cost(
-            mv, ref_mv, ctx->md_rate_est_ctx->dv_joint_cost, dvcost, MV_COST_WEIGHT_SUB);
+        Mv      mv      = {.as_int = cand->block_mi.mv[0].as_int};
+        Mv      ref_mv  = {.as_int = cand->pred_mv[0].as_int};
+        int32_t mv_rate = svt_av1_mv_bit_cost(
+            mv, ref_mv, ctx->md_rate_est_ctx->dv_joint_cost, ctx->md_rate_est_ctx->nmvcoststack, MV_COST_WEIGHT_SUB);
 
         rate                      = mv_rate + ctx->md_rate_est_ctx->intrabc_fac_bits[cand->block_mi.use_intrabc];
         cand_bf->fast_luma_rate   = rate;
@@ -554,8 +694,8 @@ uint64_t svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ct
         uint32_t luma_rate   = 0;
         uint32_t chroma_rate = 0;
         intra_mode_bits_num  = pcs->slice_type != I_SLICE
-             ? (uint64_t)ctx->md_rate_est_ctx->mb_mode_fac_bits[eb_size_group_lookup[blk_geom->bsize]][intra_mode]
-             : ZERO_COST;
+            ? (uint64_t)ctx->md_rate_est_ctx->mb_mode_fac_bits[eb_size_group_lookup[blk_geom->bsize]][intra_mode]
+            : ZERO_COST;
 
         skip_mode_rate = pcs->slice_type != I_SLICE && pcs->ppcs->frm_hdr.skip_mode_params.skip_mode_flag &&
                 is_comp_ref_allowed(blk_geom->bsize)
@@ -623,7 +763,7 @@ uint64_t svt_aom_intra_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ct
             ? ctx->md_rate_est_ctx->intra_inter_fac_bits[ctx->is_inter_ctx][0]
             : 0;
         luma_rate              = (uint32_t)(intra_mode_bits_num + skip_mode_rate + intra_luma_mode_bits_num +
-                               intra_luma_ang_mode_bits_num + is_inter_rate + intra_filter_mode_bits_num);
+                                            intra_luma_ang_mode_bits_num + is_inter_rate + intra_filter_mode_bits_num);
         if (svt_aom_allow_intrabc(&pcs->ppcs->frm_hdr, pcs->ppcs->slice_type)) {
             svt_aom_assert_err(cand->block_mi.use_intrabc == 0, "this block ibc should be off\n");
             luma_rate += ctx->md_rate_est_ctx->intrabc_fac_bits[cand->block_mi.use_intrabc];
@@ -1198,6 +1338,8 @@ uint64_t svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ct
 EbErrorType svt_aom_txb_estimate_coeff_bits_pd0(ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
                                                 uint32_t txb_origin_index, EbPictureBufferDesc* coeff_buffer_sb,
                                                 uint32_t y_eob, uint64_t* y_txb_coeff_bits, TxSize txsize) {
+    // coefficients from svt_aom_quantize_inv_quantize_light(), so the recorded RDOQ rate does not apply
+    ctx->rdoq_rate_qcoeff = NULL;
     if (y_eob) {
         *y_txb_coeff_bits = svt_av1_cost_coeffs_txb(
             ctx,
@@ -1326,11 +1468,11 @@ EbErrorType svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionCandidat
     uint64_t coeff_rate = (*y_coeff_bits + (uint64_t)ctx->md_rate_est_ctx->skip_fac_bits[0][0]);
 
     // Assign full cost
-    // Use context index 0 for the partition rate as an approximation to skip call to
-    // av1_partition_rate_cost Partition cost is only needed for > 4x4 blocks, but light-PD0 assumes
-    // 4x4 blocks are disallowed
-    *(cand_bf->full_cost) = RDCOST(
-        lambda, coeff_rate + ctx->md_rate_est_ctx->partition_fac_bits[0][PARTITION_NONE], y_distortion[0]);
+    // Keep the light context approximation, but 4x4 leaves have no partition flag.
+    const uint64_t partition_rate = ctx->blk_geom->bsize == BLOCK_4X4
+        ? 0
+        : ctx->md_rate_est_ctx->partition_fac_bits[0][PARTITION_NONE];
+    *(cand_bf->full_cost)         = RDCOST(lambda, coeff_rate + partition_rate, y_distortion[0]);
     return return_error;
 }
 
@@ -1458,6 +1600,19 @@ void svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, ModeDec
         assert(ctx->md_stage == MD_STAGE_3);
         *(cand_bf->full_cost_ssim) = RDCOST(lambda, mode_rate, mode_ssim_distortion);
     }
+#if CONFIG_ENABLE_FAST_DECODE_3
+    // Decoder-complexity cost of the additional luma transform blocks; affects decisions only, not total_rate
+    if (ctx->dec_cost_ctrls.enabled) {
+        const uint32_t txb_count = tx_blocks_per_depth[ctx->blk_geom->bsize][cand_bf->cand->block_mi.tx_depth];
+        if (txb_count > 1) {
+            const uint64_t dec_cost = RDCOST(lambda, ctx->dec_cost_ctrls.txsplit_rate * (txb_count - 1), 0);
+            *(cand_bf->full_cost) += dec_cost;
+            if (update_full_cost_ssim) {
+                *(cand_bf->full_cost_ssim) += dec_cost;
+            }
+        }
+    }
+#endif
     return;
 }
 

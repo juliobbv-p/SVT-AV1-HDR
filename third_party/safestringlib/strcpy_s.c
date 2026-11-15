@@ -64,10 +64,10 @@
  *    strcat_s(), strncat_s(), strncpy_s()
  *
  */
-errno_t strcpy_s(char *dest, rsize_t dmax, const char *src) {
+errno_t strcpy_s(char* dest, rsize_t dmax, const char* src) {
     rsize_t     orig_dmax;
-    char       *orig_dest;
-    const char *overlap_bumper;
+    char*       orig_dest;
+    const char* overlap_bumper;
 
     if (dest == NULL) {
         invoke_safe_str_constraint_handler("strcpy_s: dest is null", NULL, ESNULLP);

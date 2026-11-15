@@ -387,8 +387,8 @@ EbErrorType release_prev_picture_from_reorder_queue(EncodeContext* enc_ctx) {
     // Get the previous entry from the Picture Decision Reordering Queue (Entry N-1)
     // P.S. The previous entry in display order is needed for Scene Change Detection
     previous_entry_index     = (enc_ctx->picture_decision_reorder_queue_head_index == 0)
-            ? enc_ctx->picture_decision_reorder_queue_size - 1
-            : enc_ctx->picture_decision_reorder_queue_head_index - 1;
+        ? enc_ctx->picture_decision_reorder_queue_size - 1
+        : enc_ctx->picture_decision_reorder_queue_head_index - 1;
     queue_previous_entry_ptr = enc_ctx->picture_decision_reorder_queue[previous_entry_index];
 
     // SB activity classification based on (0,0) SAD & picture activity derivation
@@ -540,7 +540,7 @@ void dg_detector_hme_level0(PictureParentControlSet* ppcs, uint32_t seg_idx) {
             ->sixteenth_downsampled_picture_ptr;
 
     int16_t sa_width  = ppcs->input_resolution <= INPUT_SIZE_360p_RANGE ? 16
-         : ppcs->input_resolution <= INPUT_SIZE_480p_RANGE              ? 64
+        : ppcs->input_resolution <= INPUT_SIZE_480p_RANGE               ? 64
                                                                         : 128;
     int16_t sa_height = ppcs->input_resolution <= INPUT_SIZE_360p_RANGE ? 16
         : ppcs->input_resolution <= INPUT_SIZE_480p_RANGE               ? 64
@@ -1215,66 +1215,30 @@ static void apply_ref_clear(PictureParentControlSet* pcs, PictureDecisionContext
     ctx->pic_id_per_dpb_slot[slot] = 0;
 }
 
-// STORE-safe DPB slot pool: complement of the slots that some active LD-CBR
-// pred-struct branch refreshes as the sole bit of refresh_frame_mask.
-// Locking one of those slots would collapse the branch's refresh mask to 0
-// in apply_ref_mgmt_events Phase 3 → crash in assign_and_release_pa_refs.
-// Mirror of av1_generate_rps_info LD-CBR branch (line 2024-2126); keep in
-// sync when refresh_frame_mask assignments there change. LTR is gated to
-// LD-CBR in enc_settings.c — LD-CRF's shifted lay1_offset would need its
-// own branch here. Slot 7's long-base period-128 refresh is silently
-// suppressed when STOREd by the same Phase 3 guard, so it stays safe.
-static uint8_t exclusive_write_slots_mask_ld_cbr(const SequenceControlSet* scs) {
-    uint8_t       mask      = 0;
-    const uint8_t hier      = scs->static_config.hierarchical_levels;
-    const uint8_t ld_reduce = scs->mrp_ctrls.ld_reduce_ref_buffs;
-
-    // TID-0: single-bit `1 << lay0_toggle` (toggle ∈ {0,1,2}) only at
-    // ld_reduce=0; backup bits (`| 0xf0` / `| 0xfc`) make it non-exclusive otherwise.
-    if (ld_reduce == 0) {
-        mask |= 0x07u;
-    }
-    // TID-1: always single-bit; slot depends on ld_reduce.
-    if (hier >= 1) {
-        switch (ld_reduce) {
-        case 0:
-            mask |= (uint8_t)((1u << LAY1_OFF) | (1u << (LAY1_OFF + 1)));
-            break;
-        case 1:
-            mask |= (uint8_t)(1u << LAY1_OFF);
-            break;
-        case 2:
-            mask |= (uint8_t)(1u << 1);
-            break;
-        default:
-            assert(0 && "unhandled ld_reduce_ref_buffs");
-            break;
-        }
-    }
-    // TID-2: ld_reduce > 0 force-zeros TID-2 refresh, so only exclusive at ld_reduce=0.
-    if (hier >= 2 && ld_reduce == 0) {
-        mask |= (uint8_t)(1u << LAY2_OFF);
-    }
-    return mask;
-}
-
+// STORE-safe DPB slot pool for application-managed LTR: the encoder's regular
+// references own the bottom 4 slots, LTR anchors the top 4.
+//
+// The split holds because LTR requires ld_reduce_ref_buffs >= 1 (rejected at
+// init in svt_av1_enc_set_parameter otherwise), which means:
+//   - ref counts <= 2, so prune_refs collapses LAST3 onto LAST and the
+//     long-base slot 7 is never read;
+//   - every nonzero TID-0/TID-1 refresh carries its 0xfc/0xf0 backup bits, so
+//     masking the top 4 out can never collapse refresh_frame_mask to 0 in
+//     Phase 3 (a non-reference TID-1 frame refreshes nothing at all, which
+//     Phase 3 leaves alone);
+//   - TID-2 refresh is force-zeroed for any ld_reduce > 0, so LAY2_OFF (slot 5)
+//     is not written either.
+// An anchor in slot 7 suppresses the period-128 long-base refresh via the same
+// Phase-3 guard, which is harmless since nothing reads that slot here.
 uint8_t svt_aom_ref_mgmt_storeable_slots_mask(const SequenceControlSet* scs) {
-    // Flat IPP (hier=0): regular refs only ever occupy slots [0..flat_max_refs-1]
-    // (flat_max_refs <= 4) and lay0_toggle rotates through them, while slots 4-7
-    // are the per-frame `| 0xf0` refresh/clear backup and are never read as refs.
-    // Returning 0xFF is crash-safe (the 0xf0 backup keeps the Phase-3 refresh
-    // guard from collapsing refresh_frame_mask to 0), but STOREing into a bottom
-    // slot would let the Phase-3 guard freeze a slot the toggle still rotates
-    // through, silently dropping a live ref out of the window. Restrict STORE to
-    // the top 4 so it never interferes with the regular sliding-window refs.
-    if (scs->static_config.rtc && scs->static_config.hierarchical_levels == 0) {
-        return 0xF0u;
+    assert(scs->static_config.hierarchical_levels <= 2 && "LD-CBR RPS supports hierarchical_levels <= 2");
+    // An empty pool makes every STORE no-op, so LTR degrades to unavailable
+    // rather than pinning a slot the encoder is still predicting from.
+    if (scs->mrp_ctrls.ld_reduce_ref_buffs < 1) {
+        assert(0 && "LTR slot pool assumes ref counts <= 2; gated in svt_av1_enc_set_parameter");
+        return 0u;
     }
-    if (scs->static_config.pred_structure == LOW_DELAY && scs->static_config.hierarchical_levels >= 1) {
-        return (uint8_t)(~exclusive_write_slots_mask_ld_cbr(scs) & 0xFFu);
-    }
-    // RA / other paths: not LTR-eligible (rejected in enc_settings.c).
-    return 0xFFu;
+    return 0xF0u;
 }
 
 // STORE: place the current frame into the lowest free STORE-safe DPB slot
@@ -1343,6 +1307,31 @@ static bool apply_ref_use(PictureParentControlSet* pcs, PictureDecisionContext* 
                   (unsigned)pid,
                   (unsigned long)pcs->picture_number);
         return false;
+    }
+    // Reject a USE whose anchor the decoder can no longer reference, so the
+    // caller falls back to ordinary refs rather than emit a frame the decoder
+    // will drop. Once an anchor is older than 2^delta_frame_id_length the
+    // decoder has cleared its slot's RefValid (mark_ref_frames) and
+    // only a refresh restores it, which a held anchor never gets.
+    //
+    // Measured on picture_number, which does not wrap. Frame ids do, so an id
+    // difference would read a long-held anchor as recent again once past a full
+    // id period. Bounding the age also bounds what the header writer emits:
+    // ids step by one over the full span, so the delta it computes equals this
+    // age exactly.
+    if (pcs->scs->seq_header.frame_id_numbers_present_flag) {
+        const uint64_t age     = pcs->picture_number - ctx->dpb[slot].picture_number;
+        const uint64_t max_age = 1ull << pcs->scs->seq_header.delta_frame_id_length;
+        if (svt_aom_frame_id_age_unusable(age, pcs->scs->seq_header.delta_frame_id_length)) {
+            SVT_WARN(
+                "Ref-frame mgmt: USE pic_id=%u anchor unreferenceable "
+                "(age=%lu max=%lu); rejecting -> fallback (poc=%lu)\n",
+                (unsigned)pid,
+                (unsigned long)age,
+                (unsigned long)max_age,
+                (unsigned long)pcs->picture_number);
+            return false;
+        }
     }
     Av1RpsNode*    rps = &pcs->av1_ref_signal;
     const uint64_t poc = ctx->dpb[slot].picture_number;
@@ -2000,8 +1989,8 @@ static void av1_generate_rps_info(PictureParentControlSet* pcs, EncodeContext* e
 
         const uint8_t lay1_offset = scs->mrp_ctrls.ld_reduce_ref_buffs == 0 ? LAY1_OFF : 1;
         const uint8_t lay1_2_idx  = scs->mrp_ctrls.ld_reduce_ref_buffs == 2
-             ? 1
-             : lay1_offset + lay1_toggle; // the newest L1/2 picture in the DPB
+            ? 1
+            : lay1_offset + lay1_toggle; // the newest L1/2 picture in the DPB
         const uint8_t lay1_1_idx  = CIRC_DEC(
             lay1_2_idx, lay1_offset, lay1_offset + 2); // the middle L1/2 picture in the DPB
         const uint8_t lay1_0_idx = CIRC_DEC(
@@ -2077,8 +2066,8 @@ static void av1_generate_rps_info(PictureParentControlSet* pcs, EncodeContext* e
         const uint8_t base0_idx = CIRC_DEC(base1_idx, 0, 2); //the oldest L0 picture in the DPB
 
         const uint8_t  lay1_1_idx    = scs->mrp_ctrls.ld_reduce_ref_buffs == 2 ? !lay0_toggle
-                : scs->mrp_ctrls.ld_reduce_ref_buffs == 1                      ? LAY1_OFF
-                                                          : LAY1_OFF + lay1_toggle; //the newest L1 picture in the DPB
+            : scs->mrp_ctrls.ld_reduce_ref_buffs == 1                          ? LAY1_OFF
+                                                      : LAY1_OFF + lay1_toggle; //the newest L1 picture in the DPB
         const uint8_t  lay1_0_idx    = CIRC_DEC(lay1_1_idx, LAY1_OFF, LAY1_OFF + 1); //the oldest L1 picture in the DPB
         const uint8_t  lay2_idx      = LAY2_OFF; //the newest L2 picture in the DPB
         const uint8_t  long_base_idx = 7;
@@ -3811,16 +3800,16 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
         }
         if (pcs->tf_ctrls.chroma_lvl) {
             noise_level_fp16 = svt_estimate_noise_highbd_fp16(altref_buffer_highbd_start[PLANE_U], // U only
-                                                              (central_picture_ptr->width >> 1),
-                                                              (central_picture_ptr->height >> 1),
+                                                              (central_picture_ptr->width >> ss_x),
+                                                              (central_picture_ptr->height >> ss_y),
                                                               central_picture_ptr->u_stride,
                                                               encoder_bit_depth);
             noise_levels_log1p_fp16[PLANE_U] = svt_aom_noise_log1p_fp16(noise_level_fp16);
 
             noise_level_fp16 = svt_estimate_noise_highbd_fp16(altref_buffer_highbd_start[PLANE_V], // V only
-                                                              (central_picture_ptr->width >> 1),
-                                                              (central_picture_ptr->height >> 1),
-                                                              central_picture_ptr->u_stride,
+                                                              (central_picture_ptr->width >> ss_x),
+                                                              (central_picture_ptr->height >> ss_y),
+                                                              central_picture_ptr->v_stride,
                                                               encoder_bit_depth);
             noise_levels_log1p_fp16[PLANE_V] = svt_aom_noise_log1p_fp16(noise_level_fp16);
         }
@@ -3833,22 +3822,22 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
 
         if (do_noise_est) {
             noise_level_fp16                 = svt_estimate_noise_fp16(y_buffer, // Y
-                                                       central_picture_ptr->width,
-                                                       central_picture_ptr->height,
-                                                       central_picture_ptr->y_stride);
+                                                                       central_picture_ptr->width,
+                                                                       central_picture_ptr->height,
+                                                                       central_picture_ptr->y_stride);
             noise_levels_log1p_fp16[PLANE_Y] = svt_aom_noise_log1p_fp16(noise_level_fp16);
         }
         if (pcs->tf_ctrls.chroma_lvl) {
             noise_level_fp16                 = svt_estimate_noise_fp16(buffer_u, // U
-                                                       (central_picture_ptr->width >> ss_x),
-                                                       (central_picture_ptr->height >> ss_y),
-                                                       central_picture_ptr->u_stride);
+                                                                       (central_picture_ptr->width >> ss_x),
+                                                                       (central_picture_ptr->height >> ss_y),
+                                                                       central_picture_ptr->u_stride);
             noise_levels_log1p_fp16[PLANE_U] = svt_aom_noise_log1p_fp16(noise_level_fp16);
 
             noise_level_fp16                 = svt_estimate_noise_fp16(buffer_v, // V
-                                                       (central_picture_ptr->width >> ss_x),
-                                                       (central_picture_ptr->height >> ss_y),
-                                                       central_picture_ptr->v_stride);
+                                                                       (central_picture_ptr->width >> ss_x),
+                                                                       (central_picture_ptr->height >> ss_y),
+                                                                       central_picture_ptr->v_stride);
             noise_levels_log1p_fp16[PLANE_V] = svt_aom_noise_log1p_fp16(noise_level_fp16);
         }
     }
@@ -3986,7 +3975,7 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
                 uint32_t num_future_pics   = pcs->tf_ctrls.num_future_pics + (pcs->tf_ctrls.modulate_pics ? offset : 0);
                 num_future_pics            = MIN(pcs->tf_ctrls.max_num_future_pics, num_future_pics);
                 num_future_pics            = MIN((uint8_t)num_future_pics,
-                                      svt_aom_tf_max_ref_per_struct(pcs->hierarchical_levels, 0, 1));
+                                                 svt_aom_tf_max_ref_per_struct(pcs->hierarchical_levels, 0, 1));
                 uint32_t num_past_pics     = 0;
                 uint32_t pic_i;
                 //search reord-queue to get the future pictures
@@ -4190,9 +4179,12 @@ static void mctf_frame_st(SequenceControlSet* scs, PictureParentControlSet* pcs)
     MotionEstimationContext_t* me_ctx_ptr = (MotionEstimationContext_t*)scs->enc_ctx->st_me_context;
     me_ctx_ptr->me_ctx->me_type           = ME_MCTF;
     svt_aom_sig_deriv_me_tf(pcs, me_ctx_ptr->me_ctx);
+#if CONFIG_ENABLE_GLOBAL_MOTION
+    // Same guard as the threaded TASK_TFME path (me_process.c): gm_ctrls are forced off without GM.
     if (pcs->gm_ctrls.pp_enabled && pcs->gm_pp_enabled) {
         svt_aom_gm_pre_processor(pcs, pcs->temp_filt_pcs_list);
     }
+#endif // CONFIG_ENABLE_GLOBAL_MOTION
     for (int16_t seg_idx = 0; seg_idx < pcs->tf_segments_total_count; ++seg_idx) {
         svt_av1_init_temporal_filtering(pcs->temp_filt_pcs_list, pcs, me_ctx_ptr, seg_idx);
     }
@@ -4309,12 +4301,12 @@ static void send_picture_out(SequenceControlSet* scs, PictureParentControlSet* p
             }
         } else {
             if (pcs->temporal_layer_index == 0 && pcs->ref_list0_count_try >= 3) {
-                EbPictureBufferDesc* ref_last_ds = ((EbPaReferenceObject*)pcs->ref_pa_pic_ptr_array[0][0]->object_ptr)
-                                                       ->sixteenth_downsampled_picture_ptr;
+                EbPictureBufferDesc* ref_last_ds  = ((EbPaReferenceObject*)pcs->ref_pa_pic_ptr_array[0][0]->object_ptr)
+                                                        ->sixteenth_downsampled_picture_ptr;
                 EbPictureBufferDesc* ref_last3_ds = ((EbPaReferenceObject*)pcs->ref_pa_pic_ptr_array[0][2]->object_ptr)
                                                         ->sixteenth_downsampled_picture_ptr;
-                uint64_t last_dist  = mrp_detector_hme_level0(pcs, ref_last_ds);
-                uint64_t last3_dist = mrp_detector_hme_level0(pcs, ref_last3_ds);
+                uint64_t             last_dist    = mrp_detector_hme_level0(pcs, ref_last_ds);
+                uint64_t             last3_dist   = mrp_detector_hme_level0(pcs, ref_last3_ds);
                 // Prune LAST3 when it is >= early_hme_l0_prune_th% worse than LAST.
                 if (last3_dist * 100 >= last_dist * mrp_ctrl->early_hme_l0_prune_th) {
                     pcs->ref_list0_count_try = MIN(pcs->ref_list0_count_try, 2);
@@ -4337,6 +4329,8 @@ static void send_picture_out(SequenceControlSet* scs, PictureParentControlSet* p
         svt_get_empty_object(ctx->me_fifo_ptr, &me_wrapper);
         pcs->me_data_wrapper = me_wrapper;
         pcs->pa_me_data      = (MotionEstimationData*)me_wrapper->object_ptr;
+        // the object is recycled, scrub it before configuring it for this picture
+        me_reset_carryover(pcs->pa_me_data);
         me_update_param(pcs->pa_me_data, scs);
     }
 
@@ -4789,10 +4783,14 @@ static void set_mini_gop_structure(SequenceControlSet* scs, EncodeContext* enc_c
     get_pred_struct_for_all_frames(ctx, enc_ctx);
 }
 
-// Set whether the picture is to be considered as SC; for single-threaded mode we perform SC detection here
+// Detect AA-aware SC on I-frames; other frames inherit the last I-frame's classes.
 static void perform_sc_detection(SequenceControlSet* scs, PictureParentControlSet* pcs, PictureDecisionContext* ctx) {
     if (pcs->slice_type == I_SLICE) {
-        // If running multi-threaded mode, perform SC detection in svt_aom_picture_analysis_kernel, else in svt_aom_picture_decision_kernel
+        if (scs->static_config.level_of_parallelism != 1 && scs->static_config.screen_content_mode == 3 &&
+            !pcs->sc_aa_detected) {
+            svt_aom_is_screen_content_antialiasing_aware(pcs);
+        }
+        // Other detection modes remain in Picture Analysis for multi-threaded mode.
         if (scs->static_config.level_of_parallelism == 1) {
             switch (scs->static_config.screen_content_mode) {
             case 0:
@@ -4935,7 +4933,7 @@ static void init_pic_settings(SequenceControlSet* scs, PictureParentControlSet* 
     FrameHeader* frm_hdr        = &pcs->frm_hdr;
     pcs->allow_comp_inter_inter = pcs->slice_type != I_SLICE;
     frm_hdr->reference_mode     = pcs->slice_type == I_SLICE ? (ReferenceMode)0xFF
-            : svt_aom_is_incomp_mg_frame(pcs)                ? SINGLE_REFERENCE
+        : svt_aom_is_incomp_mg_frame(pcs)                    ? SINGLE_REFERENCE
                                                              : REFERENCE_MODE_SELECT;
 
     pcs->av1_cm->mi_cols = pcs->aligned_width >> MI_SIZE_LOG2;
@@ -5201,6 +5199,14 @@ static void process_pics(SequenceControlSet* scs, PictureDecisionContext* ctx) {
 // update the DPB stored in the PD context
 static void update_dpb(PictureParentControlSet* pcs, PictureDecisionContext* ctx) {
     Av1RpsNode* av1_rps = &pcs->av1_ref_signal;
+    // Snapshot each slot's frame_id before refresh overwrites it: the header
+    // writer cannot see ctx->dpb and needs these to emit per-ref
+    // delta_frame_id.
+    if (pcs->scs->seq_header.frame_id_numbers_present_flag) {
+        for (int i = 0; i < REF_FRAMES; i++) {
+            pcs->frm_hdr.ref_frame_id[i] = svt_aom_frame_id_from_pic_num(ctx->dpb[i].picture_number);
+        }
+    }
     if (av1_rps->refresh_frame_mask) {
         for (int i = 0; i < REF_FRAMES; i++) {
             if ((av1_rps->refresh_frame_mask >> i) & 1) {
@@ -5755,13 +5761,13 @@ EbErrorType svt_aom_picture_decision_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_picture_decision_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_picture_decision_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_picture_decision_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

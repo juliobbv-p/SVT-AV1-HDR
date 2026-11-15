@@ -24,7 +24,7 @@
 using svt_av1_test_tool::SVTRandom;
 
 namespace {
-#if OPT_TUNE_VMAF
+#if CONFIG_ENABLE_VMAF
 
 static const int kSvtAv1MaxWidth = 16384;
 static const int kSvtAv1MaxHeight = 8704;
@@ -656,6 +656,6 @@ INSTANTIATE_TEST_SUITE_P(
 #endif  // HAVE_SVE
 #endif  // ARCH_AARCH64
 
-#endif  // OPT_TUNE_VMAF
+#endif  // CONFIG_ENABLE_VMAF
 
 }  // namespace

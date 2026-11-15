@@ -56,6 +56,54 @@ EbErrorType svt_aom_neighbor_array_unit_ctor(NeighborArrayUnit* na_unit_ptr, uin
 
 void svt_aom_neighbor_array_unit_reset(NeighborArrayUnit* na_unit_ptr);
 
+// memset / memcpy for the short runs of a neighbor-array write (one entry per 4 or 1 samples of a
+// block edge). Variable-size libc calls cost a PLT call per edge; these cover the run with two
+// possibly overlapping fixed-size stores.
+static INLINE void svt_aom_na_memset_small(uint8_t* dst, uint8_t v, uint32_t n) {
+    if (n > 16) {
+        memset(dst, v, n);
+        return;
+    }
+    const uint64_t v8 = 0x0101010101010101ull * v;
+    if (n >= 8) {
+        memcpy(dst, &v8, 8);
+        memcpy(dst + n - 8, &v8, 8);
+    } else if (n >= 4) {
+        const uint32_t v4 = (uint32_t)v8;
+        memcpy(dst, &v4, 4);
+        memcpy(dst + n - 4, &v4, 4);
+    } else if (n >= 2) {
+        const uint16_t v2 = (uint16_t)v8;
+        memcpy(dst, &v2, 2);
+        memcpy(dst + n - 2, &v2, 2);
+    } else if (n) {
+        dst[0] = v;
+    }
+}
+
+static INLINE void svt_aom_na_memcpy_small(uint8_t* dst, const uint8_t* src, uint32_t n) {
+    if (n > 64) {
+        memcpy(dst, src, n);
+    } else if (n >= 32) {
+        memcpy(dst, src, 32);
+        memcpy(dst + n - 32, src + n - 32, 32);
+    } else if (n >= 16) {
+        memcpy(dst, src, 16);
+        memcpy(dst + n - 16, src + n - 16, 16);
+    } else if (n >= 8) {
+        memcpy(dst, src, 8);
+        memcpy(dst + n - 8, src + n - 8, 8);
+    } else if (n >= 4) {
+        memcpy(dst, src, 4);
+        memcpy(dst + n - 4, src + n - 4, 4);
+    } else if (n >= 2) {
+        memcpy(dst, src, 2);
+        memcpy(dst + n - 2, src + n - 2, 2);
+    } else if (n) {
+        dst[0] = src[0];
+    }
+}
+
 static INLINE uint32_t get_neighbor_array_unit_left_index(NeighborArrayUnit* na_unit_ptr, uint32_t loc_y) {
     return loc_y >> na_unit_ptr->granularity_log2;
 }
@@ -436,18 +484,18 @@ static INLINE void svt_aom_neighbor_array_unit_mode_write_pu(NeighborArrayUnit* 
     if (mask & NEIGHBOR_ARRAY_UNIT_TOP_MASK) {
         uint8_t* dst   = na_unit_ptr->top_array + (org_x >> 2);
         uint32_t count = bw >> 2;
-        memset(dst, v, count);
+        svt_aom_na_memset_small(dst, v, count);
     }
     if (mask & NEIGHBOR_ARRAY_UNIT_LEFT_MASK) {
         uint8_t* dst   = na_unit_ptr->left_array + (org_y >> 2);
         uint32_t count = bh >> 2;
-        memset(dst, v, count);
+        svt_aom_na_memset_small(dst, v, count);
     }
     if (mask & NEIGHBOR_ARRAY_UNIT_TOPLEFT_MASK) {
         uint32_t off   = (uint32_t)na_unit_ptr->left_array_size + (org_x >> 2) - ((org_y + (bh - 1)) >> 2);
         uint8_t* dst   = na_unit_ptr->top_left_array + off;
         uint32_t count = ((bw + bh) >> 2) - 1;
-        memset(dst, v, count);
+        svt_aom_na_memset_small(dst, v, count);
     }
 }
 #ifdef __cplusplus

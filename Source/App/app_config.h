@@ -22,6 +22,7 @@
 #endif
 
 #include "EbSvtAv1Enc.h"
+#include "app_film_grain.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -212,7 +213,8 @@ typedef struct EbConfig {
     Hdr10PlusRsJsonOpaque* hdr10plus_json;
 #endif
 
-    char* fgs_table_path;
+    char*          fgs_table_path;
+    FilmGrainTable fgs_table;
 
     bool color;
 } EbConfig;

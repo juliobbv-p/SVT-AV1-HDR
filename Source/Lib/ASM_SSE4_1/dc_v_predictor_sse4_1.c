@@ -22,61 +22,67 @@
 static INLINE uint32_t dcv_sum_u8(const uint8_t* p, int32_t n) {
     const __m128i zero = _mm_setzero_si128();
     __m128i       acc  = _mm_setzero_si128();
-    for (int32_t i = 0; i < n; i += 16)
+    for (int32_t i = 0; i < n; i += 16) {
         acc = _mm_add_epi32(acc, _mm_sad_epu8(_mm_loadu_si128((const __m128i*)(p + i)), zero));
+    }
     return (uint32_t)_mm_cvtsi128_si32(acc) + (uint32_t)_mm_extract_epi32(acc, 2);
 }
 
 // Broadcast-fill a w x h block (w a multiple of 16) with a constant byte.
 static INLINE void dcv_fill(uint8_t* dst, ptrdiff_t stride, int32_t w, int32_t h, uint8_t val) {
     const __m128i v = _mm_set1_epi8((char)val);
-    for (int32_t r = 0; r < h; r++, dst += stride)
-        for (int32_t c = 0; c < w; c += 16) _mm_storeu_si128((__m128i*)(dst + c), v);
+    for (int32_t r = 0; r < h; r++, dst += stride) {
+        for (int32_t c = 0; c < w; c += 16) {
+            _mm_storeu_si128((__m128i*)(dst + c), v);
+        }
+    }
 }
 
 // Copy the top row to every row (w a multiple of 16).
 static INLINE void dcv_v(uint8_t* dst, ptrdiff_t stride, int32_t w, int32_t h, const uint8_t* above) {
-    for (int32_t r = 0; r < h; r++, dst += stride)
-        for (int32_t c = 0; c < w; c += 16)
+    for (int32_t r = 0; r < h; r++, dst += stride) {
+        for (int32_t c = 0; c < w; c += 16) {
             _mm_storeu_si128((__m128i*)(dst + c), _mm_loadu_si128((const __m128i*)(above + c)));
+        }
+    }
 }
 
-#define DCV_V_FN(w, h)                                                                                            \
-    void svt_aom_v_predictor_##w##x##h##_sse4_1(uint8_t* dst, ptrdiff_t stride, const uint8_t* above,             \
-                                                const uint8_t* left) {                                            \
-        (void)left;                                                                                              \
-        dcv_v(dst, stride, w, h, above);                                                                         \
+#define DCV_V_FN(w, h)                                                               \
+    void svt_aom_v_predictor_##w##x##h##_sse4_1(                                     \
+        uint8_t* dst, ptrdiff_t stride, const uint8_t* above, const uint8_t* left) { \
+        (void)left;                                                                  \
+        dcv_v(dst, stride, w, h, above);                                             \
     }
 
-#define DCV_DC128_FN(w, h)                                                                                       \
-    void svt_aom_dc_128_predictor_##w##x##h##_sse4_1(uint8_t* dst, ptrdiff_t stride, const uint8_t* above,        \
-                                                     const uint8_t* left) {                                       \
-        (void)above;                                                                                             \
-        (void)left;                                                                                              \
-        dcv_fill(dst, stride, w, h, 128);                                                                        \
+#define DCV_DC128_FN(w, h)                                                           \
+    void svt_aom_dc_128_predictor_##w##x##h##_sse4_1(                                \
+        uint8_t* dst, ptrdiff_t stride, const uint8_t* above, const uint8_t* left) { \
+        (void)above;                                                                 \
+        (void)left;                                                                  \
+        dcv_fill(dst, stride, w, h, 128);                                            \
     }
 
-#define DCV_DCL_FN(w, h)                                                                                         \
-    void svt_aom_dc_left_predictor_##w##x##h##_sse4_1(uint8_t* dst, ptrdiff_t stride, const uint8_t* above,       \
-                                                      const uint8_t* left) {                                      \
-        (void)above;                                                                                             \
-        const uint32_t s = dcv_sum_u8(left, h);                                                                  \
-        dcv_fill(dst, stride, w, h, (uint8_t)((s + (h >> 1)) / h));                                              \
+#define DCV_DCL_FN(w, h)                                                             \
+    void svt_aom_dc_left_predictor_##w##x##h##_sse4_1(                               \
+        uint8_t* dst, ptrdiff_t stride, const uint8_t* above, const uint8_t* left) { \
+        (void)above;                                                                 \
+        const uint32_t s = dcv_sum_u8(left, h);                                      \
+        dcv_fill(dst, stride, w, h, (uint8_t)((s + (h >> 1)) / h));                  \
     }
 
-#define DCV_DCT_FN(w, h)                                                                                         \
-    void svt_aom_dc_top_predictor_##w##x##h##_sse4_1(uint8_t* dst, ptrdiff_t stride, const uint8_t* above,        \
-                                                     const uint8_t* left) {                                       \
-        (void)left;                                                                                              \
-        const uint32_t s = dcv_sum_u8(above, w);                                                                 \
-        dcv_fill(dst, stride, w, h, (uint8_t)((s + (w >> 1)) / w));                                              \
+#define DCV_DCT_FN(w, h)                                                             \
+    void svt_aom_dc_top_predictor_##w##x##h##_sse4_1(                                \
+        uint8_t* dst, ptrdiff_t stride, const uint8_t* above, const uint8_t* left) { \
+        (void)left;                                                                  \
+        const uint32_t s = dcv_sum_u8(above, w);                                     \
+        dcv_fill(dst, stride, w, h, (uint8_t)((s + (w >> 1)) / w));                  \
     }
 
-#define DCV_DC_FN(w, h)                                                                                          \
-    void svt_aom_dc_predictor_##w##x##h##_sse4_1(uint8_t* dst, ptrdiff_t stride, const uint8_t* above,            \
-                                                 const uint8_t* left) {                                           \
-        const uint32_t s = dcv_sum_u8(above, w) + dcv_sum_u8(left, h);                                           \
-        dcv_fill(dst, stride, w, h, (uint8_t)((s + ((w + h) >> 1)) / (w + h)));                                  \
+#define DCV_DC_FN(w, h)                                                              \
+    void svt_aom_dc_predictor_##w##x##h##_sse4_1(                                    \
+        uint8_t* dst, ptrdiff_t stride, const uint8_t* above, const uint8_t* left) { \
+        const uint32_t s = dcv_sum_u8(above, w) + dcv_sum_u8(left, h);               \
+        dcv_fill(dst, stride, w, h, (uint8_t)((s + ((w + h) >> 1)) / (w + h)));      \
     }
 
 #define DCV_SIZES(X) X(32, 16) X(32, 32) X(32, 64) X(64, 16) X(64, 32) X(64, 64)

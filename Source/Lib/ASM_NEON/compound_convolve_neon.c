@@ -250,7 +250,7 @@ void svt_av1_jnt_convolve_2d_neon(const uint8_t* src, int32_t src_stride, uint8_
 
     if (clamped_y_taps == 6) {
         if (conv_params->do_average) {
-            if (UNLIKELY(conv_params->use_jnt_comp_avg)) {
+            if (UNLIKELY(SVT_EFFECTIVE_COMPOUND_TYPES(conv_params->use_jnt_comp_avg))) {
                 dist_wtd_convolve_2d_vert_6tap_dist_wtd_avg_neon(
                     im_block, im_stride, dst8, dst8_stride, conv_params, y_filter, h, w);
             } else {
@@ -262,7 +262,7 @@ void svt_av1_jnt_convolve_2d_neon(const uint8_t* src, int32_t src_stride, uint8_
         }
     } else {
         if (conv_params->do_average) {
-            if (UNLIKELY(conv_params->use_jnt_comp_avg)) {
+            if (UNLIKELY(SVT_EFFECTIVE_COMPOUND_TYPES(conv_params->use_jnt_comp_avg))) {
                 dist_wtd_convolve_2d_vert_8tap_dist_wtd_avg_neon(
                     im_block, im_stride, dst8, dst8_stride, conv_params, y_filter, h, w);
             } else {
@@ -557,7 +557,7 @@ void svt_av1_jnt_convolve_2d_copy_neon(const uint8_t* src, int src_stride, uint8
     }
 
     if (conv_params->do_average) {
-        if (UNLIKELY(conv_params->use_jnt_comp_avg)) {
+        if (UNLIKELY(SVT_EFFECTIVE_COMPOUND_TYPES(conv_params->use_jnt_comp_avg))) {
             dist_wtd_convolve_2d_copy_dist_wtd_avg_neon(src, src_stride, dst8, dst8_stride, w, h, conv_params);
         } else {
             dist_wtd_convolve_2d_copy_avg_neon(src, src_stride, dst8, dst8_stride, w, h, conv_params);
@@ -1202,7 +1202,7 @@ void svt_av1_jnt_convolve_x_neon(const uint8_t* src, int32_t src_stride, uint8_t
     }
 
     if (conv_params->do_average) {
-        if (UNLIKELY(conv_params->use_jnt_comp_avg)) {
+        if (UNLIKELY(SVT_EFFECTIVE_COMPOUND_TYPES(conv_params->use_jnt_comp_avg))) {
             dist_wtd_convolve_x_dist_wtd_avg_neon(
                 src, src_stride, dst8, dst8_stride, w, h, filter_params_x, subpel_x_qn, conv_params);
         } else {
@@ -2360,7 +2360,7 @@ void svt_av1_jnt_convolve_y_neon(const uint8_t* src, int32_t src_stride, uint8_t
 
     if (get_filter_tap(filter_params_y, subpel_y_qn) <= 6) {
         if (conv_params->do_average) {
-            if (UNLIKELY(conv_params->use_jnt_comp_avg)) {
+            if (UNLIKELY(SVT_EFFECTIVE_COMPOUND_TYPES(conv_params->use_jnt_comp_avg))) {
                 dist_wtd_convolve_y_6tap_dist_wtd_avg_neon(
                     src_ptr + src_stride, src_stride, dst8, dst8_stride, w, h, y_filter, conv_params);
             } else {
@@ -2372,7 +2372,7 @@ void svt_av1_jnt_convolve_y_neon(const uint8_t* src, int32_t src_stride, uint8_t
         }
     } else {
         if (conv_params->do_average) {
-            if (UNLIKELY(conv_params->use_jnt_comp_avg)) {
+            if (UNLIKELY(SVT_EFFECTIVE_COMPOUND_TYPES(conv_params->use_jnt_comp_avg))) {
                 dist_wtd_convolve_y_8tap_dist_wtd_avg_neon(
                     src_ptr, src_stride, dst8, dst8_stride, w, h, y_filter, conv_params);
             } else {

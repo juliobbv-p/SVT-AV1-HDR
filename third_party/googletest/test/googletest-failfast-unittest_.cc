@@ -46,121 +46,164 @@ class HasFixtureTest : public testing::Test {};
 
 TEST_F(HasFixtureTest, Test0) {}
 
-TEST_F(HasFixtureTest, Test1) { FAIL() << "Expected failure."; }
+TEST_F(HasFixtureTest, Test1) {
+    FAIL() << "Expected failure.";
+}
 
-TEST_F(HasFixtureTest, Test2) { FAIL() << "Expected failure."; }
+TEST_F(HasFixtureTest, Test2) {
+    FAIL() << "Expected failure.";
+}
 
-TEST_F(HasFixtureTest, Test3) { FAIL() << "Expected failure."; }
+TEST_F(HasFixtureTest, Test3) {
+    FAIL() << "Expected failure.";
+}
 
-TEST_F(HasFixtureTest, Test4) { FAIL() << "Expected failure."; }
+TEST_F(HasFixtureTest, Test4) {
+    FAIL() << "Expected failure.";
+}
 
 // Test HasSimpleTest.
 
 TEST(HasSimpleTest, Test0) {}
 
-TEST(HasSimpleTest, Test1) { FAIL() << "Expected failure."; }
+TEST(HasSimpleTest, Test1) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasSimpleTest, Test2) { FAIL() << "Expected failure."; }
+TEST(HasSimpleTest, Test2) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasSimpleTest, Test3) { FAIL() << "Expected failure."; }
+TEST(HasSimpleTest, Test3) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasSimpleTest, Test4) { FAIL() << "Expected failure."; }
+TEST(HasSimpleTest, Test4) {
+    FAIL() << "Expected failure.";
+}
 
 // Test HasDisabledTest.
 
 TEST(HasDisabledTest, Test0) {}
 
-TEST(HasDisabledTest, DISABLED_Test1) { FAIL() << "Expected failure."; }
+TEST(HasDisabledTest, DISABLED_Test1) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasDisabledTest, Test2) { FAIL() << "Expected failure."; }
+TEST(HasDisabledTest, Test2) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasDisabledTest, Test3) { FAIL() << "Expected failure."; }
+TEST(HasDisabledTest, Test3) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasDisabledTest, Test4) { FAIL() << "Expected failure."; }
+TEST(HasDisabledTest, Test4) {
+    FAIL() << "Expected failure.";
+}
 
 // Test HasDeathTest
 
-TEST(HasDeathTest, Test0) { EXPECT_DEATH_IF_SUPPORTED(exit(1), ".*"); }
+TEST(HasDeathTest, Test0) {
+    EXPECT_DEATH_IF_SUPPORTED(exit(1), ".*");
+}
 
 TEST(HasDeathTest, Test1) {
-  EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
+    EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
 }
 
 TEST(HasDeathTest, Test2) {
-  EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
+    EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
 }
 
 TEST(HasDeathTest, Test3) {
-  EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
+    EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
 }
 
 TEST(HasDeathTest, Test4) {
-  EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
+    EXPECT_DEATH_IF_SUPPORTED(FAIL() << "Expected failure.", ".*");
 }
 
 // Test DISABLED_HasDisabledSuite
 
 TEST(DISABLED_HasDisabledSuite, Test0) {}
 
-TEST(DISABLED_HasDisabledSuite, Test1) { FAIL() << "Expected failure."; }
+TEST(DISABLED_HasDisabledSuite, Test1) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(DISABLED_HasDisabledSuite, Test2) { FAIL() << "Expected failure."; }
+TEST(DISABLED_HasDisabledSuite, Test2) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(DISABLED_HasDisabledSuite, Test3) { FAIL() << "Expected failure."; }
+TEST(DISABLED_HasDisabledSuite, Test3) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(DISABLED_HasDisabledSuite, Test4) { FAIL() << "Expected failure."; }
+TEST(DISABLED_HasDisabledSuite, Test4) {
+    FAIL() << "Expected failure.";
+}
 
 // Test HasParametersTest
 
 class HasParametersTest : public testing::TestWithParam<int> {};
 
-TEST_P(HasParametersTest, Test1) { FAIL() << "Expected failure."; }
+TEST_P(HasParametersTest, Test1) {
+    FAIL() << "Expected failure.";
+}
 
-TEST_P(HasParametersTest, Test2) { FAIL() << "Expected failure."; }
+TEST_P(HasParametersTest, Test2) {
+    FAIL() << "Expected failure.";
+}
 
-INSTANTIATE_TEST_SUITE_P(HasParametersSuite, HasParametersTest,
-                         testing::Values(1, 2));
+INSTANTIATE_TEST_SUITE_P(HasParametersSuite, HasParametersTest, testing::Values(1, 2));
 
 class MyTestListener : public ::testing::EmptyTestEventListener {
-  void OnTestSuiteStart(const ::testing::TestSuite& test_suite) override {
-    printf("We are in OnTestSuiteStart of %s.\n", test_suite.name());
-  }
+    void OnTestSuiteStart(const ::testing::TestSuite& test_suite) override {
+        printf("We are in OnTestSuiteStart of %s.\n", test_suite.name());
+    }
 
-  void OnTestStart(const ::testing::TestInfo& test_info) override {
-    printf("We are in OnTestStart of %s.%s.\n", test_info.test_suite_name(),
-           test_info.name());
-  }
+    void OnTestStart(const ::testing::TestInfo& test_info) override {
+        printf("We are in OnTestStart of %s.%s.\n", test_info.test_suite_name(), test_info.name());
+    }
 
-  void OnTestPartResult(
-      const ::testing::TestPartResult& test_part_result) override {
-    printf("We are in OnTestPartResult %s:%d.\n", test_part_result.file_name(),
-           test_part_result.line_number());
-  }
+    void OnTestPartResult(const ::testing::TestPartResult& test_part_result) override {
+        printf("We are in OnTestPartResult %s:%d.\n", test_part_result.file_name(), test_part_result.line_number());
+    }
 
-  void OnTestEnd(const ::testing::TestInfo& test_info) override {
-    printf("We are in OnTestEnd of %s.%s.\n", test_info.test_suite_name(),
-           test_info.name());
-  }
+    void OnTestEnd(const ::testing::TestInfo& test_info) override {
+        printf("We are in OnTestEnd of %s.%s.\n", test_info.test_suite_name(), test_info.name());
+    }
 
-  void OnTestSuiteEnd(const ::testing::TestSuite& test_suite) override {
-    printf("We are in OnTestSuiteEnd of %s.\n", test_suite.name());
-  }
+    void OnTestSuiteEnd(const ::testing::TestSuite& test_suite) override {
+        printf("We are in OnTestSuiteEnd of %s.\n", test_suite.name());
+    }
 };
 
-TEST(HasSkipTest, Test0) { SUCCEED() << "Expected success."; }
+TEST(HasSkipTest, Test0) {
+    SUCCEED() << "Expected success.";
+}
 
-TEST(HasSkipTest, Test1) { GTEST_SKIP() << "Expected skip."; }
+TEST(HasSkipTest, Test1) {
+    GTEST_SKIP() << "Expected skip.";
+}
 
-TEST(HasSkipTest, Test2) { FAIL() << "Expected failure."; }
+TEST(HasSkipTest, Test2) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasSkipTest, Test3) { FAIL() << "Expected failure."; }
+TEST(HasSkipTest, Test3) {
+    FAIL() << "Expected failure.";
+}
 
-TEST(HasSkipTest, Test4) { FAIL() << "Expected failure."; }
+TEST(HasSkipTest, Test4) {
+    FAIL() << "Expected failure.";
+}
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  ::testing::UnitTest::GetInstance()->listeners().Append(new MyTestListener());
-  return RUN_ALL_TESTS();
+    ::testing::InitGoogleTest(&argc, argv);
+    ::testing::UnitTest::GetInstance()->listeners().Append(new MyTestListener());
+    return RUN_ALL_TESTS();
 }

@@ -31,8 +31,8 @@ bool svt_aom_pick_partition(SequenceControlSet* scs, PictureControlSet* pcs, Mod
                             PC_TREE* pc_tree, int mi_row, int mi_col);
 void svt_aom_pick_partition_lpd1(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx, MdScan* mds,
                                  PC_TREE* pc_tree, int mi_row, int mi_col);
-void svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecContext* ctx, SuperBlock* sb_ptr,
-                       PC_TREE* pc_tree, PARTITION_TREE* ptree, int mi_row, int mi_col);
+PARTITION_TREE* svt_aom_encode_sb(SequenceControlSet* scs, PictureControlSet* pcs, EncDecContext* ctx, PC_TREE* pc_tree,
+                                  PARTITION_TREE* ptree, int mi_row, int mi_col);
 
 void svt_aom_store16bit_input_src(EbPictureBufferDesc* input_sample16bit_buffer, PictureControlSet* pcs, uint32_t sb_x,
                                   uint32_t sb_y, uint32_t sb_w, uint32_t sb_h);

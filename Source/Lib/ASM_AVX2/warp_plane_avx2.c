@@ -516,7 +516,7 @@ static INLINE void unpack_weights_and_set_round_const_avx2(ConvolveParams* conv_
                                                            const int offset_bits, __m256i* res_sub_const,
                                                            __m256i* round_bits_const, __m256i* wt) {
     *res_sub_const    = _mm256_set1_epi16(-(1 << (offset_bits - conv_params->round_1)) -
-                                       (1 << (offset_bits - conv_params->round_1 - 1)));
+                                          (1 << (offset_bits - conv_params->round_1 - 1)));
     *round_bits_const = _mm256_set1_epi16(((1 << round_bits) >> 1));
 
     const int     w0  = conv_params->fwd_offset;

@@ -1228,7 +1228,7 @@ void svt_av1_compute_stats_neon(int32_t wiener_win, const uint8_t* dgd, const ui
                     width + 2 * wiener_halfwin,
                     height + 2 * wiener_halfwin);
 
-    if (wiener_win == WIENER_WIN) {
+    if (SVT_EFFECTIVE_WIENER_HQ(wiener_win == WIENER_WIN)) {
         compute_stats_win7_neon(d, d_stride, s, s_stride, width, height, M, H);
     } else {
         assert(wiener_win == WIENER_WIN_CHROMA);

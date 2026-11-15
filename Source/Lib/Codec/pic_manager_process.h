@@ -15,6 +15,7 @@
 #include "definitions.h"
 #include "sys_resource_manager.h"
 #include "object.h"
+#include "svt_threads.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,7 +44,7 @@ typedef struct PictureManagerContext {
 EbErrorType svt_aom_picture_manager_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                                  int rate_control_index, uint32_t ppcs_count);
 
-void* svt_aom_picture_manager_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_picture_manager_kernel(void* input_ptr);
 
 #ifdef __cplusplus
 }

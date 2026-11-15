@@ -46,7 +46,7 @@ void svt_av1_highbd_warp_affine_avx2(const int32_t* mat, const uint8_t* ref8b, c
     const __m256i reduce_bits_vert_const = _mm256_set1_epi32(((1 << reduce_bits_vert) >> 1));
     const __m256i res_add_const          = _mm256_set1_epi32(1 << offset_bits_vert);
     const __m256i res_sub_const          = _mm256_set1_epi32(-(1 << (offset_bits - conv_params->round_1)) -
-                                                    (1 << (offset_bits - conv_params->round_1 - 1)));
+                                                             (1 << (offset_bits - conv_params->round_1 - 1)));
     __m128i       round_bits_shift       = _mm_cvtsi32_si128(round_bits);
     __m256i       round_bits_const       = _mm256_set1_epi32(((1 << round_bits) >> 1));
 
@@ -176,14 +176,14 @@ void svt_av1_highbd_warp_affine_avx2(const int32_t* mat, const uint8_t* ref8b, c
                         parsum = _mm256_madd_epi16(v_c23, _mm256_alignr_epi8(v_refu, v_refl, 4)); // R10R9..R3R9R8..R3R2
                         __m256i v_sum2 = _mm256_add_epi32(v_sum1, parsum);
                         parsum         = _mm256_madd_epi16(v_c45,
-                                                   _mm256_alignr_epi8(v_refu,
-                                                                      v_refl,
-                                                                      8)); // R12R11..R5R11R10..R5R4
+                                                           _mm256_alignr_epi8(v_refu,
+                                                                              v_refl,
+                                                                              8)); // R12R11..R5R11R10..R5R4
                         __m256i v_sum3 = _mm256_add_epi32(v_sum2, parsum);
                         parsum         = _mm256_madd_epi16(v_c67,
-                                                   _mm256_alignr_epi8(v_refu,
-                                                                      v_refl,
-                                                                      12)); // R14R13..R7R13R12..R7R6
+                                                           _mm256_alignr_epi8(v_refu,
+                                                                              v_refl,
+                                                                              12)); // R14R13..R7R13R12..R7R6
                         __m256i v_sum4 = _mm256_add_epi32(v_sum3, parsum);
 
                         tmp[k + 7] = _mm256_srai_epi32(_mm256_add_epi32(v_sum4, v_rbhoriz), reduce_bits_horiz);
@@ -264,11 +264,11 @@ void svt_av1_highbd_warp_affine_avx2(const int32_t* mat, const uint8_t* ref8b, c
                         1); // H7H6..H1H0G7G6..G1G0
 
                     __m256i v_c0123  = _mm256_unpacklo_epi32(v_coeff01,
-                                                            v_coeff23); // D3D2B3B2D1D0B1B0C3C2A3A2C1C0A1A0
+                                                             v_coeff23); // D3D2B3B2D1D0B1B0C3C2A3A2C1C0A1A0
                     __m256i v_c0123u = _mm256_unpackhi_epi32(v_coeff01,
                                                              v_coeff23); // D7D6B7B6D5D4B5B4C7C6A7A6C5C4A5A4
                     __m256i v_c4567  = _mm256_unpacklo_epi32(v_coeff45,
-                                                            v_coeff67); // H3H2F3F2H1H0F1F0G3G2E3E2G1G0E1E0
+                                                             v_coeff67); // H3H2F3F2H1H0F1F0G3G2E3E2G1G0E1E0
                     __m256i v_c4567u = _mm256_unpackhi_epi32(v_coeff45,
                                                              v_coeff67); // H7H6F7F6H5H4F5F4G7G6E7E6G5G4E5E4
 
@@ -307,14 +307,14 @@ void svt_av1_highbd_warp_affine_avx2(const int32_t* mat, const uint8_t* ref8b, c
                         parsum = _mm256_madd_epi16(v_c23, _mm256_alignr_epi8(v_refu, v_refl, 4)); // R10R9..R3R9R8..R3R2
                         __m256i v_sum2 = _mm256_add_epi32(v_sum1, parsum);
                         parsum         = _mm256_madd_epi16(v_c45,
-                                                   _mm256_alignr_epi8(v_refu,
-                                                                      v_refl,
-                                                                      8)); // R12R11..R5R11R10..R5R4
+                                                           _mm256_alignr_epi8(v_refu,
+                                                                              v_refl,
+                                                                              8)); // R12R11..R5R11R10..R5R4
                         __m256i v_sum3 = _mm256_add_epi32(v_sum2, parsum);
                         parsum         = _mm256_madd_epi16(v_c67,
-                                                   _mm256_alignr_epi8(v_refu,
-                                                                      v_refl,
-                                                                      12)); // R14R13..R7R13R12..R7R6
+                                                           _mm256_alignr_epi8(v_refu,
+                                                                              v_refl,
+                                                                              12)); // R14R13..R7R13R12..R7R6
                         __m256i v_sum4 = _mm256_add_epi32(v_sum3, parsum);
 
                         tmp[k + 7] = _mm256_srai_epi32(_mm256_add_epi32(v_sum4, v_rbhoriz), reduce_bits_horiz);
@@ -363,11 +363,11 @@ void svt_av1_highbd_warp_affine_avx2(const int32_t* mat, const uint8_t* ref8b, c
                             1); // H7H6..H1H0G7G6..G1G0
 
                         __m256i v_c0123  = _mm256_unpacklo_epi32(v_coeff01,
-                                                                v_coeff23); // D3D2B3B2D1D0B1B0C3C2A3A2C1C0A1A0
+                                                                 v_coeff23); // D3D2B3B2D1D0B1B0C3C2A3A2C1C0A1A0
                         __m256i v_c0123u = _mm256_unpackhi_epi32(v_coeff01,
                                                                  v_coeff23); // D7D6B7B6D5D4B5B4C7C6A7A6C5C4A5A4
                         __m256i v_c4567  = _mm256_unpacklo_epi32(v_coeff45,
-                                                                v_coeff67); // H3H2F3F2H1H0F1F0G3G2E3E2G1G0E1E0
+                                                                 v_coeff67); // H3H2F3F2H1H0F1F0G3G2E3E2G1G0E1E0
                         __m256i v_c4567u = _mm256_unpackhi_epi32(v_coeff45,
                                                                  v_coeff67); // H7H6F7F6H5H4F5F4G7G6E7E6G5G4E5E4
 
@@ -440,11 +440,11 @@ void svt_av1_highbd_warp_affine_avx2(const int32_t* mat, const uint8_t* ref8b, c
                     1);
 
                 __m256i v_c0123  = _mm256_unpacklo_epi32(v_coeff01,
-                                                        v_coeff23); // D3D2B3B2D1D0B1B0C3C2A3A2C1C0A1A0
+                                                         v_coeff23); // D3D2B3B2D1D0B1B0C3C2A3A2C1C0A1A0
                 __m256i v_c0123u = _mm256_unpackhi_epi32(v_coeff01,
                                                          v_coeff23); // D7D6B7B6D5D4B5B4C7C6A7A6C5C4A5A4
                 __m256i v_c4567  = _mm256_unpacklo_epi32(v_coeff45,
-                                                        v_coeff67); // H3H2F3F2H1H0F1F0G3G2E3E2G1G0E1E0
+                                                         v_coeff67); // H3H2F3F2H1H0F1F0G3G2E3E2G1G0E1E0
                 __m256i v_c4567u = _mm256_unpackhi_epi32(v_coeff45,
                                                          v_coeff67); // H7H6F7F6H5H4F5F4G7G6E7E6G5G4E5E4
 
@@ -459,7 +459,7 @@ void svt_av1_highbd_warp_affine_avx2(const int32_t* mat, const uint8_t* ref8b, c
                 __m256i v_src01u = _mm256_unpackhi_epi32(src[0],
                                                          src[1]); // T17T07T15T05T16T06T14T04
                 __m256i v_sum    = _mm256_madd_epi16(_mm256_packus_epi32(v_src01l, v_src01u),
-                                                  v_c01); // S7S5S3S1S6S4S2S0
+                                                     v_c01); // S7S5S3S1S6S4S2S0
 
                 __m256i v_src23l = _mm256_unpacklo_epi32(src[2], src[3]);
                 __m256i v_src23u = _mm256_unpackhi_epi32(src[2], src[3]);

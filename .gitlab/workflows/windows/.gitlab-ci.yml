@@ -82,7 +82,7 @@ Win64 Unit Tests:
   extends: .windows-unit-test-base
   script:
     - cmake -B Build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-    - python gtest_parallel.py --print_test_times ./Bin/Release/SvtAv1UnitTests -- --gtest_output="xml:reports/unit-{#}.xml"
+    - python gtest_parallel.py --print_test_times ./Bin/Release/SvtAv1UnitTests ./Bin/Release/SvtAv1ApiTests -- --gtest_output="xml:reports/unit-{#}.xml"
 
 # Kept separate from the unit tests, and worker-capped, on purpose.
 # gtest-parallel orders tasks slowest-first from a timing cache that persists
@@ -334,18 +334,19 @@ Win64 FFmpeg (Static):
         $hashBytes = [Security.Cryptography.SHA512]::HashData($aggregateBytes)
         [BitConverter]::ToString($hashBytes).Replace('-', '')
       }
-    - $cachedPrint = (Get-Content -LiteralPath ffmpeg-build/.cacheid -ErrorAction SilentlyContinue) ?? ""
+    - $cachedPrint = (Get-Content -LiteralPath ${env:CI_PROJECT_DIR}/ffmpeg-build/.cacheid -ErrorAction SilentlyContinue) ?? ""
     - |
       if ($cachedPrint -ne $fingerprint) {
         Write-Output "Cache miss: $cachedPrint != $fingerprint"
-        Remove-Item -LiteralPath ffmpeg-build -Recurse -Force -ErrorAction SilentlyContinue
-        New-Item -ItemType Directory -Path ffmpeg-build | Out-Null
-        Set-Content -LiteralPath ffmpeg-build/.cacheid -Value $fingerprint
+        Remove-Item -LiteralPath ${env:CI_PROJECT_DIR}/ffmpeg-build -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path ${env:CI_PROJECT_DIR}/ffmpeg-build | Out-Null
       } else {
         Write-Output "Cache hit: $cachedPrint == $fingerprint"
       }
 
-    - cd ffmpeg-build
+    - cd ${env:CI_PROJECT_DIR}/ffmpeg-build
+      # The configure script symlinks src to inside the source folder, which breaks the cache. This is to fixup the existing cache.
+    - if (Test-Path -LiteralPath ./src) { Remove-Item -Recurse -Force -Path ./src }
     - bash ../ffmpeg-src/configure
       --arch=x86_64
       --pkg-config-flags="--static"
@@ -367,6 +368,7 @@ Win64 FFmpeg (Static):
       )
     - make -j $((Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors + 2) install
     - cp ./ffmpeg.exe $env:CI_PROJECT_DIR
+    - Set-Content -LiteralPath ${env:CI_PROJECT_DIR}/ffmpeg-build/.cacheid -Value $fingerprint
     - ccache -s
   artifacts:
     untracked: false

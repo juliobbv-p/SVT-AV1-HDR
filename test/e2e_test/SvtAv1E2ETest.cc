@@ -110,6 +110,15 @@ std::vector<TestVideoVector> parkjoy = {
                     90, 8, 0, 0, 0),
 };
 
+#if CONFIG_ENABLE_LOSSLESS && CONFIG_ENABLE_QUANT_MATRIX
+static const std::vector<TestVideoVector> qm_lossless_test_vectors = {
+    std::make_tuple("colorbar_64x64_8_420", DUMMY_SOURCE, IMG_FMT_420, 64, 64,
+                    8, 0, 0, 48),
+    std::make_tuple("colorbar_64x64_10_420", DUMMY_SOURCE, IMG_FMT_420, 64, 64,
+                    10, 0, 0, 48),
+};
+#endif
+
 static const std::vector<EncTestSetting> default_enc_settings = {
     {"EncModeTest1", {{"EncoderMode", "0"}}, default_test_vectors},
     {"EncModeTest2", {{"EncoderMode", "3"}}, default_test_vectors},
@@ -129,6 +138,22 @@ static const std::vector<EncTestSetting> default_enc_settings = {
     {"QpTest4", {{"RateControlMode", "0"}, {"QP", "32"}}, default_test_vectors},
     {"QpTest5", {{"RateControlMode", "0"}, {"QP", "44"}}, default_test_vectors},
     {"QpTest6", {{"RateControlMode", "0"}, {"QP", "63"}}, default_test_vectors},
+
+#if CONFIG_ENABLE_LOSSLESS && CONFIG_ENABLE_QUANT_MATRIX
+    // Cover lossless frames reached without --lossless, explicit lossless mode,
+    // and capped-CRF recoding from lossless to lossy, with QM enabled.
+    {"QmQpZeroTest",
+     {{"EncoderMode", "2"}, {"QP", "0"}, {"AdaptiveQuantization", "0"},
+      {"UseFixedQIndexOffsets", "1"}, {"EnableQM", "1"}, {"EnableTf", "0"},
+      {"LevelOfParallelism", "2"}}, qm_lossless_test_vectors},
+    {"QmExplicitLosslessTest",
+     {{"EncoderMode", "2"}, {"Lossless", "1"}, {"EnableQM", "1"},
+      {"LevelOfParallelism", "2"}}, qm_lossless_test_vectors},
+    {"QmLosslessRecodeTest",
+     {{"EncoderMode", "2"}, {"CRF", "0"}, {"MaxBitRate", "8"},
+      {"EnableQM", "1"}, {"EnableTf", "0"}, {"EnableVarianceBoost", "0"},
+      {"LevelOfParallelism", "2"}}, qm_lossless_test_vectors},
+#endif
 
     // test enable_dlf_flag, default is 1
     {"DlfTest1", {{"LoopFilterEnable", "0"}}, default_test_vectors},

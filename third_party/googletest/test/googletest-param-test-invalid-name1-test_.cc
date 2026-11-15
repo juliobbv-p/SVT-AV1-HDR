@@ -30,17 +30,16 @@
 #include "gtest/gtest.h"
 
 namespace {
-class DummyTest : public ::testing::TestWithParam<const char *> {};
+class DummyTest : public ::testing::TestWithParam<const char*> {};
 
 TEST_P(DummyTest, Dummy) {}
 
-INSTANTIATE_TEST_SUITE_P(InvalidTestName, DummyTest,
-                         ::testing::Values("InvalidWithQuotes"),
+INSTANTIATE_TEST_SUITE_P(InvalidTestName, DummyTest, ::testing::Values("InvalidWithQuotes"),
                          ::testing::PrintToStringParamName());
 
-}  // namespace
+} // namespace
 
-int main(int argc, char *argv[]) {
-  testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+int main(int argc, char* argv[]) {
+    testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }

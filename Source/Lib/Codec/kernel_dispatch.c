@@ -48,9 +48,9 @@ void svt_kernel_dispatcher_run(SvtKernelDispatcher* dispatcher) {
     } while (progress);
 }
 
-EbErrorType svt_create_kernel_or_thread(EbHandle* thread_handle, void* (*kernel_fn)(void*), SvtKernelIterFn iter_fn,
-                                        EbThreadContext* thread_ctx, EbFifo* input_fifo, const char* name,
-                                        SvtKernelDispatcher* dispatcher) {
+EbErrorType svt_create_kernel_or_thread(EbHandle* thread_handle, THREAD_FUNC_RETURN kernel_fn(void*),
+                                        SvtKernelIterFn iter_fn, EbThreadContext* thread_ctx, EbFifo* input_fifo,
+                                        const char* name, SvtKernelDispatcher* dispatcher) {
     if (dispatcher && dispatcher->active && iter_fn) {
         // Single-thread mode: register kernel for cooperative dispatch
         svt_kernel_dispatcher_register(dispatcher, iter_fn, thread_ctx->priv, input_fifo, name);

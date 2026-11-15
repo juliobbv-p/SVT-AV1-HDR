@@ -189,7 +189,7 @@ EbErrorType svt_aom_entropy_coding_kernel_iter(void* context) {
         for (uint32_t y_sb_index = 0; y_sb_index < tile_height_in_sb; ++y_sb_index) {
             for (uint32_t x_sb_index = 0; x_sb_index < tile_width_in_sb; ++x_sb_index) {
                 uint16_t    sb_index = (uint16_t)((x_sb_index + tile_sb_start_x) +
-                                               (y_sb_index + tile_sb_start_y) * pic_width_in_sb);
+                                                  (y_sb_index + tile_sb_start_y) * pic_width_in_sb);
                 SuperBlock* sb_ptr   = pcs->sb_ptr_array[sb_index];
 
                 const uint32_t sb_origin_x = (x_sb_index + tile_sb_start_x) << sb_size_log2;
@@ -214,7 +214,6 @@ EbErrorType svt_aom_entropy_coding_kernel_iter(void* context) {
                                        tile_idx,
                                        pcs->ec_info[tile_idx]->ec,
                                        coeff_picture_ptr,
-                                       sb_ptr->ptree,
                                        sb_origin_y >> MI_SIZE_LOG2,
                                        sb_origin_x >> MI_SIZE_LOG2);
             }
@@ -264,7 +263,7 @@ EbErrorType svt_aom_entropy_coding_kernel_iter(void* context) {
         svt_get_empty_object(context_ptr->entropy_coding_output_fifo_ptr, &entropy_coding_results_wrapper_ptr);
         EntropyCodingResults* entropy_coding_results_ptr = (EntropyCodingResults*)
                                                                entropy_coding_results_wrapper_ptr->object_ptr;
-        entropy_coding_results_ptr->pcs_wrapper = rest_results->pcs_wrapper;
+        entropy_coding_results_ptr->pcs_wrapper          = rest_results->pcs_wrapper;
 
         // Post EntropyCoding Results
         svt_post_full_object(entropy_coding_results_wrapper_ptr);
@@ -275,13 +274,13 @@ EbErrorType svt_aom_entropy_coding_kernel_iter(void* context) {
     return EB_ErrorNone;
 }
 
-void* svt_aom_entropy_coding_kernel(void* input_ptr) {
+THREAD_FUNC_RETURN svt_aom_entropy_coding_kernel(void* input_ptr) {
     EbThreadContext* thread_ctx = (EbThreadContext*)input_ptr;
     for (;;) {
         EbErrorType err = svt_aom_entropy_coding_kernel_iter(thread_ctx->priv);
         if (err == EB_NoErrorFifoShutdown) {
-            return NULL;
+            return 0;
         }
     }
-    return NULL;
+    return 0;
 }

@@ -268,10 +268,43 @@ the current frame are signaled, otherwise, a reference frame index of a
 frame that contains the same parameters as the current frame is written
 to the bitstream.
 
+## 5. Film grain table (command line)
+
+Use `--fgs-table file.grain.tbl` to read all entries in a `filmgrn1` table.
+Times use 100 ns units from the first encoded picture.
+Each range includes its start time.
+It does not include its end time.
+Grain is off outside the ranges.
+Each range starts with its seed.
+The encoder changes the seed for each later picture.
+
+## 6. Film grain for each picture
+
+Use a build with film grain support.
+Before you call `svt_av1_enc_set_parameter`, set `fgs_table` to a default
+`AomFilmGrain` model.
+Keep the model in memory until `svt_av1_enc_deinit` is complete.
+
+Use pictures without grain.
+Set `grain` to valid AV1 parameters.
+Set `grain.bit_depth` to the encoder bit depth.
+Set `grain.random_seed` for each picture.
+To disable grain, set `grain.apply_grain` to `0`.
+
+```c
+EbPrivDataNode node = {FILM_GRAIN_EVENT, &grain, sizeof(grain), NULL};
+input.p_app_private = &node;
+svt_av1_enc_send_picture(encoder, &input);
+```
+
+The call copies the node and its data.
+The event replaces the default model or denoiser for this picture.
+If you do not send an event, the encoder uses the default model or denoiser.
+
 ## Notes
 
 The feature settings that are described in this document were compiled at
-v4.2.0 of the code and may not reflect the current status of the code. The
+v4.3.0 of the code and may not reflect the current status of the code. The
 description in this document represents an example showing how features would
 interact with the SVT architecture. For the most up-to-date settings, it's
 recommended to review the section of the code implementing this feature.

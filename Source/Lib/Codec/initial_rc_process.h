@@ -13,6 +13,7 @@
 #define EbInitialRateControl_h
 
 #include "definitions.h"
+#include "svt_threads.h"
 #include "sys_resource_manager.h"
 #include "rc_process.h"
 
@@ -22,5 +23,5 @@
 EbErrorType svt_aom_initial_rate_control_context_ctor(EbThreadContext* thread_ctx, const EbEncHandle* enc_handle_ptr,
                                                       uint32_t ppcs_count);
 
-void* svt_aom_initial_rate_control_kernel(void* input_ptr);
+THREAD_FUNC_RETURN svt_aom_initial_rate_control_kernel(void* input_ptr);
 #endif // EbInitialRateControl_h
