@@ -341,12 +341,8 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
 #endif
 
 #if !CDEF_8BITS_PATH || CONFIG_ENABLE_HIGH_BIT_DEPTH
-    int32_t   toff_prev  = CDEF_VBORDER;
-    int32_t   loff_prev  = CDEF_HBORDER;
-    int32_t   ysize_prev = (1 << MAX_SB_SIZE_LOG2) + 2 * CDEF_VBORDER;
-    int32_t   xsize_prev = (1 << MAX_SB_SIZE_LOG2) + 2 * CDEF_HBORDER;
-    uint16_t* inbuf      = ctx->inbuf; // 16-bit sentinel buffer (HBD / non-8bit path only)
-    uint16_t* in         = inbuf + CDEF_VBORDER * CDEF_BSTRIDE + CDEF_HBORDER;
+    uint16_t* inbuf = ctx->inbuf; // 16-bit sentinel buffer (HBD / non-8bit path only)
+    uint16_t* in    = inbuf + CDEF_VBORDER * CDEF_BSTRIDE + CDEF_HBORDER;
 #endif
 #if CDEF_8BITS_PATH
     // 8-bit padded buffer for the native interior path (replaces the 8->16 widen
@@ -442,18 +438,19 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
             }
             pcs->skip_cdef_seg[fb_idx] = 0;
 
-            int32_t toff = CDEF_VBORDER * (fbr != 0);
-            int32_t loff = CDEF_HBORDER * (fbc != 0);
-            int32_t boff = CDEF_VBORDER * ((int32_t)fbr + vb_step < nvfb);
-            int32_t roff = CDEF_HBORDER * ((int32_t)fbc + hb_step < nhfb);
+            // Border of the filter block inside the frame, per side. The kernels read at most CDEF_HALO
+            // samples around the block (svt_av1_cdef_frame() relies on the same reach).
+            int32_t toff = CDEF_HALO * (fbr != 0);
+            int32_t loff = CDEF_HALO * (fbc != 0);
+            int32_t boff = CDEF_HALO * ((int32_t)fbr + vb_step < nvfb);
+            int32_t roff = CDEF_HALO * ((int32_t)fbc + hb_step < nhfb);
 
             uint8_t (*dir)[CDEF_NBLOCKS][CDEF_NBLOCKS] = &pcs->cdef_dir_data[fb_idx].dir;
             int32_t (*var)[CDEF_NBLOCKS][CDEF_NBLOCKS] = &pcs->cdef_dir_data[fb_idx].var;
             for (int pli = 0; pli < num_planes; pli++) {
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
                 if (use_grid && pli && !search_plan[1].strength_count) {
-                    // No chroma trial needs the input buffer; preserve the dirty
-                    // rectangle of the last plane actually copied into it.
+                    // No chroma trial needs the input buffer.
                     for (int gi = 0; gi < search_count; ++gi) {
                         pcs->mse_seg[1][fb_idx][gi] = default_mse_uv * 64;
                     }
@@ -462,8 +459,8 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
 #endif
 
 #if !CDEF_8BITS_PATH || CONFIG_ENABLE_HIGH_BIT_DEPTH
-                int32_t ysize = (nvb << mi_high_l2[pli]) + boff + toff;
-                int32_t xsize = (nhb << mi_wide_l2[pli]) + roff + loff;
+                const int32_t vsize = nvb << mi_high_l2[pli];
+                const int32_t hsize = nhb << mi_wide_l2[pli];
 #endif
 #if CDEF_8BITS_PATH
                 // 8-bit content (RTC): filter via the boundary-aware hybrid. Build the 8-bit in8
@@ -478,31 +475,38 @@ static void cdef_seg_search(CdefContext* ctx, PictureControlSet* pcs, SequenceCo
                     /* We avoid filtering the pixels for which some of the pixels to
                    average are outside the frame. We could change the filter instead,
                    but it would add special cases for any future vectorization.
-                   Avoid memset'ting when dirty rect is inside the new one.
-                   TODO: this could be further optimized - fill out only borders, separate buffers for Y & UV */
-                    bool need_to_reset = toff_prev > toff || loff_prev > loff ||
-                        ysize - toff < ysize_prev - toff_prev || xsize - loff < xsize_prev - loff_prev;
-                    if (need_to_reset) {
-                        uint16_t* p = &in[(-toff_prev * CDEF_BSTRIDE - loff_prev)];
-                        for (int r = 0; r < ysize_prev; r++) {
-                            svt_memset(p, (uint8_t)CDEF_VERY_LARGE, sizeof(p[0]) * xsize_prev);
-                            p += CDEF_BSTRIDE;
-                        }
-                    }
-                    toff_prev  = toff;
-                    loff_prev  = loff;
-                    ysize_prev = ysize;
-                    xsize_prev = xsize;
-
+                   Only the border the kernels can read is set up: copied from the picture
+                   where it lies inside the frame, marked as unavailable elsewhere. */
                     svt_aom_copy_sb8_16(&in[(-toff * CDEF_BSTRIDE - loff)],
                                         CDEF_BSTRIDE,
                                         src[pli],
                                         (lr << mi_high_l2[pli]) - toff,
                                         (lc << mi_wide_l2[pli]) - loff,
                                         stride_src[pli],
-                                        ysize,
-                                        xsize,
+                                        vsize + toff + boff,
+                                        hsize + loff + roff,
                                         is_16bit);
+                    uint16_t* const corner = &in[-CDEF_HALO * CDEF_BSTRIDE - CDEF_HALO];
+                    if (!toff) {
+                        svt_aom_fill_rect(corner, CDEF_BSTRIDE, CDEF_HALO, hsize + 2 * CDEF_HALO, CDEF_VERY_LARGE);
+                    }
+                    if (!boff) {
+                        svt_aom_fill_rect(corner + (vsize + CDEF_HALO) * CDEF_BSTRIDE,
+                                          CDEF_BSTRIDE,
+                                          CDEF_HALO,
+                                          hsize + 2 * CDEF_HALO,
+                                          CDEF_VERY_LARGE);
+                    }
+                    if (!loff) {
+                        svt_aom_fill_rect(corner, CDEF_BSTRIDE, vsize + 2 * CDEF_HALO, CDEF_HALO, CDEF_VERY_LARGE);
+                    }
+                    if (!roff) {
+                        svt_aom_fill_rect(corner + hsize + CDEF_HALO,
+                                          CDEF_BSTRIDE,
+                                          vsize + 2 * CDEF_HALO,
+                                          CDEF_HALO,
+                                          CDEF_VERY_LARGE);
+                    }
                 }
 #endif
 #if CDEF_8BITS_PATH

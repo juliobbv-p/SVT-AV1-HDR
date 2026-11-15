@@ -89,6 +89,45 @@ static inline void svt_cdef_copy_rect8(uint8_t* dst, int dstride, const uint8_t*
 
 // uint16->uint16 rect copy (edge-path src assembly).
 static inline void svt_aom_copy_rect(uint16_t* dst, int dstride, const uint16_t* src, int sstride, int v, int h) {
+    // As in svt_cdef_copy_rect8(): the rows of a full filter block (64 or 32 samples) with no, one or two
+    // CDEF_HALO borders are copied in constant-size parts of at most 64 bytes (32 samples), which stay inline.
+#define CDEF_RECT_CW16(W)                                                           \
+    do {                                                                            \
+        for (int _r = 0; _r < v; _r++) {                                            \
+            memcpy(dst, src, 64);                                                   \
+            if ((W) >= 64) {                                                        \
+                memcpy(dst + 32, src + 32, 64);                                     \
+            }                                                                       \
+            if ((W) % 32) {                                                         \
+                memcpy(dst + (W) - (W) % 32, src + (W) - (W) % 32, 2 * ((W) % 32)); \
+            }                                                                       \
+            dst += dstride;                                                         \
+            src += sstride;                                                         \
+        }                                                                           \
+    } while (0)
+    switch (h) {
+    case 32:
+        CDEF_RECT_CW16(32);
+        return;
+    case 34:
+        CDEF_RECT_CW16(34);
+        return;
+    case 36:
+        CDEF_RECT_CW16(36);
+        return;
+    case 64:
+        CDEF_RECT_CW16(64);
+        return;
+    case 66:
+        CDEF_RECT_CW16(66);
+        return;
+    case 68:
+        CDEF_RECT_CW16(68);
+        return;
+    default:
+        break;
+    }
+#undef CDEF_RECT_CW16
     for (int r = 0; r < v; r++) {
         memcpy(dst, src, sizeof(*dst) * (size_t)h);
         dst += dstride;
