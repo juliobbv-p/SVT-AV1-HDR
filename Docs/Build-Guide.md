@@ -6,7 +6,7 @@ Before building, please consider **enabling** link-time optimizations (LTO), whi
 ## Windows* Operating Systems (64-bit)
 
 - __Build Requirements__
-  - Visual Studio* 2017 (download [here](https://www.visualstudio.com/vs/older-downloads/)) or 2019 (download [here](https://visualstudio.microsoft.com/downloads/))
+  - Visual Studio* 2017, 2019 (download [here](https://www.visualstudio.com/vs/older-downloads/)) or 2022 (download [here](https://visualstudio.microsoft.com/downloads/))
   - CMake 3.16 or later (download [here](https://github.com/Kitware/CMake/releases/download/v3.24.2/cmake-3.24.2-windows-x86_64.msi))
   - NASM Assembler version 2.14 or later
     - Download the nasm exe from the following [link](https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/win64/nasm-2.16.03-win64.zip)
@@ -16,8 +16,8 @@ Before building, please consider **enabling** link-time optimizations (LTO), whi
 - __Build Instructions__
   - Build the project by following the steps below
     - cd into `Build\windows`
-    - run `build.bat <2019|2017|2015>` [This will generate the .sln files and build the project]
-    - for LTO build run `build.bat <2019|2017|2015> lto` [This will generate the .sln files and build the project]
+    - run `build.bat <2022|2019|2017|2015>` [This will generate the .sln files and build the project]
+    - for LTO build run `build.bat <2022|2019|2017|2015> lto` [This will generate the .sln files and build the project]
 
 - __Binaries Location__
   - Binaries can be found under `<repo dir>/Bin/Release` or `<repo dir>/Bin/Debug`, depending on whether Debug or Release were selected in the build mode.
@@ -25,7 +25,7 @@ Before building, please consider **enabling** link-time optimizations (LTO), whi
 - __Installation__
 
   For the binaries to operate properly on your system, the following conditions have to be met:
-  - On any of the Windows* Operating Systems listed in the OS requirements section, install Visual Studio* 2015/2017/2019
+  - On any of the Windows* Operating Systems listed in the OS requirements section, install Visual Studio* 2015/2017/2019/2022
   - Once the installation is complete, copy the binaries to a location making sure that both the sample application `SvtAv1EncApp.exe` and library `SvtAv1Enc.dll` are in the same folder.
   - Open the command prompt window at the chosen location and run the sample application to encode: `SvtAV1EncApp.exe -i [in.yuv] -w [width] -h [height] -b [out.ivf]`
   - Sample application supports reading from pipe. E.g. `ffmpeg -i [input.mp4] -nostdin -f rawvideo -pix_fmt yuv420p - | SvtAv1EncApp.exe -i stdin -n [number_of_frames_to_encode] -w [width] -h [height]`
@@ -47,19 +47,18 @@ Note - a Dockerfile is provided to build the encoder into a tiny Alpine Linux Do
     (LTO and PGO can be combined, for maximum gains)
   - for an NVIDIA Nsight Systems profiling build, run `./build.sh <release | debug> --enable-nvtx`
     (opt-in NVTX ranges + named pipeline threads; default OFF, see [Appendix-Profiling.md](Appendix-Profiling.md))
+  - for a reduced feature set build, add `--rtc-build` (RTC only), `--mobile-build` (8-bit RTC and VOD at M9+,
+    AVIF at M6+) or `--minimal-build`, e.g. `./build.sh release --rtc-build`
+    (CMake: `-DRTC_BUILD=ON`, `-DMOBILE_BUILD=ON`, `-DMINIMAL_BUILD=ON`)
 
 - __Sample Binaries location__
   - Binaries can be found under `Bin/Release` and/or `Bin/Debug`
 
 - __Clang usage__
-  - To install Clang-11 on Ubuntu 20.04 execute single command: `sudo apt install clang-11`
-  - To install Clang-11 on Ubuntu 18.04 execute commands:
-    - `wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -`
-    - `sudo apt-add-repository "deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-11 main"`
-    - `sudo apt install clang-11`
-  - To build SVT-AV1 using Clang-11:
-    - `export CC="clang-11"`
-    - `export CXX="clang++-11"`
+  - To install Clang on Ubuntu execute single command: `sudo apt install clang`
+  - To build SVT-AV1 using Clang:
+    - `export CC="clang"`
+    - `export CXX="clang++"`
     - `./build.sh <release | debug>`
 
 
@@ -78,7 +77,7 @@ Note - a Dockerfile is provided to build the encoder into a tiny Alpine Linux Do
 ## 1. Build and install SVT-AV1
 
 ``` bash
-git clone --depth=1 https://gitlab.com/AOMediaCodec/SVT-AV1.git
+git clone --depth=1 https://github.com/AOMediaCodec/SVT-AV1.git
 cd SVT-AV1
 cd Build
 cmake .. -G"Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
@@ -89,7 +88,7 @@ sudo make install
 ## 2. Enable libsvtav1 in FFmpeg
 
 NOTE: If you wish to use an FFmpeg tag or release before 4.4, please go
-[here](https://gitlab.com/AOMediaCodec/SVT-AV1/tree/v0.8.4/ffmpeg_plugin) and
+[here](https://github.com/AOMediaCodec/SVT-AV1/tree/v0.8.4/ffmpeg_plugin) and
 consult that page to properly patch ffmpeg for use with SVT-AV1.
 
 ``` bash
@@ -113,12 +112,6 @@ Refer to the guide [here](https://github.com/OpenVisualCloud/Dockerfiles/blob/ma
 
 # Demo features and limitations
 
-- **Multi-instance support:** The multi-instance functionality is a demo
-  feature implemented in the SVT-AV1 Encoder sample application as an example
-  of one sample application using multiple encoding libraries. Encoding using
-  the multi-instance support is limited to only 6 simultaneous streams. For
-  example two channels encoding on Windows: `SvtAV1EncApp.exe -nch 2 -c
-  firstchannel.cfg secondchannel.cfg`
 - **Features enabled:** The library will display an error message any
   feature combination that is not currently supported.
 

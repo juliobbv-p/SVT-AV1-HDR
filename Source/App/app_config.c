@@ -824,7 +824,7 @@ ConfigDescription config_entry_rc[] = {
      "`--qp-file`, default is 0 [0-1]"},
     {QP_FILE_NEW_TOKEN, "Path to a file containing per picture QP value separated by newlines"},
     {MAX_QP_TOKEN, "Maximum (highest) quantizer, only applicable for VBR and CBR, default is 63 [1-63]"},
-    {MIN_QP_TOKEN, "Minimum (lowest) quantizer, only applicable for VBR and CBR, default is 1 [1-63]"},
+    {MIN_QP_TOKEN, "Minimum (lowest) quantizer, default is 4 for VBR and CBR, 0 otherwise [0-63]"},
 
     {ADAPTIVE_QP_ENABLE_NEW_TOKEN,
      "Set adaptive QP level, default is 2 [0: off, 1: variance base using AV1 segments, 2: deltaq "
@@ -933,9 +933,8 @@ ConfigDescription config_entry_intra_refresh[] = {
     {NULL, NULL}};
 
 ConfigDescription config_entry_specific[] = {
-    {TILE_ROW_TOKEN, "Number of tile rows to use, `TileRow == log2(x)`, default changes per resolution but is 1 [0-6]"},
-    {TILE_COL_TOKEN,
-     "Number of tile columns to use, `TileCol == log2(x)`, default changes per resolution but is 1 [0-4]"},
+    {TILE_ROW_TOKEN, "Number of tile rows to use, `TileRow == log2(x)`, default is 0 [0-6]"},
+    {TILE_COL_TOKEN, "Number of tile columns to use, `TileCol == log2(x)`, default is 0 [0-4]"},
 
     // DLF
     {LOOP_FILTER_ENABLE, "Deblocking loop filter control, default is 1 [0-2]"},

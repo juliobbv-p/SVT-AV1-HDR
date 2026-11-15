@@ -93,7 +93,7 @@ override extension-based auto-detection.
 
 The width of each input image in units of picture luma pixels, e.g. 1920
 
-`-h integer` **[Required]**]
+`-h integer` **[Required]**
 
 The height of each input image in units of picture luma pixels, e.g. 1080
 
@@ -107,8 +107,7 @@ loopback to the first frame when it is done.
 
 The keyint defines the display order location at which the encoder would insert
 a keyframe. It is recommended to use a value that is (a multiple of the mini
-GOP size `(default 16)) + 1` so that the keyframe does not break a mini GOP
-formation. When using forward frame, it is recommended that the keyint value is
+GOP size) + 1 so that the keyframe does not break a mini GOP formation. When using forward frame, it is recommended that the keyint value is
 placed at a multiple of mini-gop size. The mini-gop size is measured by `1 <<
 hierarchical-levels`.
 
@@ -132,7 +131,7 @@ If a qp/crf value is not specified, a default value is assigned (35).
 Here are some sample encode command lines
 
 #### 1 pass CRF at maximum speed for a 1920x1080 input
-`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 12 -b output.ivf`
+`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 11 -b output.ivf`
 
 #### 1 pass VBR 1000 Kbps at medium speed for a 1920x1080 input
 `SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --rc 1 --tbr 1000 --preset 5 -b output.ivf`
@@ -147,14 +146,13 @@ or
 Multiple command lines :
 
 `SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --rc 1 --tbr 1000 --preset 0 --pass 1 --stats stat_file.stat`
-`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --rc 1 --tbr 1000 --preset 0 --pass 2 --stats stat_file.stat`
-`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --rc 1 --tbr 1000 --preset 0 --pass 3 --stats stat_file.stat -b output.ivf`
+`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --rc 1 --tbr 1000 --preset 0 --pass 2 --stats stat_file.stat -b output.ivf`
 
 #### 1 pass CRF at maximum speed for a 1920x1080 input with full range video signal
-`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 12 --color-range full -b output.ivf`
+`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 11 --color-range full -b output.ivf`
 
 #### 1 pass CRF at maximum speed for a 1920x1080 input with colorimetry set to BT.709
-`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 12 --color-primaries bt709 --transfer-characteristics bt709 --matrix-coefficients bt709 -b output.ivf`
+`SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 11 --color-primaries bt709 --transfer-characteristics bt709 --matrix-coefficients bt709 -b output.ivf`
 
 #### 1 pass CRF with raw OBU output (no IVF container)
 `SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 8 -b output.obu`
@@ -162,3 +160,23 @@ Multiple command lines :
 or equivalently using the `--obu` flag:
 
 `SvtAv1EncApp -i input.yuv -w 1920 -h 1080 --crf 30 --preset 8 --obu -b output.ivf`
+
+### Sample command lines per use case
+
+The maximum preset depends on the use case, see `--preset` in the
+[list of all parameters](Parameters.md).
+
+#### VOD
+Random access (the default) with CRF, presets up to 11 (9 for 4K and above):
+
+`SvtAv1EncApp -i input.y4m --crf 35 --preset 5 -b output.ivf`
+
+#### RTC
+Low delay CBR with the real-time settings, presets 7 to 13 (13 is experimental):
+
+`SvtAv1EncApp -i input.y4m --rtc 1 --rc 2 --tbr 1000 --preset 10 -b output.ivf`
+
+#### Images
+Still-picture coding, presets up to 9:
+
+`SvtAv1EncApp -i input.y4m --avif 1 --crf 30 --preset 9 -b output.ivf`

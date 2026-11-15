@@ -10,7 +10,7 @@ permit full SVT-AV1 functionality, including passing SVT-AV1 parameters directly
 via the `svtav1-params` keyword.
 
 If your ffmpeg version is 5.0.X or lower, we suggest you upgrade to a more recent version or
-use the [ffmpeg patch](../ffmpeg_plugin/README.md) included in the [SVT-AV1 repository](https://gitlab.com/AOMediaCodec/SVT-AV1/-/tree/master/ffmpeg_plugin).
+use the [ffmpeg patch](../ffmpeg_plugin/README.md) included in the [SVT-AV1 repository](https://github.com/AOMediaCodec/SVT-AV1/tree/main/ffmpeg_plugin).
 
 ## Most Common Options
 
@@ -54,7 +54,7 @@ The following are some examples of common use cases that utilize ffmpeg.
 
 For fast encoding, the preset must be sufficiently high that your CPU can
 encode without stuttering. Higher presets are faster but less efficient. The
-highest preset is 13 (the highest preset intended for human use is 12).
+highest preset is 11 (presets 12 and 13 are only available for real-time encoding with `rtc=1`).
 
     ffmpeg -i infile.mkv -c:v libsvtav1 -preset 10 -crf 35 -c:a copy outfile.mkv
 

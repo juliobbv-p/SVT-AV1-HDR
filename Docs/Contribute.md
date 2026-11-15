@@ -25,10 +25,10 @@ to ensure that the AOMedia Project has the right to distribute your changes.
 
 ## How to Report Bugs and Provide Feedback
 
-Use the [Issues](https://gitlab.com/AOMediaCodec/SVT-AV1/issues) tab on GitLab.
+Use the [Issues](https://github.com/AOMediaCodec/SVT-AV1/issues) tab on GitHub.
 To avoid duplicate issues, please make sure you go through the existing issues
 before logging a new one. You can find previously asked questions
-[here](https://gitlab.com/AOMediaCodec/SVT-AV1/-/issues?sort=created_date&state=all&label_name[]=question).
+[here](https://github.com/AOMediaCodec/SVT-AV1/issues?q=is%3Aissue+label%3Aquestion).
 
 ## IRC
 
