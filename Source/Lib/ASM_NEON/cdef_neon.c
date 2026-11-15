@@ -212,6 +212,26 @@ static inline uint64_t find_best_mse(const uint64_t* mse0, const uint64_t* mse1,
     return best_mse;
 }
 
+// The end of the chroma strengths that svt_search_one_dual_neon() has to try. When the chroma mse of a strength
+// k2 equals that of an earlier strength k1 in every filter block, the pairs (j, k1) and (j, k2) have the same
+// total for every luma strength j: each filter block adds a function of its two mse values (and of its best mse
+// so far). The scan keeps the first of equal totals and reaches (j, k1) before (j, k2), so (j, k2) is never
+// selected. Chroma strengths that are not searched all carry one value; this finds the longest tail of
+// strengths that are equal to its first one in every filter block and returns the index after that first one.
+static size_t chroma_search_end(uint64_t** mse1, int sb_count, size_t start_idx, size_t end_idx) {
+    size_t first = start_idx;
+    for (int i = 0; i < sb_count && first + 1 < end_idx; i++) {
+        const uint64_t* const m = mse1[i];
+        // In this filter block the tail cannot start before k.
+        size_t k = end_idx - 1;
+        while (k > first && m[k - 1] == m[end_idx - 1]) {
+            k--;
+        }
+        first = k;
+    }
+    return first + 1;
+}
+
 static inline uint64x2_t add_select_best(uint64x2_t a, uint64x2_t b, uint64x2_t best) {
     uint64x2_t sum  = vaddq_u64(a, b);
     uint64x2_t comp = vcltq_u64(sum, best);
@@ -232,6 +252,7 @@ static uint64_t search_one_dual_gain_neon(int* lev0, int* lev1, int nb_strengths
     const size_t stride    = ((end_gi + 3) & ~3);
     const size_t start_idx = start_gi;
     const size_t end_idx   = end_gi;
+    const size_t end_k     = chroma_search_end(mse[1], sb_count, start_idx, end_idx);
     uint64_t     gain[end_gi * stride];
     uint64_t     best_sum = 0;
 
@@ -256,7 +277,7 @@ static uint64_t search_one_dual_gain_neon(int* lev0, int* lev1, int nb_strengths
                 vst1q_u64(gain_ptr + k + 0, vqsubq_u64(c, vld1q_u64(mse_1_ptr + k + 0)));
                 vst1q_u64(gain_ptr + k + 2, vqsubq_u64(c, vld1q_u64(mse_1_ptr + k + 2)));
                 k += 4;
-            } while (k < end_idx);
+            } while (k < end_k);
         } while (++j < end_idx);
     }
 
@@ -294,7 +315,7 @@ static uint64_t search_one_dual_gain_neon(int* lev0, int* lev1, int nb_strengths
                 vst1q_u64(gain_ptr + k + 0, vaddq_u64(vld1q_u64(gain_ptr + k + 0), vaddq_u64(g0_0, g1_0)));
                 vst1q_u64(gain_ptr + k + 2, vaddq_u64(vld1q_u64(gain_ptr + k + 2), vaddq_u64(g0_1, g1_1)));
                 k += 4;
-            } while (k < end_idx);
+            } while (k < end_k);
         } while (++j < end_idx);
     }
 
@@ -313,7 +334,7 @@ static uint64_t search_one_dual_gain_neon(int* lev0, int* lev1, int nb_strengths
                 best_id0     = (int32_t)j;
                 best_id1     = (int32_t)k;
             }
-        } while (++k < end_idx);
+        } while (++k < end_k);
     } while (++j < end_idx);
 
     lev0[nb_strengths] = best_id0;
@@ -343,6 +364,7 @@ uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64
     uint64_t tot_mse[end_gi * stride];
     size_t   start_idx = start_gi;
     size_t   end_idx   = end_gi;
+    size_t   end_k     = chroma_search_end(mse[1], sb_count, start_idx, end_idx);
 
     const uint64_t* mse_0_ptr = mse[0][0];
     const uint64_t* mse_1_ptr = mse[1][0];
@@ -365,7 +387,7 @@ uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64
             vst1q_u64(tot_mse_ptr + k + 0, best_0);
             vst1q_u64(tot_mse_ptr + k + 2, best_1);
             k += 4;
-        } while (k < end_idx);
+        } while (k < end_k);
     } while (++j < end_idx);
 
     /* Loop over the filter blocks in the frame */
@@ -412,7 +434,7 @@ uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64
                 vst1q_u64(tot_mse_ptr + k + 2, vaddq_u64(tot_mse_1, best0_1));
 
                 k += 4;
-            } while (k < end_idx);
+            } while (k < end_k);
         } while (++j < end_idx);
     }
 
@@ -441,7 +463,7 @@ uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64
                 vst1q_u64(tot_mse_ptr + k + 0, vaddq_u64(tot_mse_0, best_0));
                 vst1q_u64(tot_mse_ptr + k + 2, vaddq_u64(tot_mse_1, best_1));
                 k += 4;
-            } while (k < end_idx);
+            } while (k < end_k);
         } while (++j < end_idx);
     }
 
@@ -463,7 +485,7 @@ uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64
                 best_id0     = (int32_t)j; // index for the best luma strength
                 best_id1     = (int32_t)k; // index for the best chroma strength
             }
-        } while (++k < end_idx);
+        } while (++k < end_k);
     } while (++j < end_idx);
 
     lev0[nb_strengths] = best_id0; // Add the identified luma strength to the list of selected luma strengths
