@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVT-AV1 10-bit encoder speed-up series</title>
+<style>
+.viz-root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --text: #0b0b0b; --text2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10); --wash: rgba(11,11,11,0.04);
+  --s1: #2a78d6; --s2: #eb6834;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+    --s1: #3987e5; --s2: #d95926;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+  --s1: #3987e5; --s2: #d95926;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body.viz-root {
+  background: var(--page); color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1320px; margin: 0 auto; padding: 32px 24px 64px; }
+h1 { font-size: 26px; line-height: 1.25; margin: 0 0 8px; font-weight: 650; }
+h2 { font-size: 18px; margin: 0 0 4px; font-weight: 650; }
+h3 { font-size: 14px; margin: 0 0 2px; font-weight: 650; }
+p { margin: 0 0 10px; color: var(--text2); max-width: 88ch; }
+p.lead { font-size: 15px; }
+.mono { font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+section { margin-top: 36px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+.sub { color: var(--text2); font-size: 13px; margin: 0 0 12px; }
+.muted { color: var(--muted); }
+
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.tile .label { color: var(--text2); font-size: 13px; }
+.tile .value { font-size: 34px; font-weight: 650; line-height: 1.15; margin: 4px 0 2px; }
+.tile .note { color: var(--muted); font-size: 12.5px; }
+
+.legend { display: flex; gap: 18px; font-size: 13px; color: var(--text2); margin: 0 0 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key-line { width: 16px; height: 0; border-top: 2px solid; display: inline-block; }
+.c1 { border-color: var(--s1); } .c2 { border-color: var(--s2); }
+
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.chart svg { display: block; width: 100%; outline: none; }
+.chart svg:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; border-radius: 6px; }
+.chart text { fill: var(--muted); font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; }
+.chart text.lab { fill: var(--text); font-size: 12.5px; }
+.chart text.lab2 { fill: var(--text2); }
+
+.bars { display: grid; gap: 6px; }
+.bhead, .brow { display: grid; grid-template-columns: 200px minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: center; }
+.bhead { font-size: 12px; color: var(--text2); font-weight: 600; padding: 0 4px 2px; }
+.brow { border-radius: 6px; padding: 4px; outline: none; }
+.brow:hover, .brow:focus-visible { background: var(--wash); }
+.blabel { font-size: 13px; color: var(--text); line-height: 1.25; }
+.blabel small { display: block; color: var(--muted); font-size: 12px; }
+.btrack { position: relative; height: 12px; margin-right: 44px; }
+.bar { position: absolute; top: 0; height: 12px; background: var(--s1); }
+.bar.pos { border-radius: 0 4px 4px 0; } .bar.neg { border-radius: 4px 0 0 4px; }
+.bval { position: absolute; top: -3px; font-size: 12px; color: var(--text2); font-variant-numeric: tabular-nums;
+  white-space: nowrap; }
+.bzero { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--axis); }
+
+.filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; margin: 14px 0 12px; }
+.filters label { display: grid; gap: 3px; font-size: 12px; color: var(--text2); }
+.filters select, .filters input {
+  font: inherit; font-size: 13px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--axis); border-radius: 6px; padding: 5px 8px; min-width: 150px;
+}
+.filters .count { margin-left: auto; color: var(--text2); font-size: 13px; padding-bottom: 6px; }
+
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--text2); font-size: 12px; padding: 8px 10px;
+  border-bottom: 1px solid var(--axis); vertical-align: bottom; white-space: nowrap; }
+td { padding: 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td b { font-weight: 650; }
+td.commit { min-width: 360px; }
+td.area { max-width: 190px; }
+td.imp { min-width: 150px; max-width: 200px; }
+td .t { font-weight: 600; color: var(--text); }
+td .d { color: var(--text2); margin-top: 3px; max-width: 68ch; }
+td .e { color: var(--text2); margin-top: 4px; max-width: 68ch; }
+td .e span { color: var(--muted); }
+td .f { color: var(--muted); margin-top: 4px; font-size: 12px; overflow-wrap: anywhere; }
+td small { display: block; color: var(--muted); font-size: 12px; }
+td.imp small { white-space: normal; margin-top: 2px; }
+.chip { display: inline-block; border: 1px solid var(--border); background: var(--wash); border-radius: 999px;
+  padding: 1px 8px; font-size: 12px; color: var(--text2); margin: 0 4px 4px 0; }
+.impact { font-weight: 600; white-space: nowrap; }
+.impact .pips { display: inline-flex; gap: 2px; margin-right: 6px; vertical-align: middle; }
+.impact .pips i { width: 5px; height: 12px; border-radius: 1px; background: var(--grid); display: inline-block; }
+.impact .pips i.on { background: var(--text2); }
+
+#tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,0.16);
+  padding: 8px 10px; font-size: 12.5px; max-width: 360px; display: none; }
+#tip .tt { color: var(--text2); margin-bottom: 4px; }
+#tip .tr { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+#tip .tr b { font-weight: 650; min-width: 56px; text-align: right; }
+#tip .tr span.n { color: var(--text2); }
+
+tr.round td { background: var(--wash); color: var(--text2); font-size: 12.5px; padding: 8px 10px; }
+tr.round td b { color: var(--text); }
+.r2 table { width: 100%; }
+.r2 h3 { margin-bottom: 6px; }
+.method table { width: auto; }
+.method td, .method th { padding: 6px 14px 6px 0; }
+ul { color: var(--text2); margin: 0 0 12px; padding-left: 20px; max-width: 92ch; }
+li { margin-bottom: 5px; }
+@media (max-width: 900px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .two { grid-template-columns: minmax(0, 1fr); }
+  .bhead, .brow { grid-template-columns: 140px minmax(0, 1fr) minmax(0, 1fr); }
+}
+</style>
+</head>
+<body class="viz-root">
+<main>
+  <header>
+    <h1>SVT-AV1 10-bit encoder speed-up series: <span id="ncommits"></span> commits</h1>
+    <p class="lead" id="lead"></p>
+    <div class="kpis" id="kpis"></div>
+  </header>
+
+  <section>
+    <h2>How the savings accumulate</h2>
+    <p class="sub">Saving against the baseline after each commit, in percent of the baseline. Instruction counts are
+      exact; the cycle curve is the lowest of several runs per commit and still wanders by a few tenths of a point
+      from one commit to the next.</p>
+    <div class="legend">
+      <span><i class="key-line c1"></i>Instructions</span>
+      <span><i class="key-line c2"></i>CPU cycles</span>
+    </div>
+    <div class="two" id="panels"></div>
+  </section>
+
+  <section>
+    <h2>Where the savings come from</h2>
+    <p class="sub">Instruction savings (percentage points of the baseline, mean of the two clips), summed over the
+      commits of each primary area and of each nature. Instruction counts understate pure SIMD work, which mostly
+      shortens the time per instruction.</p>
+    <div class="two">
+      <div class="card"><div class="bars" id="byarea"></div></div>
+      <div class="card"><div class="bars" id="bynature"></div></div>
+    </div>
+  </section>
+
+  <section class="r2">
+    <h2 id="r2-title"></h2>
+    <p class="sub" id="r2-sub"></p>
+    <div class="two">
+      <div class="card"><h3>These commits on the four configurations of this report</h3><div id="r2-video"></div></div>
+      <div class="card"><h3>Both tips on the configurations the round was aimed at</h3><div id="r2-matrix"></div></div>
+    </div>
+  </section>
+
+  <section class="r2" id="r3" hidden>
+    <h2 id="r3-title"></h2>
+    <p class="sub" id="r3-sub"></p>
+    <div class="two">
+      <div class="card"><h3>These commits on the four configurations of this report</h3><div id="r3-video"></div></div>
+      <div class="card"><h3>Still images, and the tests of each commit</h3><div id="r3-still"></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The commits</h2>
+    <p class="sub">Instruction savings are percentage points of the baseline (positive = cheaper), mean of the two
+      clips, with the running total below. The impact rating is the CPU assessment: it follows the instruction
+      saving of the better preset unless a note says otherwise.</p>
+    <div class="filters">
+      <label>Nature<select id="f-nature"></select></label>
+      <label>Area<select id="f-area"></select></label>
+      <label>Impact<select id="f-impact"></select></label>
+      <label>Round<select id="f-round"></select></label>
+      <label>Order<select id="f-sort">
+        <option value="n">Series order</option>
+        <option value="i4">Largest saving, preset 4</option>
+        <option value="i2">Largest saving, preset 2</option>
+      </select></label>
+      <label>Search<input id="f-q" type="search" placeholder="title, file, description"></label>
+      <div class="count" id="count"></div>
+    </div>
+    <div class="card tablewrap">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Commit</th><th>Area</th><th>Nature</th>
+          <th class="num">Preset 4<br>instr. saved</th><th class="num">Preset 2<br>instr. saved</th>
+          <th>CPU impact</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="method">
+    <h2>How the figures were obtained</h2>
+    <div id="method"></div>
+  </section>
+</main>
+<div id="tip" role="status"></div>
+
+<script>
+const DATA = {"rows": [{"n": 1, "hash": "aa73b788a", "title": "Cache compound intermediates of MDS0 single-reference predictions", "round": 1, "desc": "Add dual-output 10-bit NEON kernels that produce a single-reference luma prediction and its first-pass compound intermediate from one filter sum. MDS0 keeps the intermediates per block and averages two of them for a compound candidate instead of filtering both references again.", "credit": "Co-authored by Claude", "areas": ["mdpred"], "nature": "Algorithmic + SIMD", "mech": "Result reuse (cache), dual-output kernels", "files": ["highbd_10_convolve_neon.h", "highbd_convolve_neon.c", "enc_inter_prediction.c", "inter_prediction.c", "inter_prediction.h", "md_process.c", "md_process.h"], "stat": "7 files changed, 532 insertions(+), 8 deletions(-)", "evidence": "", "i4": 1.693, "c4": 1.693, "i2": 1.384, "c2": 1.384, "impact": "High", "basis": ""}, {"n": 2, "hash": "a07743740", "title": "Extend the MDS0 compound cache to one-sided and full-pel reuse", "round": 1, "desc": "Scan the block's compound candidates before MDS0 so that only the predictions they need also emit an intermediate. When one side is cached, average the other reference into it, and average two full-pel references with a dedicated kernel.", "credit": "Co-authored by Claude", "areas": ["mdpred"], "nature": "Algorithmic + SIMD", "mech": "Result reuse (cache)", "files": ["highbd_jnt_convolve_neon.c", "enc_inter_prediction.c", "enc_inter_prediction.h", "md_process.c", "md_process.h", "product_coding_loop.c"], "stat": "6 files changed, 197 insertions(+), 55 deletions(-)", "evidence": "", "i4": 0.898, "c4": 2.591, "i2": 0.127, "c2": 1.511, "impact": "High", "basis": ""}, {"n": 3, "hash": "93cffa6b6", "title": "Reuse source energies during high-bit-depth mode decision", "round": 1, "desc": "Keep per-plane source energies within each block search and load four adjacent energies per NEON vector. Separate cache hits from fills while preserving source identity, energy arithmetic and AC-bias rounding.", "credit": "Co-authored by GPT-6", "areas": ["dist", "mdflow"], "nature": "Algorithmic + SIMD", "mech": "Result reuse (cache)", "files": ["highbd_ac_bias_neon.c", "ac_bias.c", "ac_bias.h", "common_dsp_rtcd.h", "enc_inter_prediction.c", "enc_inter_prediction.h", "full_loop.c", "md_process.c", "md_process.h", "product_coding_loop.c", "psy_energy_cache.h"], "stat": "11 files changed, 232 insertions(+), 44 deletions(-)", "evidence": "", "i4": 0.65, "c4": 3.241, "i2": 1.097, "c2": 2.608, "impact": "High", "basis": ""}, {"n": 4, "hash": "622ba4de8", "title": "Use 16-bit forward transforms for bounded rectangular and 8x8 residuals", "round": 1, "desc": "Dispatch 10-bit rectangular and 8x8 forward transforms to the 16-bit NEON kernels when a range check shows the residual stays within the bound those kernels support, and keep the 32-bit kernels otherwise.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_fwd_txfm_neon.c"], "stat": "1 file changed, 59 insertions(+)", "evidence": "", "i4": 0.299, "c4": 3.54, "i2": 0.293, "c2": 2.901, "impact": "Medium", "basis": ""}, {"n": 5, "hash": "378a43c72", "title": "Keep a packed 16-bit luma copy of 10-bit reference pictures", "round": 1, "desc": "Finalized 10-bit references keep a packed copy of their luma plane, so light prediction reads it instead of packing the split planes per block. Also limit the NSQ MV scan to the ME blocks of the matching size and add a bounded 16-bit inverse transform kernel, not yet dispatched.", "credit": "Co-authored by Claude", "areas": ["mdpred", "pix", "txq"], "nature": "Algorithmic + SIMD", "mech": "Avoided per-block packing", "files": ["av1_inv_txfm_neon.c", "highbd_jnt_convolve_neon.c", "enc_dec_process.c", "enc_inter_prediction.c", "inter_prediction.c", "inter_prediction.h", "pic_buffer_desc.c", "pic_buffer_desc.h", "product_coding_loop.c"], "stat": "9 files changed, 266 insertions(+), 10 deletions(-)", "evidence": "", "i4": 1.579, "c4": 5.119, "i2": 0.731, "c2": 3.632, "impact": "High", "basis": ""}, {"n": 6, "hash": "3e50c2cee", "title": "Dispatch bounded 16-bit inverse transforms for 10-bit blocks", "round": 1, "desc": "Use the 16-bit NEON inverse transform kernels for 10-bit blocks whose coefficients stay within per-size limits, worst-case bounds under which no 16-bit intermediate overflows for any sign pattern. Other blocks keep the 32-bit kernels.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_inv_txfm_neon.c"], "stat": "1 file changed, 49 insertions(+)", "evidence": "", "i4": 0.003, "c4": 5.121, "i2": 0.367, "c2": 3.999, "impact": "Medium", "basis": ""}, {"n": 7, "hash": "717ce19af", "title": "Skip duplicate superblock source packing and speed up input unpacking", "round": 1, "desc": "Do not pack a superblock's 10-bit source again when mode decision already packed it, and compress the 2-bit LSBs of the unpacked input with a shorter NEON sequence (pairs of bytes, then pairs of nibbles).", "credit": "Co-authored by Claude", "areas": ["pix"], "nature": "Algorithmic + SIMD", "mech": "Avoided duplicate work", "files": ["picture_operators_intrinsic_neon.c", "enc_dec_process.c"], "stat": "2 files changed, 105 insertions(+), 104 deletions(-)", "evidence": "", "i4": 0.187, "c4": 5.308, "i2": 0.031, "c2": 4.03, "impact": "Low", "basis": ""}, {"n": 8, "hash": "c04175b55", "title": "Skip groups of small coefficients early in the QM quantizers", "round": 1, "desc": "The quantization-matrix quantizers derive a conservative bound from the largest weight of the matrix and zero a group of sixteen AC coefficients that are all below the threshold for every weight, without the full arithmetic. Other groups take the regular path.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic + SIMD", "mech": "Early exit", "files": ["av1_quantize_neon.c"], "stat": "1 file changed, 60 insertions(+)", "evidence": "", "i4": 0.347, "c4": 5.654, "i2": 0.137, "c2": 4.167, "impact": "Medium", "basis": ""}, {"n": 9, "hash": "b9da864fe", "title": "Reject on the DC coefficient first in the bounded inverse transform", "round": 1, "desc": "The DC coefficient is usually the largest one of a block, so the bounded 16-bit inverse transform tests it against the limit before it scans the other coefficients.", "credit": "Co-authored by Claude", "areas": ["mdpred", "txq"], "nature": "Algorithmic", "mech": "Result reuse, early reject", "files": ["av1_inv_txfm_neon.c"], "stat": "1 file changed, 4 insertions(+)", "evidence": "", "i4": 0.209, "c4": 5.863, "i2": 0.114, "c2": 4.282, "impact": "Low", "basis": ""}, {"n": 10, "hash": "356cc34a7", "title": "Shorten dependency chains in the transform and quantizer bound checks", "round": 1, "desc": "The range checks in front of the narrow transform and quantizer kernels OR their magnitudes into four accumulators instead of one, so they are no longer latency-bound. The compound cache keeps the predictions it needs in a small hash table instead of a list.", "credit": "Co-authored by Claude", "areas": ["txq", "mdpred"], "nature": "SIMD", "mech": "Shorter dependency chains", "files": ["av1_inv_txfm_neon.c", "av1_quantize_neon.c", "highbd_fwd_txfm_neon.c", "enc_inter_prediction.c", "md_process.h"], "stat": "5 files changed, 43 insertions(+), 27 deletions(-)", "evidence": "", "i4": 0.172, "c4": 6.035, "i2": 0.064, "c2": 4.345, "impact": "Low", "basis": ""}, {"n": 11, "hash": "194a68306", "title": "Batch the full-pel variance grid of the MD motion search", "round": 1, "desc": "Add a DotProd kernel that computes the variances of a source block against a row of adjacent full-pel positions, loading each source vector once and keeping independent accumulators per position. md_full_pel_search() uses it in place of one variance call per position.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "SIMD", "mech": "Batched kernel", "files": ["variance_neon_dotprod.c", "product_coding_loop.c"], "stat": "2 files changed, 164 insertions(+), 1 deletion(-)", "evidence": "", "i4": 0.67, "c4": 6.705, "i2": 0.377, "c2": 4.722, "impact": "Medium", "basis": ""}, {"n": 12, "hash": "5decbaabd", "title": "Take the self-guided search SSE from retained filter outputs", "round": 1, "desc": "The self-guided search keeps the filter outputs of its best parameter set and derives the unit's SSE from them instead of filtering the unit again, when no stripe boundaries are involved. Also skip re-packing the whole 10-bit source picture when mode decision already stored every superblock.", "credit": "Co-authored by Claude", "areas": ["rest", "pix"], "nature": "Algorithmic", "mech": "Result reuse", "files": ["cdef_process.c", "rest_process.c", "restoration_pick.c"], "stat": "3 files changed, 95 insertions(+), 4 deletions(-)", "evidence": "", "i4": 0.05, "c4": 6.756, "i2": 1.167, "c2": 5.889, "impact": "High", "basis": ""}, {"n": 13, "hash": "702628592", "title": "Pack each superblock's 10-bit source in place in the frame buffer", "round": 1, "desc": "Mode decision packs and pads a superblock's 10-bit source directly in the frame-sized packed source picture instead of a superblock-local buffer that was then copied. The superblock occupies the same samples, and only its own thread touches them.", "credit": "Co-authored by Claude", "areas": ["pix"], "nature": "Algorithmic", "mech": "Avoided copies", "files": ["coding_loop.c", "product_coding_loop.c"], "stat": "2 files changed, 39 insertions(+), 20 deletions(-)", "evidence": "", "i4": 0.115, "c4": 6.871, "i2": 0.025, "c2": 5.914, "impact": "Low", "basis": ""}, {"n": 14, "hash": "69419644f", "title": "Look up x/(x+1) in registers in the self-guided filter", "round": 1, "desc": "The a/b computation of the NEON self-guided filter fetched its x/(x+1) table entries from memory one sample at a time. The lookup now stays in vector registers, built from threshold compares on the clamped z values.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "In-register table lookup", "files": ["selfguided_neon.c"], "stat": "1 file changed, 64 insertions(+), 25 deletions(-)", "evidence": "", "i4": -0.002, "c4": 6.869, "i2": 0.233, "c2": 6.147, "impact": "Low", "basis": ""}, {"n": 15, "hash": "2724d29e4", "title": "Seed and batch the coarse ME successive-elimination SAD search", "round": 1, "desc": "svt_sad_loop_16xh_sea_neon() computes the bounds of every group first, seeds the limit with the group of the smallest bound, gathers the surviving groups without branches and evaluates four at a time. The result is tracked as one (SAD, position) integer, so no branch depends on a SAD.", "credit": "Co-authored by Claude", "areas": ["me"], "nature": "Algorithmic + SIMD", "mech": "Pruning order, batching", "files": ["compute_sad_neon.c"], "stat": "1 file changed, 181 insertions(+), 32 deletions(-)", "evidence": "", "i4": 0.569, "c4": 7.439, "i2": 0.313, "c2": 6.461, "impact": "Medium", "basis": ""}, {"n": 16, "hash": "46c1ce364", "title": "Share horizontal passes in the temporal-filter sub-pel search", "round": 1, "desc": "Positions of the 10-bit temporal-filter sub-pel search at the same horizontal position share one horizontal filter pass, kept in a small per-search cache, and run only their vertical pass. Bilinear one-directional predictions use dedicated two-tap kernels.", "credit": "Co-authored by Claude", "areas": ["tf"], "nature": "Algorithmic + SIMD", "mech": "Shared filter passes", "files": ["highbd_convolve_neon.c", "enc_inter_prediction.c", "enc_inter_prediction.h", "inter_prediction.h", "temporal_filtering.c", "temporal_filtering.h"], "stat": "6 files changed, 278 insertions(+), 21 deletions(-)", "evidence": "", "i4": 0.81, "c4": 8.249, "i2": 1.602, "c2": 8.063, "impact": "High", "basis": ""}, {"n": 17, "hash": "fc3fa78ae", "title": "Add a 10-bit luma intra edge cache for MDS0 candidates", "round": 1, "desc": "The per-block intra edge cache (neighbour copy, edge availability, filtered and upsampled directional edges shared by angles with the same preparation) only covered 8-bit mode decision. Add the 16-bit form for hbd-mds 1.", "credit": "Co-authored by Claude", "areas": ["mdintra"], "nature": "Algorithmic", "mech": "Result reuse (cache)", "files": ["enc_intra_prediction.c", "md_process.h", "product_coding_loop.c"], "stat": "3 files changed, 281 insertions(+), 1 deletion(-)", "evidence": "", "i4": 0.839, "c4": 9.088, "i2": 1.312, "c2": 9.375, "impact": "High", "basis": ""}, {"n": 18, "hash": "9e738c4e5", "title": "Tabulate per-angle intra edge parameters and widen the edge cache", "round": 1, "desc": "Filter strengths and upsampling flags of every directional angle come from a table built once per process instead of four calls per candidate. The block's smooth-neighbour filter type is kept with the cached edge, and the prepared-edge slots go from 8 to 16.", "credit": "Co-authored by Claude", "areas": ["mdintra"], "nature": "Algorithmic", "mech": "Precomputed table", "files": ["enc_intra_prediction.c", "enc_intra_prediction.h", "md_process.h", "enc_handle.c"], "stat": "4 files changed, 79 insertions(+), 36 deletions(-)", "evidence": "", "i4": -0.024, "c4": 9.064, "i2": 0.105, "c2": 9.48, "impact": "Low", "basis": ""}, {"n": 19, "hash": "f5081808f", "title": "Use table lookups for the left edge in the 10-bit zone-2 predictor", "round": 1, "desc": "For blocks 8 wide and up, the left-edge samples of each 8-pixel group were fetched with one scalar load per sample. They normally fall inside a 16- or 32-sample window of the edge, so the window is loaded once and indexed with TBL; wider spans keep the scalar gather.", "credit": "Co-authored by Claude", "areas": ["mdintra"], "nature": "SIMD", "mech": "Table lookup instead of gathers", "files": ["highbd_intra_prediction_neon.c"], "stat": "1 file changed, 41 insertions(+), 4 deletions(-)", "evidence": "Kernel alone: 30-58% faster, averaged over all angles.", "i4": 0.06, "c4": 9.124, "i2": 0.191, "c2": 9.671, "impact": "Low", "basis": ""}, {"n": 20, "hash": "a479bf182", "title": "Share horizontal filter passes in the full sub-pel search", "round": 1, "desc": "In svt_av1_find_best_sub_pixel_tree(), positions at the same horizontal position share the horizontally filtered image through a four-column cache that grows row-wise on demand. Positions without a vertical fraction take their variance straight from it.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "Algorithmic", "mech": "Shared filter passes", "files": ["mcomp.c", "mcomp.h"], "stat": "2 files changed, 192 insertions(+), 2 deletions(-)", "evidence": "", "i4": 0.0, "c4": 9.124, "i2": 0.567, "c2": 10.238, "impact": "Medium", "basis": ""}, {"n": 21, "hash": "ee97212ae", "title": "Memoize repeated steps of the CDEF strength search", "round": 1, "desc": "A frame's strength search calls svt_search_one_dual() 75 times, and its greedy searches and refinement loops repeat many of the calls. A call depends only on the set of already selected strength pairs, so repeats are answered from a per-frame memo keyed by that set (55-74% of the calls).", "credit": "Co-authored by Claude", "areas": ["cdef"], "nature": "Algorithmic", "mech": "Memoization", "files": ["enc_cdef.c"], "stat": "1 file changed, 67 insertions(+), 5 deletions(-)", "evidence": "55-74% of the search calls are answered from the memo.", "i4": 0.104, "c4": 9.228, "i2": 0.657, "c2": 10.895, "impact": "Medium", "basis": ""}, {"n": 22, "hash": "655b3c35c", "title": "Skip MV costs of losing positions in the MD motion searches", "round": 1, "desc": "md_full_pel_search() does not compute the MV cost of a position whose distortion alone cannot beat the best cost, and indexes its variance grid with counters instead of divisions. md_nsq_motion_search() visits the ME sub-blocks inside the block directly instead of scanning the size class.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "Algorithmic", "mech": "Early exit", "files": ["product_coding_loop.c"], "stat": "1 file changed, 48 insertions(+), 28 deletions(-)", "evidence": "", "i4": 0.489, "c4": 9.717, "i2": 0.254, "c2": 11.149, "impact": "Medium", "basis": ""}, {"n": 23, "hash": "7ac653206", "title": "Process two rows per vector in the 8-wide grid variance kernel", "round": 1, "desc": "The batched grid variance kernel handles 8-wide blocks two rows per vector and takes the source block's sum once per grid instead of once per position.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "SIMD", "mech": "Batched kernel", "files": ["variance_neon_dotprod.c"], "stat": "1 file changed, 58 insertions(+), 41 deletions(-)", "evidence": "", "i4": 0.099, "c4": 9.816, "i2": 0.011, "c2": 11.16, "impact": "Low", "basis": ""}, {"n": 24, "hash": "5cf2e2e70", "title": "Use independent accumulators in SATD and coefficient distortion kernels", "round": 1, "desc": "svt_aom_satd_neon and the 32-bit full distortion kernels updated one or two accumulators serially, bound by the accumulate latency; they now keep one chain per vector. svt_av1_compute_cul_level_neon stops once its sum reaches COEFF_CONTEXT_MASK, to which its caller clamps.", "credit": "Co-authored by Claude", "areas": ["dist", "txq"], "nature": "SIMD", "mech": "Independent accumulator chains", "files": ["av1_quantize_neon.c", "picture_operators_intrinsic_neon.c", "sad_neon.c"], "stat": "3 files changed, 53 insertions(+), 28 deletions(-)", "evidence": "Kernels alone: 2-6x faster.", "i4": 0.06, "c4": 9.876, "i2": 0.014, "c2": 11.174, "impact": "Low", "basis": "Kernel-level gain; not resolvable in a whole encode"}, {"n": 25, "hash": "314b3edb3", "title": "Speed up 10-bit variance and directional intra interpolation", "round": 1, "desc": "highbd_variance_large_neon runs four 8-sample vectors per step, each with its own accumulator chains. The high-bit-depth directional predictors interpolate as a0 + sqrdmulh(a1 - a0, s << k) in 16-bit lanes instead of widening multiplies and narrowing shifts.", "credit": "Co-authored by Claude", "areas": ["dist", "mdintra"], "nature": "SIMD", "mech": "Accumulator chains, narrower arithmetic", "files": ["highbd_intra_prediction_neon.c", "highbd_variance_neon.c"], "stat": "2 files changed, 82 insertions(+), 57 deletions(-)", "evidence": "Kernels alone: variance 15-20% faster at 16x16 and 64x64; zone-1 predictor about 40% faster at 32x32 and 64x64.", "i4": 0.446, "c4": 10.323, "i2": 0.85, "c2": 12.024, "impact": "High", "basis": ""}, {"n": 26, "hash": "3f20d4c8b", "title": "Compute 10-bit one-directional predictions in 16-bit arithmetic", "round": 1, "desc": "Horizontal-only and vertical-only 10-bit predictions at widths of 8 and up use the centre/residual filter split of the 2D horizontal pass instead of 32-bit multiply-accumulates.", "credit": "Co-authored by Claude", "areas": ["mdpred"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_convolve_neon.c"], "stat": "1 file changed, 179 insertions(+)", "evidence": "Kernels alone: 24-43% faster.", "i4": -0.043, "c4": 10.28, "i2": -0.042, "c2": 11.982, "impact": "Low", "basis": "Kernel-level gain; not resolvable in a whole encode"}, {"n": 27, "hash": "ff2893383", "title": "Use 16-bit arithmetic for compound horizontal-only 10-bit prediction", "round": 1, "desc": "The compound horizontal-only convolve uses the same centre/residual kernel split as the single-reference paths; the shared helpers move to highbd_10_convolve_neon.h. It covers the first and second prediction, plain and distance-weighted.", "credit": "Co-authored by Claude", "areas": ["mdpred"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_10_convolve_neon.h", "highbd_convolve_neon.c", "highbd_jnt_convolve_neon.c"], "stat": "3 files changed, 126 insertions(+), 66 deletions(-)", "evidence": "", "i4": 0.04, "c4": 10.319, "i2": 0.029, "c2": 12.011, "impact": "Neutral", "basis": ""}, {"n": 28, "hash": "a1a5057d7", "title": "Speed up the wedge search SSE and sign kernels", "round": 1, "desc": "svt_av1_wedge_sse_from_residuals_small_neon forms 64*r1 + m*d in 16-bit lanes when a guard, paid once per residual pair, shows that every r1 and d fits 8 bits plus sign. svt_av1_wedge_sign_from_residuals_neon_dotprod uses two byte dot products instead of widening multiply-accumulates.", "credit": "Co-authored by Claude", "areas": ["mdpred"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["wedge_utils_neon.c", "sse_neon_dotprod.c", "aom_dsp_rtcd.c", "aom_dsp_rtcd.h", "enc_inter_prediction.c"], "stat": "5 files changed, 111 insertions(+), 3 deletions(-)", "evidence": "Kernels alone: SSE 39% faster, sign 36-51% faster.", "i4": 0.0, "c4": 10.32, "i2": 0.274, "c2": 12.285, "impact": "Low", "basis": ""}, {"n": 29, "hash": "c18632420", "title": "Use a byte filter table and TBL windows in the 8-bit warp filter", "round": 1, "desc": "The I8MM horizontal stage loaded eight 16-bit filters per row and narrowed them, and built its sample windows with seven EXTs and four combines. A byte copy of the warp filter table gives two filters per vector directly, and four TBLs give the windows.", "credit": "Co-authored by Claude", "areas": ["warp"], "nature": "SIMD", "mech": "Table lookup", "files": ["warp_plane_neon_i8mm.h", "warped_motion.c", "warped_motion.h"], "stat": "3 files changed, 132 insertions(+), 35 deletions(-)", "evidence": "", "i4": 0.003, "c4": 10.323, "i2": -0.048, "c2": 12.237, "impact": "Neutral", "basis": ""}, {"n": 30, "hash": "52bf7925d", "title": "Sum coefficient magnitudes in one pass for the light AC-bias rate", "round": 1, "desc": "svt_psy_adjust_rate_light() summed |coeff| row by row, and each vectorised row paid a remainder loop and a reduction, which dominated for the narrow blocks PD0 mostly sees. The rows are contiguous, so one flat NEON pass with four 64-bit accumulators replaces them.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "SIMD", "mech": "Flat single pass", "files": ["ac_bias_neon.c", "ac_bias.c"], "stat": "2 files changed, 38 insertions(+), 5 deletions(-)", "evidence": "Function alone: 2.3x to 4.7x faster per call.", "i4": 0.221, "c4": 10.543, "i2": 0.047, "c2": 12.284, "impact": "Low", "basis": ""}, {"n": 31, "hash": "41444822a", "title": "Reuse chroma mode search results at the last MD stage", "round": 1, "desc": "search_best_mds3_uv_mode() predicts and transform-codes every chroma mode the last stage's intra candidates can use. Its per-mode results are now recorded and copied: the prediction always, the coefficients, distortions and rates when nothing the chroma transform loop reads has changed.", "credit": "Co-authored by Claude", "areas": ["mdflow", "txq"], "nature": "Algorithmic", "mech": "Result reuse", "files": ["md_process.h", "product_coding_loop.c"], "stat": "2 files changed, 304 insertions(+), 84 deletions(-)", "evidence": "", "i4": 0.365, "c4": 10.908, "i2": 0.393, "c2": 12.677, "impact": "Medium", "basis": ""}, {"n": 32, "hash": "56f4df6b7", "title": "Use two SSE accumulators in the 10-bit self-guided projection error", "round": 1, "desc": "Both squared-error multiply-accumulates of a vector went to one register, so every eight pixels waited on two chained accumulates. One accumulator per half makes the kernel throughput-bound.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "Independent accumulator chains", "files": ["pickrst_neon.c"], "stat": "1 file changed, 16 insertions(+), 12 deletions(-)", "evidence": "Kernel alone: about 20% faster for the one- and two-filter cases.", "i4": 0.004, "c4": 10.912, "i2": -0.008, "c2": 12.669, "impact": "Low", "basis": "Kernel-level gain; not resolvable in a whole encode"}, {"n": 33, "hash": "bade64575", "title": "Speed up the CDEF strength search and 10-bit temporal filter kernels", "round": 1, "desc": "svt_search_one_dual_neon() uses min(m0 + m1, best) = best - sat(sat(best - m0) - m1) once a strength pair is selected: one saturating subtraction and one add per element in its inner loop. The 10-bit temporal filter accumulates with widening multiply-accumulates.", "credit": "Co-authored by Claude", "areas": ["cdef", "tf"], "nature": "SIMD", "mech": "Cheaper inner loop", "files": ["cdef_neon.c", "temporal_filtering_neon.c"], "stat": "2 files changed, 112 insertions(+), 13 deletions(-)", "evidence": "CDEF search step alone: about 35% faster.", "i4": 0.052, "c4": 10.965, "i2": 0.171, "c2": 12.84, "impact": "Low", "basis": ""}, {"n": 34, "hash": "7d84c1133", "title": "Keep the winning luma prediction of the interpolation filter search", "round": 1, "desc": "The search predicts luma for each distinct filter pair, and when a pair other than the incoming one won, the caller predicted luma once more with it. The best pair's prediction is now copied aside as it is found and handed to the candidate, where the caller would use the same prediction path.", "credit": "Co-authored by Claude", "areas": ["mdpred"], "nature": "Algorithmic", "mech": "Result reuse", "files": ["enc_inter_prediction.c", "md_process.c", "md_process.h"], "stat": "3 files changed, 71 insertions(+), 4 deletions(-)", "evidence": "", "i4": 0.002, "c4": 10.967, "i2": 0.025, "c2": 12.865, "impact": "Neutral", "basis": ""}, {"n": 35, "hash": "d7538d842", "title": "Select the MD full-pel search winner without branching on costs", "round": 1, "desc": "The search loop tested each position's distortion and then its total cost with two poorly predicted branches. The distortions of all visited positions are now gathered first and the winner is selected with conditional moves, in the same visiting order and with the same strict comparison.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "Algorithmic", "mech": "Branch removal", "files": ["product_coding_loop.c"], "stat": "1 file changed, 135 insertions(+), 51 deletions(-)", "evidence": "Development A/B (same binary): 0.8-1.1% fewer cycles at preset 4 on both clips, at an unchanged instruction count (fewer mispredicted branches).", "i4": -0.001, "c4": 10.966, "i2": -0.005, "c2": 12.86, "impact": "High", "basis": "Rated on the same-binary cycle A/B"}, {"n": 36, "hash": "f904075b3", "title": "Evaluate the pruned sub-pel search's half-pel cross in one kernel", "round": 1, "desc": "The first level of the pruned search evaluated the four half-pel neighbours of the full-pel MV with four sub-pixel variance calls. A new DotProd kernel loads the source and centre rows once and accumulates the four predictions side by side, for 8-, 16- and 32-wide blocks.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "Algorithmic + SIMD", "mech": "Fused kernel", "files": ["variance_neon_dotprod.c", "mcomp.c"], "stat": "2 files changed, 110 insertions(+), 6 deletions(-)", "evidence": "Kernel alone: 20-45% faster than the four calls. Development A/B: 0.3-0.5% fewer cycles at preset 4.", "i4": 0.333, "c4": 11.299, "i2": 0.095, "c2": 12.956, "impact": "Medium", "basis": ""}, {"n": 37, "hash": "ca791ff5c", "title": "Evaluate the pruned sub-pel search's quarter-pel cross in one kernel", "round": 1, "desc": "The half-pel cross one level down: the four quarter-pel neighbours of a full- or half-pel centre come from one pass. Up and down share their horizontal pass, and for a half-pel row centre all four positions blend the same pair of filtered rows.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "Algorithmic + SIMD", "mech": "Fused kernel", "files": ["variance_neon_dotprod.c", "mcomp.c"], "stat": "2 files changed, 140 insertions(+)", "evidence": "Kernel alone: 13-25% faster than the four calls.", "i4": 0.226, "c4": 11.525, "i2": 0.078, "c2": 13.034, "impact": "Low", "basis": ""}, {"n": 38, "hash": "6d3b6f772", "title": "Compute full-pel grid variances from correlations and sliding sums", "round": 1, "desc": "With sum((s - r)^2) = sum(s^2) + sum(r^2) - 2 * sum(s * r), a grid position accumulates one dot product per vector instead of an absolute difference and two dot products. The reference sums of a grid row follow from the previous row's by adding the rows that entered and removing those that left.", "credit": "Co-authored by Claude", "areas": ["mdms"], "nature": "Algorithmic + SIMD", "mech": "Incremental sums", "files": ["variance_neon_dotprod.c"], "stat": "1 file changed, 236 insertions(+), 1 deletion(-)", "evidence": "Kernel alone: 10-22% faster per grid for 16- to 64-wide blocks. Development A/B: 0.3-0.4% fewer cycles at preset 4.", "i4": 0.558, "c4": 12.083, "i2": 0.296, "c2": 13.33, "impact": "Medium", "basis": ""}, {"n": 39, "hash": "0ef384328", "title": "Keep chain seeds and use 16-bit lanes in more 10-bit convolves", "round": 1, "desc": "Seed the 16-bit convolve chains with an offset vector the optimiser cannot fold, which saves a multiply and an add per output vector. The vertical-only dual-output and compound convolves move from 32-bit to 16-bit lanes with the split filter, and the 10-bit temporal filter uses fewer multiplies.", "credit": "Co-authored by Claude", "areas": ["mdpred", "tf"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_10_convolve_neon.h", "highbd_convolve_neon.c", "highbd_jnt_convolve_neon.c", "temporal_filtering_neon.c"], "stat": "4 files changed, 334 insertions(+), 94 deletions(-)", "evidence": "Kernels alone (cycles): x-only -12%, y-only -7%, compound x-only -7%, 2D -2.5%.", "i4": 0.106, "c4": 12.189, "i2": 0.04, "c2": 13.37, "impact": "Low", "basis": ""}, {"n": 40, "hash": "8c3633426", "title": "Narrow the lanes of the self-guided filter and 10-bit compound average", "round": 1, "desc": "The self-guided filter clamps with one saturating subtraction, keeps the weighted 3x3 sums of the a plane in 16-bit lanes and forms b with one widening multiply. The plain 10-bit compound average at widths of 8 and up never leaves 16-bit lanes.", "credit": "Co-authored by Claude", "areas": ["rest", "mdpred"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_jnt_convolve_neon.h", "selfguided_neon.c"], "stat": "2 files changed, 89 insertions(+), 75 deletions(-)", "evidence": "Self-guided kernel alone: 3% fewer instructions, 1.4% fewer cycles.", "i4": 0.066, "c4": 12.255, "i2": 0.086, "c2": 13.456, "impact": "Low", "basis": "Kernel-level gain; not resolvable in a whole encode"}, {"n": 41, "hash": "f0f77254e", "title": "Add mirrored rows in 16-bit lanes in the 10-bit Wiener vertical pass", "round": 1, "desc": "The intermediate is clamped to [0, 32767], so mirrored row pairs minus a bias fit 16-bit lanes and go through widening multiply-accumulates instead of 32-bit multiplies; the bias returns through the rounding vector. One vertical function serves the 5- and 7-tap filters and slides its row window.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_wiener_convolve_neon.c"], "stat": "1 file changed, 73 insertions(+), 109 deletions(-)", "evidence": "Kernel alone: 0.7% fewer instructions; speed unchanged within noise.", "i4": 0.013, "c4": 12.269, "i2": -0.006, "c2": 13.45, "impact": "Neutral", "basis": ""}, {"n": 42, "hash": "79f8ec7b1", "title": "Remember the largest weight of each quantization matrix", "round": 1, "desc": "The QM quantizers derive their early-skip bound from the largest matrix weight and scanned the whole matrix for it on every call. The value is now kept in a small table keyed by matrix address and size, only for the constant matrices the encoder hands out; other tables are scanned as before.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic", "mech": "Memoization", "files": ["av1_quantize_neon.c", "md_config_process.c"], "stat": "2 files changed, 49 insertions(+), 6 deletions(-)", "evidence": "", "i4": 0.161, "c4": 12.43, "i2": 0.11, "c2": 13.56, "impact": "Low", "basis": ""}, {"n": 43, "hash": "197318cd5", "title": "Fuse residual, DCT and SATD for 16x16 TPL candidates", "round": 1, "desc": "With transform-based TPL costs, svt_aom_tpl_dct16_satd_neon() forms the residual, runs both DCT passes and sums the absolute coefficients in 16-bit lanes without storing them. svt_aom_tpl_dct16_coeffs_neon() produces the coefficients only for a candidate that becomes the best inter one.", "credit": "Co-authored by Claude", "areas": ["tpl"], "nature": "Algorithmic + SIMD", "mech": "Fused kernel", "files": ["lowbd_fwd_txfm2d_neon.c", "src_ops_process.c"], "stat": "2 files changed, 106 insertions(+), 11 deletions(-)", "evidence": "", "i4": 0.007, "c4": 12.436, "i2": 0.476, "c2": 14.036, "impact": "Medium", "basis": ""}, {"n": 44, "hash": "b9de4e75d", "title": "Accumulate open-loop ME SAD rows in 8-bit lanes where ranges allow", "round": 1, "desc": "When the sample ranges of a 16x16 source block and of the reference area bound every absolute difference by 127, 63 or 31, the eight-position SAD kernel accumulates two, four or eight rows per 8-bit lane before one dot product. The tier is derived once per search.", "credit": "Co-authored by Claude", "areas": ["me"], "nature": "Algorithmic + SIMD", "mech": "Range-adaptive arithmetic", "files": ["sad_neon_dotprod.c", "me_context.h", "motion_estimation.c"], "stat": "3 files changed, 281 insertions(+), 42 deletions(-)", "evidence": "89-97% of the blocks of the two clips qualify for two rows per lane, 49-70% for eight.", "i4": 0.022, "c4": 12.458, "i2": 0.519, "c2": 14.555, "impact": "Medium", "basis": ""}, {"n": 45, "hash": "0e7866b58", "title": "Accumulate SAD search loop rows in 8-bit lanes where ranges allow", "round": 1, "desc": "Before a search of at least 32 positions with a 16-, 32- or 64-wide block, svt_sad_loop_kernel_neon_dotprod() takes the sample ranges of the block and of the reference region. When they bound the absolute differences by 127, 63 or 31, two, four or eight rows share a lane before each dot product.", "credit": "Co-authored by Claude", "areas": ["me", "tf"], "nature": "Algorithmic + SIMD", "mech": "Range-adaptive arithmetic", "files": ["compute_sad_neon_dotprod.c"], "stat": "1 file changed, 258 insertions(+)", "evidence": "Kernel alone: 32-34% fewer cycles where a search qualifies (79-85% of the searches), 3% more where it does not; instruction count unchanged.", "i4": 0.027, "c4": 12.485, "i2": 0.0, "c2": 14.556, "impact": "Low", "basis": "Kernel-level gain; not resolvable in a whole encode"}, {"n": 46, "hash": "20f578bc9", "title": "Share column passes across 16x16 types in the transform-type search", "round": 1, "desc": "The search ran the column pass again for every transform type although only four column transforms exist. The 16x16 NEON transform is now available as its two passes, and the search keeps the column output per column transform for the residual it is searching.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic + SIMD", "mech": "Shared transform passes", "files": ["highbd_fwd_txfm_neon.c", "lowbd_fwd_txfm2d_neon.c", "md_process.c", "md_process.h", "product_coding_loop.c", "transforms.c"], "stat": "6 files changed, 293 insertions(+), 106 deletions(-)", "evidence": "", "i4": -0.161, "c4": 12.323, "i2": 0.125, "c2": 14.681, "impact": "Low", "basis": "Costs 0.16 points at preset 4"}, {"n": 47, "hash": "41e85a777", "title": "Add a second level of bounds to the HME successive elimination", "round": 1, "desc": "Sixteenth-resolution pictures also carry 4-column box sums. For a group of candidates that passes the 8x8 bound, the absolute differences between the sixteen 4x4 sums of the block and of each candidate add up to a tighter lower bound of the SAD, which must be below the limit too.", "credit": "Co-authored by Claude", "areas": ["me"], "nature": "Algorithmic + SIMD", "mech": "Tighter pruning bound", "files": ["compute_sad_neon.c", "motion_estimation.c", "pic_analysis_process.c", "pic_buffer_desc.h"], "stat": "4 files changed, 157 insertions(+), 8 deletions(-)", "evidence": "Removes 43% of the group evaluations left after the first bound.", "i4": 0.26, "c4": 12.584, "i2": 0.098, "c2": 14.779, "impact": "Low", "basis": ""}, {"n": 48, "hash": "3f549f6df", "title": "Evaluate the top half of an HME candidate group first", "round": 1, "desc": "The top-half SADs of a group plus the 4x4-sum bounds of its bottom half are lower bounds of the full SADs. When none of them is below the limit, the group cannot hold a candidate that matters and its bottom half is not computed.", "credit": "Co-authored by Claude", "areas": ["me"], "nature": "Algorithmic + SIMD", "mech": "Tighter pruning bound", "files": ["compute_sad_neon.c"], "stat": "1 file changed, 44 insertions(+), 16 deletions(-)", "evidence": "39% of the evaluated groups stop after the top half.", "i4": 0.104, "c4": 12.688, "i2": 0.032, "c2": 14.811, "impact": "Low", "basis": ""}, {"n": 49, "hash": "2d9cd30fb", "title": "Keep only the even-row box-sum planes for the HME search", "round": 1, "desc": "A box sum over all rows is the sum of two even-row boxes one row apart, so the NEON kernel forms it from the even-row planes when a search uses all rows, and the picture keeps two planes instead of four. Builds without the NEON kernel no longer compute the 4-column sums they never read.", "credit": "Co-authored by Claude", "areas": ["me"], "nature": "Algorithmic", "mech": "Smaller memory footprint", "files": ["compute_sad_neon.c", "motion_estimation.c", "pic_analysis_process.c", "pic_buffer_desc.h"], "stat": "4 files changed, 79 insertions(+), 52 deletions(-)", "evidence": "Two box-sum planes per sixteenth-resolution picture instead of four.", "i4": -0.08, "c4": 12.608, "i2": -0.019, "c2": 14.791, "impact": "Neutral", "basis": ""}, {"n": 50, "hash": "b2387f5a9", "title": "Keep DCT_DCT luma coefficients of intra candidates across MD stages", "round": 1, "desc": "At depth 0 an intra candidate's luma prediction is the one of stage 0, so its stage-1 transform can serve stage 3 through the per-candidate store inter candidates already use. svt_av1_intra_prediction() now clears the store's key only when it predicts luma, not when called for chroma alone.", "credit": "Co-authored by Claude", "areas": ["txq", "mdflow"], "nature": "Algorithmic", "mech": "Result reuse", "files": ["enc_intra_prediction.c", "product_coding_loop.c"], "stat": "2 files changed, 8 insertions(+), 3 deletions(-)", "evidence": "", "i4": 0.349, "c4": 12.957, "i2": 0.168, "c2": 14.96, "impact": "Medium", "basis": ""}, {"n": 51, "hash": "2ab05c108", "title": "Reuse chroma search results unless the coefficient shape changes", "round": 1, "desc": "The reuse of chroma mode search results refused every block for which the last stage could switch chroma to the reduced coefficient shape. The test now evaluates the same condition as svt_aom_full_loop_uv(), so only the candidates that really switch are left out.", "credit": "Co-authored by Claude", "areas": ["mdflow", "txq"], "nature": "Algorithmic", "mech": "Result reuse", "files": ["common_utils.h", "product_coding_loop.c"], "stat": "2 files changed, 14 insertions(+), 4 deletions(-)", "evidence": "", "i4": 0.309, "c4": 13.267, "i2": -0.001, "c2": 14.959, "impact": "Medium", "basis": ""}, {"n": 52, "hash": "c3deaea82", "title": "Reduce bookkeeping around the MD candidate stages", "round": 1, "desc": "Sort candidates on a local copy of their costs, skip the rescan for the largest stage-0 cost when it cannot have moved, answer ME-data presence queries from a mask built once per block, and compute the TPL inter statistics once per superblock.", "credit": "Co-authored by Claude", "areas": ["mdflow"], "nature": "Algorithmic", "mech": "Cheaper bookkeeping", "files": ["enc_dec_process.c", "md_process.h", "mode_decision.c", "mode_decision.h", "product_coding_loop.c"], "stat": "5 files changed, 151 insertions(+), 32 deletions(-)", "evidence": "", "i4": 0.027, "c4": 13.294, "i2": 0.033, "c2": 14.992, "impact": "Neutral", "basis": ""}, {"n": 53, "hash": "84d188504", "title": "Skip the context-level scan where mode decision never reads it", "round": 1, "desc": "svt_aom_quantize_inv_quantize() ends with a scan that derives the transform block's cul level and DC sign. For luma at transform depth 0 in MD stages 1 and 2 of PD1 nothing reads the value: stage 3 quantizes its candidates again, and only depths above 0 feed it to the next block's contexts.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic", "mech": "Dead work removed", "files": ["full_loop.c"], "stat": "1 file changed, 9 insertions(+)", "evidence": "", "i4": 0.131, "c4": 13.425, "i2": 0.066, "c2": 15.058, "impact": "Low", "basis": ""}, {"n": 54, "hash": "a2e1e99f8", "title": "Sort the variance boost's 64 block variances with a fixed network", "round": 1, "desc": "av1_get_deltaq_sb_variance_boost() sorted the 64 8x8 variances of every superblock with qsort() and a comparator call. Batcher's odd-even merge sort (543 compare-exchanges, no data-dependent branch) replaces it.", "credit": "Co-authored by Claude", "areas": ["rc"], "nature": "Algorithmic", "mech": "Branch-free sorting network", "files": ["rc_aq.c"], "stat": "1 file changed, 76 insertions(+), 8 deletions(-)", "evidence": "The qsort() call was about 0.5% of the profile samples at preset 4.", "i4": 0.046, "c4": 13.471, "i2": 0.007, "c2": 15.064, "impact": "Neutral", "basis": ""}, {"n": 55, "hash": "31b77bd04", "title": "Avoid copying 10-bit full-pel single-reference predictions", "round": 1, "desc": "With the packed reference plane, a full-pel single-reference luma prediction is a block of that plane. PD0 reads it in place through a descriptor that points at the reference. PD1 takes the MDS0 variance on the reference block and leaves the copy to the first full-loop stage that keeps the candidate.", "credit": "Co-authored by Claude", "areas": ["mdpred"], "nature": "Algorithmic", "mech": "Avoided copies", "files": ["enc_inter_prediction.c", "enc_inter_prediction.h", "md_process.h", "product_coding_loop.c"], "stat": "4 files changed, 144 insertions(+), 14 deletions(-)", "evidence": "", "i4": 0.537, "c4": 14.008, "i2": 0.058, "c2": 15.122, "impact": "Medium", "basis": ""}, {"n": 56, "hash": "b2655b65f", "title": "Pack wide 10-bit planes row by row", "round": 1, "desc": "svt_compressed_packmsb_neon() packed a plane wider than 64 samples as 64-sample columns of the full height, a new cache line on every access when temporal filtering packs whole pictures. The 64-sample groups of a row are now packed together, a row at a time.", "credit": "Co-authored by Claude", "areas": ["pix", "tf"], "nature": "SIMD", "mech": "Memory access order", "files": ["picture_operators_intrinsic_neon.c"], "stat": "1 file changed, 54 insertions(+)", "evidence": "Kernel share of the samples at 1440p, preset 4: 0.54% to 0.29%; instruction count unchanged. A model of the temporal-filter packing alone takes 66% fewer cycles.", "i4": 0.001, "c4": 14.009, "i2": -0.001, "c2": 15.121, "impact": "Low", "basis": "Rated on its profile share (about 0.25 points on the 1440p clip)"}, {"n": 57, "hash": "1c13cafc8", "title": "Compute 16x16 and 32x32 high-bit-depth Hadamard SATDs in 16-bit lanes", "round": 2, "desc": "No Hadamard coefficient exceeds its block's sum of absolute differences, so when the 8x8 sums are small enough the 8x8 and 16x16 stages stay in 16-bit lanes and the final shifts use halving adds. The sums come from the loads the transform makes anyway; larger differences take the 32-bit path.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["highbd_hadamard_neon.c"], "stat": "1 file changed, 175 insertions(+), 4 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.29% fewer instructions.", "i4": 0.013, "c4": 14.022, "i2": 0.003, "c2": 15.124, "impact": "Neutral", "basis": ""}, {"n": 58, "hash": "9688221f7", "title": "Filter the 8-bit warp's vertical stage with tap-ordered filters", "round": 2, "desc": "With a filter per pixel the vertical stage transposed eight rows of samples for every output row. It now transposes the row's eight byte filters into tap order instead and multiplies each tap vector by its row of samples, which also removes the horizontal adds.", "credit": "Co-authored by Claude", "areas": ["warp"], "nature": "SIMD", "mech": "Fewer shuffles", "files": ["warp_plane_neon_i8mm.c"], "stat": "1 file changed, 44 insertions(+), 35 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged.", "i4": 0.003, "c4": 14.025, "i2": 0.111, "c2": 15.235, "impact": "Low", "basis": ""}, {"n": 59, "hash": "d33711aa4", "title": "Estimate base-level rates of 2D transform blocks in raster order", "round": 2, "desc": "The base-level rate of a 2D-class block is summed sixteen raster positions at a time: the inverse scan marks the coded ones, byte tables give the cost by context and level, and the last coefficient's anti-diagonal bounds the rows and columns visited. Higher levels keep the scalar range-rate code.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "Algorithmic + SIMD", "mech": "Raster order, table lookups", "files": ["CMakeLists.txt", "cost_coeffs_neon.c", "md_rate_estimation.c", "md_rate_estimation.h", "rd_cost.c"], "stat": "5 files changed, 172 insertions(+)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.81% fewer instructions.", "i4": 0.168, "c4": 14.193, "i2": 0.08, "c2": 15.314, "impact": "Low", "basis": ""}, {"n": 60, "hash": "f7ee82b37", "title": "Skip discarded context updates in the transform size rate", "round": 2, "desc": "svt_aom_get_tx_size_bits() prices the transform size on scratch copies of the neighbour contexts and discards their final state. Only the variable transform size path of inter blocks walks the copies; an intra block reads the first entry of each side, and with no size signalled nothing is read.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "Algorithmic", "mech": "Dead work removed", "files": ["rd_cost.c"], "stat": "1 file changed, 27 insertions(+), 15 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.48% fewer instructions.", "i4": 0.04, "c4": 14.232, "i2": 0.134, "c2": 15.449, "impact": "Low", "basis": ""}, {"n": 61, "hash": "e369fcf25", "title": "Use 8-bit lanes for CDEF tap differences in the search and 8-wide filter", "round": 2, "desc": "A constrained tap never exceeds its strength, so its magnitude can saturate at 255 and sixteen pixels fit one vector in the strength search and the 8-wide 16-bit filter. Combined filters next to unavailable pixels and out-of-bound damping or strengths keep the existing code.", "credit": "Co-authored by Claude", "areas": ["cdef"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["cdef_filter_block_neon.c", "cdef_search_neon.c"], "stat": "2 files changed, 440 insertions(+), 2 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.38% fewer instructions.", "i4": 0.742, "c4": 14.974, "i2": 0.582, "c2": 16.031, "impact": "Medium", "basis": ""}, {"n": 62, "hash": "fc4946f5f", "title": "Combine adjacent lanes in the 10-bit AC-bias Hadamard transform", "round": 2, "desc": "The horizontal stages of the energy transform use pairwise additions and multiply-subtracts instead of transposes, a 16x16 group is transformed as two pairs of side-by-side tiles, and each block class has its own function so that single-tile blocks pay no register saves.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "SIMD", "mech": "Fewer vector operations", "files": ["highbd_ac_bias_neon.c"], "stat": "1 file changed, 231 insertions(+), 133 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.52% fewer instructions.", "i4": 0.177, "c4": 15.151, "i2": 0.17, "c2": 16.201, "impact": "Low", "basis": ""}, {"n": 63, "hash": "995b83fd9", "title": "Shorten the set-up of the coefficient context kernels for small blocks", "round": 2, "desc": "Rows of a 4-wide level array are loaded with two vector loads and one unzip instead of lane inserts, 8-wide rows as two halves, the position tables are picked by index, and the coded width and height come from the transform size tables. The longer 4-wide load stays inside the levels buffer.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "SIMD", "mech": "Shorter set-up", "files": ["encodetxb_neon.c"], "stat": "1 file changed, 34 insertions(+), 46 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.20% fewer instructions.", "i4": 0.012, "c4": 15.164, "i2": 0.022, "c2": 16.224, "impact": "Neutral", "basis": ""}, {"n": 64, "hash": "22a500281", "title": "Use more accumulators in the 10-bit Wiener statistics for 5-tap windows", "round": 2, "desc": "The edge passes of the 5-tap statistics chained four multiply-accumulates per accumulator. Step 1 now keeps one accumulator per half vector, step 2 runs its four passes as one, and step 5 keeps its deltas in registers. The 7-tap window runs step 2 as two passes of three squares.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "Independent accumulators", "files": ["highbd_pickrst_neon.c"], "stat": "1 file changed, 169 insertions(+), 93 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged.", "i4": 0.119, "c4": 15.282, "i2": 0.032, "c2": 16.256, "impact": "Low", "basis": ""}, {"n": 65, "hash": "23d954aef", "title": "Fix 8-bit overflow and one-row units in the Wiener statistics kernels", "round": 2, "desc": "The high-bit-depth statistics kept whole-unit sums of 8-bit samples in 32-bit lanes, which large high-contrast units overflow; every bit depth now takes the path that widens in chunks. The 5-tap step 3 ran its two-row body once for a one-row unit and used a row that had not been loaded.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "Correctness fix", "files": ["highbd_pickrst_neon.c", "pickrst_neon.h"], "stat": "2 files changed, 171 insertions(+), 357 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Found by the range audit: the 8-bit branches of the 10-bit kernels could overflow, and units one row high were mishandled. No effect on the benchmark streams.", "i4": -0.016, "c4": 15.267, "i2": -0.0, "c2": 16.255, "impact": "Neutral", "basis": ""}, {"n": 66, "hash": "0e00c9381", "title": "Fix a 16-bit overflow in the 8x8 high-bit-depth Hadamard SATD", "round": 2, "desc": "The kernel reduced four of its pairwise maxima in a 16-bit lane, but one maximum can reach 32 * 1023 for 10-bit samples, so blocks with differences of 820 and more could lose 2^17 from their SATD. The reduction now widens after the first pairwise addition.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "SIMD", "mech": "Correctness fix", "files": ["hadamard_path_neon.h"], "stat": "1 file changed, 5 insertions(+), 2 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Found by the range audit: differences of 820 and more in an 8x8 block could lose 2^17 from the SATD.", "i4": -0.014, "c4": 15.253, "i2": -0.003, "c2": 16.252, "impact": "Neutral", "basis": ""}, {"n": 67, "hash": "a2b850133", "title": "Form the planewise temporal filter's error product in 64 bits", "round": 2, "desc": "The NEON kernels multiplied the combined block error by the distance factor in 32 bits where the C code widens the first operand, so a large product wrapped before it was scaled into a filter weight.", "credit": "Co-authored by Claude", "areas": ["tf"], "nature": "SIMD", "mech": "Correctness fix", "files": ["temporal_filtering_neon.c"], "stat": "1 file changed, 2 insertions(+), 2 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Found by the range audit: the C code widens the product, the kernels did not.", "i4": -0.016, "c4": 15.237, "i2": -0.0, "c2": 16.252, "impact": "Neutral", "basis": ""}, {"n": 68, "hash": "67b70f69c", "title": "Quantize with matrices in 16-bit lanes where magnitudes allow", "round": 2, "desc": "The QM quantizers test sixteen coefficients at once against the zeroing bound of each half, then quantize halves whose magnitude plus rounding fits 16 bits with narrowed magnitudes, weights and levels. Larger groups and parameter sets outside the checked bounds use the existing 32-bit code.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["av1_quantize_neon.c"], "stat": "1 file changed, 1001 insertions(+), 56 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 1.79% fewer instructions. Development, full still matrix (49 images, presets 2/4/6, CRF 10-40) with commit 71: 2.4% fewer instructions.", "i4": 0.179, "c4": 15.416, "i2": 0.175, "c2": 16.427, "impact": "Low", "basis": ""}, {"n": 69, "hash": "70546cd99", "title": "Narrow coefficients first in the QM-weighted distortion of wide rows", "round": 2, "desc": "Rows of 32 or more coefficients saturate coefficients and reconstruction to 16 bits before the difference and the range test, accumulate the rounded squares in 32-bit lanes, and gain a tier for groups with one large low-frequency coefficient. Shorter rows keep the existing code.", "credit": "Co-authored by Claude", "areas": ["dist"], "nature": "SIMD", "mech": "Narrower arithmetic", "files": ["qm_distortion_neon.c"], "stat": "1 file changed, 141 insertions(+), 3 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.09% fewer instructions.", "i4": 0.06, "c4": 15.476, "i2": 0.018, "c2": 16.445, "impact": "Neutral", "basis": ""}, {"n": 70, "hash": "52a27d59a", "title": "Fix a 16-bit overflow in the 8x32 forward transform", "round": 2, "desc": "The row pass added eight outputs of the 32-point column pass in a 16-bit lane, which saturates for 8-bit residuals above 181. Its DC butterfly now forms the sum in the 32-bit products, and 10-bit blocks use the kernel up to the residual bound of the other sizes.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "SIMD", "mech": "Correctness fix", "files": ["highbd_fwd_txfm_neon.c", "lowbd_fwd_txfm2d_neon.c"], "stat": "2 files changed, 24 insertions(+), 6 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Found by the range audit: the 8-bit kernel was wrong for flat residuals of 182 and more; the 10-bit dispatch had already avoided the range.", "i4": -0.043, "c4": 15.434, "i2": -0.019, "c2": 16.426, "impact": "Neutral", "basis": ""}, {"n": 71, "hash": "67b77c9ce", "title": "Cost the simple RDOQ pass in bulk when it lowers no coefficient", "round": 2, "desc": "For 2D blocks with cached contexts, test every coefficient of the simple pass against the block's entry state in loops without data-dependent branches. When none would be lowered, sum the rate directly, levels up to 2 by table lookups in raster order; otherwise run the existing loop.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic + SIMD", "mech": "Branch-free verification, table lookups", "files": ["full_loop.c"], "stat": "1 file changed, 204 insertions(+)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.08% fewer instructions. Development, 15 still encodes, alternating runs: 5.9% fewer cycles at an unchanged instruction count (fewer mispredicted branches). A coefficient is lowered in about 2% of the blocks.", "i4": 0.037, "c4": 15.471, "i2": 0.018, "c2": 16.444, "impact": "Neutral", "basis": ""}, {"n": 72, "hash": "2a668fb0e", "title": "Price the RDOQ eob move only when the eob can move", "round": 2, "desc": "update_coeff_eob() computed the cost of ending the block at every nonzero coefficient, but with sharpness the end of block never moves and the result went unused. The candidate is now evaluated only without sharpness.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic", "mech": "Dead work removed", "files": ["full_loop.c"], "stat": "1 file changed, 22 insertions(+), 17 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 1.68% fewer instructions. Development, 15 still encodes, with commit 75: 1.6% fewer cycles. The eob cannot move in 67% (preset 4) to 96% (preset 2) of the still-image blocks.", "i4": 0.071, "c4": 15.542, "i2": 0.187, "c2": 16.631, "impact": "Low", "basis": ""}, {"n": 73, "hash": "1ccc3d388", "title": "Collect the zero runs of the RDOQ eob loop without branching", "round": 2, "desc": "For 2D blocks with cached contexts, find the next nonzero coefficients and the rates of the zeros before each in a loop that does not branch on the coefficients, then update them one by one. At the first lowered coefficient or moved end of block the existing loop takes over from that position.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic", "mech": "Branch-free scan", "files": ["full_loop.c"], "stat": "1 file changed, 118 insertions(+)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 1.03% more instructions. Development, 15 still encodes, on top of commit 74: 0.4% fewer cycles, 1.1% more instructions.", "i4": -0.066, "c4": 15.475, "i2": -0.128, "c2": 16.504, "impact": "Neutral", "basis": "Rated on cycles: unchanged on video within noise in development runs; it trades instructions for fewer mispredicted branches"}, {"n": 74, "hash": "4122f13f5", "title": "Screen distortion-only RDOQ blocks in one raster-order pass", "round": 2, "desc": "With an RD multiplier of 0 a coefficient is lowered only when the lower level has the smaller distortion. A NEON pass now rules that out from the magnitudes while summing the low-level rates and marking the higher levels for theirs; a block it cannot clear takes the general path.", "credit": "Co-authored by Claude", "areas": ["txq"], "nature": "Algorithmic + SIMD", "mech": "Vector screening pass", "files": ["full_loop.c"], "stat": "1 file changed, 196 insertions(+), 4 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 2.07% fewer instructions. Development, 15 still encodes, alternating runs: 3.1% fewer cycles. 1.3% of the screened blocks fall back to the general path.", "i4": 0.136, "c4": 15.611, "i2": 0.09, "c2": 16.594, "impact": "Low", "basis": ""}, {"n": 75, "hash": "9d9877974", "title": "Sum the Wiener statistics of narrow-range samples with dot products", "round": 3, "desc": "The 5-tap statistics of high bit depth units multiply samples that have the unit average removed. Groups of 16 columns whose samples all fit signed bytes are now summed from byte copies with DotProd instructions; the other groups keep the widening multiply-accumulates.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "Byte dot products under a run-time range check", "files": ["highbd_pickrst_neon.c", "pickrst_neon.h", "CMakeLists.txt", "highbd_pickrst_neon_dotprod.c", "aom_dsp_rtcd.c", "aom_dsp_rtcd.h", "RestorationPickTest.cc"], "stat": "7 files changed, 370 insertions(+), 41 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.06% fewer instructions. Development: the statistics call inside the encoder takes 10 to 22% less time on preset-6 stills and 35% less on Bourne at preset 4. 37 to 72% of the 16-column groups of still images and 75 to 89% of video take the byte path. Compared with the C kernel on 1,188 unit sizes and sample ranges.", "i4": 0.279, "c4": 15.891, "i2": 0.086, "c2": 16.68, "impact": "Low", "basis": ""}, {"n": 76, "hash": "7b95138e1", "title": "Evaluate several self-guided projections per pass over a unit", "round": 3, "desc": "The projection refinement measured one error per pass over the unit and both filter outputs. For high bit depth it now keeps the outputs as 16-bit residual planes and a NEON pass returns the errors of up to eight projections on a line; a residual that does not fit takes the old path.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "Algorithmic + SIMD", "mech": "Batched evaluation, 16-bit residual planes", "files": ["pickrst_neon.c", "rest_process.c", "restoration_pick.c"], "stat": "3 files changed, 553 insertions(+), 63 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Development, Bourne preset 2, alternating runs: 0.6% fewer cycles at CRF 60, 0.2% at CRF 35. Passes over a unit per refined search fall from 8 to 20 to 4 to 6. Old and new search were compared on every unit in a differential build without a mismatch.", "i4": 0.011, "c4": 15.901, "i2": 0.132, "c2": 16.811, "impact": "Low", "basis": ""}, {"n": 77, "hash": "b26d15611", "title": "Form the self-guided projection sums with the residual planes", "round": 3, "desc": "The high bit depth search read both filter outputs once for the projection subspace and once more per residual plane. One NEON pass now stores both residual planes and returns the five sums of the subspace, and the solve of svt_get_proj_subspace_c() becomes a helper that takes them.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "Algorithmic + SIMD", "mech": "Fused passes", "files": ["pickrst_neon.c", "restoration_pick.c"], "stat": "2 files changed, 142 insertions(+), 76 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Development: about 0.1% fewer instructions at preset 2. The solve was compared with the previous one on about 11,000 units, all 16 parameter sets included, without a mismatch.", "i4": -0.008, "c4": 15.893, "i2": 0.074, "c2": 16.886, "impact": "Neutral", "basis": ""}, {"n": 78, "hash": "7fc9bcb83", "title": "Share the box sums of self-guided parameter sets with equal radii", "round": 3, "desc": "The search filtered each parameter set from its own box sums although those depend only on the radius. A NEON kernel now filters up to three sets of radii 2 and 1 from one computation of the sums and stores their residual planes; a set without such a partner keeps the single-set path.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "Algorithmic + SIMD", "mech": "Shared intermediate sums across parameter sets", "files": ["pickrst_neon.c", "selfguided_neon.c", "restoration_pick.c"], "stat": "3 files changed, 453 insertions(+), 93 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Development, Bourne preset 2, alternating runs: 0.3% (CRF 35) and 0.6% (CRF 60) fewer cycles. The box sums are 35 to 37% of a filter call. Compared with the C filter on 30,296 cases.", "i4": 0.015, "c4": 15.908, "i2": 0.299, "c2": 17.185, "impact": "Medium", "basis": ""}, {"n": 79, "hash": "1bea6ee06", "title": "Sum the rows of the self-guided 3x3 box filter without transposing", "round": 3, "desc": "The second stage of boxsum1 transposed 4x4 blocks to add three columns of the vertical sums. It now adds neighbouring samples of each row in place, writing the same positions from the same first-stage values.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "Fewer vector operations", "files": ["selfguided_neon.c"], "stat": "1 file changed, 36 insertions(+), 75 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Development: the filter of a 64x64 unit takes 4.7% fewer cycles; about 0.1% fewer instructions at preset 2.", "i4": -0.007, "c4": 15.901, "i2": 0.074, "c2": 17.259, "impact": "Neutral", "basis": ""}, {"n": 80, "hash": "6609f66b0", "title": "Store self-guided residuals straight from the final filter", "round": 3, "desc": "The shared-sum kernel wrote each filter output to a 32-bit plane on the stack and reduced it to the residual in a second step. The final filter now subtracts the upscaled sample and stores the 16-bit residual itself.", "credit": "Co-authored by Claude", "areas": ["rest"], "nature": "SIMD", "mech": "Fused stages", "files": ["selfguided_neon.c"], "stat": "1 file changed, 92 insertions(+), 103 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Development: the shared-sum kernel takes 3.8% fewer cycles and its stack frame shrinks by 17 KB.", "i4": -0.013, "c4": 15.888, "i2": 0.042, "c2": 17.301, "impact": "Neutral", "basis": ""}, {"n": 81, "hash": "c553008fa", "title": "Copy only what the CDEF search reads into its input buffer", "round": 3, "desc": "The search copied each filter block with the full buffer border and reset the buffer between planes, one library call per row. It now copies the block and the two-sample border the kernels reach with constant-size copies, and marks only the sides that lie outside the frame.", "credit": "Co-authored by Claude", "areas": ["cdef"], "nature": "Algorithmic", "mech": "Smaller copies", "files": ["cdef_copy.h", "cdef_process.c"], "stat": "2 files changed, 75 insertions(+), 32 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Development: 0.16 to 0.26% fewer instructions on preset-6 stills. Portable C; not built or run on x86.", "i4": 0.132, "c4": 16.019, "i2": 0.038, "c2": 17.339, "impact": "Low", "basis": ""}, {"n": 82, "hash": "403db56dc", "title": "Skip chroma strengths that repeat in the CDEF strength selection", "round": 3, "desc": "A chroma strength whose mse equals that of an earlier strength in every filter block gives the same totals and loses the tie to it. The NEON pair search now stops before the tail of such strengths, found per call.", "credit": "Co-authored by Claude", "areas": ["cdef"], "nature": "Algorithmic", "mech": "Redundant candidates skipped", "files": ["cdef_neon.c"], "stat": "1 file changed, 29 insertions(+), 7 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): instruction count unchanged. Development: at video preset 2 the pair search tries 13 of 48 chroma strengths, 0.12 to 0.27% fewer instructions there. Compared with the C selection on 300,000 cases.", "i4": -0.02, "c4": 15.999, "i2": 0.227, "c2": 17.566, "impact": "Low", "basis": ""}, {"n": 83, "hash": "acac178c9", "title": "Search the CDEF strengths of a whole filter block in one NEON call", "round": 3, "desc": "The search called the block kernel through its pointer for every 8x8 block, set up the strength plan each time and reduced its sums per block. One call now walks the filter block: the setup is hoisted, primary strengths come from a table, and partial sums stay in vectors across blocks.", "credit": "Co-authored by Claude", "areas": ["cdef"], "nature": "SIMD", "mech": "Hoisted setup, fewer reductions", "files": ["cdef_search_neon.c", "cdef.c", "cdef.h"], "stat": "3 files changed, 710 insertions(+), 280 deletions(-)", "evidence": "Still images (3 images, presets 2/4/6, CRF 10 and 40): 0.22% fewer instructions. Development, alternating runs together with the two CDEF commits before it: 0.9% fewer cycles on preset-6 stills, 0.4 to 0.5% on stills at presets 2 and 4, about 0.4% on video. The search kernel is 16 to 43% faster per block on replayed encoder inputs. A variant that also shared identical primary groups was measured next to it and left out.", "i4": 0.34, "c4": 16.34, "i2": 0.302, "c2": 17.868, "impact": "Medium", "basis": ""}], "areas": {"mdpred": "Mode decision: inter prediction", "mdintra": "Mode decision: intra prediction", "mdms": "Mode decision: motion search", "mdflow": "Mode decision: candidate flow", "txq": "Transform and quantization", "dist": "Distortion and rate kernels", "me": "Motion estimation (ME / HME)", "tf": "Temporal filtering", "tpl": "TPL", "cdef": "CDEF", "rest": "Loop restoration", "pix": "10-bit picture packing", "rc": "Rate control / AQ", "warp": "Warped motion"}, "cfgs": ["bourne-p4", "ctgpd-p4", "bourne-p2", "ctgpd-p2"], "final": {"bourne-p4": {"cyc": -16.37, "cpu": -16.32, "ins": -16.85, "mem_base": 985.4, "rss_base": 988.8, "mem_spread_base": 0.16, "mem_tip": 1044.3, "rss_tip": 1047.9, "mem_spread_tip": 4.44, "runs": 6}, "ctgpd-p4": {"cyc": -16.27, "cpu": -16.35, "ins": -16.55, "mem_base": 1614.1, "rss_base": 1617.3, "mem_spread_base": 0.39, "mem_tip": 1722.2, "rss_tip": 1725.6, "mem_spread_tip": 0.03, "runs": 4}, "bourne-p2": {"cyc": -18.95, "cpu": -18.96, "ins": -18.72, "mem_base": 1005.9, "rss_base": 1009.3, "mem_spread_base": 0.13, "mem_tip": 1072.9, "rss_tip": 1076.4, "mem_spread_tip": 0.13, "runs": 3}, "ctgpd-p2": {"cyc": -18.13, "cpu": -18.17, "ins": -17.75, "mem_base": 1603.6, "rss_base": 1606.9, "mem_spread_base": 0.02, "mem_tip": 1655.2, "rss_tip": 1658.8, "mem_spread_tip": 0.0, "runs": 2}}, "cyc_cfgs": ["bourne-p4", "ctgpd-p4", "bourne-p2"], "npass": {"bourne-p4": 4, "ctgpd-p4": 4, "bourne-p2": 3}, "npass2": {"bourne-p4": 4, "ctgpd-p4": 4, "bourne-p2": 3}, "gap": {"bourne-p4": 0.25, "ctgpd-p4": 0.26, "bourne-p2": 0.29}, "scatter": {"bourne-p4": 0.35, "ctgpd-p4": 0.36, "bourne-p2": 0.17}, "panels": [{"name": "Preset 4", "sub": "mean of the two clips", "ins": [0.0, 1.693, 2.591, 3.241, 3.54, 5.119, 5.121, 5.766, 6.113, 6.322, 6.494, 7.164, 7.215, 7.33, 7.328, 7.897, 8.708, 9.547, 9.522, 9.582, 9.583, 9.687, 10.176, 10.275, 9.688, 10.134, 10.091, 10.131, 10.131, 10.134, 10.355, 10.72, 10.724, 10.776, 10.778, 10.778, 11.11, 11.336, 11.894, 12.0, 12.067, 12.08, 12.241, 12.248, 12.269, 12.296, 12.135, 12.395, 12.499, 12.419, 12.769, 13.078, 13.105, 13.237, 13.283, 13.82, 13.82, 13.833, 13.836, 14.004, 14.044, 14.786, 14.963, 14.975, 15.094, 15.078, 15.065, 15.049, 15.228, 15.288, 15.245, 15.283, 15.353, 15.287, 15.423, 15.702, 15.713, 15.705, 15.719, 15.712, 15.699, 15.831, 15.811, 16.151], "cyc": [0.0, 1.676, 2.245, 2.322, 3.443, 4.093, 4.353, 4.269, 3.291, 3.77, 3.444, 4.852, 4.884, 5.133, 4.863, 6.14, 6.652, 6.965, 6.902, 7.585, 7.504, 7.75, 7.638, 7.707, 8.329, 9.46, 9.758, 9.678, 9.735, 9.75, 10.299, 10.359, 10.593, 10.532, 10.163, 10.499, 10.5, 11.46, 11.495, 11.541, 12.222, 11.695, 12.072, 12.421, 12.202, 11.911, 11.785, 11.669, 11.242, 11.621, 11.673, 12.1, 12.524, 12.167, 12.449, 13.142, 13.513, 13.408, 13.23, 13.31, 13.517, 14.203, 14.148, 14.126, 14.581, 14.77, 14.482, 14.949, 15.042, 14.726, 14.885, 15.083, 15.288, 15.095, 15.57, 15.987, 16.134, 15.798, 16.225, 15.89, 15.869, 15.921, 16.013, 16.093], "lag_max": 3.0, "lag_at": 10, "lag_end": 0.1}, {"name": "Preset 2", "sub": "Bourne", "ins": [0.0, 1.33, 1.55, 2.769, 3.092, 3.796, 4.362, 4.855, 5.017, 5.116, 5.188, 5.626, 6.835, 6.86, 7.103, 7.282, 8.971, 10.161, 10.257, 10.459, 11.068, 11.726, 11.937, 11.903, 11.926, 12.822, 12.791, 12.817, 12.895, 12.837, 12.883, 13.327, 13.318, 13.48, 13.557, 13.564, 13.661, 13.751, 14.077, 14.113, 14.198, 14.192, 14.316, 14.824, 15.365, 15.374, 15.521, 15.623, 15.655, 15.634, 15.852, 15.859, 15.882, 15.937, 15.943, 16.021, 16.019, 16.02, 16.163, 16.192, 16.319, 16.994, 17.17, 17.193, 17.224, 17.223, 17.218, 17.218, 17.409, 17.43, 17.409, 17.407, 17.574, 17.446, 17.492, 17.59, 17.741, 17.814, 18.119, 18.203, 18.247, 18.288, 18.499, 18.849], "cyc": [0.0, 1.248, 1.158, 2.473, 2.859, 3.661, 3.792, 4.608, 3.828, 3.914, 3.86, 4.58, 5.845, 5.637, 5.838, 6.31, 7.893, 9.495, 9.019, 9.632, 10.716, 11.082, 11.122, 11.072, 11.108, 11.952, 12.276, 12.495, 12.354, 12.562, 12.759, 13.127, 13.354, 13.305, 13.427, 13.317, 13.816, 14.436, 14.464, 14.327, 14.616, 14.763, 14.741, 15.098, 15.602, 15.444, 15.649, 15.433, 15.156, 15.666, 15.891, 15.973, 15.591, 16.336, 16.045, 16.228, 16.086, 16.114, 16.043, 16.223, 16.646, 16.964, 17.187, 17.33, 17.269, 17.261, 17.411, 17.31, 18.321, 18.468, 18.28, 18.527, 18.623, 18.352, 18.829, 18.987, 19.266, 19.15, 19.449, 19.717, 20.152, 20.378, 20.817, 21.008], "lag_max": 1.3, "lag_at": 10, "lag_end": -2.2}], "thresh": [0.75, 0.3, 0.1], "n_ab": 3, "n_kernel": 5, "bad_sha": [], "base": "f5df03be4", "tip": "acac178c9", "round2": {"first": 57, "last": 74, "removed": [{"n": 7, "i4": 0.46, "i2": 0.35}, {"n": 25, "i4": -0.65, "i2": 0.02}], "ins": {"bourne-p4": 1.68, "ctgpd-p4": 1.53, "bourne-p2": 1.47, "ctgpd-p2": 1.47}, "cyc": {"bourne-p4": 2.34, "ctgpd-p4": 1.78, "bourne-p2": 2.74, "ctgpd-p2": null}, "i4": 1.6, "i2": 1.47, "still_ins": 7.38, "still_bad": 0, "fams": [{"key": "still444:p2", "cyc": -15.4, "ins": -8.46}, {"key": "still444:p6", "cyc": -12.78, "ins": -7.15}, {"key": "still:p2", "cyc": -13.88, "ins": -8.09}, {"key": "still:p4", "cyc": -15.28, "ins": -8.63}, {"key": "still:p6", "cyc": -11.69, "ins": -7.27}, {"key": "video:p2", "cyc": -2.98, "ins": -2.03}, {"key": "video:p4", "cyc": -3.51, "ins": -2.07}], "ab_same": true, "rewrite": {"bourne-p4": -0.043, "ctgpd-p4": -0.042, "bourne-p2": -0.055, "ctgpd-p2": -0.036}, "session": 0.078}, "round3": {"first": 75, "last": 83, "ins": {"bourne-p4": 0.85, "ctgpd-p4": 0.61, "bourne-p2": 1.36, "ctgpd-p2": 1.19}, "cyc": {"bourne-p4": 0.81, "ctgpd-p4": 0.24, "bourne-p2": 2.18, "ctgpd-p2": null}, "i4": 0.73, "i2": 1.27, "still": {"2": 0.24, "4": 0.51, "6": 1.42}, "still_bad": 0, "swept": 9, "sweep_cases": 49, "sweep_failed": 0, "session": 0.156}, "npass3": {"bourne-p4": 4, "ctgpd-p4": 4, "bourne-p2": 3}, "total_stat": "88 files changed, 11883 insertions(+), 2007 deletions(-)", "totals": {"bourne-p4": {"ins": 16.29, "cyc": 16.6}, "ctgpd-p4": {"ins": 16.01, "cyc": 15.59}, "bourne-p2": {"ins": 18.85, "cyc": 21.01}, "ctgpd-p2": {"ins": 17.62, "cyc": null}}};
+const ROWS = DATA.rows, AREAS = DATA.areas, R2 = DATA.round2, R3 = DATA.round3;
+const NATURES = ['Algorithmic', 'SIMD', 'Algorithmic + SIMD'];
+const IMPACTS = ['High', 'Medium', 'Low', 'Neutral', 'Cost'];
+const NAMES = {'bourne-p4': 'Bourne, preset 4', 'ctgpd-p4': 'CTGPD, preset 4', 'bourne-p2': 'Bourne, preset 2',
+  'ctgpd-p2': 'CTGPD, preset 2'};
+const memPct = c => 100 * (DATA.final[c].mem_tip / DATA.final[c].mem_base - 1);
+const fmt = (v, digits = 2) => v == null ? 'n/a' : (v < 0 ? '−' : '') + Math.abs(v).toFixed(digits);
+const sfmt = (v, digits = 2) => v == null ? 'n/a'
+  : (Math.abs(v) < 0.005 ? '' : v < 0 ? '−' : '+') + Math.abs(v).toFixed(digits);
+
+function el(tag, attrs, text) {
+  const e = document.createElement(tag);
+  for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function svg(tag, attrs, text) {
+  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const k in (attrs || {})) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+// ---- tooltip
+const tip = document.getElementById('tip');
+function showTip(x, y, title, lines) {
+  tip.replaceChildren();
+  tip.appendChild(el('div', {class: 'tt'}, title));
+  lines.forEach(l => {
+    const row = el('div', {class: 'tr'});
+    if (l.cls) row.appendChild(el('i', {class: 'key-line ' + l.cls}));
+    row.appendChild(el('b', null, l.value));
+    row.appendChild(el('span', {class: 'n'}, l.name));
+    tip.appendChild(row);
+  });
+  tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, x + 14)) + 'px';
+  tip.style.top = Math.max(8, Math.min(window.innerHeight - h - 8, y + 14)) + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+
+// ---- header
+(function () {
+  document.getElementById('ncommits').textContent = ROWS.length;
+  document.title += ': ' + ROWS.length + ' commits';
+  document.getElementById('lead').textContent =
+    'Bit-exact optimizations of the AArch64 (NEON) encoder on top of ' + DATA.base + ', measured at tune PSNR, ' +
+    '10-bit input, hbd-mds 1, presets 2 and 4, one thread. Commits 1 to ' + (R2.first - 1) + ' are the first ' +
+    'round; commits ' + R2.first + ' to ' + R2.last + ' come from a later SIMD audit that was also aimed at still ' +
+    'images. ' + (R3 ? 'Commits ' + R3.first + ' to ' + R3.last + ' are a third round on the loop filters ' +
+    '(restoration and CDEF). ' : '') + DATA.total_stat.replace(/^\s+/, '') + '. CPU time of the whole series against the baseline:';
+  const k = document.getElementById('kpis');
+  DATA.cfgs.forEach(c => {
+    const t = el('div', {class: 'card tile'});
+    t.appendChild(el('div', {class: 'label'}, NAMES[c]));
+    t.appendChild(el('div', {class: 'value'}, fmt(DATA.final[c].cpu, 1) + '%'));
+    t.appendChild(el('div', {class: 'note'}, 'CPU time · instructions ' + fmt(DATA.final[c].ins, 1) + '%' +
+      (DATA.final[c].mem_base ? ' · peak memory ' + sfmt(memPct(c), 1) + '%' : '')));
+    k.appendChild(t);
+  });
+})();
+
+// ---- cumulative line charts (one panel per preset, same two series in each)
+function linePanel(host, panel, top) {
+  host.replaceChildren();
+  const N = panel.ins.length - 1;
+  const W = Math.max(420, host.clientWidth), H = 300, m = {l: 40, r: 132, t: 14, b: 36};
+  const all = panel.ins.concat(panel.cyc);
+  const ymax = top, ymin = Math.min(0, Math.floor(Math.min(...all)));
+  const X = n => m.l + (W - m.l - m.r) * n / N, Y = v => m.t + (H - m.t - m.b) * (1 - (v - ymin) / (ymax - ymin));
+  const s = svg('svg', {viewBox: `0 0 ${W} ${H}`, height: H, tabindex: 0, role: 'img',
+    'aria-label': panel.name + ': cumulative instruction and cycle savings after each commit. The table below lists ' +
+      'the instruction savings of every commit.'});
+  for (let v = 0; v <= ymax; v += 5) {
+    s.appendChild(svg('line', {x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), stroke: v === 0 ? 'var(--axis)' : 'var(--grid)',
+      'stroke-width': 1}));
+    s.appendChild(svg('text', {x: m.l - 8, y: Y(v) + 4, 'text-anchor': 'end'}, v + '%'));
+  }
+  for (let n = 0; n < N - 6; n += 10)
+    s.appendChild(svg('text', {x: X(n), y: H - m.b + 18, 'text-anchor': 'middle'}, n === 0 ? 'base' : n));
+  s.appendChild(svg('text', {x: X(N), y: H - m.b + 18, 'text-anchor': 'middle'}, N));
+  s.appendChild(svg('text', {x: W - m.r, y: H - 2, 'text-anchor': 'end'}, 'commit number'));
+  const xr = (X(R2.first - 1) + X(R2.first)) / 2;
+  s.appendChild(svg('line', {x1: xr, x2: xr, y1: m.t, y2: H - m.b, stroke: 'var(--axis)', 'stroke-width': 1,
+    'stroke-dasharray': '3 3'}));
+  s.appendChild(svg('text', {x: xr - 6, y: H - m.b - 6, 'text-anchor': 'end'}, 'audit round →'));
+  if (R3) {
+    const x3 = (X(R3.first - 1) + X(R3.first)) / 2;
+    s.appendChild(svg('line', {x1: x3, x2: x3, y1: m.t, y2: H - m.b, stroke: 'var(--axis)', 'stroke-width': 1,
+      'stroke-dasharray': '3 3'}));
+    s.appendChild(svg('text', {x: x3 - 6, y: H - m.b - 22, 'text-anchor': 'end'}, 'loop filters →'));
+  }
+  const series = [{k: 'ins', color: 'var(--s1)', name: 'Instructions', cls: 'c1'},
+    {k: 'cyc', color: 'var(--s2)', name: 'CPU cycles', cls: 'c2'}];
+  const ends = series.map(se => Y(panel[se.k][N]));
+  if (Math.abs(ends[0] - ends[1]) < 16) {
+    const mid = (ends[0] + ends[1]) / 2, up = ends[0] <= ends[1] ? 0 : 1;
+    ends[up] = mid - 8; ends[1 - up] = mid + 8;
+  }
+  series.forEach((se, i) => {
+    s.appendChild(svg('path', {d: panel[se.k].map((v, j) => (j ? 'L' : 'M') + X(j).toFixed(1) + ' ' + Y(v).toFixed(1))
+      .join(''), fill: 'none', stroke: se.color, 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}));
+    s.appendChild(svg('circle', {cx: X(N), cy: Y(panel[se.k][N]), r: 4, fill: se.color, stroke: 'var(--surface)',
+      'stroke-width': 2}));
+    s.appendChild(svg('text', {x: X(N) + 10, y: ends[i] + 4, class: 'lab'}, se.name + '  ' + fmt(panel[se.k][N], 1) + '%'));
+  });
+  const cross = svg('line', {y1: m.t, y2: H - m.b, stroke: 'var(--axis)', 'stroke-width': 1, visibility: 'hidden'});
+  s.appendChild(cross);
+  const dots = series.map(se => {
+    const c = svg('circle', {r: 4, fill: se.color, stroke: 'var(--surface)', 'stroke-width': 2, visibility: 'hidden'});
+    s.appendChild(c);
+    return c;
+  });
+  let cur = -1;
+  function show(j, cx, cy) {
+    cur = Math.max(0, Math.min(N, j));
+    cross.setAttribute('x1', X(cur)); cross.setAttribute('x2', X(cur)); cross.setAttribute('visibility', 'visible');
+    series.forEach((se, i) => { dots[i].setAttribute('cx', X(cur)); dots[i].setAttribute('cy', Y(panel[se.k][cur]));
+      dots[i].setAttribute('visibility', 'visible'); });
+    const r = s.getBoundingClientRect();
+    showTip(cx != null ? cx : r.left + X(cur) * r.width / W, cy != null ? cy : r.top + 40,
+      cur ? panel.name + '  ·  after #' + cur + '  ' + ROWS[cur - 1].title : panel.name + '  ·  baseline',
+      series.map(se => ({cls: se.cls, value: fmt(panel[se.k][cur]) + '%', name: se.name + ' saved'})));
+  }
+  function hide() { cross.setAttribute('visibility', 'hidden'); dots.forEach(d => d.setAttribute('visibility', 'hidden'));
+    hideTip(); }
+  s.addEventListener('pointermove', e => {
+    const r = s.getBoundingClientRect(), x = (e.clientX - r.left) * W / r.width;
+    show(Math.round((x - m.l) / (W - m.l - m.r) * N), e.clientX, e.clientY);
+  });
+  s.addEventListener('pointerleave', hide);
+  s.addEventListener('blur', hide);
+  s.addEventListener('focus', () => show(cur < 0 ? N : cur));
+  s.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft') { show(cur - 1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { show(cur + 1); e.preventDefault(); }
+  });
+  host.appendChild(s);
+}
+function linePanels() {
+  const host = document.getElementById('panels');
+  if (!host.children.length) {
+    DATA.panels.forEach(p => {
+      const card = el('div', {class: 'card'});
+      card.appendChild(el('h3', null, p.name));
+      card.appendChild(el('p', {class: 'sub'}, p.sub));
+      card.appendChild(el('div', {class: 'chart'}));
+      host.appendChild(card);
+    });
+  }
+  // one scale for all panels
+  const top = Math.max(16, Math.ceil(Math.max(...DATA.panels.flatMap(p => p.ins.concat(p.cyc))) + 1));
+  DATA.panels.forEach((p, i) => linePanel(host.children[i].querySelector('.chart'), p, top));
+}
+
+// ---- the third round
+(function () {
+  if (!R3) return;
+  document.getElementById('r3').hidden = false;
+  const n3 = R3.last - R3.first + 1;
+  document.getElementById('r3-title').textContent = 'The loop-filter round: commits ' + R3.first + ' to ' + R3.last;
+  document.getElementById('r3-sub').textContent =
+    'These ' + n3 + ' commits speed up the searches of the in-loop filters: the Wiener statistics, the self-guided ' +
+    'projection search and its filter (several parameter sets from shared sums, several projections per pass), ' +
+    'and the CDEF strength search. The self-guided search only runs at presets up to 3, so most of the video ' +
+    'gain is at preset 2. They were measured in a third session, chained to commit ' + (R3.first - 1) +
+    ' as measured again in that session; its baseline run agrees with the first session to within ' +
+    R3.session.toFixed(2) + '% of the instruction count.';
+  const pct = v => v == null ? 'n/a' : fmt(-v) + '%';
+  let t = el('table'), hr = el('tr');
+  ['Commits ' + R3.first + '–' + R3.last, 'Cycles', 'Instructions'].forEach((h, i) =>
+    hr.appendChild(el('th', i ? {class: 'num'} : null, h)));
+  t.appendChild(hr);
+  DATA.cfgs.forEach(c => {
+    const tr = el('tr');
+    tr.appendChild(el('td', null, NAMES[c]));
+    tr.appendChild(el('td', {class: 'num'}, pct(R3.cyc[c])));
+    tr.appendChild(el('td', {class: 'num'}, pct(R3.ins[c])));
+    t.appendChild(tr);
+  });
+  const hv = document.getElementById('r3-video');
+  hv.appendChild(t);
+  hv.appendChild(el('p', {class: 'sub'}, 'Change against commit ' + (R3.first - 1) + ' in percent of the baseline, ' +
+    'from the per-commit runs (default CRF, 60 frames): instructions exact, cycles the lowest of several runs' +
+    (DATA.cfgs.some(c => R3.cyc[c] == null) ? ' (no cycle passes were run for ' +
+      DATA.cfgs.filter(c => R3.cyc[c] == null).map(c => NAMES[c]).join(', ') + ')' : '') +
+    '. Summed over the commits and averaged over the two clips this is ' + fmt(R3.i4) +
+    ' points of instructions at preset 4 and ' + fmt(R3.i2) + ' at preset 2.'));
+  const hs = document.getElementById('r3-still');
+  if (R3.still) {
+    t = el('table'); hr = el('tr');
+    ['Commit ' + R3.last + ' against commit ' + (R3.first - 1), 'Instructions'].forEach((h, i) =>
+      hr.appendChild(el('th', i ? {class: 'num'} : null, h)));
+    t.appendChild(hr);
+    ['2', '4', '6'].forEach(p => {
+      const tr = el('tr');
+      tr.appendChild(el('td', null, 'Stills 4:2:0, preset ' + p));
+      tr.appendChild(el('td', {class: 'num'}, fmt(-R3.still[p]) + '%'));
+      t.appendChild(tr);
+    });
+    hs.appendChild(t);
+    hs.appendChild(el('p', {class: 'sub'}, 'Three 10-bit images, tune IQ, CRF 10 and 40, instruction counts summed. ' +
+      (R3.still_bad === 0 ? 'Every commit produced the same still-image bitstreams as before the round.'
+        : 'Still-image bitstream mismatches were seen.')));
+  }
+  hs.appendChild(el('p', {class: 'sub'}, 'Each commit of the round was built on its own without compiler warnings ' +
+    'and passes the style check of the repository. ' + (R3.swept ? 'The binary of ' +
+    (R3.swept === n3 ? 'each commit' : R3.swept + ' of the ' + n3 + ' commits') + ' was compared with the baseline ' +
+    'encoder in a sweep of ' + R3.sweep_cases + ' configurations (presets 2 and 4 over five CRFs, 8-bit and 10-bit ' +
+    'input, 4:4:4, odd picture sizes, several threads): ' + (R3.sweep_failed === 0 ? 'all bitstreams identical.' :
+      R3.sweep_failed + ' bitstreams differed.') : '')));
+})();
+
+// ---- the second round
+(function () {
+  const n2 = R2.last - R2.first + 1;
+  document.getElementById('r2-title').textContent = 'The audit round: commits ' + R2.first + ' to ' + R2.last;
+  document.getElementById('r2-sub').textContent =
+    'These ' + n2 + ' commits come from an audit of the SIMD kernels (narrower lanes, proven value ranges, ' +
+    'fewer and better-pipelined operations) and of the scalar loops around them. It was aimed at the video ' +
+    'configurations of this report at CRF 10, 35 and 60 and at 10-bit still images (tune IQ, presets 2, 4 and 6), ' +
+    'where quantization matrices and RDOQ carry far more weight; most of what it found pays there. It also ' +
+    'proved or corrected the value ranges of earlier kernels, which is where the correctness fixes come from.';
+  const pct = v => v == null ? 'n/a' : fmt(-v) + '%';
+  let t = el('table'), hr = el('tr');
+  ['Commits ' + R2.first + '–' + R2.last, 'Cycles', 'Instructions'].forEach((h, i) =>
+    hr.appendChild(el('th', i ? {class: 'num'} : null, h)));
+  t.appendChild(hr);
+  DATA.cfgs.forEach(c => {
+    const tr = el('tr');
+    tr.appendChild(el('td', null, NAMES[c]));
+    tr.appendChild(el('td', {class: 'num'}, pct(R2.cyc[c])));
+    tr.appendChild(el('td', {class: 'num'}, pct(R2.ins[c])));
+    t.appendChild(tr);
+  });
+  const hv = document.getElementById('r2-video');
+  hv.appendChild(t);
+  hv.appendChild(el('p', {class: 'sub'}, 'Change against commit ' + (R2.first - 1) + ' in percent of the baseline, ' +
+    'from the per-commit runs (default CRF, 60 frames): instructions exact, cycles the lowest of ' +
+    'several runs' + (DATA.cfgs.some(c => R2.cyc[c] == null) ? ' (no cycle passes were run for ' +
+      DATA.cfgs.filter(c => R2.cyc[c] == null).map(c => NAMES[c]).join(', ') + ')' : '') + '. Summed over the commits and averaged over the two clips this is ' + fmt(R2.i4) +
+    ' points of instructions at preset 4 and ' + fmt(R2.i2) + ' at preset 2.'));
+  const FAM = {'still:p2': 'Stills 4:2:0, preset 2', 'still:p4': 'Stills 4:2:0, preset 4',
+    'still:p6': 'Stills 4:2:0, preset 6', 'still444:p2': 'Stills 4:4:4, preset 2', 'still444:p6': 'Stills 4:4:4, preset 6',
+    'video:p2': 'Video, preset 2', 'video:p4': 'Video, preset 4'};
+  t = el('table'); hr = el('tr');
+  ['Commit ' + R2.last + ' against commit ' + (R2.first - 1), 'Cycles', 'Instructions'].forEach((h, i) =>
+    hr.appendChild(el('th', i ? {class: 'num'} : null, h)));
+  t.appendChild(hr);
+  Object.keys(FAM).map(k => R2.fams.find(f => f.key === k)).filter(Boolean).forEach(f => {
+    const tr = el('tr');
+    tr.appendChild(el('td', null, FAM[f.key] || f.key));
+    tr.appendChild(el('td', {class: 'num'}, fmt(f.cyc) + '%'));
+    tr.appendChild(el('td', {class: 'num'}, fmt(f.ins) + '%'));
+    t.appendChild(tr);
+  });
+  const hm = document.getElementById('r2-matrix');
+  hm.appendChild(t);
+  hm.appendChild(el('p', {class: 'sub'}, 'Alternating A/B of the two binaries, one encode at a time, two passes, ' +
+    'lowest cycle count per encode, summed per row. Stills: 49 10-bit images, tune IQ, CRF 10, 24, 32 and 40 ' +
+    '(4:4:4 at CRF 24). Video: Bourne and CTGPD, tune PSNR, hbd-mds 1, CRF 10, 35 and 60 (60 frames at preset 4, ' +
+    '30 at preset 2). ' + (R2.ab_same ? 'All bitstreams of the two binaries are equal.'
+      : 'Not all bitstreams of the two binaries are equal.')));
+})();
+
+// ---- ranked bars, one column per preset
+function groupBars(hostId, title, groups) {
+  const host = document.getElementById(hostId);
+  host.replaceChildren();
+  const head = el('div', {class: 'bhead'});
+  [title, 'Preset 4', 'Preset 2'].forEach(t => head.appendChild(el('div', null, t)));
+  host.appendChild(head);
+  const vals = groups.flatMap(g => [g.i4, g.i2]);
+  const lo = Math.min(0, ...vals), hi = Math.max(0.01, ...vals), span = hi - lo, zero = -lo / span * 100;
+  groups.forEach(g => {
+    const row = el('div', {class: 'brow', tabindex: 0});
+    const lab = el('div', {class: 'blabel'}, g.name);
+    lab.appendChild(el('small', null, g.count + (g.count === 1 ? ' commit' : ' commits')));
+    row.appendChild(lab);
+    ['i4', 'i2'].forEach(k => {
+      const t = el('div', {class: 'btrack'}), v = g[k], w = Math.abs(v) / span * 100;
+      const left = v >= 0 ? zero : zero - w;
+      const b = el('div', {class: 'bar' + (v >= 0 ? ' pos' : ' neg')});
+      b.style.left = left + '%'; b.style.width = Math.max(w, 0.4) + '%';
+      t.appendChild(b);
+      if (lo < 0) { const z = el('div', {class: 'bzero'}); z.style.left = zero + '%'; t.appendChild(z); }
+      const val = el('span', {class: 'bval'}, fmt(v));
+      val.style.left = 'calc(' + Math.max(zero, left + w) + '% + 6px)';
+      t.appendChild(val);
+      row.appendChild(t);
+    });
+    const tipFor = (x, y) => showTip(x, y, g.name + '  (' + g.count + (g.count === 1 ? ' commit)' : ' commits)'), [
+      {value: fmt(g.i4) + ' pp', name: 'instructions saved, preset 4'},
+      {value: fmt(g.i2) + ' pp', name: 'instructions saved, preset 2'}]);
+    row.addEventListener('pointermove', e => tipFor(e.clientX, e.clientY));
+    row.addEventListener('pointerleave', hideTip);
+    row.addEventListener('focus', () => { const r = row.getBoundingClientRect(); tipFor(r.left + 210, r.top); });
+    row.addEventListener('blur', hideTip);
+    host.appendChild(row);
+  });
+}
+function grouped(keyOf, nameOf) {
+  const g = {};
+  ROWS.forEach(r => {
+    const k = keyOf(r);
+    g[k] = g[k] || {name: nameOf(k), i4: 0, i2: 0, count: 0};
+    g[k].i4 += r.i4; g[k].i2 += r.i2; g[k].count++;
+  });
+  return Object.values(g).sort((a, b) => (b.i4 + b.i2) - (a.i4 + a.i2));
+}
+
+// ---- table
+function option(sel, value, text) { sel.appendChild(el('option', {value}, text)); }
+const fN = document.getElementById('f-nature'), fA = document.getElementById('f-area'),
+  fI = document.getElementById('f-impact'), fS = document.getElementById('f-sort'), fQ = document.getElementById('f-q');
+option(fN, '', 'All'); NATURES.forEach(n => option(fN, n, n));
+option(fA, '', 'All'); Object.keys(AREAS).forEach(a => option(fA, a, AREAS[a]));
+option(fI, '', 'All'); IMPACTS.forEach(i => option(fI, i, i));
+const fR = document.getElementById('f-round');
+option(fR, '', 'All'); option(fR, '1', 'First round (1–' + (R2.first - 1) + ')');
+option(fR, '2', 'Audit round (' + R2.first + '–' + R2.last + ')');
+if (R3) option(fR, '3', 'Loop-filter round (' + R3.first + '–' + R3.last + ')');
+
+function numCell(v, cum) {
+  const td = el('td', {class: 'num'});
+  td.appendChild(el('b', null, sfmt(v)));
+  td.appendChild(el('small', null, 'total ' + fmt(cum, 1)));
+  return td;
+}
+function renderTable() {
+  const q = fQ.value.trim().toLowerCase();
+  let rows = ROWS.filter(r => (!fN.value || r.nature === fN.value) && (!fA.value || r.areas.includes(fA.value)) &&
+    (!fI.value || r.impact === fI.value) && (!fR.value || String(r.round) === fR.value) &&
+    (!q || [r.title, r.desc, r.files.join(' '), r.hash, r.mech, r.evidence].join(' ').toLowerCase().includes(q)));
+  if (fS.value !== 'n') rows = rows.slice().sort((a, b) => b[fS.value] - a[fS.value]);
+  const body = document.getElementById('rows');
+  body.replaceChildren();
+  let lastRound = 1;
+  rows.forEach(r => {
+    if (fS.value === 'n' && r.round === 2 && lastRound === 1) {
+      const sep = el('tr', {class: 'round'}), td = el('td', {colspan: 7});
+      td.appendChild(el('b', null, 'Audit round, commits ' + R2.first + ' to ' + R2.last + '. '));
+      td.appendChild(document.createTextNode('Together: ' + sfmt(R2.i4) + ' points of instructions at preset 4, ' +
+        sfmt(R2.i2) + ' at preset 2. The still-image line under each commit is its instruction saving on a small ' +
+        'still set, which these commits were mostly written for.'));
+      sep.appendChild(td);
+      body.appendChild(sep);
+    }
+    if (fS.value === 'n' && r.round === 3 && lastRound === 2) {
+      const sep = el('tr', {class: 'round'}), td = el('td', {colspan: 7});
+      td.appendChild(el('b', null, 'Loop-filter round, commits ' + R3.first + ' to ' + R3.last + '. '));
+      td.appendChild(document.createTextNode('Together: ' + sfmt(R3.i4) + ' points of instructions at preset 4, ' +
+        sfmt(R3.i2) + ' at preset 2. The still-image line under each commit is its instruction saving on the ' +
+        'same small still set.'));
+      sep.appendChild(td);
+      body.appendChild(sep);
+    }
+    lastRound = r.round;
+    const tr = el('tr');
+    tr.appendChild(el('td', {class: 'num'}, r.n));
+    const c = el('td', {class: 'commit'});
+    c.appendChild(el('div', {class: 't'}, r.title));
+    c.appendChild(el('div', {class: 'd'}, r.desc));
+    if (r.evidence) {
+      const e = el('div', {class: 'e'});
+      e.appendChild(el('span', null, 'Measured: '));
+      e.appendChild(document.createTextNode(r.evidence));
+      c.appendChild(e);
+    }
+    const f = el('div', {class: 'f'});
+    f.appendChild(el('span', {class: 'mono'}, r.hash));
+    f.appendChild(document.createTextNode('  ·  ' + r.stat.replace(/^\s+/, '') + '  ·  ' + r.files.join(', ') +
+      (r.credit && r.credit !== 'Co-authored by Claude' ? '  ·  ' + r.credit : '')));
+    c.appendChild(f);
+    tr.appendChild(c);
+    const a = el('td', {class: 'area'});
+    r.areas.forEach(k => a.appendChild(el('span', {class: 'chip'}, AREAS[k])));
+    tr.appendChild(a);
+    const n = el('td');
+    n.appendChild(el('span', {class: 'chip'}, r.nature));
+    n.appendChild(el('small', null, r.mech));
+    tr.appendChild(n);
+    tr.appendChild(numCell(r.i4, r.c4));
+    tr.appendChild(numCell(r.i2, r.c2));
+    const im = el('td', {class: 'imp'}), wrap = el('span', {class: 'impact'}),
+      pips = el('span', {class: 'pips', 'aria-hidden': 'true'});
+    const level = {High: 3, Medium: 2, Low: 1}[r.impact] || 0;
+    for (let i = 0; i < 3; i++) pips.appendChild(el('i', i < level ? {class: 'on'} : null));
+    wrap.appendChild(pips);
+    wrap.appendChild(document.createTextNode(r.impact));
+    im.appendChild(wrap);
+    if (r.basis) im.appendChild(el('small', null, r.basis));
+    tr.appendChild(im);
+    body.appendChild(tr);
+  });
+  document.getElementById('count').textContent = rows.length + ' of ' + ROWS.length + ' commits';
+}
+[fN, fA, fI, fR, fS].forEach(s => s.addEventListener('change', renderTable));
+fQ.addEventListener('input', renderTable);
+
+// ---- method
+(function () {
+  const host = document.getElementById('method');
+  const counts = {};
+  ROWS.forEach(r => { counts[r.impact] = (counts[r.impact] || 0) + 1; });
+  const [HIGH, MEDIUM, LOW] = DATA.thresh;
+  const cc = DATA.cyc_cfgs;
+  const ul = el('ul');
+  [
+    'Instruction counts: every commit was built on its own and run on the four configurations (Bourne 1080p and ' +
+      'CTGPD 1440p, 10-bit, 60 frames, presets 2 and 4, tune PSNR, hbd-mds 1, one thread) on an Apple M3. ' +
+      'Instruction counts repeat to about 0.03%, so a commit’s instruction saving (the difference to the commit ' +
+      'before it, in percent of the baseline) is exact for practical purposes.',
+    'CPU cycles per commit: ' + cc.map(c => NAMES[c] + ' (' + DATA.npass[c] + ' passes)').join(', ') +
+      ' were run again one encode at a time, walking all commits once per pass and keeping the lowest count of each ' +
+      'commit (the commits of the audit round in a later session, ' +
+      cc.map(c => DATA.npass2[c]).join(' / ') + ' passes, chained to commit ' + (R2.first - 1) + ' as measured ' +
+      'again in that session). ' +
+      'The lowest and second-lowest run of a commit still differ by ' +
+      cc.map(c => DATA.gap[c].toFixed(2) + '%').join(' / ') + ' (median), and from one commit to the next the cycle ' +
+      'curve departs from the instruction curve by ' + cc.map(c => DATA.scatter[c].toFixed(2)).join(' / ') +
+      ' points (median), in both directions. That is run-to-run noise plus the effect every rebuild has on code ' +
+      'placement, and it is larger than what most single commits save. Whole-encode cycle counts therefore cannot ' +
+      'rate a single commit here; they are shown as a cumulative curve instead.',
+    'What the cumulative curves show: ' + DATA.panels.map(p => 'at ' + p.name.toLowerCase() + ' the cycle saving runs ' +
+      'up to ' + fmt(p.lag_max, 1) + ' points below the instruction saving (after commit ' + p.lag_at + ') and ends ' +
+      fmt(Math.abs(p.lag_end), 1) + ' points ' + (p.lag_end >= 0 ? 'below' : 'above') + ' it').join('; ') +
+      '. One reading: the early prediction caches replace computation by copies and lookups, which removes more ' +
+      'instructions than time, and later SIMD commits that shorten dependency chains remove time without removing ' +
+      'instructions. A code-placement penalty that lasted over those builds would look the same; these ' +
+      'measurements cannot tell the two apart.',
+    'CPU impact rating: the instruction saving of the better preset. High: at least ' + HIGH + ' points; Medium: at ' +
+      'least ' + MEDIUM + '; Low: at least ' + LOW + '; Neutral: below that; Cost: an increase of ' + LOW + ' or more ' +
+      'with no saving at the other preset. Two kinds of exception, each marked in the table: ' + DATA.n_ab +
+      ' commits whose instruction count says the opposite or nothing are rated on a cycle measurement made during ' +
+      'development (the change switched on and off inside one binary, which removes the code-placement effect, or ' +
+      'its share of the profile), and ' + DATA.n_kernel + ' SIMD commits that leave the instruction count unchanged ' +
+      'but have a measured kernel speed-up are rated Low. In this series: ' +
+      IMPACTS.filter(i => counts[i]).map(i => counts[i] + ' ' + i).join(', ') + '.',
+    (function () {
+      const r = DATA.cfgs.map(c => DATA.final[c].cpu / DATA.final[c].ins);
+      return 'Across the series the CPU-time saving is ' + Math.min(...r).toFixed(2) + ' to ' + Math.max(...r).toFixed(2) +
+        ' times the instruction saving (table below). In the first round it was 0.9 to 0.95 times; the audit ' +
+        'round saved more time than instructions.';
+    })(),
+    'Whole-series figures: a separate A/B of the tip against the baseline, alternating the two binaries one encode ' +
+      'at a time and taking the minimum of several runs per side. The cumulative cycle curves come from the ' +
+      'per-commit passes, which ran next to another encode, and end higher (' +
+      cc.map(c => NAMES[c] + ' ' + fmt(DATA.totals[c].cyc, 1) + '%').join(', ') + '); the alternating A/B is the ' +
+      'reference.',
+    'Nature: “Algorithmic” changes what work is done (reuse of results, pruning, avoided copies, dead work); ' +
+      '“SIMD” changes how a kernel computes the same thing (narrower lanes, independent accumulator chains, ' +
+      'table lookups); “Algorithmic + SIMD” introduces a new way of doing the work together with a kernel for it.',
+    '“Measured” lines under a commit quote what was measured when the change was developed: a same-binary ' +
+      'A/B or a microbenchmark of the kernel alone.',
+    'The audit round was measured in a second session. Control runs of the baseline, of commit ' + (R2.first - 1) +
+      ' and of a rebuilt early commit agree with the first session to within ' + R2.session.toFixed(2) + '% of the ' +
+      'baseline’s instruction count. Between the sessions the series was rewritten once: commit 6 now carries ' +
+      'worst-case limits for the 16-bit inverse transform, proven instead of measured, which let more blocks take ' +
+      'that path. Rebuilt, commit ' + (R2.first - 1) + ' differs from the measured one by ' +
+      DATA.cfgs.map(c => NAMES[c] + ' ' + sfmt(R2.rewrite[c], 3) + '%').join(', ') + ' of the baseline’s ' +
+      'instructions; that difference is included from commit 6 on. The cycle figures of commits 6 to ' +
+      (R2.first - 1) + ' are those measured before the rewrite.',
+    'After all per-commit measurements the series was checked for commits that slow each other down, and rewritten: ' +
+      R2.removed.length + ' commits were deleted (the superblock prediction cache and the commit that limited it ' +
+      'to slow presets: the cache no longer paid for its copies; in the measurements they stood for ' +
+      R2.removed.map(r => sfmt(r.i4) + ' / ' + sfmt(r.i2)).join(' and ') + ' points of instructions at preset 4 / ' +
+      'preset 2), one commit was reduced to its inverse-transform part (its shared filter-search predictions were ' +
+      'never shared and its PD0 path had become redundant), cache storage was moved behind the other fields of ' +
+      'the mode-decision context, and helpers that had dropped out of inlining were inlined again, each in the ' +
+      'commit that caused it. The rows keep the figures measured before that, renumbered, and their running ' +
+      'totals leave the deleted commits out; the curves are the measured ones and still contain them; the ' +
+      'whole-series table and the tiles are a new A/B of the final series against the baseline.',
+    'Peak memory (table below) is the peak memory footprint that /usr/bin/time -l reports, median of the runs of ' +
+      'the whole-series A/B: single-threaded, 60 frames, baseline and last commit only. With more threads the ' +
+      'encoder allocates more working state per thread, so the absolute figures are larger there.',
+    'Still-image lines under the commits of the audit round: three 10-bit images, tune IQ, presets 2, 4 and 6, ' +
+      'CRF 10 and 40, instruction count of each commit against the one before, in percent of the count at commit ' +
+      (R2.first - 1) + (R2.still_ins == null ? '' : ' (' + fmt(R2.still_ins) + '% fewer instructions over the ' +
+      'round; the cycle saving is larger, see the table of the audit round') + '). ' +
+      (R2.still_bad === 0 ? 'Every commit produced the same still-image bitstreams as commit ' + (R2.first - 1) + '.'
+        : 'Still-image bitstream mismatches were seen.'),
+    DATA.bad_sha.length === 0
+      ? 'Every commit of the series produced the baseline’s bitstream on all four configurations in these runs.'
+      : 'Bitstream mismatches against the baseline were seen at: ' + DATA.bad_sha.map(x => x.join(' ')).join(', ') + '.',
+  ].forEach(t => ul.appendChild(el('li', null, t)));
+  host.appendChild(ul);
+  const t = el('table');
+  const hr = el('tr');
+  const hasMem = DATA.cfgs.every(c => DATA.final[c].mem_base);
+  ['Whole series vs. baseline', 'CPU time', 'Cycles', 'Instructions'].concat(hasMem
+    ? ['Peak memory, baseline', 'Peak memory, last commit', 'Change'] : []).forEach((h, i) =>
+    hr.appendChild(el('th', i ? {class: 'num'} : null, h)));
+  t.appendChild(hr);
+  DATA.cfgs.forEach(c => {
+    const tr = el('tr');
+    tr.appendChild(el('td', null, NAMES[c]));
+    ['cpu', 'cyc', 'ins'].forEach(k => tr.appendChild(el('td', {class: 'num'}, fmt(DATA.final[c][k]) + '%')));
+    if (hasMem) {
+      const f = DATA.final[c];
+      tr.appendChild(el('td', {class: 'num'}, f.mem_base.toFixed(0) + ' MB'));
+      tr.appendChild(el('td', {class: 'num'}, f.mem_tip.toFixed(0) + ' MB'));
+      tr.appendChild(el('td', {class: 'num'}, sfmt(f.mem_tip - f.mem_base, 0) + ' MB (' + sfmt(memPct(c), 1) + '%)'));
+    }
+    t.appendChild(tr);
+  });
+  const card = el('div', {class: 'card'});
+  card.style.display = 'inline-block';
+  card.appendChild(t);
+  host.appendChild(card);
+})();
+
+linePanels();
+groupBars('byarea', 'Primary area', grouped(r => r.areas[0], k => AREAS[k]));
+groupBars('bynature', 'Nature', grouped(r => r.nature, k => k));
+renderTable();
+let rt;
+window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(linePanels, 120); });
+</script>
+</body>
+</html>
