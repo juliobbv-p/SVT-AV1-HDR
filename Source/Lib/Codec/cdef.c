@@ -63,10 +63,13 @@ that we have a highly directional pattern (e.g. a high contrast
 edge), so we can apply more deringing. A low variance means that we
 either have a low contrast edge, or a non-directional texture, so
 we want to be careful not to blur. */
-static INLINE int32_t adjust_strength(int32_t strength, int32_t var) {
-    const int32_t i = (var >> 6) ? AOMMIN(get_msb(var >> 6), 12) : 0;
+static INLINE int32_t adjust_strength_class(int32_t strength, int32_t variance_class) {
     /* We use the variance of 8x8 blocks to adjust the strength. */
-    return var ? (strength * (4 + i) + 8) >> 4 : 0;
+    return variance_class ? (strength * (3 + variance_class) + 8) >> 4 : 0;
+}
+
+static INLINE int32_t adjust_strength(int32_t strength, int32_t var) {
+    return adjust_strength_class(strength, svt_cdef_variance_class(var));
 }
 
 void svt_aom_copy_rect8_8bit_to_16bit_c(uint16_t* dst, int32_t dstride, const uint8_t* src, int32_t sstride, int32_t v,
@@ -444,6 +447,11 @@ bool svt_cdef_search_plan(CdefSearchPlan* plan, const uint8_t* strengths, const 
             plan->slot_map[i] = compact[strengths[i]];
         }
     }
+    for (int c = 0; c < CDEF_VARIANCE_CLASSES; ++c) {
+        for (int p = 0; p < plan->primary_count; ++p) {
+            plan->luma_primary[c][p] = (uint8_t)adjust_strength_class(plan->primary[p] << 2, c);
+        }
+    }
     return true;
 }
 
@@ -480,6 +488,14 @@ void svt_cdef_search_block_10bit_c(const uint16_t* input, const uint16_t* target
     }
 }
 
+#if defined(ARCH_AARCH64)
+// The search of all blocks of a filter block in cdef_search_neon.c; it has no C counterpart.
+void svt_cdef_search_blocks_10bit_neon(const uint16_t* in, const uint16_t* target, int target_stride,
+                                       uint8_t dir[CDEF_NBLOCKS][CDEF_NBLOCKS], int32_t var[CDEF_NBLOCKS][CDEF_NBLOCKS],
+                                       const CdefList* dlist, int count, const CdefSearchPlan* plan, int pli,
+                                       int damping, int bsize, int subsampling_factor, uint64_t ssd[TOTAL_STRENGTHS]);
+#endif
+
 void svt_cdef_search_fb_10bit(uint16_t* in, const uint16_t* target, int target_stride,
                               uint8_t dir[CDEF_NBLOCKS][CDEF_NBLOCKS], int32_t* dirinit,
                               int32_t var[CDEF_NBLOCKS][CDEF_NBLOCKS], CdefList* dlist, int count,
@@ -497,12 +513,33 @@ void svt_cdef_search_fb_10bit(uint16_t* in, const uint16_t* target, int target_s
     const int  bsize       = ydec ? (xdec ? BLOCK_4X4 : BLOCK_8X4) : (xdec ? BLOCK_4X8 : BLOCK_8X8);
     const bool has_primary = plan->primary_count && plan->primary[plan->primary_count - 1] != 0;
     memset(ssd, 0, plan->strength_count * sizeof(*ssd));
-    for (int bi = 0; bi < count && plan->strength_count; ++bi) {
-        const int by = dlist[bi].by, bx = dlist[bi].bx;
-        uint8_t   primary[16];
+#if defined(ARCH_AARCH64)
+    // The NEON kernel keeps its sums across the blocks.
+    const bool by_block = svt_cdef_search_block_10bit != svt_cdef_search_block_10bit_neon;
+    if (!by_block && plan->strength_count) {
+        svt_cdef_search_blocks_10bit_neon(in,
+                                          target,
+                                          target_stride,
+                                          dir,
+                                          var,
+                                          dlist,
+                                          count,
+                                          plan,
+                                          pli,
+                                          damping + 2 - (pli != 0),
+                                          bsize,
+                                          subsampling_factor,
+                                          ssd);
+    }
+#else
+    const bool by_block = true;
+#endif
+    for (int bi = 0; bi < count && plan->strength_count && by_block; ++bi) {
+        const int      by = dlist[bi].by, bx = dlist[bi].bx;
+        const uint8_t* luma = plan->luma_primary[svt_cdef_variance_class(var[by][bx])];
+        uint8_t        primary[16];
         for (int p = 0; p < plan->primary_count; ++p) {
-            const int configured = plan->primary[p] << 2;
-            primary[p]           = !configured || pli ? configured : adjust_strength(configured, var[by][bx]);
+            primary[p] = pli ? plan->primary[p] << 2 : luma[p];
         }
         uint64_t block[64];
         svt_cdef_search_block_10bit(in + height * by * CDEF_BSTRIDE + width * bx,

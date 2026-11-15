@@ -49,6 +49,15 @@ extern const int8_t (*const svt_aom_eb_cdef_directions_rc)[2][2];
 
 #define TOTAL_STRENGTHS (CDEF_PRI_STRENGTHS * CDEF_SEC_STRENGTHS)
 
+// The luma primary strength of a block follows its directional variance through one of these classes: 0 for
+// no variance, otherwise 1 + min(msb(var >> 6), 12), with 1 for variances below 128.
+#define CDEF_VARIANCE_CLASSES 14
+
+static INLINE int svt_cdef_variance_class(int32_t var) {
+    const int32_t scaled = var >> 6;
+    return var ? 1 + (scaled ? AOMMIN(get_msb(scaled), 12) : 0) : 0;
+}
+
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 // Compact requested combinations, grouped by configured primary strength. Keep
 // the original search-slot order separately because selection and ties use it.
@@ -59,6 +68,8 @@ typedef struct CdefSearchPlan {
     uint8_t group_start[CDEF_PRI_STRENGTHS + 1];
     uint8_t secondary[TOTAL_STRENGTHS];
     uint8_t slot_map[TOTAL_STRENGTHS];
+    // 10-bit luma primary strength of each group, by variance class of the block
+    uint8_t luma_primary[CDEF_VARIANCE_CLASSES][CDEF_PRI_STRENGTHS];
 } CdefSearchPlan;
 
 bool svt_cdef_search_plan(CdefSearchPlan* plan, const uint8_t* strengths, const int8_t* enabled, int count);
