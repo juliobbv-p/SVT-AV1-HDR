@@ -1741,6 +1741,60 @@ bool svt_av1_highbd_sgrproj_residual_neon(const uint8_t* src8, const uint8_t* da
     return vmaxvq_s16(max) < INT16_MAX && vminvq_s16(min) > INT16_MIN;
 }
 
+// Adds the products of one block of residuals to the sums of the projection subspace; e is src - dat.
+static AOM_FORCE_INLINE void sgrproj_sums_block(const int16x8_t r0, const int16x8_t r1, const int16x8_t e,
+                                                int64x2_t* sum) {
+    sum[0] = sgrproj_add_products(sum[0], r0, r0);
+    sum[1] = sgrproj_add_products(sum[1], r0, r1);
+    sum[2] = sgrproj_add_products(sum[2], r1, r1);
+    sum[3] = sgrproj_add_products(sum[3], r0, e);
+    sum[4] = sgrproj_add_products(sum[4], r1, e);
+}
+
+// The sums of the projection subspace that svt_av1_highbd_sgrproj_residual_neon() forms while it stores the residual
+// planes, for planes that are already stored: sums[] = {sum(a0 * a0), sum(a0 * a1), sum(a1 * a1), sum(a0 * s),
+// sum(a1 * s)} with s = (src - dat) << SGRPROJ_RST_BITS. Every residual must fit (the kernels that store the planes
+// report it, and no residual is INT16_MIN then), which keeps the factors within the limit of
+// sgrproj_add_products(); src - dat is below 2^12 in magnitude. width must be at least 8.
+void svt_av1_highbd_sgrproj_residual_sums_neon(const uint8_t* src8, const uint8_t* dat8, int32_t width, int32_t height,
+                                               int32_t src_stride, int32_t dat_stride, const int16_t* a0,
+                                               const int16_t* a1, int32_t a_stride, int64_t sums[5]) {
+    const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
+    const uint16_t* dat = CONVERT_TO_SHORTPTR(dat8);
+
+    int64x2_t sum[5];
+    for (int i = 0; i < 5; i++) {
+        sum[i] = vdupq_n_s64(0);
+    }
+
+    assert(width >= 8);
+    do {
+        int j = 0;
+        for (; j <= width - 8; j += 8) {
+            const int16x8_t e = vreinterpretq_s16_u16(vsubq_u16(vld1q_u16(&src[j]), vld1q_u16(&dat[j])));
+            sgrproj_sums_block(vld1q_s16(&a0[j]), vld1q_s16(&a1[j]), e, sum);
+        }
+        if (j != width) {
+            // the last 8 samples of the row; the residuals already counted are masked out, which zeroes every
+            // product of their lanes
+            const int16x8_t mask = vld1q_s16(mask_16x8[width % 8 - 1]);
+            j                    = width - 8;
+            const int16x8_t e    = vreinterpretq_s16_u16(vsubq_u16(vld1q_u16(&src[j]), vld1q_u16(&dat[j])));
+            sgrproj_sums_block(vandq_s16(vld1q_s16(&a0[j]), mask), vandq_s16(vld1q_s16(&a1[j]), mask), e, sum);
+        }
+        src += src_stride;
+        dat += dat_stride;
+        a0 += a_stride;
+        a1 += a_stride;
+    } while (--height != 0);
+
+    sums[0] = vaddvq_s64(sum[0]);
+    sums[1] = vaddvq_s64(sum[1]);
+    sums[2] = vaddvq_s64(sum[2]);
+    sums[3] = vaddvq_s64(sum[3]) * (1 << SGRPROJ_RST_BITS);
+    sums[4] = vaddvq_s64(sum[4]) * (1 << SGRPROJ_RST_BITS);
+}
+
 // Squared errors of one block of 8 samples for the n projections xq + i * xq_inc, i = 0..n-1: those of the low
 // four samples are added to acc[i], those of the high four to acc[i + hi]. c holds 32 * {xq[0], xq[1], xq_inc[0],
 // xq_inc[1]}.

@@ -338,6 +338,18 @@ int64_t svt_av1_highbd_sgrproj_filtered_sse_neon(const uint8_t* src8, int32_t wi
                                                  const int16_t* a1, int32_t a_stride, const int32_t xq[2],
                                                  int32_t bit_depth);
 
+bool svt_av1_highbd_selfguided_residuals_neon(const uint8_t* dat8, int32_t width, int32_t height, int32_t stride,
+                                              int32_t bit_depth, const int32_t* sgr_params_idx, int32_t n,
+                                              int16_t* const* a, int32_t a_stride);
+
+void svt_av1_highbd_sgrproj_residual_sums_neon(const uint8_t* src8, const uint8_t* dat8, int32_t width, int32_t height,
+                                               int32_t src_stride, int32_t dat_stride, const int16_t* a0,
+                                               const int16_t* a1, int32_t a_stride, int64_t sums[5]);
+
+// Largest number of parameter sets filtered from one computation of the box sums: the search has room for four pairs
+// of residual planes, and one of them keeps the best set so far
+#define SGRPROJ_SHARED_MAX 3
+
 // Number of measured projection errors kept per parameter set, and of projections measured in one pass
 #define SGRPROJ_MEMO_SIZE 32
 #define SGRPROJ_LINE_MAX 8
@@ -758,6 +770,36 @@ static int64_t sgrproj_filtered_sse_highbd(const uint8_t* src8, int32_t width, i
 #endif
 
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Whether the parameter set has the radii svt_av1_highbd_selfguided_residuals_neon() is written for
+static bool sgrproj_shared_radii(int32_t ep) {
+    return svt_aom_eb_sgr_params[ep].r[0] == 2 && svt_aom_eb_sgr_params[ep].r[1] == 1;
+}
+
+// Residual planes of the parameter sets eps[0..n-1], which all filter the radii 2 and 1, across a restoration unit:
+// each processing unit is filtered for all the sets at once, from one computation of its box sums. Set k takes the
+// planes pair[k] and pair[k] + RESTORATION_UNITPELS_MAX. Returns whether every residual fits (see
+// svt_av1_highbd_selfguided_residuals_neon()).
+static bool sgrproj_shared_residuals(const uint8_t* dat8, int32_t width, int32_t height, int32_t dat_stride,
+                                     int32_t bit_depth, int32_t pu_width, int32_t pu_height, const int32_t* eps,
+                                     int32_t n, int16_t* const* pair, int32_t a_stride) {
+    for (int32_t i = 0; i < height; i += pu_height) {
+        const int32_t h = AOMMIN(pu_height, height - i);
+        for (int32_t j = 0; j < width; j += pu_width) {
+            const int32_t w = AOMMIN(pu_width, width - j);
+            int16_t*      a[2 * SGRPROJ_SHARED_MAX];
+            for (int32_t k = 0; k < n; k++) {
+                a[2 * k]     = pair[k] + i * a_stride + j;
+                a[2 * k + 1] = a[2 * k] + RESTORATION_UNITPELS_MAX;
+            }
+            if (!svt_av1_highbd_selfguided_residuals_neon(
+                    dat8 + i * dat_stride + j, w, h, dat_stride, bit_depth, eps, n, a, a_stride)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // search_selfguided_restoration() for high bit depth units, with the filter outputs of each parameter set reduced
 // to int16 residual planes: the projection errors and the SSE of the filtered unit are computed from them, several
 // projections per pass. Returns false, without a result, when a residual does not fit in 16 bits; the caller then
@@ -767,12 +809,16 @@ static bool search_selfguided_restoration_residual(const uint8_t* dat8, int32_t 
                                                    int32_t bit_depth, int32_t pu_width, int32_t pu_height,
                                                    int32_t* rstbuf, const SgFilterCtrls* ctrls, int32_t plane,
                                                    int64_t* unit_sse, SgrprojInfo* info) {
-    int32_t* flt0 = rstbuf;
-    int32_t* flt1 = flt0 + RESTORATION_UNITPELS_MAX;
-    // Two residual planes each for the current and for the best parameter set so far, in the two int32 planes the
-    // search on the filter outputs uses for its best set; the pairs swap roles when a set becomes the best.
-    int16_t*      a          = (int16_t*)(rstbuf + 2 * RESTORATION_UNITPELS_MAX);
-    int16_t*      best_a     = (int16_t*)(rstbuf + 3 * RESTORATION_UNITPELS_MAX);
+    // Each of the four int32 planes of rstbuf holds a pair of residual planes. One pair keeps the best parameter set
+    // so far and changes places with the pair of a set that becomes the best. The others serve the sets being
+    // evaluated: one pair each for sets that are filtered together, or one pair and the two int32 planes of the
+    // filter outputs for a set that is filtered on its own.
+    int16_t* pair[SGRPROJ_SHARED_MAX];
+    for (int32_t i = 0; i < SGRPROJ_SHARED_MAX; i++) {
+        pair[i] = (int16_t*)(rstbuf + i * RESTORATION_UNITPELS_MAX);
+    }
+    int16_t* best_pair = (int16_t*)(rstbuf + SGRPROJ_SHARED_MAX * RESTORATION_UNITPELS_MAX);
+
     int32_t       bestep     = 0;
     int64_t       besterr    = -1;
     int32_t       bestxqd[2] = {0, 0};
@@ -783,63 +829,98 @@ static bool search_selfguided_restoration_residual(const uint8_t* dat8, int32_t 
     const int8_t  do_refine  = ctrls->refine[plane];
     // The error of a parameter set only serves the refinement and the comparison with other sets
     const bool need_err = do_refine || start_ep + ep_inc < end_ep;
-    for (int32_t ep = start_ep; ep < end_ep; ep += ep_inc) {
-        int32_t exq[2];
-        int32_t exqd[2];
-        apply_sgr(ep, dat8, width, height, dat_stride, 1, bit_depth, pu_width, pu_height, flt0, flt1, flt_stride);
+    // The kernel that filters several sets from one computation of the box sums stands in for the NEON filter
+    const bool shared_sums = svt_av1_selfguided_restoration == svt_av1_selfguided_restoration_neon;
+    for (int32_t ep = start_ep; ep < end_ep;) {
+        // This set and, when their box sums can be shared, the sets after it that filter the same radii
+        int32_t eps[SGRPROJ_SHARED_MAX] = {ep};
 
-        const SgrParamsType* const params = &svt_aom_eb_sgr_params[ep];
-        // The residual planes and, from the same pass, the sums of the projection subspace. The output of a
-        // radius that is not filtered is not written: its plane is zero and so is its projection coefficient.
-        int64_t sums[5];
-        if (!svt_av1_highbd_sgrproj_residual_neon(src8,
-                                                  dat8,
-                                                  width,
-                                                  height,
-                                                  src_stride,
-                                                  dat_stride,
-                                                  params->r[0] ? flt0 : NULL,
-                                                  params->r[1] ? flt1 : NULL,
-                                                  flt_stride,
-                                                  a,
-                                                  a + RESTORATION_UNITPELS_MAX,
-                                                  flt_stride,
-                                                  sums)) {
-            return false;
+        int32_t n = 1;
+        if (shared_sums && sgrproj_shared_radii(ep)) {
+            while (n < SGRPROJ_SHARED_MAX && ep + n * ep_inc < end_ep && sgrproj_shared_radii(ep + n * ep_inc)) {
+                eps[n] = ep + n * ep_inc;
+                n++;
+            }
         }
-        double H[2][2] = {{(double)sums[0], (double)sums[1]}, {(double)sums[1], (double)sums[2]}};
-        double C[2]    = {(double)sums[3], (double)sums[4]};
-        exq[0] = exq[1] = 0;
-        solve_proj_subspace(H, C, width * height, params, exq);
-        encode_xq(exq, exqd, params);
+        // A set without company is filtered on its own: the pass that stores its residual planes then forms the
+        // sums of the projection subspace as well.
+        const bool shared = n > 1;
+        int64_t    sums[5];
+        if (shared) {
+            if (!sgrproj_shared_residuals(
+                    dat8, width, height, dat_stride, bit_depth, pu_width, pu_height, eps, n, pair, flt_stride)) {
+                return false;
+            }
+        } else {
+            const SgrParamsType* const params = &svt_aom_eb_sgr_params[ep];
 
-        int64_t err = 0;
-        if (need_err) {
-            SgrprojTrial trial;
-            trial.src8             = src8;
-            trial.dat8             = dat8;
-            trial.width            = width;
-            trial.height           = height;
-            trial.src_stride       = src_stride;
-            trial.dat_stride       = dat_stride;
-            trial.use_highbitdepth = 1;
-            trial.flt0             = flt0;
-            trial.flt1             = flt1;
-            trial.flt_stride       = flt_stride;
-            trial.params           = params;
-            trial.a0               = a;
-            trial.a1               = a + RESTORATION_UNITPELS_MAX;
-            trial.memo_count       = 0;
-            err                    = finer_search_pixel_proj_error(&trial, 2, exqd, do_refine);
+            int32_t* const flt0 = (int32_t*)pair[1];
+            int32_t* const flt1 = (int32_t*)pair[2];
+            apply_sgr(ep, dat8, width, height, dat_stride, 1, bit_depth, pu_width, pu_height, flt0, flt1, flt_stride);
+            // The output of a radius that is not filtered is not written: its plane is zero and so is its
+            // projection coefficient.
+            if (!svt_av1_highbd_sgrproj_residual_neon(src8,
+                                                      dat8,
+                                                      width,
+                                                      height,
+                                                      src_stride,
+                                                      dat_stride,
+                                                      params->r[0] ? flt0 : NULL,
+                                                      params->r[1] ? flt1 : NULL,
+                                                      flt_stride,
+                                                      pair[0],
+                                                      pair[0] + RESTORATION_UNITPELS_MAX,
+                                                      flt_stride,
+                                                      sums)) {
+                return false;
+            }
         }
-        if (besterr == -1 || err < besterr) {
-            bestep     = ep;
-            besterr    = err;
-            bestxqd[0] = exqd[0];
-            bestxqd[1] = exqd[1];
-            int16_t* t = best_a;
-            best_a     = a;
-            a          = t;
+
+        for (int32_t k = 0; k < n; k++, ep += ep_inc) {
+            const SgrParamsType* const params = &svt_aom_eb_sgr_params[ep];
+
+            const int16_t* const a0 = pair[k];
+            const int16_t* const a1 = pair[k] + RESTORATION_UNITPELS_MAX;
+            if (shared) {
+                svt_av1_highbd_sgrproj_residual_sums_neon(
+                    src8, dat8, width, height, src_stride, dat_stride, a0, a1, flt_stride, sums);
+            }
+            double  H[2][2] = {{(double)sums[0], (double)sums[1]}, {(double)sums[1], (double)sums[2]}};
+            double  C[2]    = {(double)sums[3], (double)sums[4]};
+            int32_t exq[2]  = {0, 0};
+            int32_t exqd[2];
+            solve_proj_subspace(H, C, width * height, params, exq);
+            encode_xq(exq, exqd, params);
+
+            int64_t err = 0;
+            if (need_err) {
+                SgrprojTrial trial;
+                trial.src8             = src8;
+                trial.dat8             = dat8;
+                trial.width            = width;
+                trial.height           = height;
+                trial.src_stride       = src_stride;
+                trial.dat_stride       = dat_stride;
+                trial.use_highbitdepth = 1;
+                trial.flt0             = NULL;
+                trial.flt1             = NULL;
+                trial.flt_stride       = flt_stride;
+                trial.params           = params;
+                trial.a0               = a0;
+                trial.a1               = a1;
+                trial.memo_count       = 0;
+                err                    = finer_search_pixel_proj_error(&trial, 2, exqd, do_refine);
+            }
+            if (besterr == -1 || err < besterr) {
+                bestep     = ep;
+                besterr    = err;
+                bestxqd[0] = exqd[0];
+                bestxqd[1] = exqd[1];
+
+                int16_t* const t = best_pair;
+                best_pair        = pair[k];
+                pair[k]          = t;
+            }
         }
     }
     if (unit_sse) {
@@ -853,8 +934,8 @@ static bool search_selfguided_restoration_residual(const uint8_t* dat8, int32_t 
                                                                  src_stride,
                                                                  dat8,
                                                                  dat_stride,
-                                                                 best_a,
-                                                                 best_a + RESTORATION_UNITPELS_MAX,
+                                                                 best_pair,
+                                                                 best_pair + RESTORATION_UNITPELS_MAX,
                                                                  flt_stride,
                                                                  xq,
                                                                  bit_depth);
