@@ -1095,29 +1095,60 @@ static inline uint16x8_t cross_sum_fast_odd_row_inp16(uint16_t* buf) {
     return vaddq_u16(xl, x);
 }
 
-static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_stride, int16_t* src,
-                                       const int src_stride, int32_t* dst, const int dst_stride, const int width,
-                                       const int height) {
+// Where the final filters leave a block of 8 outputs: at dst as they are or, for the high bit depth search
+// (residual set), at res as the residuals a = flt - (src << SGRPROJ_RST_BITS), saturated to int16, with the stored
+// values folded into the extremes min and max. As in svt_av1_highbd_sgrproj_residual_neon(), the subtraction is
+// done modulo 2^32 and a difference outside the int16 range leaves INT16_MIN or INT16_MAX in its lane. The filters
+// work in whole blocks; only the first `valid` lanes of the last block of a row belong to the unit, and the others
+// are kept out of the extremes.
+static AOM_FORCE_INLINE void final_filter_store(const int residual, int32_t* dst, int16_t* res, const int32x4_t flt_lo,
+                                                const int32x4_t flt_hi, const int16x8_t src, const int valid,
+                                                int16x8_t* min, int16x8_t* max) {
+    if (!residual) {
+        vst1q_s32(dst, flt_lo);
+        vst1q_s32(dst + 4, flt_hi);
+        return;
+    }
+    const uint16x8_t u  = vshlq_n_u16(vreinterpretq_u16_s16(src), SGRPROJ_RST_BITS);
+    const uint32x4_t lo = vsubw_u16(vreinterpretq_u32_s32(flt_lo), vget_low_u16(u));
+    const uint32x4_t hi = vsubw_high_u16(vreinterpretq_u32_s32(flt_hi), u);
+    int16x8_t        r  = vqmovn_high_s32(vqmovn_s32(vreinterpretq_s32_u32(lo)), vreinterpretq_s32_u32(hi));
+
+    vst1q_s16(res, r);
+    if (valid < 8) {
+        static const int16_t lane[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+        r = vandq_s16(r, vreinterpretq_s16_u16(vcltq_s16(vld1q_s16(lane), vdupq_n_s16((int16_t)valid))));
+    }
+    *max = vmaxq_s16(*max, r);
+    *min = vminq_s16(*min, r);
+}
+
+// residual selects the output of final_filter_store(): the int32 plane out, or the int16 residual plane out with
+// its extremes.
+static AOM_FORCE_INLINE void final_filter_fast(uint16_t* A, int32_t* B, const int buf_stride, int16_t* src,
+                                               const int src_stride, const int residual, void* out,
+                                               const int out_stride, const int width, const int height, int16x8_t* min,
+                                               int16x8_t* max) {
     int16x8_t s0;
-    int32_t * B_tmp, *dst_ptr;
+    int32_t * B_tmp, *dst_ptr = NULL;
     uint16_t* A_tmp;
-    int16_t*  src_ptr;
+    int16_t * src_ptr, *res_ptr = NULL;
     int32x4_t a_res0, a_res1, b_res0, b_res1;
     int       w, h, count = 0;
     assert(SGRPROJ_SGR_BITS == 8);
     assert(SGRPROJ_RST_BITS == 4);
 
-    A_tmp   = A;
-    B_tmp   = B;
-    src_ptr = src;
-    dst_ptr = dst;
-    h       = height;
+    h = height;
     do {
         A_tmp   = (A + count * buf_stride);
         B_tmp   = (B + count * buf_stride);
         src_ptr = (src + count * src_stride);
-        dst_ptr = (dst + count * dst_stride);
         w       = width;
+        if (residual) {
+            res_ptr = (int16_t*)out + count * out_stride;
+        } else {
+            dst_ptr = (int32_t*)out + count * out_stride;
+        }
         if (!(count & 1)) {
             do {
                 s0 = vld1q_s16(src_ptr);
@@ -1136,13 +1167,16 @@ static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_st
                 a_res0 = vrshrq_n_s32(a_res0, SGRPROJ_SGR_BITS + NB_EVEN - SGRPROJ_RST_BITS);
                 a_res1 = vrshrq_n_s32(a_res1, SGRPROJ_SGR_BITS + NB_EVEN - SGRPROJ_RST_BITS);
 
-                vst1q_s32(dst_ptr, a_res0);
-                vst1q_s32(dst_ptr + 4, a_res1);
+                final_filter_store(residual, dst_ptr, res_ptr, a_res0, a_res1, s0, w, min, max);
 
                 A_tmp += 8;
                 B_tmp += 8;
                 src_ptr += 8;
-                dst_ptr += 8;
+                if (residual) {
+                    res_ptr += 8;
+                } else {
+                    dst_ptr += 8;
+                }
                 w -= 8;
             } while (w > 0);
         } else {
@@ -1163,13 +1197,16 @@ static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_st
                 a_res0 = vrshrq_n_s32(a_res0, SGRPROJ_SGR_BITS + NB_ODD - SGRPROJ_RST_BITS);
                 a_res1 = vrshrq_n_s32(a_res1, SGRPROJ_SGR_BITS + NB_ODD - SGRPROJ_RST_BITS);
 
-                vst1q_s32(dst_ptr, a_res0);
-                vst1q_s32(dst_ptr + 4, a_res1);
+                final_filter_store(residual, dst_ptr, res_ptr, a_res0, a_res1, s0, w, min, max);
 
                 A_tmp += 8;
                 B_tmp += 8;
                 src_ptr += 8;
-                dst_ptr += 8;
+                if (residual) {
+                    res_ptr += 8;
+                } else {
+                    dst_ptr += 8;
+                }
                 w -= 8;
             } while (w > 0);
         }
@@ -1178,12 +1215,19 @@ static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_st
     } while (h > 0);
 }
 
-static void final_filter_internal(uint16_t* A, int32_t* B, const int buf_stride, int16_t* src, const int src_stride,
-                                  int32_t* dst, const int dst_stride, const int width, const int height) {
+static void final_filter_fast_internal(uint16_t* A, int32_t* B, const int buf_stride, int16_t* src,
+                                       const int src_stride, int32_t* dst, const int dst_stride, const int width,
+                                       const int height) {
+    final_filter_fast(A, B, buf_stride, src, src_stride, 0, dst, dst_stride, width, height, NULL, NULL);
+}
+
+static AOM_FORCE_INLINE void final_filter(uint16_t* A, int32_t* B, const int buf_stride, int16_t* src,
+                                          const int src_stride, const int residual, void* out, const int out_stride,
+                                          const int width, const int height, int16x8_t* min, int16x8_t* max) {
     int16x8_t s0;
-    int32_t * B_tmp, *dst_ptr;
+    int32_t * B_tmp, *dst_ptr = NULL;
     uint16_t* A_tmp;
-    int16_t*  src_ptr;
+    int16_t * src_ptr, *res_ptr = NULL;
     int32x4_t a_res0, a_res1, b_res0, b_res1;
     int       w, h, count = 0;
 
@@ -1195,8 +1239,12 @@ static void final_filter_internal(uint16_t* A, int32_t* B, const int buf_stride,
         A_tmp   = (A + count * buf_stride);
         B_tmp   = (B + count * buf_stride);
         src_ptr = (src + count * src_stride);
-        dst_ptr = (dst + count * dst_stride);
         w       = width;
+        if (residual) {
+            res_ptr = (int16_t*)out + count * out_stride;
+        } else {
+            dst_ptr = (int32_t*)out + count * out_stride;
+        }
         do {
             s0 = vld1q_s16(src_ptr);
             // sample (at most 12 bits) times neighbour sum (at most 8192): one widening multiply
@@ -1213,18 +1261,26 @@ static void final_filter_internal(uint16_t* A, int32_t* B, const int buf_stride,
 
             a_res0 = vrshrq_n_s32(a_res0, SGRPROJ_SGR_BITS + NB_EVEN - SGRPROJ_RST_BITS);
             a_res1 = vrshrq_n_s32(a_res1, SGRPROJ_SGR_BITS + NB_EVEN - SGRPROJ_RST_BITS);
-            vst1q_s32(dst_ptr, a_res0);
-            vst1q_s32(dst_ptr + 4, a_res1);
+            final_filter_store(residual, dst_ptr, res_ptr, a_res0, a_res1, s0, w, min, max);
 
             A_tmp += 8;
             B_tmp += 8;
             src_ptr += 8;
-            dst_ptr += 8;
+            if (residual) {
+                res_ptr += 8;
+            } else {
+                dst_ptr += 8;
+            }
             w -= 8;
         } while (w > 0);
         count++;
         h -= 1;
     } while (h > 0);
+}
+
+static void final_filter_internal(uint16_t* A, int32_t* B, const int buf_stride, int16_t* src, const int src_stride,
+                                  int32_t* dst, const int dst_stride, const int width, const int height) {
+    final_filter(A, B, buf_stride, src, src_stride, 0, dst, dst_stride, width, height, NULL, NULL);
 }
 
 static inline void restoration_fast_internal(uint16_t* dgd16, int width, int height, int dgd_stride, int32_t* dst,
@@ -1502,72 +1558,10 @@ void svt_av1_selfguided_restoration_neon(const uint8_t* dat8, int32_t width, int
 }
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-// One block of 8 residuals a = flt - (dgd << SGRPROJ_RST_BITS), saturated to int16. As in
-// svt_av1_highbd_sgrproj_residual_neon(), the subtraction is done modulo 2^32 and a difference outside the int16
-// range leaves INT16_MIN or INT16_MAX in its lane.
-static inline int16x8_t sgr_residual_block(const int32_t* flt, const uint16_t* dgd) {
-    const uint16x8_t u  = vshlq_n_u16(vld1q_u16(dgd), SGRPROJ_RST_BITS);
-    const uint32x4_t lo = vsubw_u16(vreinterpretq_u32_s32(vld1q_s32(flt)), vget_low_u16(u));
-    const uint32x4_t hi = vsubw_high_u16(vreinterpretq_u32_s32(vld1q_s32(flt + 4)), u);
-    return vqmovn_high_s32(vqmovn_s32(vreinterpretq_s32_u32(lo)), vreinterpretq_s32_u32(hi));
-}
-
-// Stores the residual plane of a filter output and folds the stored values into the extremes min and max. Two
-// blocks per pass keep separate extremes, so that the passes do not wait for each other.
-static inline void sgr_residual(const int32_t* flt, const int flt_stride, const uint16_t* dgd, const int dgd_stride,
-                                int16_t* a, const int a_stride, const int width, const int height, int16x8_t* min,
-                                int16x8_t* max) {
-    const int width8 = width & ~7;
-    int16x8_t lo0    = *min;
-    int16x8_t hi0    = *max;
-    int16x8_t lo1    = lo0;
-    int16x8_t hi1    = hi0;
-
-    for (int i = 0; i < height; i++) {
-        const int32_t* const  flt_row = flt + i * flt_stride;
-        const uint16_t* const dgd_row = dgd + i * dgd_stride;
-        int16_t* const        a_row   = a + i * a_stride;
-        int                   j       = 0;
-        for (; j + 16 <= width8; j += 16) {
-            const int16x8_t r0 = sgr_residual_block(flt_row + j, dgd_row + j);
-            const int16x8_t r1 = sgr_residual_block(flt_row + j + 8, dgd_row + j + 8);
-            hi0                = vmaxq_s16(hi0, r0);
-            lo0                = vminq_s16(lo0, r0);
-            hi1                = vmaxq_s16(hi1, r1);
-            lo1                = vminq_s16(lo1, r1);
-            vst1q_s16(a_row + j, r0);
-            vst1q_s16(a_row + j + 8, r1);
-        }
-        if (j < width8) {
-            const int16x8_t r0 = sgr_residual_block(flt_row + j, dgd_row + j);
-            hi0                = vmaxq_s16(hi0, r0);
-            lo0                = vminq_s16(lo0, r0);
-            vst1q_s16(a_row + j, r0);
-        }
-    }
-    if (width8 < width) {
-        // The samples left over in each row, padded with zeros: a zero residual does not move the extremes.
-        const int left = width - width8;
-        for (int i = 0; i < height; i++) {
-            int32_t  f[8] = {0};
-            uint16_t d[8] = {0};
-            int16_t  r[8];
-            memcpy(f, flt + i * flt_stride + width8, left * sizeof(*f));
-            memcpy(d, dgd + i * dgd_stride + width8, left * sizeof(*d));
-            const int16x8_t r0 = sgr_residual_block(f, d);
-            hi0                = vmaxq_s16(hi0, r0);
-            lo0                = vminq_s16(lo0, r0);
-            vst1q_s16(r, r0);
-            memcpy(a + i * a_stride + width8, r, left * sizeof(*r));
-        }
-    }
-    *min = vminq_s16(lo0, lo1);
-    *max = vmaxq_s16(hi0, hi1);
-}
-
-// restoration_fast_internal() for n parameter sets, with the box sums computed once and each filter output reduced
-// to its residual plane a[2 * k]. The buffers and their layout are those of that function, except that the b plane
-// does not replace the box sums, which the next set needs.
+// restoration_fast_internal() for n parameter sets, with the box sums computed once and each filter output stored
+// as its residual plane a[2 * k], with the extremes of the stored values folded into min and max. The buffers and
+// their layout are those of that function, except that the b plane does not replace the box sums, which the next
+// set needs.
 static inline void sgr_residuals_fast_internal(uint16_t* dgd16, int width, int height, int dgd_stride, int bit_depth,
                                                const int32_t* sgr_params_idx, int n, int16_t* const* a, int a_stride,
                                                int16x8_t* min, int16x8_t* max) {
@@ -1579,9 +1573,6 @@ static inline void sgr_residuals_fast_internal(uint16_t* dgd16, int width, int h
     uint16_t  A16_[RESTORATION_PROC_UNIT_PELS];
     int32_t   sum_[RESTORATION_PROC_UNIT_PELS];
     int32_t   B_[RESTORATION_PROC_UNIT_PELS];
-    // The final filter writes whole blocks of 8 samples.
-    int32_t   flt[RESTORATION_PROC_UNIT_SIZE * RESTORATION_PROC_UNIT_SIZE];
-    const int flt_stride = (width + 7) & ~7;
 
     boxsum2((int16_t*)(dgd16 - dgd_stride * SGRPROJ_BORDER_VERT - SGRPROJ_BORDER_HORZ),
             dgd_stride,
@@ -1625,9 +1616,8 @@ static inline void sgr_residuals_fast_internal(uint16_t* dgd16, int width, int h
                                       params->s[0],
                                       2);
         }
-        final_filter_fast_internal(
-            tmp16_buf, B, buf_stride, (int16_t*)dgd16, dgd_stride, flt, flt_stride, width, height);
-        sgr_residual(flt, flt_stride, dgd16, dgd_stride, a[2 * k], a_stride, width, height, min, max);
+        final_filter_fast(
+            tmp16_buf, B, buf_stride, (int16_t*)dgd16, dgd_stride, 1, a[2 * k], a_stride, width, height, min, max);
     }
 }
 
@@ -1643,8 +1633,6 @@ static inline void sgr_residuals_internal(uint16_t* dgd16, int width, int height
     uint16_t  A16_[RESTORATION_PROC_UNIT_PELS];
     uint16_t  B16_[RESTORATION_PROC_UNIT_PELS];
     int32_t   B_[RESTORATION_PROC_UNIT_PELS];
-    int32_t   flt[RESTORATION_PROC_UNIT_SIZE * RESTORATION_PROC_UNIT_SIZE];
-    const int flt_stride = (width + 7) & ~7;
 
     boxsum1((int16_t*)(dgd16 - dgd_stride * SGRPROJ_BORDER_VERT - SGRPROJ_BORDER_HORZ),
             dgd_stride,
@@ -1687,8 +1675,8 @@ static inline void sgr_residuals_internal(uint16_t* dgd16, int width, int height
                                  params->s[1],
                                  1);
         }
-        final_filter_internal(A16, B, buf_stride, (int16_t*)dgd16, dgd_stride, flt, flt_stride, width, height);
-        sgr_residual(flt, flt_stride, dgd16, dgd_stride, a[2 * k + 1], a_stride, width, height, min, max);
+        final_filter(
+            A16, B, buf_stride, (int16_t*)dgd16, dgd_stride, 1, a[2 * k + 1], a_stride, width, height, min, max);
     }
 }
 
@@ -1697,8 +1685,9 @@ static inline void sgr_residuals_internal(uint16_t* dgd16, int width, int height
 // a = flt - (dat << SGRPROJ_RST_BITS) the restoration search works on: a[2 * k] receives the plane of flt0 and
 // a[2 * k + 1] the plane of flt1 of the set sgr_params_idx[k]. The box sums depend on the samples and on the radius
 // only, so each radius computes them once and every set then derives its a and b planes and its filter output from
-// them. Returns whether every residual lies strictly inside the int16 range, in which case the stored planes are
-// exact.
+// them. Like the filter, the final stage works in blocks of 8 samples: a row of a plane is written up to the next
+// multiple of 8 beyond width. Returns whether every residual lies strictly inside the int16 range, in which case
+// the stored planes are exact.
 bool svt_av1_highbd_selfguided_residuals_neon(const uint8_t* dat8, int32_t width, int32_t height, int32_t stride,
                                               int32_t bit_depth, const int32_t* sgr_params_idx, int32_t n,
                                               int16_t* const* a, int32_t a_stride) {
