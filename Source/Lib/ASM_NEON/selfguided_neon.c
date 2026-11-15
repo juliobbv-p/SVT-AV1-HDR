@@ -927,81 +927,42 @@ static AOM_FORCE_INLINE void boxsum1(int16_t* src, const int src_stride, uint16_
         }
     }
 
-    {
-        int16x4_t d1, d2, d3, d4, d5, d6, d7, d8;
-        int16x4_t q23, q34, q56, q234, q345, q456, q567;
-        int32x4_t r23, r56, r234, r345, r456, r567, r34, r78, r678;
-        int32x4_t r1, r2, r3, r4, r5, r6, r7, r8;
-        int16x4_t q678, q78;
+    // Second stage: the sum of each column with its two neighbours, row by row and in place. The sums go to the
+    // columns 2 to cols + 1 of the rows 0 to rows - 1, cols and rows being the width and the height rounded up to
+    // multiples of 4. Every sum is formed from values of the first stage: all the loads of a pass precede its
+    // stores, and prev keeps the columns that the pass before it has overwritten.
+    const int cols = (width + 3) & ~3;
+    const int rows = (height + 3) & ~3;
+    for (int i = 0; i < rows; i++) {
+        uint16_t* const row1  = dst1 + i * dst_stride + 2;
+        int32_t* const  row2  = dst2 + i * dst_stride + 2;
+        uint16x8_t      prev1 = vld1q_dup_u16(row1 - 1);
+        int32x4_t       prev2 = vld1q_dup_s32(row2 - 1);
+        int             j     = 0;
+        for (; j + 8 <= cols; j += 8) {
+            const uint16x8_t cur1     = vld1q_u16(row1 + j);
+            const uint16x8_t next1    = vld1q_u16(row1 + j + 1);
+            const int32x4_t  cur2_lo  = vld1q_s32(row2 + j);
+            const int32x4_t  cur2_hi  = vld1q_s32(row2 + j + 4);
+            const int32x4_t  next2_lo = vld1q_s32(row2 + j + 1);
+            const int32x4_t  next2_hi = vld1q_s32(row2 + j + 5);
 
-        int32_t*  src2_ptr;
-        uint16_t* src1_ptr;
-        count = 0;
-        h     = height;
-        w     = width;
-        do {
-            dst1_ptr = dst1 + (count << 2) * dst_stride;
-            dst2_ptr = dst2 + (count << 2) * dst_stride;
-            src1_ptr = dst1 + (count << 2) * dst_stride;
-            src2_ptr = dst2 + (count << 2) * dst_stride;
-            w        = width;
+            vst1q_u16(row1 + j, vaddq_u16(vaddq_u16(vextq_u16(prev1, cur1, 7), cur1), next1));
+            vst1q_s32(row2 + j, vaddq_s32(vaddq_s32(vextq_s32(prev2, cur2_lo, 3), cur2_lo), next2_lo));
+            vst1q_s32(row2 + j + 4, vaddq_s32(vaddq_s32(vextq_s32(cur2_lo, cur2_hi, 3), cur2_hi), next2_hi));
+            prev1 = cur1;
+            prev2 = cur2_hi;
+        }
+        if (j < cols) {
+            // four columns are left
+            const uint16x4_t cur1  = vld1_u16(row1 + j);
+            const uint16x4_t next1 = vld1_u16(row1 + j + 1);
+            const int32x4_t  cur2  = vld1q_s32(row2 + j);
+            const int32x4_t  next2 = vld1q_s32(row2 + j + 1);
 
-            load_s16_4x4((int16_t*)src1_ptr, dst_stride, &d1, &d2, &d3, &d4);
-            transpose_s16_4x4d(&d1, &d2, &d3, &d4);
-            load_s32_4x4(src2_ptr, dst_stride, &r1, &r2, &r3, &r4);
-            transpose_s32_4x4(&r1, &r2, &r3, &r4);
-            src1_ptr += 4;
-            src2_ptr += 4;
-
-            q23  = vadd_s16(d2, d3);
-            q234 = vadd_s16(q23, d4);
-            q34  = vadd_s16(d3, d4);
-            dst1_ptr += 2;
-            r23  = vaddq_s32(r2, r3);
-            r234 = vaddq_s32(r23, r4);
-            r34  = vaddq_s32(r3, r4);
-            dst2_ptr += 2;
-
-            do {
-                load_s16_4x4((int16_t*)src1_ptr, dst_stride, &d5, &d6, &d7, &d8);
-                transpose_s16_4x4d(&d5, &d6, &d7, &d8);
-                load_s32_4x4(src2_ptr, dst_stride, &r5, &r6, &r7, &r8);
-                transpose_s32_4x4(&r5, &r6, &r7, &r8);
-                src1_ptr += 4;
-                src2_ptr += 4;
-
-                q345 = vadd_s16(d5, q34);
-                q56  = vadd_s16(d5, d6);
-                q456 = vadd_s16(d4, q56);
-                q567 = vadd_s16(d7, q56);
-                q78  = vadd_s16(d7, d8);
-                q678 = vadd_s16(d6, q78);
-                transpose_s16_4x4d(&q234, &q345, &q456, &q567);
-                store_s16_4x4((int16_t*)dst1_ptr, dst_stride, q234, q345, q456, q567);
-                dst1_ptr += 4;
-
-                d4   = d8;
-                q34  = q78;
-                q234 = q678;
-
-                r345 = vaddq_s32(r5, r34);
-                r56  = vaddq_s32(r5, r6);
-                r456 = vaddq_s32(r4, r56);
-                r567 = vaddq_s32(r7, r56);
-                r78  = vaddq_s32(r7, r8);
-                r678 = vaddq_s32(r6, r78);
-                transpose_s32_4x4(&r234, &r345, &r456, &r567);
-                store_s32_4x4(dst2_ptr, dst_stride, r234, r345, r456, r567);
-                dst2_ptr += 4;
-
-                r4   = r8;
-                r34  = r78;
-                r234 = r678;
-                w -= 4;
-            } while (w > 0);
-            h -= 4;
-            count++;
-        } while (h > 0);
+            vst1_u16(row1 + j, vadd_u16(vadd_u16(vext_u16(vget_high_u16(prev1), cur1, 3), cur1), next1));
+            vst1q_s32(row2 + j, vaddq_s32(vaddq_s32(vextq_s32(prev2, cur2, 3), cur2), next2));
+        }
     }
 }
 
