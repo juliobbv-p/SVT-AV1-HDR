@@ -881,7 +881,7 @@ static void hme_level_0(MeContext*           me_ctx, // ME context Ptr, used to 
     // intrinsic functions) is the same for search region width from 1 to 8
     sa_width           = (int16_t)((sa_width + 7) & ~0x07);
     int16_t pad_width  = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
-    int16_t pad_height = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
+    int16_t pad_height = pad_width;
 
     int16_t x_search_region_distance = sa_width * sr_w;
     int16_t y_search_region_distance = sa_height * sr_h;
@@ -1441,7 +1441,7 @@ static void prehme_core(MeContext* me_ctx, int16_t org_x, int16_t org_y, uint32_
     int32_t search_region_index;
 
     int16_t pad_width  = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
-    int16_t pad_height = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
+    int16_t pad_height = pad_width;
 
     int16_t search_area_width  = prehme_data->sa.width;
     int16_t search_area_height = prehme_data->sa.height;
@@ -1872,7 +1872,7 @@ static HmeRect hme_l1_window(int16_t org_x, int16_t org_y, const EbPictureBuffer
                              int16_t sa_height, int16_t hme_l0_sc_x, int16_t hme_l0_sc_y) {
     sa_width            = (int16_t)((sa_width + 7) & ~0x07);
     int16_t pad_width   = (int16_t)(ref->border) - 1;
-    int16_t pad_height  = (int16_t)(ref->border) - 1;
+    int16_t pad_height  = pad_width;
     int16_t sa_origin_x = -(sa_width >> 1) + hme_l0_sc_x;
     int16_t sa_origin_y = -(sa_height >> 1) + hme_l0_sc_y;
     if (((org_x + sa_origin_x) < -pad_width)) {
@@ -2541,8 +2541,7 @@ static void construct_me_candidate_array_mrp_off(PictureParentControlSet* pcs, M
     }
 }
 
-static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs, MeContext* ctx,
-                                                    uint32_t num_of_list_to_search, uint32_t sb_index) {
+static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs, MeContext* ctx, uint32_t sb_index) {
     // This function should only be called if there is one ref frame in list 0
     assert(ctx->num_of_ref_pic_to_search[0] == 1);
     assert(ctx->num_of_ref_pic_to_search[1] == 0);
@@ -2550,10 +2549,6 @@ static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs
 
     // Set whether the reference from each list is allowed
     uint8_t blk_do_ref = ctx->search_results[REF_LIST_0][0].do_ref;
-
-    if (num_of_list_to_search < 2 || !ctx->search_results[REF_LIST_1][0].do_ref) {
-        num_of_list_to_search = 1;
-    }
 
     // Set the count to 1 for all PUs using memset, which is faster than setting at the end of each loop.  The count will only need
     // to be updated if both reference frames are allowed.
@@ -2699,10 +2694,8 @@ static void construct_me_candidate_array(PictureParentControlSet* pcs, MeContext
                         me_cand_offset++;
                     }
                 }
-            }
 
-            // 3rd set of BIPRED cand: (BWD, ALT)
-            if (!pcs->scs->mrp_ctrls.only_l_bwd) {
+                // 3rd set of BIPRED cand: (BWD, ALT)
                 if (me_ctx->num_of_ref_pic_to_search[REF_LIST_1] == 3 && blk_do_ref[REF_LIST_1][0] &&
                     blk_do_ref[REF_LIST_1][2]) {
                     {
@@ -3039,7 +3032,7 @@ EbErrorType svt_aom_motion_estimation_b64(
         {
             if (me_ctx->num_of_ref_pic_to_search[REF_LIST_0] == 1 &&
                 me_ctx->num_of_ref_pic_to_search[REF_LIST_1] == 0) {
-                construct_me_candidate_array_single_ref(pcs, me_ctx, num_of_list_to_search, b64_index);
+                construct_me_candidate_array_single_ref(pcs, me_ctx, b64_index);
             } else if (me_ctx->num_of_ref_pic_to_search[REF_LIST_0] == 1 &&
                        me_ctx->num_of_ref_pic_to_search[REF_LIST_1] == 1) {
                 construct_me_candidate_array_mrp_off(pcs, me_ctx, num_of_list_to_search, b64_index);

@@ -83,6 +83,7 @@ void svt_aom_highbd_hadamard_8x8_sse4_1(const int16_t* src_diff, ptrdiff_t src_s
     u.v[4] = t4;
     u.v[5] = t5;
     u.v[6] = t6;
+    // cppcheck-suppress unreadVariable ; read through u.buffer
     u.v[7] = t7;
     // pass 2: identical to the C second pass (int32, stride 8), verbatim.
     for (int32_t idx = 0; idx < 8; ++idx) {

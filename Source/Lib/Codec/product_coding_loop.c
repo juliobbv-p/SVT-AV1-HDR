@@ -4837,8 +4837,6 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     txb_full_distortion_txt[DIST_SSD][DCT_DCT][DIST_CALC_PREDICTION] = 0;
     if (ssim_level > SSIM_LVL_0) {
         memset(txb_full_distortion_txt[DIST_SSIM], 0, sizeof(txb_full_distortion_txt[DIST_SSIM]));
-    }
-    if (ssim_level > SSIM_LVL_0) {
         assert(ctx->pd_pass == PD_PASS_1);
         assert(ctx->md_stage == MD_STAGE_3);
     }
@@ -8936,7 +8934,6 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     const uint32_t bheight_uv      = ctx->blk_geom->bheight_uv;
 
     //copy neigh recon data in blk_ptr
-    uint32_t             j;
     EbPictureBufferDesc* recon_ptr;
     uint32_t             rec_luma_offset;
     uint32_t             rec_cb_offset;
@@ -9018,7 +9015,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
         dst_ptr_bot_right_16bit = (uint16_t*)svt_aom_na_topright_ptr(
             ctx->luma_recon_na_16bit, blk_org_x, blk_org_y, bwidth);
         src_ptr_16bit = ((uint16_t*)recon_ptr->y_buffer) + rec_luma_offset + bwidth - 1;
-        for (j = 0; j < bheight; ++j) {
+        for (uint32_t j = 0; j < bheight; ++j) {
             *dst_ptr_bot_right_16bit = dst_ptr_top_left_16bit[j] = src_ptr_16bit[j * recon_ptr->y_stride];
             dst_ptr_bot_right_16bit -= 1;
         }
@@ -9037,7 +9034,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
         dst_ptr_bot_right_16bit = (uint16_t*)svt_aom_na_topright_ptr(
             ctx->cb_recon_na_16bit, blk_origin_x_uv, blk_origin_y_uv, bwidth_uv);
         src_ptr_16bit = ((uint16_t*)recon_ptr->u_buffer) + rec_cb_offset + bwidth_uv - 1;
-        for (j = 0; j < bheight_uv; ++j) {
+        for (uint32_t j = 0; j < bheight_uv; ++j) {
             *dst_ptr_bot_right_16bit = dst_ptr_top_left_16bit[j] = src_ptr_16bit[j * recon_ptr->u_stride];
             dst_ptr_bot_right_16bit -= 1;
         }
@@ -9056,7 +9053,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
         dst_ptr_bot_right_16bit = (uint16_t*)svt_aom_na_topright_ptr(
             ctx->cr_recon_na_16bit, blk_origin_x_uv, blk_origin_y_uv, bwidth_uv);
         src_ptr_16bit = ((uint16_t*)recon_ptr->v_buffer) + rec_cr_offset + bwidth_uv - 1;
-        for (j = 0; j < bheight_uv; ++j) {
+        for (uint32_t j = 0; j < bheight_uv; ++j) {
             *dst_ptr_bot_right_16bit = dst_ptr_top_left_16bit[j] = src_ptr_16bit[j * recon_ptr->v_stride];
             dst_ptr_bot_right_16bit -= 1;
         }

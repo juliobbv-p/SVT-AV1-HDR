@@ -1910,7 +1910,8 @@ void recode_loop_update_q(PictureParentControlSet* ppcs, bool* const loop, int* 
         *q = clamp(*q, *q_low, *q_high);
     }
 
-    *q    = clamp_qindex(scs, *q);
+    *q = clamp_qindex(scs, *q);
+    // cppcheck-suppress knownConditionTrueFalse ; *q is updated by the recode loop test above
     *loop = (*q != last_q);
     // Used for capped CRF. Update the active worse quality based on the final assigned qindex.
     // cppcheck claims that `*loop == 0` is always true here, but that's a false positive based on the assumption that

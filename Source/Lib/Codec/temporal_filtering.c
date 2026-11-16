@@ -2192,9 +2192,8 @@ static void tf_64x64_inter_prediction(PictureParentControlSet* pcs, MeContext* m
 
     // Perform final pass using the 1/8 MV
     // AV1 MVs are always in 1/8th pel precision.
-    BlockModeInfo block_mi = {.mv[0]              = {{me_ctx->tf_64x64_mv_x, me_ctx->tf_64x64_mv_y}},
-                              .ref_frame[0]       = LAST_FRAME,
-                              .ref_frame[1]       = NONE_FRAME,
+    BlockModeInfo block_mi = {.mv                 = {{{me_ctx->tf_64x64_mv_x, me_ctx->tf_64x64_mv_y}}},
+                              .ref_frame          = {LAST_FRAME, NONE_FRAME},
                               .is_interintra_used = 0,
                               .motion_mode        = SIMPLE_TRANSLATION,
                               .interp_filters     = (uint32_t)interp_filters,

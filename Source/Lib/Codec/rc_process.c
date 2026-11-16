@@ -901,7 +901,6 @@ EbErrorType svt_aom_rate_control_kernel_iter(void* context) {
 
     case RC_PACKETIZATION_FEEDBACK_RESULT:
         ppcs = (PictureParentControlSet*)rc_tasks->pcs_wrapper->object_ptr;
-        scs  = ppcs->scs;
 
         rc_process_packetization_feedback(ppcs, rate_control_tasks_wrapper_ptr);
 
@@ -910,9 +909,6 @@ EbErrorType svt_aom_rate_control_kernel_iter(void* context) {
         break;
 
     default:
-        pcs = (PictureControlSet*)rc_tasks->pcs_wrapper->object_ptr;
-        scs = pcs->scs;
-
         break;
     }
     return EB_ErrorNone;

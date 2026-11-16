@@ -418,7 +418,7 @@ static void early_hme_b64(uint8_t* sixteenth_b64_buffer, uint32_t sixteenth_b64_
     // intrinsic functions) is the same for search region width from 1 to 8
     sa_width           = (int16_t)((sa_width + 7) & ~0x07);
     int16_t pad_width  = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
-    int16_t pad_height = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
+    int16_t pad_height = pad_width;
 
     int16_t sa_origin_x = -(int16_t)(sa_width >> 1);
     int16_t sa_origin_y = -(int16_t)(sa_height >> 1);
@@ -3872,7 +3872,6 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
         //get central
         pcs->temp_filt_pcs_list[num_past_pics] = pcs;
 
-        int actual_past_pics   = num_past_pics;
         int actual_future_pics = 0;
         int pic_i;
         //search reord-queue to get the future pictures
@@ -3910,17 +3909,8 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
                 }
             }
         }
-        pcs->past_altref_nframes   = actual_past_pics;
+        pcs->past_altref_nframes   = num_past_pics;
         pcs->future_altref_nframes = actual_future_pics;
-
-        // adjust the temporal filtering pcs buffer to remove unused past pictures
-        if (actual_past_pics != num_past_pics) {
-            pic_i = 0;
-            while (pcs->temp_filt_pcs_list[pic_i] != NULL) {
-                pcs->temp_filt_pcs_list[pic_i] = pcs->temp_filt_pcs_list[pic_i + num_past_pics - actual_past_pics];
-                pic_i++;
-            }
-        }
     } else {
         if (svt_aom_is_delayed_intra(pcs)) {
             //initilize list
@@ -4041,7 +4031,6 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
                         pd_ctx->mg_pictures_array[idx]->tf_active_region_present = active_region_cnt > 0;
                     }
                 }
-                int actual_past_pics   = num_past_pics;
                 int actual_future_pics = 0;
                 int pic_i;
                 //search reord-queue to get the future pictures
@@ -4086,18 +4075,8 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
                         }
                     }
                 }
-                pcs->past_altref_nframes   = actual_past_pics;
+                pcs->past_altref_nframes   = num_past_pics;
                 pcs->future_altref_nframes = actual_future_pics;
-
-                // adjust the temporal filtering pcs buffer to remove unused past pictures
-                if (actual_past_pics != num_past_pics) {
-                    pic_i = 0;
-                    while (pcs->temp_filt_pcs_list[pic_i] != NULL) {
-                        pcs->temp_filt_pcs_list[pic_i] =
-                            pcs->temp_filt_pcs_list[pic_i + num_past_pics - actual_past_pics];
-                        pic_i++;
-                    }
-                }
             }
         }
 
@@ -5433,8 +5412,6 @@ EbErrorType svt_aom_picture_decision_kernel_iter(void* context) {
         pcs->tpl_group_size                 = 0;
         if (pcs->picture_number == 0) {
             ctx->prev_delayed_intra = NULL;
-        }
-        if (pcs->picture_number == 0) {
             ctx->sframe_hier_lvls = scs->static_config.hierarchical_levels;
         }
 
