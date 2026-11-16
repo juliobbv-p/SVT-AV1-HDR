@@ -10176,6 +10176,11 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
          (ctx->skip_sub_depth_ctrls.enabled && ctx->blk_geom->sq_size <= ctx->skip_sub_depth_ctrls.max_size &&
           mds->split_flag &&
           (ctx->blk_geom->bsize >= BLOCK_16X16 || (!ctx->disallow_4x4 && ctx->blk_geom->bsize == BLOCK_8X8))))) {
+        // The distortions are measured on the recon, which has to be generated for this block if nothing else needs it
+        if (!perform_md_recon) {
+            av1_perform_inverse_transform_recon(
+                pcs, ctx, cand_bf, ctx->blk_geom, ctx->spatial_sse_recon_cand == cand_bf);
+        }
         svt_aom_calc_src_to_recon_dist_per_quadrant(
             pcs, ctx, input_pic, loc.input_origin_index, loc.input_cb_origin_in_index, cand_bf, 0, 0);
     }
