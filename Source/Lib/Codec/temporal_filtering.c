@@ -1565,6 +1565,7 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
                              stride_src[PLANE_Y],
                              bs,
                              bs);
+        // cppcheck-suppress autoVariables ; reset to NULL before returning
         tf_sp_param->sv = &sv;
     }
     // Check centre position
