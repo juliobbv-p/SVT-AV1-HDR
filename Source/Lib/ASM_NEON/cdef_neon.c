@@ -354,8 +354,8 @@ uint64_t svt_search_one_dual_neon(int* lev0, int* lev1, int nb_strengths, uint64
             // Loop over the additionally searched chroma strengths
             if (tot_mse[j * stride + k] < best_tot_mse) {
                 best_tot_mse = tot_mse[j * stride + k];
-                best_id0     = j; // index for the best luma strength
-                best_id1     = k; // index for the best chroma strength
+                best_id0     = (int32_t)j; // index for the best luma strength
+                best_id1     = (int32_t)k; // index for the best chroma strength
             }
         } while (++k < end_idx);
     } while (++j < end_idx);

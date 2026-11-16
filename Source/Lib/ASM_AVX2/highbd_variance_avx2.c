@@ -178,5 +178,5 @@ uint32_t svt_aom_variance_highbd_avx2(const uint16_t* a, int a_stride, const uin
         break;
     }
 
-    return *sse - ((int64_t)sum * sum) / (w * h);
+    return (uint32_t)(*sse - ((int64_t)sum * sum) / (w * h));
 }

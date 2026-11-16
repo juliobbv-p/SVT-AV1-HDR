@@ -166,7 +166,7 @@ static uint32_t get_num_processors() {
 #ifdef _WIN32
     return GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
 #else
-    return sysconf(_SC_NPROCESSORS_ONLN);
+    return (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 }
 

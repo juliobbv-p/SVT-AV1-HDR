@@ -1045,7 +1045,7 @@ void process_output_statistics_buffer(EbBufferHeaderType* header_ptr, EbConfig* 
 void process_output_stream_buffer(EncChannel* channel, EncApp* enc_app, int32_t* frame_count) {
     EbConfig*            app_cfg    = channel->app_cfg;
     AppPortActiveType*   port_state = &app_cfg->output_stream_port_active;
-    EbBufferHeaderType*  header_ptr;
+    EbBufferHeaderType*  header_ptr       = NULL;
     EbComponentType*     component_handle = app_cfg->svt_encoder_handle;
     AppExitConditionType return_value     = APP_ExitConditionNone;
     // Per channel variables

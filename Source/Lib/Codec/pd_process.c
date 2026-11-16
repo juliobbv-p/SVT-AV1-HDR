@@ -1012,8 +1012,8 @@ static void prune_sframe_refs(PictureDecisionContext* ctx, PictureParentControlS
         }
 #endif // DEBUG_SFRAME
         // check every reference frames, if it's in ref_list0 and direct to S-Frame, remove it from array
-        uint32_t sframe_poc = ctx->sframe_poc %
-            ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits));
+        uint32_t sframe_poc = (uint32_t)(ctx->sframe_poc %
+                                         ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits)));
         uint8_t ref_idx = 0;
         while (ref_idx < *tot_ref_frames) {
             MvReferenceFrame rf[2];
@@ -4547,8 +4547,8 @@ static void update_sframe_ref_order_hint(PictureParentControlSet* ppcs, PictureD
         memcpy(ppcs->dpb_order_hint, pd_ctx->ref_order_hint, sizeof(ppcs->dpb_order_hint));
     }
     if (ppcs->av1_ref_signal.refresh_frame_mask != 0) {
-        const uint32_t cur_order_hint = ppcs->picture_number %
-            ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits));
+        const uint32_t cur_order_hint =
+            (uint32_t)(ppcs->picture_number % ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits)));
         for (int32_t i = 0; i < REF_FRAMES; i++) {
             if ((ppcs->av1_ref_signal.refresh_frame_mask >> i) & 1) {
                 pd_ctx->ref_order_hint[i] = cur_order_hint;
@@ -4943,9 +4943,10 @@ static void init_pic_settings(SequenceControlSet* scs, PictureParentControlSet* 
     const OrderHintInfo* const order_hint_info = &pcs->scs->seq_header.order_hint_info;
     uint32_t*                  ref_order_hint  = pcs->ref_order_hint;
     for (uint8_t i = 0; i < INTER_REFS_PER_FRAME; ++i) {
-        ref_order_hint[i] = pcs->av1_ref_signal.ref_poc_array[i] % (uint64_t)(1 << (order_hint_info->order_hint_bits));
+        ref_order_hint[i] = (uint32_t)(pcs->av1_ref_signal.ref_poc_array[i] %
+                                       (uint64_t)(1 << (order_hint_info->order_hint_bits)));
     }
-    pcs->cur_order_hint = pcs->picture_number % (uint64_t)(1 << (order_hint_info->order_hint_bits));
+    pcs->cur_order_hint = (uint32_t)(pcs->picture_number % (uint64_t)(1 << (order_hint_info->order_hint_bits)));
 
     set_ref_frame_sign_bias(scs, pcs);
 

@@ -323,7 +323,7 @@ static inline uint8_t cdef_dir_from_lines_neon(int16x8_t lines[8], int32_t* var)
     uint64_t      a   = vget_lane_u64(vreinterpret_u64_u8(tbl), 0);
     unsigned long id;
     svt_clzll(id, a);
-    int best_dir = id >> 3;
+    int best_dir = (int)(id >> 3);
 
     // Difference between the optimal variance and the variance along the
     // orthogonal direction. Again, the sum(x^2) terms cancel out.

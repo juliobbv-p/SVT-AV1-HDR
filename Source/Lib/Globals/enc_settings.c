@@ -1409,7 +1409,7 @@ static EbErrorType str_to_int(const char* nptr, int32_t* out, char** nextptr) {
     char*   endptr;
     int32_t val;
 
-    val = strtol(nptr, &endptr, 0);
+    val = (int32_t)strtol(nptr, &endptr, 0);
 
     if (endptr == nptr || (!nextptr && *endptr)) {
         return EB_ErrorBadParameter;
@@ -1451,7 +1451,7 @@ static EbErrorType str_to_uint(const char* nptr, uint32_t* out, char** nextptr) 
         return EB_ErrorBadParameter;
     }
 
-    val = strtoul(nptr, &endptr, 0);
+    val = (uint32_t)strtoul(nptr, &endptr, 0);
 
     if (endptr == nptr || (!nextptr && *endptr)) {
         return EB_ErrorBadParameter;
@@ -1468,7 +1468,7 @@ static EbErrorType str_to_int8(const char* nptr, int8_t* out, char** nextptr) {
     char*   endptr;
     int32_t val;
 
-    val = strtol(nptr, &endptr, 0);
+    val = (int32_t)strtol(nptr, &endptr, 0);
 
     if (endptr == nptr || (!nextptr && *endptr)) {
         return EB_ErrorBadParameter;
@@ -1494,7 +1494,7 @@ static EbErrorType str_to_uint8(const char* nptr, uint8_t* out, char** nextptr) 
         return EB_ErrorBadParameter;
     }
 
-    val = strtoul(nptr, &endptr, 0);
+    val = (uint32_t)strtoul(nptr, &endptr, 0);
 
     if (endptr == nptr || (!nextptr && *endptr)) {
         return EB_ErrorBadParameter;
@@ -1667,11 +1667,11 @@ static EbErrorType str_to_keyint(const char* nptr, int32_t* out, bool* multi) {
     case 's':
         // signal we need to multiply keyint * frame_rate
         *multi = true;
-        *out   = keyint;
+        *out   = (int32_t)keyint;
         break;
     case '\0':
         *multi = false;
-        *out   = keyint < 0 ? keyint : keyint - 1;
+        *out   = (int32_t)(keyint < 0 ? keyint : keyint - 1);
         break;
     default:
         // else leave as untouched, we have an invalid keyint

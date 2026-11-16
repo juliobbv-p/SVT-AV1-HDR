@@ -656,7 +656,7 @@ static inline uint32x4_t get_mv_cost_vector(const svt_mv_cost_param* mv_cost_par
 static inline void update_best_cost_u32(uint32x4_t cost4, uint32_t* best_cost, int16_t* x_search_center,
                                         int16_t* y_search_center, int16_t x_search_index, int16_t y_search_index,
                                         int16_t mvx, int16_t mvy) {
-    uint64_t temp_cost;
+    uint32_t temp_cost;
 
     /* Find the minimum SAD value out of the 4 search spaces. */
     temp_cost = vminvq_u32(cost4);

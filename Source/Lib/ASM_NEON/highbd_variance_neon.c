@@ -193,5 +193,5 @@ uint32_t svt_aom_variance_highbd_neon(const uint16_t* a, int a_stride, const uin
 
     const int sad = vaddvq_s32(sum_s32);
     *sse          = vaddvq_u32(vaddq_u32(vreinterpretq_u32_s32(sse_s32[0]), vreinterpretq_u32_s32(sse_s32[1])));
-    return *sse - ((int64_t)sad * sad) / (w * h);
+    return (uint32_t)(*sse - ((int64_t)sad * sad) / (w * h));
 }

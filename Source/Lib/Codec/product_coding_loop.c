@@ -3129,8 +3129,9 @@ static void perform_md_reference_pruning(PictureControlSet* pcs, ModeDecisionCon
         unsigned num_of_cand_to_sort = MAX_NUM_OF_REF_PIC_LIST * REF_LIST_MAX_DEPTH;
         uint32_t dev_to_the_best[MAX_NUM_OF_REF_PIC_LIST * REF_LIST_MAX_DEPTH] = {0};
         for (unsigned i = 0; i < num_of_cand_to_sort - 1; ++i) {
-            dev_to_the_best[i] = (((int64_t)MAX(early_inter_distortion_array[i], 1) - MAX(min_dist, 1)) * 100) /
-                MAX(min_dist, 1);
+            dev_to_the_best[i] = (uint32_t)((((int64_t)MAX(early_inter_distortion_array[i], 1) - MAX(min_dist, 1)) *
+                                             100) /
+                                            MAX(min_dist, 1));
         }
         for (unsigned li = 0; li < MAX_NUM_OF_REF_PIC_LIST; li++) {
             for (unsigned ri = 0; ri < REF_LIST_MAX_DEPTH; ri++) {
@@ -3140,7 +3141,7 @@ static void perform_md_reference_pruning(PictureControlSet* pcs, ModeDecisionCon
                         ? 0
                         : (ctx->ref_pruning_ctrls.max_dev_to_best[gi] == (uint32_t)~0)
                         ? (uint32_t)~0
-                        : MAX(0, ((int64_t)ctx->ref_pruning_ctrls.max_dev_to_best[gi] - (int64_t)offset));
+                        : (uint32_t)MAX(0, ((int64_t)ctx->ref_pruning_ctrls.max_dev_to_best[gi] - (int64_t)offset));
 
                     if (dev_to_the_best[li * REF_LIST_MAX_DEPTH + ri] < pruning_th) {
                         ctx->ref_filtering_res[gi][li][ri].do_ref = 1;
@@ -10134,8 +10135,8 @@ static bool update_skip_nsq_based_on_sq_recon_dist(ModeDecisionContext* ctx, con
                                                MIN(dist_q0, dist_q1));
         const uint32_t quad_dev_b = (uint32_t)((ABS((int64_t)dist_q2 - (int64_t)dist_q3) * 100) /
                                                MIN(dist_q2, dist_q3));
-        max_part0_to_part1_dev    = max_part0_to_part1_dev +
-            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_t, quad_dev_b)) / 100);
+        max_part0_to_part1_dev = (uint32_t)(max_part0_to_part1_dev +
+                                            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_t, quad_dev_b)) / 100));
 
         max_part0_to_part1_dev = (uint32_t)((dist_cost_ratio <= min_ratio) ? 0
                                                 : (dist_cost_ratio <= max_ratio)
@@ -10171,8 +10172,8 @@ static bool update_skip_nsq_based_on_sq_recon_dist(ModeDecisionContext* ctx, con
                                                MIN(dist_q0, dist_q2));
         const uint32_t quad_dev_r = (uint32_t)((ABS((int64_t)dist_q1 - (int64_t)dist_q3) * 100) /
                                                MIN(dist_q1, dist_q3));
-        max_part0_to_part1_dev    = max_part0_to_part1_dev +
-            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_l, quad_dev_r)) / 100);
+        max_part0_to_part1_dev = (uint32_t)(max_part0_to_part1_dev +
+                                            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_l, quad_dev_r)) / 100));
 
         max_part0_to_part1_dev = (uint32_t)((dist_cost_ratio <= min_ratio) ? 0
                                                 : (dist_cost_ratio <= max_ratio)

@@ -244,7 +244,7 @@ static EbErrorType str_to_int(const char* token, const char* nptr, int32_t* out)
     char*   endptr;
     int32_t val;
 
-    val = strtol(nptr, &endptr, 0);
+    val = (int32_t)strtol(nptr, &endptr, 0);
 
     if (endptr == nptr || *endptr) {
         return validate_error(EB_ErrorBadParameter, token, nptr);
@@ -267,7 +267,7 @@ static EbErrorType str_to_uint(const char* token, const char* nptr, uint32_t* ou
         return EB_ErrorBadParameter;
     }
 
-    val = strtoul(nptr, &endptr, 0);
+    val = (uint32_t)strtoul(nptr, &endptr, 0);
 
     if (endptr == nptr || *endptr) {
         return validate_error(EB_ErrorBadParameter, token, nptr);
@@ -2056,7 +2056,7 @@ uint32_t get_passes(int32_t argc, char* const argv[], EncPass enc_pass[MAX_ENC_P
         }
     }
     if (find_token(argc, argv, PRESET_TOKEN, config_string) == 0) {
-        enc_mode = strtol(config_string, NULL, 0);
+        enc_mode = (int)strtol(config_string, NULL, 0);
         if (enc_mode > MAX_ENC_PRESET || enc_mode < -1) {
             fprintf(stderr, "Error: EncoderMode must be in the range of [-1-%d]\n", MAX_ENC_PRESET);
             return 0;

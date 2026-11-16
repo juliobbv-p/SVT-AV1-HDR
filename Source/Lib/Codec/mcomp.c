@@ -458,8 +458,8 @@ int svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, const s
         if (ms_params->skip_diag_refinement && iter < QUARTER_PEL) {
             org_error = MIN(org_error, besterr);
         }
-        int32_t deviation = (((int64_t)MAX(besterr, 1) - (int64_t)MAX(prev_besterr, 1)) * 100) /
-            (int64_t)MAX(prev_besterr, 1);
+        int32_t deviation = (int32_t)((((int64_t)MAX(besterr, 1) - (int64_t)MAX(prev_besterr, 1)) * 100) /
+                                      (int64_t)MAX(prev_besterr, 1));
         if (deviation >= ms_params->round_dev_th) {
             return besterr;
         }
