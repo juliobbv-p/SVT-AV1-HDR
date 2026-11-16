@@ -5377,7 +5377,7 @@ void update_tx_cand_bf(ModeDecisionCandidateBuffer* cand_bf, ModeDecisionContext
         memcpy(cand_bf->eob.y, ctx->cand_bf_tx_depth_1->eob.y, sizeof(uint16_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
         memcpy(cand_bf->quant_dc.y,
                ctx->cand_bf_tx_depth_1->quant_dc.y,
-               sizeof(int32_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
+               sizeof(uint8_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
 
         cand_bf->y_has_coeff = ctx->cand_bf_tx_depth_1->y_has_coeff;
         // Copy depth 1 pred
@@ -5412,7 +5412,7 @@ void update_tx_cand_bf(ModeDecisionCandidateBuffer* cand_bf, ModeDecisionContext
         memcpy(cand_bf->eob.y, ctx->cand_bf_tx_depth_2->eob.y, sizeof(uint16_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
         memcpy(cand_bf->quant_dc.y,
                ctx->cand_bf_tx_depth_2->quant_dc.y,
-               sizeof(int32_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
+               sizeof(uint8_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
 
         cand_bf->y_has_coeff = ctx->cand_bf_tx_depth_2->y_has_coeff;
         // Copy depth 2 pred
