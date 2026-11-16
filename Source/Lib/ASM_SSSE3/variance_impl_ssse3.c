@@ -43,6 +43,7 @@ DECL(16);
                                                              int            dst_stride,                   \
                                                              unsigned int*  sse_ptr) {                    \
         /*Avoid overflow in helper by capping height.*/                                                   \
+        /* cppcheck-suppress duplicateValueTernary ; h may equal 64 */                                    \
         const int    hf  = AOMMIN(h, 64);                                                                 \
         const int    wf2 = AOMMIN(wf, 128);                                                               \
         unsigned int sse = 0;                                                                             \
@@ -67,13 +68,10 @@ DECL(16);
     }
 
 FN(128, 128, 16, 7, 7, (int64_t), (int64_t));
-// cppcheck-suppress duplicateValueTernary
 FN(128, 64, 16, 7, 6, (int64_t), (int64_t));
 FN(64, 128, 16, 6, 7, (int64_t), (int64_t));
-// cppcheck-suppress duplicateValueTernary
 FN(64, 64, 16, 6, 6, (int64_t), (int64_t));
 FN(64, 32, 16, 6, 5, (int64_t), (int64_t));
-// cppcheck-suppress duplicateValueTernary
 FN(32, 64, 16, 5, 6, (int64_t), (int64_t));
 FN(32, 32, 16, 5, 5, (int64_t), (int64_t));
 FN(32, 16, 16, 5, 4, (int64_t), (int64_t));
@@ -89,7 +87,6 @@ FN(4, 16, 4, 2, 4, (int32_t), (int32_t));
 FN(16, 4, 16, 4, 2, (int32_t), (int32_t));
 FN(8, 32, 8, 3, 5, (uint32_t), (int64_t));
 FN(32, 8, 16, 5, 3, (uint32_t), (int64_t));
-// cppcheck-suppress duplicateValueTernary
 FN(16, 64, 16, 4, 6, (int64_t), (int64_t));
 FN(64, 16, 16, 6, 4, (int64_t), (int64_t));
 

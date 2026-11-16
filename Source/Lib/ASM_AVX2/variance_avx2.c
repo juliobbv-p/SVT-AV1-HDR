@@ -290,6 +290,7 @@ unsigned int svt_aom_sub_pixel_variance16xh_avx2(const uint8_t* src, int src_str
                                                             int            dst_stride,        \
                                                             unsigned int*  sse_ptr) {         \
         /*Avoid overflow in helper by capping height.*/                                       \
+        /* cppcheck-suppress duplicateValueTernary ; h may equal 64 */                        \
         const int    hf  = AOMMIN(h, 64);                                                     \
         const int    wf2 = AOMMIN(wf, 128);                                                   \
         unsigned int sse = 0;                                                                 \
@@ -314,17 +315,13 @@ unsigned int svt_aom_sub_pixel_variance16xh_avx2(const uint8_t* src, int src_str
     }
 
 AOM_SUB_PIXEL_VAR_AVX2(128, 128, 32, 7, 7);
-// cppcheck-suppress duplicateValueTernary
 AOM_SUB_PIXEL_VAR_AVX2(128, 64, 32, 7, 6);
 AOM_SUB_PIXEL_VAR_AVX2(64, 128, 32, 6, 7);
-// cppcheck-suppress duplicateValueTernary
 AOM_SUB_PIXEL_VAR_AVX2(64, 64, 32, 6, 6);
 AOM_SUB_PIXEL_VAR_AVX2(64, 32, 32, 6, 5);
-// cppcheck-suppress duplicateValueTernary
 AOM_SUB_PIXEL_VAR_AVX2(32, 64, 32, 5, 6);
 AOM_SUB_PIXEL_VAR_AVX2(32, 32, 32, 5, 5);
 AOM_SUB_PIXEL_VAR_AVX2(32, 16, 32, 5, 4);
-// cppcheck-suppress duplicateValueTernary
 AOM_SUB_PIXEL_VAR_AVX2(16, 64, 16, 4, 6);
 AOM_SUB_PIXEL_VAR_AVX2(16, 32, 16, 4, 5);
 AOM_SUB_PIXEL_VAR_AVX2(16, 16, 16, 4, 4);
