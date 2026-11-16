@@ -446,7 +446,7 @@ namespace svt_av1_e2e_tools {
 void SequenceHeaderParser::input_obu_data(const uint8_t *obu_data,
                                           const uint32_t size,
                                           RefDecoder::StreamInfo *stream_info) {
-    SeqHeader seg_header;
+    SeqHeader seg_header{};
     seg_header.seq_force_integer_mv = SELECT_INTEGER_MV;
     seg_header.order_hint_info.enable_ref_frame_mvs = 0;
     seg_header.order_hint_info.enable_jnt_comp = 0;
