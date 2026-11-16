@@ -1014,7 +1014,7 @@ static void prune_sframe_refs(PictureDecisionContext* ctx, PictureParentControlS
         // check every reference frames, if it's in ref_list0 and direct to S-Frame, remove it from array
         uint32_t sframe_poc = (uint32_t)(ctx->sframe_poc %
                                          ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits)));
-        uint8_t ref_idx = 0;
+        uint8_t  ref_idx    = 0;
         while (ref_idx < *tot_ref_frames) {
             MvReferenceFrame rf[2];
             av1_set_ref_frame(rf, ref_frame_arr[ref_idx]);
@@ -5412,7 +5412,7 @@ EbErrorType svt_aom_picture_decision_kernel_iter(void* context) {
         pcs->tpl_group_size                 = 0;
         if (pcs->picture_number == 0) {
             ctx->prev_delayed_intra = NULL;
-            ctx->sframe_hier_lvls = scs->static_config.hierarchical_levels;
+            ctx->sframe_hier_lvls   = scs->static_config.hierarchical_levels;
         }
 
         release_prev_picture_from_reorder_queue(enc_ctx);

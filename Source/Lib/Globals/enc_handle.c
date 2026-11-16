@@ -5446,7 +5446,7 @@ EbErrorType svt_input_buffer_header_update(EbBufferHeaderType* input_buffer, Seq
 **************************************/
 EbErrorType svt_input_y8b_update(EbBufferHeaderType* input_buffer, SequenceControlSet* scs) {
     EbPictureBufferDescInitData input_pic_buf_desc_init_data;
-    EbSvtAv1EncConfiguration*   config   = &scs->static_config;
+    EbSvtAv1EncConfiguration*   config = &scs->static_config;
 
     input_pic_buf_desc_init_data.max_width = !(scs->max_input_luma_width % 8)
         ? scs->max_input_luma_width
@@ -6149,7 +6149,7 @@ static EbErrorType allocate_frame_buffer(SequenceControlSet* scs, EbBufferHeader
 static EbErrorType allocate_y8b_frame_buffer(SequenceControlSet* scs, EbBufferHeaderType* input_buffer) {
     EbErrorType                 return_error = EB_ErrorNone;
     EbPictureBufferDescInitData input_pic_buf_desc_init_data;
-    EbSvtAv1EncConfiguration*   config   = &scs->static_config;
+    EbSvtAv1EncConfiguration*   config = &scs->static_config;
 
     input_pic_buf_desc_init_data.max_width = !(scs->max_input_luma_width % 8)
         ? scs->max_input_luma_width
