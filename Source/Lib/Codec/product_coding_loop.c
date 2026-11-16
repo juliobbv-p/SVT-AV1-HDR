@@ -9566,15 +9566,13 @@ static void md_encode_block_light_pd1(PictureControlSet* pcs, ModeDecisionContex
         ctx->use_tx_shortcuts_mds3        = (100 * best_md_stage_dist) <
             (ctx->lpd1_tx_ctrls.use_mds3_shortcuts_th * th_normalizer);
     }
-    // For 10bit content, when recon is not needed, hbd_md can stay =0,
-    // and the 8bit prediction is used to produce the residual (with 8bit source).
-    // When recon is needed, the prediction must be re-done in 10bit,
-    // and the residual will be generated with the 10bit pred and 10bit source
+    // For 10bit content, when bypassing EncDec, the coefficients generated at MDS3 are the ones written to the
+    // bitstream. The decoder dequantizes them with the 10bit quantizer, which is not 4x the 8bit one (the two are
+    // close to equal at low qindex), so the final residual can't come from the 8bit prediction and 8bit source.
+    // The prediction is re-done in 10bit, and the residual is generated with the 10bit pred and 10bit source,
+    // whether or not the recon is needed.
 
-    // Using the 8bit residual for the TX will cause different streams compared to using the 10bit residual.
-    // To generate the same streams, compute the 10bit prediction before computing the recon
-
-    if (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) > EB_EIGHT_BIT && ctx->bypass_encdec && perform_md_recon) {
+    if (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) > EB_EIGHT_BIT && ctx->bypass_encdec) {
         ctx->hbd_md = 2;
 
         // Update input pic and offsets
@@ -10134,16 +10132,14 @@ static void md_encode_block(PictureControlSet* pcs, ModeDecisionContext* ctx, co
     const uint8_t org_hbd          = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md);
     const uint8_t perform_md_recon = svt_aom_do_md_recon(pcs->ppcs, ctx);
 
-    // For 10bit content, when recon is not needed, hbd_md can stay =0,
-    // and the 8bit prediction is used to produce the residual (with 8bit source).
-    // When recon is needed, the prediction must be re-done in 10bit,
-    // and the residual will be generated with the 10bit pred and 10bit source
-
-    // Using the 8bit residual for the TX will cause different streams compared to using the 10bit residual.
-    // To generate the same streams, compute the 10bit prediction before computing the recon
+    // For 10bit content, when bypassing EncDec, the coefficients generated at MDS3 are the ones written to the
+    // bitstream. The decoder dequantizes them with the 10bit quantizer, which is not 4x the 8bit one (the two are
+    // close to equal at low qindex), so the final residual can't come from the 8bit prediction and 8bit source.
+    // The prediction is re-done in 10bit, and the residual is generated with the 10bit pred and 10bit source,
+    // whether or not the recon is needed.
 
     if (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) > EB_EIGHT_BIT && ctx->bypass_encdec &&
-        !SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) && ctx->pd_pass == PD_PASS_1 && perform_md_recon) {
+        !SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) && ctx->pd_pass == PD_PASS_1) {
         ctx->hbd_md             = 2;
         ctx->need_hbd_comp_mds3 = 1;
         ctx->scale_palette      = 1;
@@ -10215,11 +10211,10 @@ static bool update_skip_nsq_based_on_split_rate(PictureControlSet* pcs, ModeDeci
     const BlkStruct* sq_blk_ptr = pc_tree->block_data[PART_N][0];
     // if hbd_md is 0, we may still use 10bit lambda to generate final costs if we are bypassing encdec for 10bit content.
     const bool     used_10bit_at_mds3 = (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) > EB_EIGHT_BIT &&
-                                         ctx->bypass_encdec && ctx->pd_pass == PD_PASS_1 &&
-                                         svt_aom_do_md_recon(pcs->ppcs, ctx));
+                                     ctx->bypass_encdec && ctx->pd_pass == PD_PASS_1);
     const uint32_t full_lambda        = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) || used_10bit_at_mds3
-        ? ctx->full_sb_lambda_md[EB_10_BIT_MD]
-        : ctx->full_sb_lambda_md[EB_8_BIT_MD];
+               ? ctx->full_sb_lambda_md[EB_10_BIT_MD]
+               : ctx->full_sb_lambda_md[EB_8_BIT_MD];
     uint32_t       nsq_split_cost_th  = ctx->nsq_search_ctrls.nsq_split_cost_th;
     // Get the rate cost of splitting into the current NSQ shape.
     // If the cost of the split rate is significant, then the shape is unlikely to be selected.
@@ -11285,19 +11280,18 @@ static bool test_split_partition(SequenceControlSet* scs, PictureControlSet* pcs
     }
     // if hbd_md is 0, we may still use 10bit lambda to generate final costs if we are bypassing encdec for 10bit content.
     const bool     used_10bit_at_mds3 = (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) > EB_EIGHT_BIT &&
-                                         ctx->bypass_encdec && ctx->pd_pass == PD_PASS_1 &&
-                                         svt_aom_do_md_recon(pcs->ppcs, ctx));
+                                     ctx->bypass_encdec && ctx->pd_pass == PD_PASS_1);
     const uint32_t full_lambda        = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) || used_10bit_at_mds3
-        ? ctx->full_sb_lambda_md[EB_10_BIT_MD]
-        : ctx->full_sb_lambda_md[EB_8_BIT_MD];
+               ? ctx->full_sb_lambda_md[EB_10_BIT_MD]
+               : ctx->full_sb_lambda_md[EB_8_BIT_MD];
     int64_t        above_split_rate   = svt_aom_partition_rate_cost(pcs->ppcs,
-                                                                    pc_tree->bsize,
-                                                                    mi_row,
-                                                                    mi_col,
-                                                                    ctx->md_rate_est_ctx,
-                                                                    PARTITION_SPLIT,
-                                                                    pc_tree->left_part_ctx,
-                                                                    pc_tree->above_part_ctx);
+                                                           pc_tree->bsize,
+                                                           mi_row,
+                                                           mi_col,
+                                                           ctx->md_rate_est_ctx,
+                                                           PARTITION_SPLIT,
+                                                           pc_tree->left_part_ctx,
+                                                           pc_tree->above_part_ctx);
 
     // If not using accurate partition rate, bias against splitting by increasing the rate of SPLIT partition
     if (!pcs->ppcs->use_accurate_part_ctx) {
@@ -11393,11 +11387,10 @@ static bool test_depth(SequenceControlSet* scs, PictureControlSet* pcs, ModeDeci
 
     // if hbd_md is 0, we may still use 10bit lambda to generate final costs if we are bypassing encdec for 10bit content.
     const bool     used_10bit_at_mds3 = (SVT_EFFECTIVE_BIT_DEPTH(ctx->encoder_bit_depth) > EB_EIGHT_BIT &&
-                                         ctx->bypass_encdec && ctx->pd_pass == PD_PASS_1 &&
-                                         svt_aom_do_md_recon(pcs->ppcs, ctx));
+                                     ctx->bypass_encdec && ctx->pd_pass == PD_PASS_1);
     const uint32_t full_lambda        = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) || used_10bit_at_mds3
-        ? ctx->full_sb_lambda_md[EB_10_BIT_MD]
-        : ctx->full_sb_lambda_md[EB_8_BIT_MD];
+               ? ctx->full_sb_lambda_md[EB_10_BIT_MD]
+               : ctx->full_sb_lambda_md[EB_8_BIT_MD];
     // Loop over all shapes set to be tested at the current depth
     for (uint32_t shape_idx = 0; shape_idx < mds->tot_shapes; shape_idx++) {
         const Part shape           = mds->shapes[shape_idx];
