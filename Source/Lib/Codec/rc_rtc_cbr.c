@@ -21,6 +21,11 @@
 #define RCF_FAST_CONVERGENCE_FRAMES 30
 #define RCF_FAST_CONVERGENCE_MIN_GAIN 0.7
 
+// The top qindex steps below worst_quality are kept for buffer overflow: inter frames may use them only
+// while the buffer is above this share of its maximum.
+#define OVERFLOW_QINDEX_HEADROOM 8
+#define OVERFLOW_BUFFER_PCT 60
+
 // Binary search evaluation function type
 typedef double (*arg_eval_fn)(void* ctx, int arg);
 
@@ -437,6 +442,9 @@ static uint8_t calculate_qindex(PictureControlSet* pcs, SequenceControlSet* scs)
             int max_limit = is_higher_layer ? 32 : 16;
             min_qindex    = MAX(min_qindex, rc->min_ref_base_q_idx - min_limit * 4);
             max_qindex    = MIN(max_qindex, rc->min_ref_base_q_idx + max_limit * 4);
+        }
+        if (rc->buffer_level * 100 < rc->maximum_buffer_size * OVERFLOW_BUFFER_PCT) {
+            max_qindex = MIN(max_qindex, MAX(min_qindex, rc->worst_quality - OVERFLOW_QINDEX_HEADROOM));
         }
         ppcs->base_frame_target = calc_pframe_target_size(ppcs);
 
