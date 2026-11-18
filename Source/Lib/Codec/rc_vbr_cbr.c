@@ -1126,6 +1126,35 @@ static int get_active_best_quality(PictureControlSet* pcs, int active_worst_qual
     return active_best_quality;
 }
 
+// qindex of an intermediate-layer frame (VBR): start from the reference qindex and move toward the recent leaf
+// qindex once per temporal layer between the frame and its reference, with the CRF per-layer weights
+static int intermediate_layer_qindex(PictureControlSet* pcs, const RATE_CONTROL* rc) {
+    PictureParentControlSet* ppcs   = pcs->ppcs;
+    const uint8_t            hl     = ppcs->hierarchical_levels;
+    const int                leaf_q = (int)(rc->leaf_qindex_avg + 0.5);
+    int                      ref_q  = pcs->ref_base_q_idx[REF_LIST_0][0];
+    uint8_t                  ref_tl = get_ref_obj(pcs, REF_LIST_0, 0)->tmp_layer_idx;
+    if (pcs->slice_type == B_SLICE && ppcs->ref_list1_count_try) {
+        ref_q  = AOMMAX(ref_q, pcs->ref_base_q_idx[REF_LIST_1][0]);
+        ref_tl = AOMMAX(ref_tl, get_ref_obj(pcs, REF_LIST_1, 0)->tmp_layer_idx);
+    }
+    int w1 = svt_av1_non_base_qindex_weight_ref[hl];
+    int w2 = svt_av1_non_base_qindex_weight_wq[hl];
+    // when configured with 4-frame mini-gops the CRF step toward the leaf qindex is too steep for VBR; halve it
+    if (ppcs->scs->static_config.hierarchical_levels == 2) {
+        w2 /= 2;
+    }
+    if (hl == 5) {
+        w1 += pcs->ref_intra_percentage;
+    }
+    int q = ref_q;
+    for (int steps = (int)ppcs->temporal_layer_index - (int)ref_tl; steps > 0; steps--) {
+        q = (w1 * q + w2 * leaf_q + (w1 + w2) / 2) / (w1 + w2);
+    }
+    q = AOMMAX(q, ref_q);
+    return clamp(q, rc->best_quality, rc->worst_quality);
+}
+
 static void adjust_active_best_and_worst_quality_org(PictureControlSet* pcs, RATE_CONTROL* rc, int* active_worst,
                                                      int* active_best) {
     int                      active_best_quality  = *active_best;
@@ -1245,6 +1274,15 @@ static int rc_pick_q_and_bounds(PictureControlSet* pcs) {
 
     q = get_q(pcs, active_worst_quality, active_best_quality);
 
+    // Intermediate layers: blend the rate-controlled qindex (from their own bit targets, which are too small relative
+    // to the leaves) with the CRF-style cascade anchored on the recent leaf qindex, weighted 5:3 toward the cascade
+    if (ppcs->temporal_layer_index > 0 && !ppcs->is_highest_layer && rc->leaf_qindex_valid &&
+        !frame_is_intra_only(ppcs)) {
+        q                    = (5 * intermediate_layer_qindex(pcs, rc) + 3 * q + 4) / 8;
+        active_best_quality  = q;
+        active_worst_quality = q;
+    }
+
     // Special case when we are targeting the max allowed rate.
     if (ppcs->this_frame_target >= rc->max_frame_bandwidth && q > active_worst_quality) {
         active_worst_quality = q;
@@ -1335,6 +1373,12 @@ void svt_av1_rc_calc_qindex_rate_control(PictureControlSet* pcs, SequenceControl
     }
 
     new_qindex = clamp_qindex(scs, new_qindex);
+
+    if (scs->enc_ctx->rc_cfg.mode == AOM_VBR && ppcs->temporal_layer_index > 0 && ppcs->is_highest_layer) {
+        RATE_CONTROL* rc      = &scs->enc_ctx->rc;
+        rc->leaf_qindex_avg   = rc->leaf_qindex_valid ? 0.5 * rc->leaf_qindex_avg + 0.5 * new_qindex : new_qindex;
+        rc->leaf_qindex_valid = true;
+    }
 
     if (scs->enc_ctx->rc_cfg.mode == AOM_CBR) {
         // CR is not used in qindex derivation, so compute it all here

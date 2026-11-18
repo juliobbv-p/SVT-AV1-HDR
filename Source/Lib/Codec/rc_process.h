@@ -162,6 +162,9 @@ typedef struct RATE_CONTROL {
     int prev_avg_frame_bandwidth; //only for CBR?
     int active_worst_quality;
     int active_best_quality[MAX_ARF_LAYERS + 1];
+    // VBR: smoothed qindex of recent leaf (highest-layer) frames; intermediate layers step toward it
+    double leaf_qindex_avg;
+    bool   leaf_qindex_valid;
 
     // gop bit budget
     int64_t gf_group_bits;
