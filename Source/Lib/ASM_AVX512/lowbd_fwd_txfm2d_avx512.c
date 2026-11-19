@@ -608,6 +608,62 @@ void svt_lbd_fwd_col64_avx512(const int16_t* input, uint32_t stride, __m512i* ou
     }
 }
 
+// The caller has bounded the input to [-255,255]. If the rounded column
+// pass also fits that range, both DCTs can run on 32 word lanes. Otherwise
+// hand the already rounded columns to the wide row pass.
+bool svt_fwd_packed_64x64_energy_avx512(const int16_t* src, uint32_t stride, int32_t* coeff, __m512i* wide,
+                                        uint64_t* energy) {
+    __m512i col[2][64], in[64], out[64], magnitude = _mm512_setzero_si512();
+    for (int half = 0; half < 2; ++half) {
+        for (int y = 0; y < 64; ++y) {
+            in[y] = _mm512_loadu_si512(src + y * stride + half * 32);
+        }
+        fdct64_x32_avx512(in, out, 13);
+        for (int y = 0; y < 64; ++y) {
+            col[half][y] = _mm512_mulhrs_epi16(out[y], _mm512_set1_epi16(8192));
+            magnitude    = _mm512_or_si512(magnitude, _mm512_abs_epi16(col[half][y]));
+        }
+    }
+    if (_mm512_test_epi16_mask(magnitude, _mm512_set1_epi16(-256))) {
+        for (int y = 0; y < 64; ++y) {
+            for (int half = 0; half < 2; ++half) {
+                const __m512i v            = col[half][y];
+                wide[4 * y + 2 * half]     = _mm512_cvtepi16_epi32(_mm512_castsi512_si256(v));
+                wide[4 * y + 2 * half + 1] = _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64(v, 1));
+            }
+        }
+        return false;
+    }
+    __m512i total = _mm512_setzero_si512();
+    for (int y = 0; y < 64; y += 32) {
+        transpose_32x32_epi16_avx512(col[0] + y, in);
+        transpose_32x32_epi16_avx512(col[1] + y, in + 32);
+        fdct64_x32_avx512(in, out, 10);
+        if (!y) {
+            for (int x = 0; x < 32; ++x) {
+                out[x] = _mm512_mulhrs_epi16(out[x], _mm512_set1_epi16(8192));
+            }
+            transpose_32x32_epi16_avx512(out, in);
+            for (int r = 0; r < 32; ++r) {
+                _mm512_storeu_si512(coeff + r * 32, _mm512_cvtepi16_epi32(_mm512_castsi512_si256(in[r])));
+                _mm512_storeu_si512(coeff + r * 32 + 16, _mm512_cvtepi16_epi32(_mm512_extracti64x4_epi64(in[r], 1)));
+            }
+        }
+        for (int x = y ? 0 : 32; x < 64; x += 16) {
+            __m512i sum = _mm512_setzero_si512();
+            for (int i = 0; i < 16; ++i) {
+                const __m512i v = _mm512_mulhrs_epi16(out[x + i], _mm512_set1_epi16(8192));
+                sum             = _mm512_add_epi32(sum, _mm512_madd_epi16(v, v));
+            }
+            total = _mm512_add_epi64(
+                total,
+                _mm512_add_epi64(_mm512_srli_epi64(sum, 32), _mm512_and_si512(sum, _mm512_set1_epi64(UINT32_MAX))));
+        }
+    }
+    *energy = _mm512_reduce_add_epi64(total);
+    return true;
+}
+
 // 32x64 column pass: fdct64 on 32 columns (1 group), shift[0]=0, >>2 (shift[1]).
 // Emits int32 layout out[p*2 + g] = row p, cols 16g..16g+15. Column fits int16.
 void svt_lbd_fwd_col64_32w_avx512(const int16_t* input, uint32_t stride, __m512i* out) {

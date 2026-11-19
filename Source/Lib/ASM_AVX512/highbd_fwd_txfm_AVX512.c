@@ -24,6 +24,8 @@ const int32_t* sinpi_arr(int32_t n);
 void svt_aom_transform_config(TxType tx_type, TxSize tx_size, Txfm2dFlipCfg* cfg);
 
 // int16 lowbd column passes defined in lowbd_fwd_txfm2d_avx512.c
+bool svt_fwd_packed_64x64_energy_avx512(const int16_t* src, uint32_t stride, int32_t* coeff, __m512i* wide,
+                                        uint64_t* energy);
 void svt_lbd_fwd_col64_avx512(const int16_t* input, uint32_t stride, __m512i* out); // 8-bit 64x64
 void svt_lbd_fwd_col32_64w_avx512(const int16_t* input, uint32_t stride, __m512i* out); // 8-bit 64x32
 
@@ -559,8 +561,35 @@ static void fdct16x16_avx512(const __m512i* in, __m512i* out, const int8_t bit, 
     }
 }
 
+// Test four rows at a time. A 16-wide row occupies one YMM half.
+static INLINE bool dct_fits_8bit(const int16_t* src, uint32_t stride, int n) {
+    for (int y = 0; y < n; y += 4, src += 4 * stride) {
+        __m512i bits;
+        if (n == 16) {
+            const __m256i a = _mm256_or_si256(_mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)src)),
+                                              _mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)(src + stride))));
+            const __m256i b = _mm256_or_si256(_mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)(src + 2 * stride))),
+                                              _mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)(src + 3 * stride))));
+            bits            = _mm512_inserti64x4(_mm512_castsi256_si512(a), b, 1);
+        } else {
+            bits = _mm512_setzero_si512();
+            for (int x = 0; x < n; x += 32) {
+                const __m512i a = _mm512_abs_epi16(_mm512_loadu_si512(src + x)),
+                              b = _mm512_abs_epi16(_mm512_loadu_si512(src + stride + x));
+                const __m512i c = _mm512_abs_epi16(_mm512_loadu_si512(src + 2 * stride + x)),
+                              d = _mm512_abs_epi16(_mm512_loadu_si512(src + 3 * stride + x));
+                bits            = _mm512_ternarylogic_epi64(bits, _mm512_or_si512(a, b), _mm512_or_si512(c, d), 0xfe);
+            }
+        }
+        if (_mm512_test_epi16_mask(bits, _mm512_set1_epi16(-256))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void svt_av1_fwd_txfm2d_16x16_avx512(int16_t* input, int32_t* coeff, uint32_t stride, TxType tx_type, uint8_t bd) {
-    if (bd == EB_EIGHT_BIT && tx_type == DCT_DCT) {
+    if (tx_type == DCT_DCT && (bd == EB_EIGHT_BIT || (bd == EB_TEN_BIT && dct_fits_8bit(input, stride, 16)))) {
         svt_lbd_fwd_txfm2d_16x16_dct_avx2(input, coeff, stride);
         return;
     }
@@ -1033,8 +1062,8 @@ static INLINE void av1_round_shift_array_avx512(__m512i* input, __m512i* output,
 
 static INLINE void fwd_txfm2d_32x32_avx512(const int16_t* input, int32_t* output, const int32_t stride,
                                            const Txfm2dFlipCfg* cfg, int32_t* txfm_buf) {
-    assert(cfg->tx_size < TX_SIZES);
-    const int32_t        txfm_size       = tx_size_wide[cfg->tx_size];
+    assert(cfg->tx_size == TX_32X32);
+    const int32_t        txfm_size       = 32;
     const int8_t*        shift           = cfg->shift;
     const int8_t*        stage_range_col = cfg->stage_range_col;
     const int8_t*        stage_range_row = cfg->stage_range_row;
@@ -1060,7 +1089,7 @@ static INLINE void fwd_txfm2d_32x32_avx512(const int16_t* input, int32_t* output
 }
 
 void svt_av1_fwd_txfm2d_32x32_avx512(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
-    if (bd == EB_EIGHT_BIT && tx_type == DCT_DCT) {
+    if (tx_type == DCT_DCT && (bd == EB_EIGHT_BIT || (bd == EB_TEN_BIT && dct_fits_8bit(input, stride, 32)))) {
         // int16 low-bit-depth path is bit-exact with the int32 transform for 8-bit and faster.
         svt_lbd_fwd_txfm2d_32x32_dct_avx512(input, output, stride);
         return;
@@ -1069,7 +1098,13 @@ void svt_av1_fwd_txfm2d_32x32_avx512(int16_t* input, int32_t* output, uint32_t s
     Txfm2dFlipCfg cfg;
     svt_aom_transform_config(tx_type, TX_32X32, &cfg);
     (void)bd;
-    fwd_txfm2d_32x32_avx512(input, output, stride, &cfg, txfm_buf);
+    if ((uintptr_t)output & 63) {
+        DECLARE_ALIGNED(64, int32_t, aligned[1024]);
+        fwd_txfm2d_32x32_avx512(input, aligned, stride, &cfg, txfm_buf);
+        memcpy(output, aligned, sizeof(aligned));
+    } else {
+        fwd_txfm2d_32x32_avx512(input, output, stride, &cfg, txfm_buf);
+    }
 }
 
 static void fidtx64x64_avx512(const __m512i* input, __m512i* output) {
@@ -1730,35 +1765,46 @@ static INLINE __m512i energy_acc_avx512(__m512i acc, const __m512i v) {
 // is summed before the final transpose (it is transpose-invariant) and only the kept quarter is transposed.
 uint64_t svt_av1_fwd_txfm2d_64x64_energy_avx512(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type,
                                                 uint8_t bd) {
-    if (bd != EB_EIGHT_BIT || tx_type != DCT_DCT) {
+    if (tx_type != DCT_DCT) {
         svt_av1_fwd_txfm2d_64x64_avx512(input, output, stride, tx_type, bd);
         return svt_handle_transform64x64(output);
     }
     const int32_t txw_idx = tx_size_wide_log2[TX_64X64] - tx_size_wide_log2[0];
     const int32_t txh_idx = tx_size_high_log2[TX_64X64] - tx_size_high_log2[0];
-    __m512i       in[256], kept[64];
-    __m512i*      out = (__m512i*)output;
-    svt_lbd_fwd_col64_avx512(input, stride, out);
+    __m512i       in[256], out[256];
+    if (bd == EB_EIGHT_BIT || (bd == EB_TEN_BIT && dct_fits_8bit(input, stride, 64))) {
+        uint64_t energy;
+        if (svt_fwd_packed_64x64_energy_avx512(input, stride, output, out, &energy)) {
+            return energy;
+        }
+    } else {
+        load_buffer_64x64_avx512(input, stride, out);
+        fdct64x64_avx512(out, in, fwd_cos_bit_col[txw_idx][txh_idx]);
+        av1_round_shift_array_avx512(in, out, 256, -fwd_txfm_shift_ls[TX_64X64][1]);
+    }
     transpose_16nx16n_avx512(64, out, in);
     fdct64x64_avx512(in, out, fwd_cos_bit_row[txw_idx][txh_idx]);
-
-    // out[r * 4 + g] is coefficient column r, rows 16g..16g+15; round by 2 (shift[2] = -2).
-    const __m512i round = _mm512_set1_epi32(2);
     __m512i       e0 = _mm512_setzero_si512(), e1 = _mm512_setzero_si512();
-    for (int32_t r = 0; r < 32; r++) {
-        kept[r * 2 + 0] = _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 0], round), 2);
-        kept[r * 2 + 1] = _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 1], round), 2);
-        e0              = energy_acc_avx512(e0, _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 2], round), 2));
-        e1              = energy_acc_avx512(e1, _mm512_srai_epi32(_mm512_add_epi32(out[r * 4 + 3], round), 2));
+    const __m512i round = _mm512_set1_epi32(2);
+    for (int r = 0; r < 64; ++r) {
+        const int first = r < 32 ? 2 : 0;
+        for (int k = first; k < 4; k += 2) {
+            e0 = energy_acc_avx512(e0, _mm512_srai_epi32(_mm512_add_epi32(out[4 * r + k], round), 2));
+            e1 = energy_acc_avx512(e1, _mm512_srai_epi32(_mm512_add_epi32(out[4 * r + k + 1], round), 2));
+        }
     }
-    for (int32_t i = 128; i < 256; i += 2) {
-        e0 = energy_acc_avx512(e0, _mm512_srai_epi32(_mm512_add_epi32(out[i + 0], round), 2));
-        e1 = energy_acc_avx512(e1, _mm512_srai_epi32(_mm512_add_epi32(out[i + 1], round), 2));
+    for (int x = 0; x < 32; x += 16) {
+        for (int y = 0; y < 32; y += 16) {
+            __m512i tile[16], rows[16];
+            for (int k = 0; k < 16; ++k) {
+                tile[k] = _mm512_srai_epi32(_mm512_add_epi32(out[(x + k) * 4 + y / 16], round), 2);
+            }
+            transpose_16x16_avx512(tile, rows);
+            for (int k = 0; k < 16; ++k) {
+                _mm512_storeu_si512(output + (y + k) * 32 + x, rows[k]);
+            }
+        }
     }
-    transpose_16x16_stride_avx512(2, &kept[0], &out[0]);
-    transpose_16x16_stride_avx512(2, &kept[1], &out[32]);
-    transpose_16x16_stride_avx512(2, &kept[32], &out[1]);
-    transpose_16x16_stride_avx512(2, &kept[33], &out[33]);
     return (uint64_t)_mm512_reduce_add_epi64(_mm512_add_epi64(e0, e1));
 }
 
