@@ -1287,15 +1287,23 @@ void svt_inter_predictor_pd0(const uint8_t* src, int32_t src_stride, uint8_t* ds
     }
 }
 
-#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+#if (defined(ARCH_AARCH64) || defined(ARCH_X86_64)) && CONFIG_ENABLE_HIGH_BIT_DEPTH
 bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b, int src_stride, uint16_t* dst,
                                       int dst_stride, int w, int h, const SubpelParams* subpel, ConvolveParams* params,
                                       int bd) {
     // Match the unscaled copy dispatch; keep --asm restrictions and uncommon
     // round configurations on the original pack/convolve path.
+#if defined(ARCH_X86_64)
+    if (svt_av1_highbd_jnt_convolve_2d_copy != svt_av1_highbd_jnt_convolve_2d_copy_avx2) {
+        return false;
+    }
+#else
+    if (svt_av1_highbd_jnt_convolve_2d_copy != svt_av1_highbd_jnt_convolve_2d_copy_neon) {
+        return false;
+    }
+#endif
     if (bd != EB_TEN_BIT || !src_2b || subpel->subpel_x || subpel->subpel_y || has_scale(subpel->xs, subpel->ys) ||
-        !(w == 2 || w == 4 || (w > 0 && !(w & 7))) || h <= 0 ||
-        svt_av1_highbd_jnt_convolve_2d_copy != svt_av1_highbd_jnt_convolve_2d_copy_neon) {
+        !(w == 2 || w == 4 || (w > 0 && !(w & 7))) || h <= 0) {
         return false;
     }
     if (params->is_compound && (params->round_0 != ROUND0_BITS || params->round_1 != COMPOUND_ROUND1_BITS)) {
@@ -1305,7 +1313,11 @@ bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b,
         (params->fwd_offset < 0 || params->bck_offset < 0 || params->fwd_offset + params->bck_offset != 16)) {
         return false;
     }
+#if defined(ARCH_X86_64)
+    svt_aom_highbd_10_fullpel_split_avx2(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, params);
+#else
     svt_aom_highbd_10_fullpel_split_neon(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, params);
+#endif
     return true;
 }
 #endif
@@ -1313,7 +1325,7 @@ bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b,
 void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
                                    int32_t w, int32_t h, InterpFilters interp_filters, SubpelParams* subpel_params,
                                    ConvolveParams* conv_params, int32_t bd) {
-#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+#if (defined(ARCH_AARCH64) || defined(ARCH_X86_64)) && CONFIG_ENABLE_HIGH_BIT_DEPTH
     if (svt_aom_try_highbd_fullpel_split(
             src, src_2b, src_stride, (uint16_t*)dst, dst_stride, w, h, subpel_params, conv_params, bd)) {
         return;
@@ -1332,19 +1344,28 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
         DECLARE_ALIGNED(16, uint16_t, src16[PACKED_BUFFER_SIZE * 4]);
         int32_t src_stride16;
         // pack the reference into temp 16bit buffer
-        uint8_t offset_x = INTERPOLATION_OFFSET;
-        uint8_t offset_y = INTERPOLATION_OFFSET;
-#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
-        // NEON handles the final horizontal rows without rounding up. Other
-        // dispatch targets can read beyond this four-pixel border.
-        const int use_compact = !is_scaled && bd == EB_TEN_BIT && w >= 8 && !(w & 7) && h >= 4 && !(h & 3) &&
-            filter_params_x.taps == SUBPEL_TAPS && filter_params_y.taps == SUBPEL_TAPS &&
-            (subpel_params->subpel_x >> SCALE_EXTRA_BITS) != 0 && (subpel_params->subpel_y >> SCALE_EXTRA_BITS) != 0 &&
-            svt_aom_convolveHbd[1][1][conv_params->is_compound] ==
-                (conv_params->is_compound ? svt_av1_highbd_jnt_convolve_2d_neon : svt_av1_highbd_convolve_2d_sr_neon);
+        uint8_t  offset_x       = INTERPOLATION_OFFSET;
+        uint8_t  offset_y       = INTERPOLATION_OFFSET;
+        uint32_t packed_extra_x = 2 * offset_x;
+#if defined(ARCH_AARCH64) || defined(ARCH_X86_64)
+        const bool compound = conv_params->is_compound;
+#if defined(ARCH_X86_64)
+        const bool compact_filter = svt_aom_convolveHbd[1][1][compound] ==
+            (compound ? svt_av1_highbd_jnt_convolve_2d_avx2 : svt_av1_highbd_convolve_2d_sr_avx2);
+        // The AVX2 horizontal load uses three left and five right samples.
+        const int left_border = 3;
+#else
+        const bool compact_filter = svt_aom_convolveHbd[1][1][compound] ==
+            (compound ? svt_av1_highbd_jnt_convolve_2d_neon : svt_av1_highbd_convolve_2d_sr_neon);
+        const int left_border = 4;
+#endif
+        const bool use_compact = compact_filter && !is_scaled && bd == EB_TEN_BIT && w >= 8 && !(w & 7) && h >= 4 &&
+            !(h & 3) && filter_params_x.taps == SUBPEL_TAPS && filter_params_y.taps == SUBPEL_TAPS &&
+            (subpel_params->subpel_x >> SCALE_EXTRA_BITS) && (subpel_params->subpel_y >> SCALE_EXTRA_BITS);
         if (use_compact) {
-            offset_y = 4;
-            offset_x = 4;
+            offset_x       = left_border;
+            offset_y       = 4;
+            packed_extra_x = 8;
         }
 #endif
         uint32_t width_scale  = 1;
@@ -1354,7 +1375,7 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
             height_scale = subpel_params->ys != SCALE_SUBPEL_SHIFTS ? 2 : 1;
         }
         // optimize stride from MAX_SB_SIZE to bwidth to minimum the block buffer size
-        src_stride16 = w * width_scale + (offset_x << 1);
+        src_stride16 = w * width_scale + packed_extra_x;
         // 16-byte align of src16
         if (src_stride16 % 8) {
             src_stride16 = ALIGN_POWER_OF_TWO(src_stride16, 3);
@@ -1378,7 +1399,7 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
                                src_stride,
                                src16,
                                src_stride16,
-                               w * width_scale + (offset_x << 1),
+                               w * width_scale + packed_extra_x,
                                h * height_scale + (offset_y << 1));
 #if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
         }

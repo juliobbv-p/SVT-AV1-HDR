@@ -1889,6 +1889,7 @@ void svt_av1_inv_txfm2d_add_64x32_neon(const int32_t *input, uint16_t *output_r,
 #endif
 
 #ifdef ARCH_X86_64
+void svt_aom_highbd_10_fullpel_split_avx2(const uint8_t *msb, int msb_stride, const uint8_t *lsb, int lsb_stride, uint16_t *dst, int dst_stride, int w, int h, ConvolveParams *params);
 
 void svt_aom_blend_a64_vmask_sse4_1(uint8_t *dst, uint32_t dst_stride, const uint8_t *src0, uint32_t src0_stride, const uint8_t *src1, uint32_t src1_stride, const uint8_t *mask, int w, int h);
 

@@ -288,6 +288,23 @@ void svt_compressed_packmsb_avx2_intrin(uint8_t* in8_bit_buffer, uint32_t in8_st
     }
 }
 
+// Padded reference windows have one eight-pixel tail after full 32-pixel loads.
+static AOM_FORCE_INLINE void pack_padded_rows(const uint8_t* msb, uint32_t ms, const uint8_t* lsb, uint32_t ls,
+                                              uint16_t* dst, uint32_t ds, int width, uint32_t height) {
+    for (uint32_t y = 0; y < height; ++y, msb += ms, lsb += ls, dst += ds) {
+        int x = 0;
+        for (; x + 32 <= width; x += 32) {
+            const __m256i hi = _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(msb + x)), 0xd8);
+            const __m256i lo = _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(lsb + x)), 0xd8);
+            _mm256_storeu_si256((__m256i*)(dst + x), _mm256_srli_epi16(_mm256_unpacklo_epi8(lo, hi), 6));
+            _mm256_storeu_si256((__m256i*)(dst + x + 16), _mm256_srli_epi16(_mm256_unpackhi_epi8(lo, hi), 6));
+        }
+        const __m128i lo = _mm_loadl_epi64((const __m128i*)(lsb + x));
+        const __m128i hi = _mm_loadl_epi64((const __m128i*)(msb + x));
+        _mm_storeu_si128((__m128i*)(dst + x), _mm_srli_epi16(_mm_unpacklo_epi8(lo, hi), 6));
+    }
+}
+
 void svt_enc_msb_pack2d_avx2_intrin_al(uint8_t* in8_bit_buffer, uint32_t in8_stride, uint8_t* inn_bit_buffer,
                                        uint16_t* out16_bit_buffer, uint32_t inn_stride, uint32_t out_stride,
                                        uint32_t width, uint32_t height) {
@@ -574,6 +591,15 @@ void svt_enc_msb_pack2d_avx2_intrin_al(uint8_t* in8_bit_buffer, uint32_t in8_str
             inn_bit_buffer += inn_stride << 1;
             out16_bit_buffer += out_stride << 1;
         }
+    } else if (width == 40) {
+        pack_padded_rows(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, inn_stride, out16_bit_buffer, out_stride, 40, height);
+    } else if (width == 72) {
+        pack_padded_rows(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, inn_stride, out16_bit_buffer, out_stride, 72, height);
+    } else if (width == 136) {
+        pack_padded_rows(
+            in8_bit_buffer, in8_stride, inn_bit_buffer, inn_stride, out16_bit_buffer, out_stride, 136, height);
     } else {
         uint32_t in_n_stride_diff = 2 * inn_stride;
         uint32_t in_8_stride_diff = 2 * in8_stride;
