@@ -12,6 +12,7 @@
 #include "definitions.h"
 
 #if EN_AVX512_SUPPORT
+#include "intra_prediction.h"
 #include <immintrin.h>
 #include "highbd_intrapred_sse2.h"
 #include "common_dsp_rtcd.h"
@@ -1522,4 +1523,299 @@ void aom_highbd_smooth_h_predictor_64x64_avx512(uint16_t* dst, ptrdiff_t stride,
     (void)bd;
     smooth_h_pred_64x8(dst, stride, above, left, 8);
 }
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && CONFIG_ENABLE_FILTER_INTRA
+
+// Each 256-bit half holds one predicted row. In vertical filter mode
+// the rightmost tap of every tile is 2/16. With no clipping, its error
+// relative to the next corner is the previous error rounded down by
+// three bits (with half added). Four such steps erase any 10-bit error.
+static AOM_FORCE_INLINE void directional_intra(uint16_t* dst, ptrdiff_t stride, int w, int h, const uint16_t* above,
+                                               const uint16_t* left, int bd, bool vertical) {
+    const int     limit      = (1 << bd) - 1;
+    const __m512i gain       = vertical ? _mm512_set1_epi64(INT64_C(0x1000200030005000))
+                                        : _mm512_mask_set1_epi16(_mm512_set1_epi16(16384), 0xffff0000, 8192);
+    const __m256i tile_shift = _mm256_setr_epi64x(
+        0, INT64_C(0x0003000300030003), INT64_C(0x0006000600060006), INT64_C(0x0009000900090009));
+    const __m256i tile_round = _mm256_setr_epi64x(
+        0, INT64_C(0x0004000400040004), INT64_C(0x0024002400240024), INT64_C(0x0124012401240124));
+    const __m512i   prev_end = _mm512_setr_epi64(0,
+                                               0x0003000300030003LL,
+                                               0x0007000700070007LL,
+                                               0x000b000b000b000bLL,
+                                               0,
+                                               0x0013001300130013LL,
+                                               0x0017001700170017LL,
+                                               0x001b001b001b001bLL);
+    const __mmask32 valid    = w >= 16 ? UINT32_MAX : (uint32_t)(((1u << w) - 1) * 0x10001);
+    for (int y = 0; y < h; y += 2, dst += 2 * stride) {
+        const uint16_t* top    = y ? dst - stride : above;
+        int             corner = y ? left[y - 1] : above[-1];
+        int             edge0 = left[y], edge1 = left[y + 1];
+        for (int x = 0; x < w; x += 16) {
+            const __m256i row = _mm256_maskz_loadu_epi16((__mmask16)valid, top + x);
+            if (vertical && x) {
+                _mm256_storeu_si256((__m256i*)(dst + x), row);
+                _mm256_storeu_si256((__m256i*)(dst + stride + x), row);
+                continue;
+            }
+            const __m512i pixels = _mm512_broadcast_i64x4(row);
+            const __m512i edge   = _mm512_mask_set1_epi16(_mm512_set1_epi16(edge0), 0xffff0000, edge1);
+            __m512i       raw;
+            if (vertical) {
+                const __m512i diff  = _mm512_sub_epi16(edge, _mm512_set1_epi16(corner));
+                const __m512i carry = _mm512_srav_epi16(_mm512_add_epi16(diff, _mm512_broadcast_i64x4(tile_round)),
+                                                        _mm512_broadcast_i64x4(tile_shift));
+                raw                 = _mm512_add_epi16(pixels, _mm512_mulhrs_epi16(carry, gain));
+            } else {
+                const __m512i corners = _mm512_mask_set1_epi16(
+                    _mm512_permutexvar_epi16(prev_end, pixels), 0x000f000f, corner);
+                const __m512i correction = _mm512_mulhrs_epi16(_mm512_sub_epi16(pixels, corners), gain);
+                __m512i       prefix     = _mm512_maskz_permutexvar_epi16(0xfff0fff0, prev_end, correction);
+                // Inclusive four-tile prefix inside each half.
+                prefix = _mm512_add_epi16(
+                    prefix, _mm512_maskz_permutexvar_epi64(0xee, _mm512_setr_epi64(0, 0, 1, 2, 4, 4, 5, 6), prefix));
+                prefix = _mm512_add_epi16(
+                    prefix, _mm512_maskz_permutexvar_epi64(0xcc, _mm512_setr_epi64(0, 0, 0, 1, 4, 4, 4, 5), prefix));
+                raw = _mm512_add_epi16(correction, _mm512_add_epi16(edge, prefix));
+            }
+            const __m512i max     = _mm512_set1_epi16(limit);
+            const __m512i clipped = _mm512_min_epi16(max, _mm512_max_epi16(raw, _mm512_setzero_si512()));
+            if (_mm512_mask_cmpneq_epi16_mask(0x88888888u & valid, raw, clipped)) {
+                // A clipped endpoint changes the left input of the next tile.
+                for (int j = x; j < AOMMIN(x + 16, w); j += 4) {
+                    for (int k = 0; k < 4; ++k) {
+                        const int gain_v = k ? 8 - 2 * k : 10;
+                        const int sample = top[j + k];
+                        int       a, b;
+                        if (vertical) {
+                            a = sample + ROUND_POWER_OF_TWO((edge0 - corner) * gain_v, 4);
+                            b = sample + ROUND_POWER_OF_TWO((edge1 - corner) * gain_v, 4);
+                        } else {
+                            a = edge0 + ROUND_POWER_OF_TWO(sample - corner, 1);
+                            b = edge1 + ROUND_POWER_OF_TWO(sample - corner, 2);
+                        }
+                        dst[j + k]          = clamp(a, 0, limit);
+                        dst[stride + j + k] = clamp(b, 0, limit);
+                    }
+                    edge0  = dst[j + 3];
+                    edge1  = dst[stride + j + 3];
+                    corner = top[j + 3];
+                }
+            } else {
+                _mm256_mask_storeu_epi16(dst + x, (__mmask16)valid, _mm512_castsi512_si256(clipped));
+                _mm256_mask_storeu_epi16(dst + stride + x, (__mmask16)valid, _mm512_extracti64x4_epi64(clipped, 1));
+                if (!vertical && x + 16 < w) {
+                    edge0  = _mm256_extract_epi16(_mm512_castsi512_si256(clipped), 15);
+                    edge1  = _mm256_extract_epi16(_mm512_extracti64x4_epi64(clipped, 1), 15);
+                    corner = top[x + 15];
+                }
+            }
+        }
+    }
+}
+
+void svt_aom_highbd_filter_intra_predictor_avx512(uint16_t* dst, ptrdiff_t stride, TxSize size, const uint16_t* above,
+                                                  const uint16_t* left, int mode, int bd) {
+    if (bd <= 10 && tx_size_wide[size] >= 32 && mode == FILTER_V_PRED) {
+        directional_intra(dst, stride, tx_size_wide[size], tx_size_high[size], above, left, bd, true);
+    } else if (bd <= 10 && tx_size_wide[size] >= 32 && mode == FILTER_H_PRED) {
+        directional_intra(dst, stride, tx_size_wide[size], tx_size_high[size], above, left, bd, false);
+    } else {
+        svt_aom_highbd_filter_intra_predictor_avx2(dst, stride, size, above, left, mode, bd);
+    }
+}
+#endif
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+static INLINE __mmask32 edge_mask(int length) {
+    return length == 32 ? UINT32_MAX : (1u << length) - 1;
+}
+
+static INLINE __m512i z2_lanes(void) {
+    static const uint16_t lanes[32] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15,
+                                       16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+    return _mm512_loadu_si512(lanes);
+}
+
+static INLINE __m512i z2_interpolate(__m512i lo, __m512i hi, __m512i q) {
+    // Multiply the signed pixel difference by a Q15 weight. PMULHRSW
+    // applies the rounding bias and shift without widening either operand.
+    const __m512i frac = _mm512_and_si512(_mm512_slli_epi16(q, 10), _mm512_set1_epi16(31 << 10));
+    return _mm512_add_epi16(lo, _mm512_mulhrs_epi16(_mm512_sub_epi16(hi, lo), frac));
+}
+
+static INLINE void z2_store4x2(uint16_t* dst, ptrdiff_t stride, __m128i v) {
+    _mm_storel_epi64((__m128i*)dst, v);
+    _mm_storel_epi64((__m128i*)(dst + stride), _mm_srli_si128(v, 8));
+}
+
+static INLINE void z2_4x4(uint16_t* dst, ptrdiff_t stride, const uint16_t* above, const uint16_t* left, int up_a,
+                          int up_l, int dx, int dy) {
+    const __m256i   lane = _mm512_castsi512_si256(z2_lanes());
+    const __m256i   col = _mm256_and_si256(lane, _mm256_set1_epi16(3)), row = _mm256_srli_epi16(lane, 2);
+    const int       sa = 1 << up_a, sl = 1 << up_l;
+    const __mmask16 am = (1u << (4 * sa + 1)) - 1, lm = (1u << (4 * sl + 1)) - 1;
+    const __m256i   top  = _mm256_maskz_loadu_epi16(am, above - sa);
+    const __m256i   side = _mm256_maskz_loadu_epi16(lm, left - sl);
+    const __m256i   x    = _mm256_sub_epi16(
+        _mm256_slli_epi16(col, 6),
+        _mm256_mullo_epi16(_mm256_add_epi16(row, _mm256_set1_epi16(1)), _mm256_set1_epi16(dx)));
+    const __m256i y = _mm256_sub_epi16(
+        _mm256_slli_epi16(row, 6),
+        _mm256_mullo_epi16(_mm256_add_epi16(col, _mm256_set1_epi16(1)), _mm256_set1_epi16(dy)));
+    const __m256i a    = _mm256_add_epi16(_mm256_sra_epi16(x, _mm_cvtsi32_si128(1 - up_a)), _mm256_set1_epi16(sa * 32));
+    const __m256i l    = _mm256_add_epi16(_mm256_sra_epi16(y, _mm_cvtsi32_si128(1 - up_l)),
+                                       _mm256_set1_epi16((16 + sl) * 32));
+    const __m256i q    = _mm256_mask_mov_epi16(a, _mm256_movepi16_mask(a), l);
+    const __m256i base = _mm256_srli_epi16(q, 5);
+    const __m256i lo   = _mm256_permutex2var_epi16(top, base, side);
+    const __m256i hi   = _mm256_permutex2var_epi16(top, _mm256_add_epi16(base, _mm256_set1_epi16(1)), side);
+    const __m256i frac = _mm256_and_si256(_mm256_slli_epi16(q, 10), _mm256_set1_epi16(31 << 10));
+    const __m256i out  = _mm256_add_epi16(lo, _mm256_mulhrs_epi16(_mm256_sub_epi16(hi, lo), frac));
+    z2_store4x2(dst, stride, _mm256_castsi256_si128(out));
+    z2_store4x2(dst + 2 * stride, stride, _mm256_extracti128_si256(out, 1));
+}
+
+// Thirty-two consecutive destinations occupy a register. Narrow blocks place
+// successive rows next to each other.
+static AOM_FORCE_INLINE void z2_predict(uint16_t* dst, ptrdiff_t stride, int log_w, int h, const uint16_t* above,
+                                        const uint16_t* left, int up_a, int up_l, int dx, int dy) {
+    const int       w = 1 << log_w, rows = 32 / w, sa = 1 << up_a, sl = 1 << up_l;
+    const __m512i   lane = z2_lanes();
+    const __m512i   col  = _mm512_and_si512(lane, _mm512_set1_epi16(w - 1));
+    const __m512i   row  = _mm512_srli_epi16(lane, log_w);
+    const __mmask32 am = edge_mask(w * sa), lm = edge_mask(h * sl);
+    const __m512i   a0 = _mm512_maskz_loadu_epi16(am, above - sa), a1 = _mm512_maskz_loadu_epi16(am, above - sa + 1);
+    const __m512i   l0 = _mm512_maskz_loadu_epi16(lm, left - sl), l1 = _mm512_maskz_loadu_epi16(lm, left - sl + 1);
+    const __m512i   one = _mm512_set1_epi16(1);
+    __m512i         x   = _mm512_sub_epi16(_mm512_slli_epi16(col, 6),
+                                 _mm512_mullo_epi16(_mm512_add_epi16(row, one), _mm512_set1_epi16(dx)));
+    const __m512i   y   = _mm512_sub_epi16(_mm512_slli_epi16(row, 6),
+                                       _mm512_mullo_epi16(_mm512_add_epi16(col, one), _mm512_set1_epi16(dy)));
+    const __m128i   ax  = _mm_cvtsi32_si128(1 - up_a);
+    __m512i l = _mm512_add_epi16(_mm512_sra_epi16(y, _mm_cvtsi32_si128(1 - up_l)), _mm512_set1_epi16((32 + sl) * 32));
+    for (int r = 0; r < h; r += rows, dst += rows * stride) {
+        // Q5 contains both the table index and the fractional interpolation
+        // weight. Bit 5 of the integer index selects the left reference.
+        const __m512i a    = _mm512_add_epi16(_mm512_sra_epi16(x, ax), _mm512_set1_epi16(sa * 32));
+        const __m512i q    = _mm512_mask_mov_epi16(a, _mm512_movepi16_mask(a), l);
+        const __m512i base = _mm512_srli_epi16(q, 5);
+        const __m512i lo = _mm512_permutex2var_epi16(a0, base, l0), hi = _mm512_permutex2var_epi16(a1, base, l1);
+        const __m512i out = z2_interpolate(lo, hi, q);
+        if (w == 32) {
+            _mm512_storeu_si512(dst, out);
+        } else if (w == 16) {
+            _mm256_storeu_si256((__m256i*)dst, _mm512_castsi512_si256(out));
+            _mm256_storeu_si256((__m256i*)(dst + stride), _mm512_extracti64x4_epi64(out, 1));
+        } else if (w == 8) {
+            _mm_storeu_si128((__m128i*)dst, _mm512_castsi512_si128(out));
+            _mm_storeu_si128((__m128i*)(dst + stride), _mm512_extracti32x4_epi32(out, 1));
+            _mm_storeu_si128((__m128i*)(dst + 2 * stride), _mm512_extracti32x4_epi32(out, 2));
+            _mm_storeu_si128((__m128i*)(dst + 3 * stride), _mm512_extracti32x4_epi32(out, 3));
+        } else {
+            z2_store4x2(dst, stride, _mm512_castsi512_si128(out));
+            z2_store4x2(dst + 2 * stride, stride, _mm512_extracti32x4_epi32(out, 1));
+            z2_store4x2(dst + 4 * stride, stride, _mm512_extracti32x4_epi32(out, 2));
+            z2_store4x2(dst + 6 * stride, stride, _mm512_extracti32x4_epi32(out, 3));
+        }
+        x = _mm512_sub_epi16(x, _mm512_set1_epi16(rows * dx));
+        l = _mm512_add_epi16(l, _mm512_set1_epi16(rows * sl * 32));
+    }
+}
+
+typedef struct Z2Edge {
+    __m512i first, second, next_first, next_second;
+} Z2Edge;
+
+// Load the two endpoints separately so the final interpolated pixel can use
+// reference 63 without needing a third register for one boundary sample.
+static INLINE Z2Edge z2_edge(const uint16_t* ref, int length) {
+    const __mmask32 mask = edge_mask(AOMMIN(length, 32));
+    Z2Edge          edge;
+    edge.first      = _mm512_maskz_loadu_epi16(mask, ref - 1);
+    edge.next_first = _mm512_maskz_loadu_epi16(mask, ref);
+    edge.second = edge.next_second = _mm512_setzero_si512();
+    if (length == 64) {
+        edge.second      = _mm512_loadu_si512(ref + 31);
+        edge.next_second = _mm512_loadu_si512(ref + 32);
+    }
+    return edge;
+}
+
+static AOM_FORCE_INLINE void z2_large(uint16_t* dst, ptrdiff_t stride, int w, int h, const uint16_t* above,
+                                      const uint16_t* left, int dx, int dy, int rows) {
+    const Z2Edge  top = z2_edge(above, w), side = z2_edge(left, h);
+    const __m512i lane = rows == 2 ? _mm512_and_si512(z2_lanes(), _mm512_set1_epi16(15)) : z2_lanes();
+    const __m512i one = _mm512_set1_epi16(1), round = _mm512_set1_epi16(32);
+    for (int c = 0; c < w; c += 32) {
+        const __m512i col      = _mm512_add_epi16(lane, _mm512_set1_epi16(c));
+        const __m512i x_origin = _mm512_slli_epi16(_mm512_add_epi16(col, one), 5);
+        // (c+1)*dy can exceed INT16_MAX. Unsigned rounded halving converts
+        // to Q5 before subtraction, so all signed coordinates fit in words.
+        const __m512i product = _mm512_mullo_epi16(_mm512_add_epi16(col, one), _mm512_set1_epi16(dy));
+        __m512i       y       = _mm512_sub_epi16(round, _mm512_avg_epu16(product, _mm512_setzero_si512()));
+        __m512i       origin  = x_origin;
+        if (rows == 2) {
+            // The upper half represents the next row. Removing floor(dx/2)
+            // from its origin completes the two half-pixel row increments.
+            y      = _mm512_mask_add_epi16(y, 0xffff0000, y, round);
+            origin = _mm512_mask_sub_epi16(origin, 0xffff0000, origin, _mm512_set1_epi16(dx >> 1));
+        }
+        for (int r = 0; r < h; r += rows) {
+            const __m512i   x        = _mm512_sub_epi16(origin, _mm512_set1_epi16(((r + 1) * dx + 1) >> 1));
+            const __mmask32 use_left = _mm512_movepi16_mask(x);
+            const __m512i   q        = _mm512_mask_mov_epi16(x, use_left, y);
+            const __m512i   base     = _mm512_srli_epi16(q, 5);
+            const __m512i   a        = _mm512_permutex2var_epi16(top.first, base, top.second);
+            const __m512i   b        = _mm512_permutex2var_epi16(top.next_first, base, top.next_second);
+            const __m512i   lo       = _mm512_mask_mov_epi16(
+                a, use_left, _mm512_permutex2var_epi16(side.first, base, side.second));
+            const __m512i hi = _mm512_mask_mov_epi16(
+                b, use_left, _mm512_permutex2var_epi16(side.next_first, base, side.next_second));
+            const __m512i out = z2_interpolate(lo, hi, q);
+            uint16_t*     d   = dst + r * stride + c;
+            if (rows == 2) {
+                _mm256_storeu_si256((__m256i*)d, _mm512_castsi512_si256(out));
+                _mm256_storeu_si256((__m256i*)(d + stride), _mm512_extracti64x4_epi64(out, 1));
+            } else {
+                _mm512_storeu_si512(d, out);
+            }
+            y = _mm512_add_epi16(y, _mm512_set1_epi16(32 * rows));
+        }
+    }
+}
+
+void svt_av1_highbd_dr_prediction_z2_avx512(uint16_t* dst, ptrdiff_t stride, int w, int h, const uint16_t* above,
+                                            const uint16_t* left, int up_a, int up_l, int dx, int dy, int bd) {
+    if ((w << up_a) > 32 || (h << up_l) > 32) {
+        if (up_a || up_l || w < 16) {
+            svt_av1_highbd_dr_prediction_z2_avx2(dst, stride, w, h, above, left, up_a, up_l, dx, dy, bd);
+        } else if (w == 16) {
+            z2_large(dst, stride, w, h, above, left, dx, dy, 2);
+        } else {
+            z2_large(dst, stride, w, h, above, left, dx, dy, 1);
+        }
+        return;
+    }
+    switch (w) {
+    case 4:
+        if (h == 4) {
+            z2_4x4(dst, stride, above, left, up_a, up_l, dx, dy);
+        } else {
+            z2_predict(dst, stride, 2, h, above, left, up_a, up_l, dx, dy);
+        }
+        break;
+    case 8:
+        z2_predict(dst, stride, 3, h, above, left, up_a, up_l, dx, dy);
+        break;
+    case 16:
+        z2_predict(dst, stride, 4, h, above, left, up_a, up_l, dx, dy);
+        break;
+    case 32:
+        z2_predict(dst, stride, 5, h, above, left, up_a, up_l, dx, dy);
+        break;
+    }
+}
+#endif
+
 #endif

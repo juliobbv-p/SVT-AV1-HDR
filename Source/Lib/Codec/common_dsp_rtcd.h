@@ -88,6 +88,7 @@ RTCD_EXTERN void(*svt_cfl_luma_subsampling_420_hbd)(const uint16_t *input, int32
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 void svt_aom_highbd_filter_intra_predictor_c(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 void svt_aom_highbd_filter_intra_predictor_avx2(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
+void svt_aom_highbd_filter_intra_predictor_avx512(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 void svt_aom_highbd_filter_intra_predictor_neon(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 RTCD_EXTERN void(*svt_aom_highbd_filter_intra_predictor)(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 #endif
@@ -2696,6 +2697,7 @@ void svt_av1_highbd_dr_prediction_z1_avx2(uint16_t *dst, ptrdiff_t stride, int32
 void svt_av1_highbd_dr_prediction_z1_sse4_1(uint16_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint16_t *above, const uint16_t *left, int32_t upsample_above, int32_t dx, int32_t dy, int32_t bd);
 
 void svt_av1_highbd_dr_prediction_z2_avx2(uint16_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint16_t *above, const uint16_t *left, int32_t upsample_above, int32_t upsample_left, int32_t dx, int32_t dy, int32_t bd);
+void svt_av1_highbd_dr_prediction_z2_avx512(uint16_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint16_t *above, const uint16_t *left, int32_t upsample_above, int32_t upsample_left, int32_t dx, int32_t dy, int32_t bd);
 void svt_av1_highbd_dr_prediction_z2_sse4_1(uint16_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint16_t *above, const uint16_t *left, int32_t upsample_above, int32_t upsample_left, int32_t dx, int32_t dy, int32_t bd);
 
 void svt_av1_highbd_dr_prediction_z3_avx2(uint16_t *dst, ptrdiff_t stride, int32_t bw, int32_t bh, const uint16_t *above, const uint16_t *left, int32_t upsample_left, int32_t dx, int32_t dy, int32_t bd);
