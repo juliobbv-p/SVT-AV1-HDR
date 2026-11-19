@@ -244,6 +244,7 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #endif
 
 #if defined ARCH_X86_64
+    svt_aom_use_avx2 = (flags & EB_CPU_FLAGS_AVX2) != 0;
 #if EN_AVX512_SUPPORT
     svt_aom_use_avx512 = (flags & EB_CPU_FLAGS_AVX512F) != 0;
 #endif

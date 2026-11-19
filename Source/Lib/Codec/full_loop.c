@@ -1093,6 +1093,51 @@ static AOM_FORCE_INLINE void update_coeff_simple(int* accu_rate, int si, int eob
     }
 }
 
+#ifdef ARCH_X86_64
+// Only dense scan intervals amortize computing a full raster block of deltas.
+static int update_simple_2d_batch(int* accu_rate, int si, int si_end, int count, TxSize tx_size, int bwl,
+                                  int64_t rdmult, int shift, const int16_t* dequant, const int16_t* scan,
+                                  const LvMapCoeffCost* txb_costs, const TranLow* tcoeff, TranLow* qcoeff,
+                                  TranLow* dqcoeff, uint8_t* levels, const QmVal* iqm, int8_t* nz_ctx) {
+    int64_t delta[32 * 32];
+    assert(count <= 32 * 32);
+    svt_av1_rdoq_deltas_avx2(tcoeff, qcoeff, dqcoeff, iqm, dequant[1], shift, count, delta);
+    for (; si >= si_end; --si) {
+        const int      ci   = scan[si];
+        const int      qc   = qcoeff[ci];
+        const int      ctx  = nz_ctx[ci];
+        const int32_t* base = txb_costs->base_cost[ctx];
+        if (!qc) {
+            *accu_rate += base[0];
+            continue;
+        }
+        const int mag = abs(qc);
+        int       rate, rate_low;
+        if (mag == 1) {
+            rate     = base[1] + av1_cost_literal(1);
+            rate_low = rate - base[5];
+        } else {
+            rate = get_two_coeff_cost_simple(ci, mag, ctx, txb_costs, bwl, TX_CLASS_2D, levels, &rate_low);
+        }
+        // Each rate is rounded separately. The signed shift floors the
+        // threshold, retaining the scalar strict inequality, including ties.
+        const int64_t threshold = (RDCOST(rdmult, rate_low, 0) - RDCOST(rdmult, rate, 0)) >> RDDIV_BITS;
+        if (delta[ci] > threshold) {
+            const int low                   = mag - 1;
+            const int recon                 = low ? (low * get_dqv(dequant, ci, iqm)) >> shift : 0;
+            const int level                 = AOMMIN(low, INT8_MAX);
+            qcoeff[ci]                      = qc < 0 ? -low : low;
+            dqcoeff[ci]                     = qc < 0 ? -recon : recon;
+            levels[get_padded_idx(ci, bwl)] = level;
+            refresh_nz_ctx_2d(nz_ctx, levels, ci, level, bwl, tx_size);
+            rate = rate_low;
+        }
+        *accu_rate += rate;
+    }
+    return si;
+}
+#endif
+
 static INLINE void update_skip(int* accu_rate, int64_t accu_dist, uint16_t* eob, int nz_num, int* nz_ci, int64_t rdmult,
                                int skip_cost, int non_skip_cost, TranLow* qcoeff, TranLow* dqcoeff, int sharpness) {
     const int64_t rd         = RDCOST(rdmult, *accu_rate + non_skip_cost, accu_dist);
@@ -1359,6 +1404,28 @@ static void svt_av1_optimize_b(PictureControlSet* pcs, ModeDecisionContext* ctx,
     }
         switch (tx_class) {
         case TX_CLASS_2D:
+#ifdef ARCH_X86_64
+            if (nz_ctx && svt_aom_use_avx2 && si - si_end + 1 >= AOMMAX(32, width * height / 2)) {
+                si = update_simple_2d_batch(&accu_rate,
+                                            si,
+                                            si_end,
+                                            width * height,
+                                            tx_size,
+                                            bwl,
+                                            rdmult,
+                                            shift,
+                                            p->dequant_qtx,
+                                            scan,
+                                            txb_costs,
+                                            coeff_ptr,
+                                            qcoeff_ptr,
+                                            dqcoeff_ptr,
+                                            levels,
+                                            qparam->iqmatrix,
+                                            nz_ctx);
+                break;
+            }
+#endif
             if (nz_ctx) {
                 UPDATE_COEFF_SIMPLE_LOOP(TX_CLASS_2D, nz_ctx);
             } else {

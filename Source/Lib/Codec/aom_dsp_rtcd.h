@@ -43,7 +43,10 @@ extern "C" {
 
 // Helper Functions
 void svt_aom_setup_rtcd_internal(EbCpuFlags flags);
-// AVX-512 enabled for the call sites that use an AVX-512 kernel directly instead of a function pointer
+// Enabled instruction sets for direct kernel calls.
+#ifdef ARCH_X86_64
+RTCD_EXTERN bool svt_aom_use_avx2;
+#endif
 RTCD_EXTERN bool svt_aom_use_avx512;
 
 int64_t svt_aom_sse_c(const uint8_t *a, int a_stride, const uint8_t *b, int b_stride, int width, int height);
@@ -2296,6 +2299,8 @@ void svt_aom_fft8x8_float_avx2(const float *input, float *temp, float *output);
 
 void svt_av1_get_nz_map_contexts_sse2(const uint8_t *const levels, const int16_t *const scan, const uint16_t eob, const TxSize tx_size, const TxClass tx_class, int8_t *const coeff_contexts);
 void svt_av1_get_nz_map_contexts_avx2(const uint8_t *const levels, const int16_t *const scan, const uint16_t eob, const TxSize tx_size, const TxClass tx_class, int8_t *const coeff_contexts);
+void svt_av1_rdoq_deltas_avx2(const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff, const QmVal* iqm,
+                              int ac_dequant, int shift, int count, int64_t* delta);
 void svt_av1_get_nz_map_contexts_2d_rows_avx2(const uint8_t *const levels, const TxSize tx_size, const int32_t rows, int8_t *const coeff_contexts);
 
 void svt_residual_kernel8bit_avx2(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);

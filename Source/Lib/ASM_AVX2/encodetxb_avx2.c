@@ -18,6 +18,58 @@
 #include "cabac_context_model.h"
 #include "full_loop.h"
 
+// The simple RDOQ pass visits each AC position once. Its two reconstruction
+// errors are independent of scan order and of the evolving entropy contexts.
+static INLINE __m256i rdoq_square(__m256i errors) {
+    return _mm256_mul_epu32(errors, errors);
+}
+
+static AOM_FORCE_INLINE void rdoq_deltas(const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff,
+                                         const QmVal* iqm, int ac_dequant, int shift, int count, int64_t* delta) {
+    assert(count % 8 == 0);
+    const __m256i ac    = _mm256_set1_epi32(ac_dequant);
+    const __m128i scale = _mm_cvtsi32_si128(shift);
+    for (int i = 0; i < count; i += 8) {
+        const __m256i orig  = _mm256_abs_epi32(yy_loadu_256(tcoeff + i));
+        const __m256i recon = _mm256_abs_epi32(yy_loadu_256(dqcoeff + i));
+        __m256i       step  = ac;
+        if (iqm) {
+            const __m256i iw = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i*)(iqm + i)));
+            step             = _mm256_srli_epi32(
+                _mm256_add_epi32(_mm256_mullo_epi32(iw, ac), _mm256_set1_epi32(1 << (AOM_QM_BITS - 1))), AOM_QM_BITS);
+        }
+        const __m256i qabs      = _mm256_abs_epi32(yy_loadu_256(qcoeff + i));
+        const __m256i low_level = _mm256_max_epi32(_mm256_sub_epi32(qabs, _mm256_set1_epi32(1)),
+                                                   _mm256_setzero_si256());
+        const __m256i low       = _mm256_srl_epi32(_mm256_mullo_epi32(low_level, step), scale);
+        const __m256i cur_err   = _mm256_sll_epi32(_mm256_abs_epi32(_mm256_sub_epi32(orig, recon)), scale);
+        const __m256i low_err   = _mm256_sll_epi32(_mm256_abs_epi32(_mm256_sub_epi32(orig, low)), scale);
+        const __m256i even      = _mm256_sub_epi64(rdoq_square(cur_err), rdoq_square(low_err));
+        const __m256i odd       = _mm256_sub_epi64(rdoq_square(_mm256_srli_epi64(cur_err, 32)),
+                                             rdoq_square(_mm256_srli_epi64(low_err, 32)));
+        // A coefficient already below its target magnitude cannot be lowered.
+        const __m256i disabled = _mm256_cmpgt_epi32(orig, recon);
+        const __m256i never    = _mm256_set1_epi64x(INT64_MIN);
+        const __m256i lo       = _mm256_unpacklo_epi64(even, odd);
+        const __m256i hi       = _mm256_unpackhi_epi64(even, odd);
+        const __m256i first    = _mm256_permute2x128_si256(lo, hi, 0x20);
+        const __m256i last     = _mm256_permute2x128_si256(lo, hi, 0x31);
+        yy_storeu_256(delta + i,
+                      _mm256_blendv_epi8(first, never, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(disabled))));
+        yy_storeu_256(delta + i + 4,
+                      _mm256_blendv_epi8(last, never, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(disabled, 1))));
+    }
+}
+
+void svt_av1_rdoq_deltas_avx2(const TranLow* tcoeff, const TranLow* qcoeff, const TranLow* dqcoeff, const QmVal* iqm,
+                              int ac_dequant, int shift, int count, int64_t* delta) {
+    if (iqm) {
+        rdoq_deltas(tcoeff, qcoeff, dqcoeff, iqm, ac_dequant, shift, count, delta);
+    } else {
+        rdoq_deltas(tcoeff, qcoeff, dqcoeff, NULL, ac_dequant, shift, count, delta);
+    }
+}
+
 static INLINE __m256i txb_init_levels_avx2(const TranLow* const coeff) {
     const __m256i idx   = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
     const __m256i c0    = yy_loadu_256(coeff + 0 * 8);
