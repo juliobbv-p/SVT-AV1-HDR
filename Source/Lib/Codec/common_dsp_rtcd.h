@@ -148,6 +148,7 @@ void svt_av1_inv_txfm2d_add_16x4_c(const int32_t *input, uint16_t *output_r, int
 RTCD_EXTERN void(*svt_av1_inv_txfm2d_add_16x4)(const int32_t *input, uint16_t *output_r, int32_t stride_r, uint16_t *output_w, int32_t stride_w, TxType tx_type, TxSize tx_size, int32_t bd);
 void svt_av1_highbd_inv_txfm_add_c(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
 void svt_highbd_inv_txfm_dispatch_avx2(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
+void svt_highbd_inv_txfm_dispatch_avx512(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
 void svt_av1_highbd_inv_txfm_add_neon(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
 RTCD_EXTERN void(*svt_av1_highbd_inv_txfm_add)(const TranLow *input, uint8_t *dest_r, int32_t stride_r, uint8_t *dest_w, int32_t stride_w, const TxfmParam *txfm_param);
 void svt_av1_inv_txfm_add_c(const TranLow *dqcoeff, uint8_t *dst_r, int32_t stride_r, uint8_t *dst_w, int32_t stride_w, const TxfmParam *txfm_param);

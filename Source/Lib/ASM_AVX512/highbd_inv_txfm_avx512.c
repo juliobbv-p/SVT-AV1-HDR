@@ -19,6 +19,7 @@
 #include "inv_transforms.h"
 #include "synonyms_avx512.h"
 #include "transpose_avx512.h"
+#include "txfm_common_avx2.h"
 
 extern const int8_t* svt_aom_inv_txfm_shift_ls[];
 const int32_t*       cospi_arr(int32_t n);
@@ -2788,4 +2789,632 @@ void svt_av1_inv_txfm2d_add_32x16_avx512(const int32_t* coeff, uint16_t* output_
     av1_round_shift_array_avx512(in, out, 32, -shift[1]);
     write_buffer_32x16n_avx512(out, output_r, stride_r, output_w, stride_w, 0, 0, bd, 32);
 }
+
+// Sparse 10-bit DCTs use the AV1 even/odd factorization. The even half
+// recurses on every second input, while the odd half omits the zero
+// rotations beyond the scan band. Each word lane carries one transform.
+static INLINE __m512i rotate_one(__m512i x, int c) {
+    return _mm512_mulhrs_epi16(x, _mm512_set1_epi16(c * 8));
+}
+
+static INLINE __m512i rotate_two(__m512i a, int ca, __m512i b, int cb) {
+    const __m512i c     = _mm512_set1_epi32((uint16_t)ca | ((uint32_t)(uint16_t)cb << 16));
+    const __m512i round = _mm512_set1_epi32(1 << (INV_COS_BIT - 1));
+    const __m512i lo    = _mm512_madd_epi16(_mm512_unpacklo_epi16(a, b), c);
+    const __m512i hi    = _mm512_madd_epi16(_mm512_unpackhi_epi16(a, b), c);
+    return _mm512_packs_epi32(_mm512_srai_epi32(_mm512_add_epi32(lo, round), INV_COS_BIT),
+                              _mm512_srai_epi32(_mm512_add_epi32(hi, round), INV_COS_BIT));
+}
+
+static AOM_FORCE_INLINE void packed_idct4(const __m512i* in, int stride, int used, __m512i* out) {
+    const int32_t* cospi = cospi_arr(INV_COS_BIT);
+    const __m512i  zero  = _mm512_setzero_si512();
+    const __m512i  x0    = in[0];
+    const __m512i  x2    = used > 2 ? in[2 * stride] : zero;
+    const __m512i  x1    = used > 1 ? in[1 * stride] : zero;
+    const __m512i  x3    = used > 3 ? in[3 * stride] : zero;
+    const __m512i  s2_0  = rotate_two(x0, cospi[32], x2, cospi[32]);
+    const __m512i  s2_1  = rotate_two(x0, cospi[32], x2, -cospi[32]);
+    const __m512i  s2_2  = rotate_two(x1, cospi[48], x3, -cospi[16]);
+    const __m512i  s2_3  = rotate_two(x1, cospi[16], x3, cospi[48]);
+    out[0]               = _mm512_add_epi16(s2_0, s2_3);
+    out[3]               = _mm512_sub_epi16(s2_0, s2_3);
+    out[1]               = _mm512_add_epi16(s2_1, s2_2);
+    out[2]               = _mm512_sub_epi16(s2_1, s2_2);
+}
+
+static AOM_FORCE_INLINE void packed_idct8(const __m512i* in, int stride, int used, __m512i* out) {
+    const int32_t* cospi = cospi_arr(INV_COS_BIT);
+    packed_idct4(in, 2 * stride, (used + 1) / 2, out);
+    const __m512i zero = _mm512_setzero_si512();
+    const __m512i x1   = used > 1 ? in[1 * stride] : zero;
+    const __m512i x5   = used > 5 ? in[5 * stride] : zero;
+    const __m512i x3   = used > 3 ? in[3 * stride] : zero;
+    const __m512i x7   = used > 7 ? in[7 * stride] : zero;
+    const __m512i s2_4 = rotate_two(x1, cospi[56], x7, -cospi[8]);
+    const __m512i s2_5 = rotate_two(x5, cospi[24], x3, -cospi[40]);
+    const __m512i s2_6 = rotate_two(x5, cospi[40], x3, cospi[24]);
+    const __m512i s2_7 = rotate_two(x1, cospi[8], x7, cospi[56]);
+    const __m512i s3_4 = _mm512_add_epi16(s2_4, s2_5);
+    const __m512i s3_5 = _mm512_sub_epi16(s2_4, s2_5);
+    const __m512i s3_6 = _mm512_sub_epi16(s2_7, s2_6);
+    const __m512i s3_7 = _mm512_add_epi16(s2_6, s2_7);
+    const __m512i s4_5 = rotate_two(s3_5, -cospi[32], s3_6, cospi[32]);
+    const __m512i s4_6 = rotate_two(s3_5, cospi[32], s3_6, cospi[32]);
+    out[7]             = _mm512_sub_epi16(out[0], s3_7);
+    out[0]             = _mm512_add_epi16(out[0], s3_7);
+    out[6]             = _mm512_sub_epi16(out[1], s4_6);
+    out[1]             = _mm512_add_epi16(out[1], s4_6);
+    out[5]             = _mm512_sub_epi16(out[2], s4_5);
+    out[2]             = _mm512_add_epi16(out[2], s4_5);
+    out[4]             = _mm512_sub_epi16(out[3], s3_4);
+    out[3]             = _mm512_add_epi16(out[3], s3_4);
+}
+
+static AOM_FORCE_INLINE void packed_idct16(const __m512i* in, int stride, int used, __m512i* out) {
+    const int32_t* cospi = cospi_arr(INV_COS_BIT);
+    packed_idct8(in, 2 * stride, (used + 1) / 2, out);
+    const __m512i zero  = _mm512_setzero_si512();
+    const __m512i x1    = used > 1 ? in[1 * stride] : zero;
+    const __m512i x9    = used > 9 ? in[9 * stride] : zero;
+    const __m512i x5    = used > 5 ? in[5 * stride] : zero;
+    const __m512i x13   = used > 13 ? in[13 * stride] : zero;
+    const __m512i x3    = used > 3 ? in[3 * stride] : zero;
+    const __m512i x11   = used > 11 ? in[11 * stride] : zero;
+    const __m512i x7    = used > 7 ? in[7 * stride] : zero;
+    const __m512i x15   = used > 15 ? in[15 * stride] : zero;
+    const __m512i s2_8  = rotate_two(x1, cospi[60], x15, -cospi[4]);
+    const __m512i s2_9  = rotate_two(x9, cospi[28], x7, -cospi[36]);
+    const __m512i s2_10 = rotate_two(x5, cospi[44], x11, -cospi[20]);
+    const __m512i s2_11 = rotate_two(x13, cospi[12], x3, -cospi[52]);
+    const __m512i s2_12 = rotate_two(x13, cospi[52], x3, cospi[12]);
+    const __m512i s2_13 = rotate_two(x5, cospi[20], x11, cospi[44]);
+    const __m512i s2_14 = rotate_two(x9, cospi[36], x7, cospi[28]);
+    const __m512i s2_15 = rotate_two(x1, cospi[4], x15, cospi[60]);
+    const __m512i s3_8  = _mm512_add_epi16(s2_8, s2_9);
+    const __m512i s3_9  = _mm512_sub_epi16(s2_8, s2_9);
+    const __m512i s3_10 = _mm512_sub_epi16(s2_11, s2_10);
+    const __m512i s3_11 = _mm512_add_epi16(s2_10, s2_11);
+    const __m512i s3_12 = _mm512_add_epi16(s2_12, s2_13);
+    const __m512i s3_13 = _mm512_sub_epi16(s2_12, s2_13);
+    const __m512i s3_14 = _mm512_sub_epi16(s2_15, s2_14);
+    const __m512i s3_15 = _mm512_add_epi16(s2_14, s2_15);
+    const __m512i s4_9  = rotate_two(s3_9, -cospi[16], s3_14, cospi[48]);
+    const __m512i s4_10 = rotate_two(s3_10, -cospi[48], s3_13, -cospi[16]);
+    const __m512i s4_13 = rotate_two(s3_10, -cospi[16], s3_13, cospi[48]);
+    const __m512i s4_14 = rotate_two(s3_9, cospi[48], s3_14, cospi[16]);
+    const __m512i s5_8  = _mm512_add_epi16(s3_8, s3_11);
+    const __m512i s5_9  = _mm512_add_epi16(s4_9, s4_10);
+    const __m512i s5_10 = _mm512_sub_epi16(s4_9, s4_10);
+    const __m512i s5_11 = _mm512_sub_epi16(s3_8, s3_11);
+    const __m512i s5_12 = _mm512_sub_epi16(s3_15, s3_12);
+    const __m512i s5_13 = _mm512_sub_epi16(s4_14, s4_13);
+    const __m512i s5_14 = _mm512_add_epi16(s4_13, s4_14);
+    const __m512i s5_15 = _mm512_add_epi16(s3_12, s3_15);
+    const __m512i s6_10 = rotate_two(s5_10, -cospi[32], s5_13, cospi[32]);
+    const __m512i s6_11 = rotate_two(s5_11, -cospi[32], s5_12, cospi[32]);
+    const __m512i s6_12 = rotate_two(s5_11, cospi[32], s5_12, cospi[32]);
+    const __m512i s6_13 = rotate_two(s5_10, cospi[32], s5_13, cospi[32]);
+    out[15]             = _mm512_sub_epi16(out[0], s5_15);
+    out[0]              = _mm512_add_epi16(out[0], s5_15);
+    out[14]             = _mm512_sub_epi16(out[1], s5_14);
+    out[1]              = _mm512_add_epi16(out[1], s5_14);
+    out[13]             = _mm512_sub_epi16(out[2], s6_13);
+    out[2]              = _mm512_add_epi16(out[2], s6_13);
+    out[12]             = _mm512_sub_epi16(out[3], s6_12);
+    out[3]              = _mm512_add_epi16(out[3], s6_12);
+    out[11]             = _mm512_sub_epi16(out[4], s6_11);
+    out[4]              = _mm512_add_epi16(out[4], s6_11);
+    out[10]             = _mm512_sub_epi16(out[5], s6_10);
+    out[5]              = _mm512_add_epi16(out[5], s6_10);
+    out[9]              = _mm512_sub_epi16(out[6], s5_9);
+    out[6]              = _mm512_add_epi16(out[6], s5_9);
+    out[8]              = _mm512_sub_epi16(out[7], s5_8);
+    out[7]              = _mm512_add_epi16(out[7], s5_8);
+}
+
+static AOM_FORCE_INLINE void packed_idct32(const __m512i* in, int stride, int used, __m512i* out) {
+    const int32_t* cospi = cospi_arr(INV_COS_BIT);
+    packed_idct16(in, 2 * stride, (used + 1) / 2, out);
+    const __m512i zero  = _mm512_setzero_si512();
+    const __m512i x1    = used > 1 ? in[1 * stride] : zero;
+    const __m512i x9    = used > 9 ? in[9 * stride] : zero;
+    const __m512i x5    = used > 5 ? in[5 * stride] : zero;
+    const __m512i x13   = used > 13 ? in[13 * stride] : zero;
+    const __m512i x3    = used > 3 ? in[3 * stride] : zero;
+    const __m512i x11   = used > 11 ? in[11 * stride] : zero;
+    const __m512i x7    = used > 7 ? in[7 * stride] : zero;
+    const __m512i x15   = used > 15 ? in[15 * stride] : zero;
+    const __m512i s2_16 = rotate_one(x1, cospi[62]);
+    const __m512i s2_17 = rotate_one(x15, -cospi[34]);
+    const __m512i s2_18 = rotate_one(x9, cospi[46]);
+    const __m512i s2_19 = rotate_one(x7, -cospi[50]);
+    const __m512i s2_20 = rotate_one(x5, cospi[54]);
+    const __m512i s2_21 = rotate_one(x11, -cospi[42]);
+    const __m512i s2_22 = rotate_one(x13, cospi[38]);
+    const __m512i s2_23 = rotate_one(x3, -cospi[58]);
+    const __m512i s2_24 = rotate_one(x3, cospi[6]);
+    const __m512i s2_25 = rotate_one(x13, cospi[26]);
+    const __m512i s2_26 = rotate_one(x11, cospi[22]);
+    const __m512i s2_27 = rotate_one(x5, cospi[10]);
+    const __m512i s2_28 = rotate_one(x7, cospi[14]);
+    const __m512i s2_29 = rotate_one(x9, cospi[18]);
+    const __m512i s2_30 = rotate_one(x15, cospi[30]);
+    const __m512i s2_31 = rotate_one(x1, cospi[2]);
+    const __m512i s3_16 = _mm512_add_epi16(s2_16, s2_17);
+    const __m512i s3_17 = _mm512_sub_epi16(s2_16, s2_17);
+    const __m512i s3_18 = _mm512_sub_epi16(s2_19, s2_18);
+    const __m512i s3_19 = _mm512_add_epi16(s2_18, s2_19);
+    const __m512i s3_20 = _mm512_add_epi16(s2_20, s2_21);
+    const __m512i s3_21 = _mm512_sub_epi16(s2_20, s2_21);
+    const __m512i s3_22 = _mm512_sub_epi16(s2_23, s2_22);
+    const __m512i s3_23 = _mm512_add_epi16(s2_22, s2_23);
+    const __m512i s3_24 = _mm512_add_epi16(s2_24, s2_25);
+    const __m512i s3_25 = _mm512_sub_epi16(s2_24, s2_25);
+    const __m512i s3_26 = _mm512_sub_epi16(s2_27, s2_26);
+    const __m512i s3_27 = _mm512_add_epi16(s2_26, s2_27);
+    const __m512i s3_28 = _mm512_add_epi16(s2_28, s2_29);
+    const __m512i s3_29 = _mm512_sub_epi16(s2_28, s2_29);
+    const __m512i s3_30 = _mm512_sub_epi16(s2_31, s2_30);
+    const __m512i s3_31 = _mm512_add_epi16(s2_30, s2_31);
+    const __m512i s4_17 = rotate_two(s3_17, -cospi[8], s3_30, cospi[56]);
+    const __m512i s4_18 = rotate_two(s3_18, -cospi[56], s3_29, -cospi[8]);
+    const __m512i s4_21 = rotate_two(s3_21, -cospi[40], s3_26, cospi[24]);
+    const __m512i s4_22 = rotate_two(s3_22, -cospi[24], s3_25, -cospi[40]);
+    const __m512i s4_25 = rotate_two(s3_22, -cospi[40], s3_25, cospi[24]);
+    const __m512i s4_26 = rotate_two(s3_21, cospi[24], s3_26, cospi[40]);
+    const __m512i s4_29 = rotate_two(s3_18, -cospi[8], s3_29, cospi[56]);
+    const __m512i s4_30 = rotate_two(s3_17, cospi[56], s3_30, cospi[8]);
+    const __m512i s5_16 = _mm512_add_epi16(s3_16, s3_19);
+    const __m512i s5_17 = _mm512_add_epi16(s4_17, s4_18);
+    const __m512i s5_18 = _mm512_sub_epi16(s4_17, s4_18);
+    const __m512i s5_19 = _mm512_sub_epi16(s3_16, s3_19);
+    const __m512i s5_20 = _mm512_sub_epi16(s3_23, s3_20);
+    const __m512i s5_21 = _mm512_sub_epi16(s4_22, s4_21);
+    const __m512i s5_22 = _mm512_add_epi16(s4_21, s4_22);
+    const __m512i s5_23 = _mm512_add_epi16(s3_20, s3_23);
+    const __m512i s5_24 = _mm512_add_epi16(s3_24, s3_27);
+    const __m512i s5_25 = _mm512_add_epi16(s4_25, s4_26);
+    const __m512i s5_26 = _mm512_sub_epi16(s4_25, s4_26);
+    const __m512i s5_27 = _mm512_sub_epi16(s3_24, s3_27);
+    const __m512i s5_28 = _mm512_sub_epi16(s3_31, s3_28);
+    const __m512i s5_29 = _mm512_sub_epi16(s4_30, s4_29);
+    const __m512i s5_30 = _mm512_add_epi16(s4_29, s4_30);
+    const __m512i s5_31 = _mm512_add_epi16(s3_28, s3_31);
+    const __m512i s6_18 = rotate_two(s5_18, -cospi[16], s5_29, cospi[48]);
+    const __m512i s6_19 = rotate_two(s5_19, -cospi[16], s5_28, cospi[48]);
+    const __m512i s6_20 = rotate_two(s5_20, -cospi[48], s5_27, -cospi[16]);
+    const __m512i s6_21 = rotate_two(s5_21, -cospi[48], s5_26, -cospi[16]);
+    const __m512i s6_26 = rotate_two(s5_21, -cospi[16], s5_26, cospi[48]);
+    const __m512i s6_27 = rotate_two(s5_20, -cospi[16], s5_27, cospi[48]);
+    const __m512i s6_28 = rotate_two(s5_19, cospi[48], s5_28, cospi[16]);
+    const __m512i s6_29 = rotate_two(s5_18, cospi[48], s5_29, cospi[16]);
+    const __m512i s7_16 = _mm512_add_epi16(s5_16, s5_23);
+    const __m512i s7_17 = _mm512_add_epi16(s5_17, s5_22);
+    const __m512i s7_18 = _mm512_add_epi16(s6_18, s6_21);
+    const __m512i s7_19 = _mm512_add_epi16(s6_19, s6_20);
+    const __m512i s7_20 = _mm512_sub_epi16(s6_19, s6_20);
+    const __m512i s7_21 = _mm512_sub_epi16(s6_18, s6_21);
+    const __m512i s7_22 = _mm512_sub_epi16(s5_17, s5_22);
+    const __m512i s7_23 = _mm512_sub_epi16(s5_16, s5_23);
+    const __m512i s7_24 = _mm512_sub_epi16(s5_31, s5_24);
+    const __m512i s7_25 = _mm512_sub_epi16(s5_30, s5_25);
+    const __m512i s7_26 = _mm512_sub_epi16(s6_29, s6_26);
+    const __m512i s7_27 = _mm512_sub_epi16(s6_28, s6_27);
+    const __m512i s7_28 = _mm512_add_epi16(s6_27, s6_28);
+    const __m512i s7_29 = _mm512_add_epi16(s6_26, s6_29);
+    const __m512i s7_30 = _mm512_add_epi16(s5_25, s5_30);
+    const __m512i s7_31 = _mm512_add_epi16(s5_24, s5_31);
+    const __m512i s8_20 = rotate_two(s7_20, -cospi[32], s7_27, cospi[32]);
+    const __m512i s8_21 = rotate_two(s7_21, -cospi[32], s7_26, cospi[32]);
+    const __m512i s8_22 = rotate_two(s7_22, -cospi[32], s7_25, cospi[32]);
+    const __m512i s8_23 = rotate_two(s7_23, -cospi[32], s7_24, cospi[32]);
+    const __m512i s8_24 = rotate_two(s7_23, cospi[32], s7_24, cospi[32]);
+    const __m512i s8_25 = rotate_two(s7_22, cospi[32], s7_25, cospi[32]);
+    const __m512i s8_26 = rotate_two(s7_21, cospi[32], s7_26, cospi[32]);
+    const __m512i s8_27 = rotate_two(s7_20, cospi[32], s7_27, cospi[32]);
+    out[31]             = _mm512_sub_epi16(out[0], s7_31);
+    out[0]              = _mm512_add_epi16(out[0], s7_31);
+    out[30]             = _mm512_sub_epi16(out[1], s7_30);
+    out[1]              = _mm512_add_epi16(out[1], s7_30);
+    out[29]             = _mm512_sub_epi16(out[2], s7_29);
+    out[2]              = _mm512_add_epi16(out[2], s7_29);
+    out[28]             = _mm512_sub_epi16(out[3], s7_28);
+    out[3]              = _mm512_add_epi16(out[3], s7_28);
+    out[27]             = _mm512_sub_epi16(out[4], s8_27);
+    out[4]              = _mm512_add_epi16(out[4], s8_27);
+    out[26]             = _mm512_sub_epi16(out[5], s8_26);
+    out[5]              = _mm512_add_epi16(out[5], s8_26);
+    out[25]             = _mm512_sub_epi16(out[6], s8_25);
+    out[6]              = _mm512_add_epi16(out[6], s8_25);
+    out[24]             = _mm512_sub_epi16(out[7], s8_24);
+    out[7]              = _mm512_add_epi16(out[7], s8_24);
+    out[23]             = _mm512_sub_epi16(out[8], s8_23);
+    out[8]              = _mm512_add_epi16(out[8], s8_23);
+    out[22]             = _mm512_sub_epi16(out[9], s8_22);
+    out[9]              = _mm512_add_epi16(out[9], s8_22);
+    out[21]             = _mm512_sub_epi16(out[10], s8_21);
+    out[10]             = _mm512_add_epi16(out[10], s8_21);
+    out[20]             = _mm512_sub_epi16(out[11], s8_20);
+    out[11]             = _mm512_add_epi16(out[11], s8_20);
+    out[19]             = _mm512_sub_epi16(out[12], s7_19);
+    out[12]             = _mm512_add_epi16(out[12], s7_19);
+    out[18]             = _mm512_sub_epi16(out[13], s7_18);
+    out[13]             = _mm512_add_epi16(out[13], s7_18);
+    out[17]             = _mm512_sub_epi16(out[14], s7_17);
+    out[14]             = _mm512_add_epi16(out[14], s7_17);
+    out[16]             = _mm512_sub_epi16(out[15], s7_16);
+    out[15]             = _mm512_add_epi16(out[15], s7_16);
+}
+
+static AOM_FORCE_INLINE void packed_idct64(const __m512i* in, int stride, int used, __m512i* out) {
+    const int32_t* cospi = cospi_arr(INV_COS_BIT);
+    packed_idct32(in, 2 * stride, (used + 1) / 2, out);
+    const __m512i zero   = _mm512_setzero_si512();
+    const __m512i x1     = used > 1 ? in[1 * stride] : zero;
+    const __m512i x9     = used > 9 ? in[9 * stride] : zero;
+    const __m512i x5     = used > 5 ? in[5 * stride] : zero;
+    const __m512i x13    = used > 13 ? in[13 * stride] : zero;
+    const __m512i x3     = used > 3 ? in[3 * stride] : zero;
+    const __m512i x11    = used > 11 ? in[11 * stride] : zero;
+    const __m512i x7     = used > 7 ? in[7 * stride] : zero;
+    const __m512i x15    = used > 15 ? in[15 * stride] : zero;
+    const __m512i s2_32  = rotate_one(x1, cospi[63]);
+    const __m512i s2_35  = rotate_one(x15, -cospi[49]);
+    const __m512i s2_36  = rotate_one(x9, cospi[55]);
+    const __m512i s2_39  = rotate_one(x7, -cospi[57]);
+    const __m512i s2_40  = rotate_one(x5, cospi[59]);
+    const __m512i s2_43  = rotate_one(x11, -cospi[53]);
+    const __m512i s2_44  = rotate_one(x13, cospi[51]);
+    const __m512i s2_47  = rotate_one(x3, -cospi[61]);
+    const __m512i s2_48  = rotate_one(x3, cospi[3]);
+    const __m512i s2_51  = rotate_one(x13, cospi[13]);
+    const __m512i s2_52  = rotate_one(x11, cospi[11]);
+    const __m512i s2_55  = rotate_one(x5, cospi[5]);
+    const __m512i s2_56  = rotate_one(x7, cospi[7]);
+    const __m512i s2_59  = rotate_one(x9, cospi[9]);
+    const __m512i s2_60  = rotate_one(x15, cospi[15]);
+    const __m512i s2_63  = rotate_one(x1, cospi[1]);
+    const __m512i s4_33  = rotate_two(s2_32, -cospi[4], s2_63, cospi[60]);
+    const __m512i s4_34  = rotate_two(s2_35, -cospi[60], s2_60, -cospi[4]);
+    const __m512i s4_37  = rotate_two(s2_36, -cospi[36], s2_59, cospi[28]);
+    const __m512i s4_38  = rotate_two(s2_39, -cospi[28], s2_56, -cospi[36]);
+    const __m512i s4_41  = rotate_two(s2_40, -cospi[20], s2_55, cospi[44]);
+    const __m512i s4_42  = rotate_two(s2_43, -cospi[44], s2_52, -cospi[20]);
+    const __m512i s4_45  = rotate_two(s2_44, -cospi[52], s2_51, cospi[12]);
+    const __m512i s4_46  = rotate_two(s2_47, -cospi[12], s2_48, -cospi[52]);
+    const __m512i s4_49  = rotate_two(s2_47, -cospi[52], s2_48, cospi[12]);
+    const __m512i s4_50  = rotate_two(s2_44, cospi[12], s2_51, cospi[52]);
+    const __m512i s4_53  = rotate_two(s2_43, -cospi[20], s2_52, cospi[44]);
+    const __m512i s4_54  = rotate_two(s2_40, cospi[44], s2_55, cospi[20]);
+    const __m512i s4_57  = rotate_two(s2_39, -cospi[36], s2_56, cospi[28]);
+    const __m512i s4_58  = rotate_two(s2_36, cospi[28], s2_59, cospi[36]);
+    const __m512i s4_61  = rotate_two(s2_35, -cospi[4], s2_60, cospi[60]);
+    const __m512i s4_62  = rotate_two(s2_32, cospi[60], s2_63, cospi[4]);
+    const __m512i s5_32  = _mm512_add_epi16(s2_32, s2_35);
+    const __m512i s5_33  = _mm512_add_epi16(s4_33, s4_34);
+    const __m512i s5_34  = _mm512_sub_epi16(s4_33, s4_34);
+    const __m512i s5_35  = _mm512_sub_epi16(s2_32, s2_35);
+    const __m512i s5_36  = _mm512_sub_epi16(s2_39, s2_36);
+    const __m512i s5_37  = _mm512_sub_epi16(s4_38, s4_37);
+    const __m512i s5_38  = _mm512_add_epi16(s4_37, s4_38);
+    const __m512i s5_39  = _mm512_add_epi16(s2_36, s2_39);
+    const __m512i s5_40  = _mm512_add_epi16(s2_40, s2_43);
+    const __m512i s5_41  = _mm512_add_epi16(s4_41, s4_42);
+    const __m512i s5_42  = _mm512_sub_epi16(s4_41, s4_42);
+    const __m512i s5_43  = _mm512_sub_epi16(s2_40, s2_43);
+    const __m512i s5_44  = _mm512_sub_epi16(s2_47, s2_44);
+    const __m512i s5_45  = _mm512_sub_epi16(s4_46, s4_45);
+    const __m512i s5_46  = _mm512_add_epi16(s4_45, s4_46);
+    const __m512i s5_47  = _mm512_add_epi16(s2_44, s2_47);
+    const __m512i s5_48  = _mm512_add_epi16(s2_48, s2_51);
+    const __m512i s5_49  = _mm512_add_epi16(s4_49, s4_50);
+    const __m512i s5_50  = _mm512_sub_epi16(s4_49, s4_50);
+    const __m512i s5_51  = _mm512_sub_epi16(s2_48, s2_51);
+    const __m512i s5_52  = _mm512_sub_epi16(s2_55, s2_52);
+    const __m512i s5_53  = _mm512_sub_epi16(s4_54, s4_53);
+    const __m512i s5_54  = _mm512_add_epi16(s4_53, s4_54);
+    const __m512i s5_55  = _mm512_add_epi16(s2_52, s2_55);
+    const __m512i s5_56  = _mm512_add_epi16(s2_56, s2_59);
+    const __m512i s5_57  = _mm512_add_epi16(s4_57, s4_58);
+    const __m512i s5_58  = _mm512_sub_epi16(s4_57, s4_58);
+    const __m512i s5_59  = _mm512_sub_epi16(s2_56, s2_59);
+    const __m512i s5_60  = _mm512_sub_epi16(s2_63, s2_60);
+    const __m512i s5_61  = _mm512_sub_epi16(s4_62, s4_61);
+    const __m512i s5_62  = _mm512_add_epi16(s4_61, s4_62);
+    const __m512i s5_63  = _mm512_add_epi16(s2_60, s2_63);
+    const __m512i s6_34  = rotate_two(s5_34, -cospi[8], s5_61, cospi[56]);
+    const __m512i s6_35  = rotate_two(s5_35, -cospi[8], s5_60, cospi[56]);
+    const __m512i s6_36  = rotate_two(s5_36, -cospi[56], s5_59, -cospi[8]);
+    const __m512i s6_37  = rotate_two(s5_37, -cospi[56], s5_58, -cospi[8]);
+    const __m512i s6_42  = rotate_two(s5_42, -cospi[40], s5_53, cospi[24]);
+    const __m512i s6_43  = rotate_two(s5_43, -cospi[40], s5_52, cospi[24]);
+    const __m512i s6_44  = rotate_two(s5_44, -cospi[24], s5_51, -cospi[40]);
+    const __m512i s6_45  = rotate_two(s5_45, -cospi[24], s5_50, -cospi[40]);
+    const __m512i s6_50  = rotate_two(s5_45, -cospi[40], s5_50, cospi[24]);
+    const __m512i s6_51  = rotate_two(s5_44, -cospi[40], s5_51, cospi[24]);
+    const __m512i s6_52  = rotate_two(s5_43, cospi[24], s5_52, cospi[40]);
+    const __m512i s6_53  = rotate_two(s5_42, cospi[24], s5_53, cospi[40]);
+    const __m512i s6_58  = rotate_two(s5_37, -cospi[8], s5_58, cospi[56]);
+    const __m512i s6_59  = rotate_two(s5_36, -cospi[8], s5_59, cospi[56]);
+    const __m512i s6_60  = rotate_two(s5_35, cospi[56], s5_60, cospi[8]);
+    const __m512i s6_61  = rotate_two(s5_34, cospi[56], s5_61, cospi[8]);
+    const __m512i s7_32  = _mm512_add_epi16(s5_32, s5_39);
+    const __m512i s7_33  = _mm512_add_epi16(s5_33, s5_38);
+    const __m512i s7_34  = _mm512_add_epi16(s6_34, s6_37);
+    const __m512i s7_35  = _mm512_add_epi16(s6_35, s6_36);
+    const __m512i s7_36  = _mm512_sub_epi16(s6_35, s6_36);
+    const __m512i s7_37  = _mm512_sub_epi16(s6_34, s6_37);
+    const __m512i s7_38  = _mm512_sub_epi16(s5_33, s5_38);
+    const __m512i s7_39  = _mm512_sub_epi16(s5_32, s5_39);
+    const __m512i s7_40  = _mm512_sub_epi16(s5_47, s5_40);
+    const __m512i s7_41  = _mm512_sub_epi16(s5_46, s5_41);
+    const __m512i s7_42  = _mm512_sub_epi16(s6_45, s6_42);
+    const __m512i s7_43  = _mm512_sub_epi16(s6_44, s6_43);
+    const __m512i s7_44  = _mm512_add_epi16(s6_43, s6_44);
+    const __m512i s7_45  = _mm512_add_epi16(s6_42, s6_45);
+    const __m512i s7_46  = _mm512_add_epi16(s5_41, s5_46);
+    const __m512i s7_47  = _mm512_add_epi16(s5_40, s5_47);
+    const __m512i s7_48  = _mm512_add_epi16(s5_48, s5_55);
+    const __m512i s7_49  = _mm512_add_epi16(s5_49, s5_54);
+    const __m512i s7_50  = _mm512_add_epi16(s6_50, s6_53);
+    const __m512i s7_51  = _mm512_add_epi16(s6_51, s6_52);
+    const __m512i s7_52  = _mm512_sub_epi16(s6_51, s6_52);
+    const __m512i s7_53  = _mm512_sub_epi16(s6_50, s6_53);
+    const __m512i s7_54  = _mm512_sub_epi16(s5_49, s5_54);
+    const __m512i s7_55  = _mm512_sub_epi16(s5_48, s5_55);
+    const __m512i s7_56  = _mm512_sub_epi16(s5_63, s5_56);
+    const __m512i s7_57  = _mm512_sub_epi16(s5_62, s5_57);
+    const __m512i s7_58  = _mm512_sub_epi16(s6_61, s6_58);
+    const __m512i s7_59  = _mm512_sub_epi16(s6_60, s6_59);
+    const __m512i s7_60  = _mm512_add_epi16(s6_59, s6_60);
+    const __m512i s7_61  = _mm512_add_epi16(s6_58, s6_61);
+    const __m512i s7_62  = _mm512_add_epi16(s5_57, s5_62);
+    const __m512i s7_63  = _mm512_add_epi16(s5_56, s5_63);
+    const __m512i s8_36  = rotate_two(s7_36, -cospi[16], s7_59, cospi[48]);
+    const __m512i s8_37  = rotate_two(s7_37, -cospi[16], s7_58, cospi[48]);
+    const __m512i s8_38  = rotate_two(s7_38, -cospi[16], s7_57, cospi[48]);
+    const __m512i s8_39  = rotate_two(s7_39, -cospi[16], s7_56, cospi[48]);
+    const __m512i s8_40  = rotate_two(s7_40, -cospi[48], s7_55, -cospi[16]);
+    const __m512i s8_41  = rotate_two(s7_41, -cospi[48], s7_54, -cospi[16]);
+    const __m512i s8_42  = rotate_two(s7_42, -cospi[48], s7_53, -cospi[16]);
+    const __m512i s8_43  = rotate_two(s7_43, -cospi[48], s7_52, -cospi[16]);
+    const __m512i s8_52  = rotate_two(s7_43, -cospi[16], s7_52, cospi[48]);
+    const __m512i s8_53  = rotate_two(s7_42, -cospi[16], s7_53, cospi[48]);
+    const __m512i s8_54  = rotate_two(s7_41, -cospi[16], s7_54, cospi[48]);
+    const __m512i s8_55  = rotate_two(s7_40, -cospi[16], s7_55, cospi[48]);
+    const __m512i s8_56  = rotate_two(s7_39, cospi[48], s7_56, cospi[16]);
+    const __m512i s8_57  = rotate_two(s7_38, cospi[48], s7_57, cospi[16]);
+    const __m512i s8_58  = rotate_two(s7_37, cospi[48], s7_58, cospi[16]);
+    const __m512i s8_59  = rotate_two(s7_36, cospi[48], s7_59, cospi[16]);
+    const __m512i s9_32  = _mm512_add_epi16(s7_32, s7_47);
+    const __m512i s9_33  = _mm512_add_epi16(s7_33, s7_46);
+    const __m512i s9_34  = _mm512_add_epi16(s7_34, s7_45);
+    const __m512i s9_35  = _mm512_add_epi16(s7_35, s7_44);
+    const __m512i s9_36  = _mm512_add_epi16(s8_36, s8_43);
+    const __m512i s9_37  = _mm512_add_epi16(s8_37, s8_42);
+    const __m512i s9_38  = _mm512_add_epi16(s8_38, s8_41);
+    const __m512i s9_39  = _mm512_add_epi16(s8_39, s8_40);
+    const __m512i s9_40  = _mm512_sub_epi16(s8_39, s8_40);
+    const __m512i s9_41  = _mm512_sub_epi16(s8_38, s8_41);
+    const __m512i s9_42  = _mm512_sub_epi16(s8_37, s8_42);
+    const __m512i s9_43  = _mm512_sub_epi16(s8_36, s8_43);
+    const __m512i s9_44  = _mm512_sub_epi16(s7_35, s7_44);
+    const __m512i s9_45  = _mm512_sub_epi16(s7_34, s7_45);
+    const __m512i s9_46  = _mm512_sub_epi16(s7_33, s7_46);
+    const __m512i s9_47  = _mm512_sub_epi16(s7_32, s7_47);
+    const __m512i s9_48  = _mm512_sub_epi16(s7_63, s7_48);
+    const __m512i s9_49  = _mm512_sub_epi16(s7_62, s7_49);
+    const __m512i s9_50  = _mm512_sub_epi16(s7_61, s7_50);
+    const __m512i s9_51  = _mm512_sub_epi16(s7_60, s7_51);
+    const __m512i s9_52  = _mm512_sub_epi16(s8_59, s8_52);
+    const __m512i s9_53  = _mm512_sub_epi16(s8_58, s8_53);
+    const __m512i s9_54  = _mm512_sub_epi16(s8_57, s8_54);
+    const __m512i s9_55  = _mm512_sub_epi16(s8_56, s8_55);
+    const __m512i s9_56  = _mm512_add_epi16(s8_55, s8_56);
+    const __m512i s9_57  = _mm512_add_epi16(s8_54, s8_57);
+    const __m512i s9_58  = _mm512_add_epi16(s8_53, s8_58);
+    const __m512i s9_59  = _mm512_add_epi16(s8_52, s8_59);
+    const __m512i s9_60  = _mm512_add_epi16(s7_51, s7_60);
+    const __m512i s9_61  = _mm512_add_epi16(s7_50, s7_61);
+    const __m512i s9_62  = _mm512_add_epi16(s7_49, s7_62);
+    const __m512i s9_63  = _mm512_add_epi16(s7_48, s7_63);
+    const __m512i s10_40 = rotate_two(s9_40, -cospi[32], s9_55, cospi[32]);
+    const __m512i s10_41 = rotate_two(s9_41, -cospi[32], s9_54, cospi[32]);
+    const __m512i s10_42 = rotate_two(s9_42, -cospi[32], s9_53, cospi[32]);
+    const __m512i s10_43 = rotate_two(s9_43, -cospi[32], s9_52, cospi[32]);
+    const __m512i s10_44 = rotate_two(s9_44, -cospi[32], s9_51, cospi[32]);
+    const __m512i s10_45 = rotate_two(s9_45, -cospi[32], s9_50, cospi[32]);
+    const __m512i s10_46 = rotate_two(s9_46, -cospi[32], s9_49, cospi[32]);
+    const __m512i s10_47 = rotate_two(s9_47, -cospi[32], s9_48, cospi[32]);
+    const __m512i s10_48 = rotate_two(s9_47, cospi[32], s9_48, cospi[32]);
+    const __m512i s10_49 = rotate_two(s9_46, cospi[32], s9_49, cospi[32]);
+    const __m512i s10_50 = rotate_two(s9_45, cospi[32], s9_50, cospi[32]);
+    const __m512i s10_51 = rotate_two(s9_44, cospi[32], s9_51, cospi[32]);
+    const __m512i s10_52 = rotate_two(s9_43, cospi[32], s9_52, cospi[32]);
+    const __m512i s10_53 = rotate_two(s9_42, cospi[32], s9_53, cospi[32]);
+    const __m512i s10_54 = rotate_two(s9_41, cospi[32], s9_54, cospi[32]);
+    const __m512i s10_55 = rotate_two(s9_40, cospi[32], s9_55, cospi[32]);
+    out[63]              = _mm512_sub_epi16(out[0], s9_63);
+    out[0]               = _mm512_add_epi16(out[0], s9_63);
+    out[62]              = _mm512_sub_epi16(out[1], s9_62);
+    out[1]               = _mm512_add_epi16(out[1], s9_62);
+    out[61]              = _mm512_sub_epi16(out[2], s9_61);
+    out[2]               = _mm512_add_epi16(out[2], s9_61);
+    out[60]              = _mm512_sub_epi16(out[3], s9_60);
+    out[3]               = _mm512_add_epi16(out[3], s9_60);
+    out[59]              = _mm512_sub_epi16(out[4], s9_59);
+    out[4]               = _mm512_add_epi16(out[4], s9_59);
+    out[58]              = _mm512_sub_epi16(out[5], s9_58);
+    out[5]               = _mm512_add_epi16(out[5], s9_58);
+    out[57]              = _mm512_sub_epi16(out[6], s9_57);
+    out[6]               = _mm512_add_epi16(out[6], s9_57);
+    out[56]              = _mm512_sub_epi16(out[7], s9_56);
+    out[7]               = _mm512_add_epi16(out[7], s9_56);
+    out[55]              = _mm512_sub_epi16(out[8], s10_55);
+    out[8]               = _mm512_add_epi16(out[8], s10_55);
+    out[54]              = _mm512_sub_epi16(out[9], s10_54);
+    out[9]               = _mm512_add_epi16(out[9], s10_54);
+    out[53]              = _mm512_sub_epi16(out[10], s10_53);
+    out[10]              = _mm512_add_epi16(out[10], s10_53);
+    out[52]              = _mm512_sub_epi16(out[11], s10_52);
+    out[11]              = _mm512_add_epi16(out[11], s10_52);
+    out[51]              = _mm512_sub_epi16(out[12], s10_51);
+    out[12]              = _mm512_add_epi16(out[12], s10_51);
+    out[50]              = _mm512_sub_epi16(out[13], s10_50);
+    out[13]              = _mm512_add_epi16(out[13], s10_50);
+    out[49]              = _mm512_sub_epi16(out[14], s10_49);
+    out[14]              = _mm512_add_epi16(out[14], s10_49);
+    out[48]              = _mm512_sub_epi16(out[15], s10_48);
+    out[15]              = _mm512_add_epi16(out[15], s10_48);
+    out[47]              = _mm512_sub_epi16(out[16], s10_47);
+    out[16]              = _mm512_add_epi16(out[16], s10_47);
+    out[46]              = _mm512_sub_epi16(out[17], s10_46);
+    out[17]              = _mm512_add_epi16(out[17], s10_46);
+    out[45]              = _mm512_sub_epi16(out[18], s10_45);
+    out[18]              = _mm512_add_epi16(out[18], s10_45);
+    out[44]              = _mm512_sub_epi16(out[19], s10_44);
+    out[19]              = _mm512_add_epi16(out[19], s10_44);
+    out[43]              = _mm512_sub_epi16(out[20], s10_43);
+    out[20]              = _mm512_add_epi16(out[20], s10_43);
+    out[42]              = _mm512_sub_epi16(out[21], s10_42);
+    out[21]              = _mm512_add_epi16(out[21], s10_42);
+    out[41]              = _mm512_sub_epi16(out[22], s10_41);
+    out[22]              = _mm512_add_epi16(out[22], s10_41);
+    out[40]              = _mm512_sub_epi16(out[23], s10_40);
+    out[23]              = _mm512_add_epi16(out[23], s10_40);
+    out[39]              = _mm512_sub_epi16(out[24], s9_39);
+    out[24]              = _mm512_add_epi16(out[24], s9_39);
+    out[38]              = _mm512_sub_epi16(out[25], s9_38);
+    out[25]              = _mm512_add_epi16(out[25], s9_38);
+    out[37]              = _mm512_sub_epi16(out[26], s9_37);
+    out[26]              = _mm512_add_epi16(out[26], s9_37);
+    out[36]              = _mm512_sub_epi16(out[27], s9_36);
+    out[27]              = _mm512_add_epi16(out[27], s9_36);
+    out[35]              = _mm512_sub_epi16(out[28], s9_35);
+    out[28]              = _mm512_add_epi16(out[28], s9_35);
+    out[34]              = _mm512_sub_epi16(out[29], s9_34);
+    out[29]              = _mm512_add_epi16(out[29], s9_34);
+    out[33]              = _mm512_sub_epi16(out[30], s9_33);
+    out[30]              = _mm512_add_epi16(out[30], s9_33);
+    out[32]              = _mm512_sub_epi16(out[31], s9_32);
+    out[31]              = _mm512_add_epi16(out[31], s9_32);
+}
+
+typedef void (*PackedIdct)(const __m512i*, int, int, __m512i*);
+
+static AOM_FORCE_INLINE bool sparse_idct(const int32_t* input, const uint16_t* src, int ss, uint16_t* dst, int ds,
+                                         int n, int band, PackedIdct idct) {
+    __m256i         tile[16], transpose[16];
+    __m512i         in[16], first[64], col[64], mass = _mm512_setzero_si512();
+    const __mmask16 mask = band == 8 ? 0xff : 0xffff;
+    for (int y = 0; y < band; ++y) {
+        const __m512i row = _mm512_maskz_loadu_epi32(mask, input + y * AOMMIN(n, 32));
+        mass              = _mm512_add_epi32(mass, _mm512_min_epu32(_mm512_abs_epi32(row), _mm512_set1_epi32(512)));
+        tile[y]           = _mm512_cvtsepi32_epi16(row);
+    }
+    // An input L1 norm below 8192 leaves headroom for both rounded
+    // butterfly passes. Large coefficients retain the wide transform.
+    if (_mm512_cmpge_epi32_mask(mass, _mm512_set1_epi32(512))) {
+        return false;
+    }
+    for (int i = band; i < 16; ++i) {
+        tile[i] = _mm256_setzero_si256();
+    }
+    transpose_16bit_16x16_avx2(tile, transpose);
+    for (int i = 0; i < band; ++i) {
+        in[i] = _mm512_zextsi256_si512(transpose[i]);
+    }
+    idct(in, 1, band, first);
+    for (int x = 0; x < n; x += 32) {
+        for (int half = 0; half < (n == 16 ? 1 : 2); ++half) {
+            for (int i = 0; i < 16; ++i) {
+                tile[i] = _mm256_mulhrs_epi16(_mm512_castsi512_si256(first[x + 16 * half + i]),
+                                              _mm256_set1_epi16(8192));
+            }
+            transpose_16bit_16x16_avx2(tile, transpose);
+            for (int i = 0; i < band; ++i) {
+                if (half) {
+                    in[i] = _mm512_inserti64x4(in[i], transpose[i], 1);
+                } else {
+                    in[i] = _mm512_zextsi256_si512(transpose[i]);
+                }
+            }
+        }
+        idct(in, 1, band, col);
+        const __mmask32 k = n == 16 ? 0xffff : UINT32_MAX;
+        for (int y = 0; y < n; ++y) {
+            const __m512i residual = _mm512_mulhrs_epi16(col[y], _mm512_set1_epi16(2048));
+            const __m512i pix      = _mm512_add_epi16(residual, _mm512_maskz_loadu_epi16(k, src + y * ss + x));
+            _mm512_mask_storeu_epi16(
+                dst + y * ds + x,
+                k,
+                _mm512_min_epi16(_mm512_max_epi16(pix, _mm512_setzero_si512()), _mm512_set1_epi16(1023)));
+        }
+    }
+    return true;
+}
+
+static NOINLINE bool sparse_16(const int32_t* input, const uint16_t* src, int ss, uint16_t* dst, int ds, int band) {
+    return sparse_idct(input, src, ss, dst, ds, 16, band, packed_idct16);
+}
+
+static NOINLINE bool sparse_32(const int32_t* input, const uint16_t* src, int ss, uint16_t* dst, int ds, int band) {
+    return sparse_idct(input, src, ss, dst, ds, 32, band, packed_idct32);
+}
+
+static NOINLINE bool sparse_64(const int32_t* input, const uint16_t* src, int ss, uint16_t* dst, int ds, int band) {
+    return sparse_idct(input, src, ss, dst, ds, 64, band, packed_idct64);
+}
+
+void svt_highbd_inv_txfm_dispatch_avx512(const TranLow* input, uint8_t* src8, int ss, uint8_t* dst8, int ds,
+                                         const TxfmParam* p) {
+    const int w = tx_size_wide[p->tx_size], h = tx_size_high[p->tx_size];
+    if (!p->lossless && p->bd == 10 && p->tx_type == DCT_DCT) {
+        const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
+        uint16_t*       dst = CONVERT_TO_SHORTPTR(dst8);
+        if (p->eob == 1 && w >= 32 && input[0] >= INT16_MIN && input[0] <= INT16_MAX) {
+            int           dc    = input[0];
+            const int8_t* shift = svt_aom_inv_txfm_shift_ls[p->tx_size];
+            if (w == 2 * h || h == 2 * w) {
+                dc = ROUND_POWER_OF_TWO(dc * new_inv_sqrt2, new_sqrt2_bits);
+            }
+            dc = ROUND_POWER_OF_TWO(ROUND_POWER_OF_TWO(dc * new_inv_sqrt2, new_sqrt2_bits), -shift[0]);
+            dc = ROUND_POWER_OF_TWO(ROUND_POWER_OF_TWO(dc * new_inv_sqrt2, new_sqrt2_bits), -shift[1]);
+            const __m512i   magnitude = _mm512_set1_epi16(abs(dc)), limit = _mm512_set1_epi16(1023);
+            const __mmask32 mask = w >= 32 ? UINT32_MAX : (1u << w) - 1;
+            // Signed saturation at zero is a single unsigned subtract for
+            // negative DC. Positive DC only needs the upper clip.
+            if (dc < 0) {
+                for (int y = 0; y < h; ++y, src += ss, dst += ds) {
+                    for (int x = 0; x < w; x += 32) {
+                        _mm512_mask_storeu_epi16(
+                            dst + x, mask, _mm512_subs_epu16(_mm512_maskz_loadu_epi16(mask, src + x), magnitude));
+                    }
+                }
+            } else {
+                for (int y = 0; y < h; ++y, src += ss, dst += ds) {
+                    for (int x = 0; x < w; x += 32) {
+                        _mm512_mask_storeu_epi16(
+                            dst + x,
+                            mask,
+                            _mm512_min_epu16(_mm512_add_epi16(_mm512_maskz_loadu_epi16(mask, src + x), magnitude),
+                                             limit));
+                    }
+                }
+            }
+            return;
+        }
+        if (p->eob > 1 && p->eob <= 136 && w == h && (w >= 32 || (w == 16 && p->eob > 36))) {
+            const int band = p->eob <= 36 ? 8 : 16;
+            if (w == 16       ? sparse_16(input, src, ss, dst, ds, band)
+                    : w == 32 ? sparse_32(input, src, ss, dst, ds, band)
+                              : sparse_64(input, src, ss, dst, ds, band)) {
+                return;
+            }
+        }
+    }
+    svt_highbd_inv_txfm_dispatch_avx2(input, src8, ss, dst8, ds, p);
+}
+
 #endif
