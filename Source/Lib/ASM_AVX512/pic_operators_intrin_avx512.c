@@ -338,4 +338,52 @@ uint64_t svt_spatial_full_distortion_kernel_avx512(uint8_t* input, uint32_t inpu
     return hadd32_avx2_intrin(sum);
 }
 
+// The magnitude of any difference whose square fits in uint64_t fits one
+// unsigned dword. Subtracting signed min from signed max gives that magnitude
+// even when the original signed subtraction would overflow.
+static INLINE __m512i square_pairs(__m512i v) {
+    const __m512i odd = _mm512_srli_epi64(v, 32);
+    return _mm512_add_epi64(_mm512_mul_epu32(v, v), _mm512_mul_epu32(odd, odd));
+}
+
+static AOM_FORCE_INLINE void coeff_distortion(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t w,
+                                              uint32_t h, uint64_t* result, bool residual) {
+    if (stride == w) {
+        w *= h;
+        h = 1;
+    }
+    const unsigned  tail   = w & 15;
+    const __mmask16 last   = (__mmask16)((1u << tail) - 1);
+    __m512i         energy = _mm512_setzero_si512(), error = _mm512_setzero_si512();
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; x += 16) {
+            const __mmask16 k   = x < w - tail ? 0xffff : last;
+            const __m512i   c   = _mm512_maskz_loadu_epi32(k, coeff + x);
+            const __m512i   mag = _mm512_abs_epi32(c);
+            energy              = _mm512_add_epi64(energy, square_pairs(mag));
+            if (residual) {
+                const __m512i r = _mm512_maskz_loadu_epi32(k, recon + x);
+                const __m512i d = _mm512_sub_epi32(_mm512_max_epi32(c, r), _mm512_min_epi32(c, r));
+                error           = _mm512_add_epi64(error, square_pairs(d));
+            }
+        }
+        coeff += stride;
+        if (residual) {
+            recon += stride;
+        }
+    }
+    result[DIST_CALC_PREDICTION] = _mm512_reduce_add_epi64(energy);
+    result[DIST_CALC_RESIDUAL]   = residual ? (uint64_t)_mm512_reduce_add_epi64(error) : result[DIST_CALC_PREDICTION];
+}
+
+void svt_full_distortion_kernel32_bits_avx512(int32_t* coeff, int32_t* recon, uint32_t stride, uint32_t w, uint32_t h,
+                                              uint64_t result[DIST_CALC_TOTAL]) {
+    coeff_distortion(coeff, recon, stride, w, h, result, true);
+}
+
+void svt_full_distortion_kernel_cbf_zero32_bits_avx512(int32_t* coeff, uint32_t stride,
+                                                       uint64_t result[DIST_CALC_TOTAL], uint32_t w, uint32_t h) {
+    coeff_distortion(coeff, NULL, stride, w, h, result, false);
+}
+
 #endif // EN_AVX512_SUPPORT
