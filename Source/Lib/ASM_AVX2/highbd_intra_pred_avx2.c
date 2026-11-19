@@ -2643,3 +2643,71 @@ void svt_aom_highbd_smooth_v_predictor_64x64_avx2(uint16_t* dst, ptrdiff_t strid
         smooth_v_pred_64x8(sm_weights_d_64 + 32 * i, rep, ab, &dst, stride);
     }
 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH && CONFIG_ENABLE_FILTER_INTRA
+// Each adjacent tap pair feeds one vpmaddwd per 4x2 prediction tile.
+static const int8_t paired_intra_taps[FILTER_INTRA_MODES][4][16] = {
+    {
+        {-6, 0, -5, 0, -3, 0, -3, 0, -4, 0, -3, 0, -3, 0, -3, 0},
+        {10, 0, 2, 10, 1, 1, 1, 1, 6, 0, 2, 6, 2, 2, 1, 2},
+        {0, 0, 0, 0, 10, 0, 2, 10, 0, 0, 0, 0, 6, 0, 2, 6},
+        {12, 0, 9, 0, 7, 0, 5, 0, 2, 12, 2, 9, 2, 7, 3, 5},
+    },
+    {
+        {-10, 0, -6, 0, -4, 0, -2, 0, -10, 0, -6, 0, -4, 0, -2, 0},
+        {16, 0, 0, 16, 0, 0, 0, 0, 16, 0, 0, 16, 0, 0, 0, 0},
+        {0, 0, 0, 0, 16, 0, 0, 16, 0, 0, 0, 0, 16, 0, 0, 16},
+        {10, 0, 6, 0, 4, 0, 2, 0, 0, 10, 0, 6, 0, 4, 0, 2},
+    },
+    {
+        {-8, 0, -8, 0, -8, 0, -8, 0, -4, 0, -4, 0, -4, 0, -4, 0},
+        {8, 0, 0, 8, 0, 0, 0, 0, 4, 0, 0, 4, 0, 0, 0, 0},
+        {0, 0, 0, 0, 8, 0, 0, 8, 0, 0, 0, 0, 4, 0, 0, 4},
+        {16, 0, 16, 0, 16, 0, 16, 0, 0, 16, 0, 16, 0, 16, 0, 16},
+    },
+    {
+        {-2, 0, -1, 0, -1, 0, 0, 0, -1, 0, -1, 0, -1, 0, -1, 0},
+        {8, 0, 3, 8, 2, 3, 1, 2, 4, 0, 3, 4, 2, 3, 2, 2},
+        {0, 0, 0, 0, 8, 0, 3, 8, 0, 0, 0, 0, 4, 0, 3, 4},
+        {10, 0, 6, 0, 4, 0, 2, 0, 3, 10, 4, 6, 4, 4, 3, 3},
+    },
+    {
+        {-12, 0, -10, 0, -9, 0, -8, 0, -10, 0, -9, 0, -8, 0, -7, 0},
+        {14, 0, 0, 14, 0, 0, 0, 0, 12, 0, 1, 12, 0, 0, 0, 0},
+        {0, 0, 0, 0, 14, 0, 0, 14, 0, 0, 0, 0, 12, 0, 1, 12},
+        {14, 0, 12, 0, 11, 0, 10, 0, 0, 14, 0, 12, 1, 11, 1, 9},
+    },
+};
+
+void svt_aom_highbd_filter_intra_predictor_avx2(uint16_t* dst, ptrdiff_t stride, TxSize tx_size, const uint16_t* above,
+                                                const uint16_t* left, int mode, int bd) {
+    __m256i taps[4];
+    for (int i = 0; i < 4; ++i) {
+        taps[i] = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)paired_intra_taps[mode][i]));
+    }
+    const __m128i   limit = _mm_set1_epi16((1 << bd) - 1);
+    const int       w = tx_size_wide[tx_size], h = tx_size_high[tx_size];
+    const uint16_t* top    = above;
+    uint16_t        corner = above[-1];
+    for (int y = 0; y < h; y += 2) {
+        __m128i edge = _mm_loadu_si32(left + y);
+        for (int x = 0; x < w; x += 4) {
+            const __m256i a    = _mm256_madd_epi16(_mm256_set1_epi32(corner), taps[0]);
+            const __m256i b    = _mm256_madd_epi16(_mm256_broadcastd_epi32(_mm_loadu_si32(top + x)), taps[1]);
+            const __m256i c    = _mm256_madd_epi16(_mm256_broadcastd_epi32(_mm_loadu_si32(top + x + 2)), taps[2]);
+            const __m256i d    = _mm256_madd_epi16(_mm256_broadcastd_epi32(edge), taps[3]);
+            const __m256i base = _mm256_add_epi32(_mm256_add_epi32(a, b), _mm256_add_epi32(c, _mm256_set1_epi32(8)));
+            const __m256i sum  = _mm256_srai_epi32(_mm256_add_epi32(base, d), 4);
+            const __m128i pix  = _mm_min_epu16(
+                limit, _mm_packus_epi32(_mm256_castsi256_si128(sum), _mm256_extracti128_si256(sum, 1)));
+            _mm_storel_epi64((__m128i*)(dst + x), pix);
+            _mm_storeh_pd((double*)(dst + stride + x), _mm_castsi128_pd(pix));
+            edge   = _mm_shuffle_epi8(pix, _mm_setr_epi8(6, 7, 14, 15, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1));
+            corner = top[x + 3];
+        }
+        corner = left[y + 1];
+        top    = dst + stride;
+        dst += 2 * stride;
+    }
+}
+#endif

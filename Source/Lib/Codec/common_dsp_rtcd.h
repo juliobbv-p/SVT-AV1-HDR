@@ -87,6 +87,7 @@ RTCD_EXTERN void(*svt_cfl_luma_subsampling_420_hbd)(const uint16_t *input, int32
 
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
 void svt_aom_highbd_filter_intra_predictor_c(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
+void svt_aom_highbd_filter_intra_predictor_avx2(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 void svt_aom_highbd_filter_intra_predictor_neon(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 RTCD_EXTERN void(*svt_aom_highbd_filter_intra_predictor)(uint16_t *dst, ptrdiff_t stride, TxSize tx_size, const uint16_t *above, const uint16_t *left, int mode, int bd);
 #endif

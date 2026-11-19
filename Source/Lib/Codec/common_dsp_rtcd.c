@@ -518,7 +518,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 #endif
 #if CONFIG_ENABLE_FILTER_INTRA
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_ONLY_C(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c);
+    SET_AVX2(svt_aom_highbd_filter_intra_predictor, svt_aom_highbd_filter_intra_predictor_c, svt_aom_highbd_filter_intra_predictor_avx2);
 #endif
     SET_SSE41(svt_av1_filter_intra_predictor, svt_av1_filter_intra_predictor_c, svt_av1_filter_intra_predictor_sse4_1);
 #endif
