@@ -1101,7 +1101,14 @@ static int update_simple_2d_batch(int* accu_rate, int si, int si_end, int count,
                                   TranLow* dqcoeff, uint8_t* levels, const QmVal* iqm, int8_t* nz_ctx) {
     int64_t delta[32 * 32];
     assert(count <= 32 * 32);
-    svt_av1_rdoq_deltas_avx2(tcoeff, qcoeff, dqcoeff, iqm, dequant[1], shift, count, delta);
+#if EN_AVX512_SUPPORT
+    if (svt_aom_use_avx512) {
+        svt_av1_rdoq_deltas_avx512(tcoeff, qcoeff, dqcoeff, iqm, dequant[1], shift, count, delta);
+    } else
+#endif
+    {
+        svt_av1_rdoq_deltas_avx2(tcoeff, qcoeff, dqcoeff, iqm, dequant[1], shift, count, delta);
+    }
     for (; si >= si_end; --si) {
         const int      ci   = scan[si];
         const int      qc   = qcoeff[ci];

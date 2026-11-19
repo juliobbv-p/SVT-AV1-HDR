@@ -277,21 +277,21 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 #endif
     SET_SSE41_AVX2(svt_aom_quantize_b, svt_aom_quantize_b_c, svt_aom_quantize_b_sse4_1, svt_aom_quantize_b_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_SSE41_AVX2(svt_aom_highbd_quantize_b, svt_aom_highbd_quantize_b_c, svt_aom_highbd_quantize_b_sse4_1, svt_aom_highbd_quantize_b_avx2);
+    SET_SSE41_AVX2_AVX512(svt_aom_highbd_quantize_b, svt_aom_highbd_quantize_b_c, svt_aom_highbd_quantize_b_sse4_1, svt_aom_highbd_quantize_b_avx2, svt_aom_highbd_quantize_b_avx512);
 #endif
     SET_AVX2(svt_av1_quantize_b_qm, svt_aom_quantize_b_c, svt_av1_quantize_b_qm_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_AVX2(svt_av1_highbd_quantize_b_qm, svt_aom_highbd_quantize_b_c, svt_av1_highbd_quantize_b_qm_avx2);
+    SET_AVX2_AVX512(svt_av1_highbd_quantize_b_qm, svt_aom_highbd_quantize_b_c, svt_av1_highbd_quantize_b_qm_avx2, svt_av1_highbd_quantize_b_qm_avx512);
 #endif
     SET_SSE41_AVX2(svt_av1_quantize_fp, svt_av1_quantize_fp_c, svt_av1_quantize_fp_sse4_1, svt_av1_quantize_fp_avx2);
     SET_SSE41_AVX2(svt_av1_quantize_fp_32x32, svt_av1_quantize_fp_32x32_c, svt_av1_quantize_fp_32x32_sse4_1, svt_av1_quantize_fp_32x32_avx2);
     SET_SSE41_AVX2(svt_av1_quantize_fp_64x64, svt_av1_quantize_fp_64x64_c, svt_av1_quantize_fp_64x64_sse4_1, svt_av1_quantize_fp_64x64_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_SSE41_AVX2(svt_av1_highbd_quantize_fp, svt_av1_highbd_quantize_fp_c, svt_av1_highbd_quantize_fp_sse4_1, svt_av1_highbd_quantize_fp_avx2);
+    SET_SSE41_AVX2_AVX512(svt_av1_highbd_quantize_fp, svt_av1_highbd_quantize_fp_c, svt_av1_highbd_quantize_fp_sse4_1, svt_av1_highbd_quantize_fp_avx2, svt_av1_highbd_quantize_fp_avx512);
 #endif
     SET_AVX2(svt_av1_quantize_fp_qm, svt_av1_quantize_fp_qm_c, svt_av1_quantize_fp_qm_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_AVX2(svt_av1_highbd_quantize_fp_qm, svt_av1_highbd_quantize_fp_qm_c, svt_av1_highbd_quantize_fp_qm_avx2);
+    SET_AVX2_AVX512(svt_av1_highbd_quantize_fp_qm, svt_av1_highbd_quantize_fp_qm_c, svt_av1_highbd_quantize_fp_qm_avx2, svt_av1_highbd_quantize_fp_qm_avx512);
     SET_SSE2(svt_aom_highbd_mse16x16, svt_aom_highbd_mse16x16_c, svt_aom_highbd_mse16x16_sse2);
 #endif
 
