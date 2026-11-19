@@ -878,7 +878,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2(svt_aom_cdef_find_dir, svt_aom_cdef_find_dir_c, svt_aom_cdef_find_dir_sse4_1, svt_aom_cdef_find_dir_avx2);
     SET_SSE41_AVX2(svt_aom_cdef_find_dir_dual, svt_aom_cdef_find_dir_dual_c, svt_aom_cdef_find_dir_dual_sse4_1, svt_aom_cdef_find_dir_dual_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_AVX2(svt_cdef_search_block_10bit, svt_cdef_search_block_10bit_c, svt_cdef_search_block_10bit_avx2);
+    SET_AVX2_AVX512(svt_cdef_search_block_10bit, svt_cdef_search_block_10bit_c, svt_cdef_search_block_10bit_avx2, svt_cdef_search_block_10bit_avx512);
 #endif
     SET_SSE41_AVX2(svt_cdef_filter_block, svt_cdef_filter_block_c, svt_av1_cdef_filter_block_sse4_1, svt_cdef_filter_block_avx2);
     SET_SSE41_AVX2(svt_cdef_filter_block_8bit, svt_cdef_filter_block_8bit_c, svt_cdef_filter_block_8bit_sse4_1, svt_cdef_filter_block_8bit_avx2);
