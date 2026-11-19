@@ -15,6 +15,8 @@
 #include "synonyms_avx2.h"
 
 #include "pack_unpack_c.h"
+#include "common_dsp_rtcd.h"
+#include "pic_operators.h"
 
 #define _mm256_set_m128i(/* __m128i */ hi, /* __m128i */ lo) \
     _mm256_insertf128_si256(_mm256_castsi128_si256(lo), (hi), 0x1)
@@ -625,101 +627,6 @@ void svt_enc_msb_pack2d_avx2_intrin_al(uint8_t* in8_bit_buffer, uint32_t in8_str
             }
         }
     }
-}
-
-void svt_full_distortion_kernel32_bits_avx2(int32_t* coeff, int32_t* recon_coeff, uint32_t stride, uint32_t area_width,
-                                            uint32_t area_height, uint64_t distortion_result[DIST_CALC_TOTAL]) {
-    uint32_t row_count;
-    __m256i  sum1 = _mm256_setzero_si256();
-    __m256i  sum2 = _mm256_setzero_si256();
-    __m128i  temp1, temp2, temp3;
-
-    row_count = area_height;
-    do {
-        int32_t* coeff_temp       = coeff;
-        int32_t* recon_coeff_temp = recon_coeff;
-        uint32_t col              = area_width;
-
-        // _mm256_mul_epi32 squares the even 32-bit lanes; shifting each 64-bit lane
-        // down by 32 brings the odd lanes into position for a second pass. Exact for
-        // any int32 input, with no assumption that the squares fit 32 bits.
-        while (col >= 8) {
-            const __m256i x  = _mm256_loadu_si256((const __m256i*)coeff_temp);
-            const __m256i y  = _mm256_loadu_si256((const __m256i*)recon_coeff_temp);
-            const __m256i d  = _mm256_sub_epi32(x, y);
-            const __m256i xo = _mm256_srli_epi64(x, 32);
-            const __m256i dd = _mm256_srli_epi64(d, 32);
-            sum2 = _mm256_add_epi64(sum2, _mm256_add_epi64(_mm256_mul_epi32(x, x), _mm256_mul_epi32(xo, xo)));
-            sum1 = _mm256_add_epi64(sum1, _mm256_add_epi64(_mm256_mul_epi32(d, d), _mm256_mul_epi32(dd, dd)));
-            coeff_temp += 8;
-            recon_coeff_temp += 8;
-            col -= 8;
-        }
-        while (col >= 4) {
-            __m128i       x0 = _mm_loadu_si128((__m128i*)(coeff_temp));
-            __m128i       y0 = _mm_loadu_si128((__m128i*)(recon_coeff_temp));
-            __m256i       x  = _mm256_cvtepi32_epi64(x0);
-            const __m256i y  = _mm256_cvtepi32_epi64(y0);
-            sum2             = _mm256_add_epi64(sum2, _mm256_mul_epi32(x, x));
-            x                = _mm256_sub_epi64(x, y);
-            sum1             = _mm256_add_epi64(sum1, _mm256_mul_epi32(x, x));
-            coeff_temp += 4;
-            recon_coeff_temp += 4;
-            col -= 4;
-        }
-
-        coeff += stride;
-        recon_coeff += stride;
-        row_count -= 1;
-    } while (row_count > 0);
-
-    temp1 = _mm256_castsi256_si128(sum1);
-    temp2 = _mm256_extracti128_si256(sum1, 1);
-    temp1 = _mm_add_epi64(temp1, temp2);
-    temp2 = _mm_shuffle_epi32(temp1, 0x4e);
-    temp3 = _mm_add_epi64(temp1, temp2);
-    temp1 = _mm256_castsi256_si128(sum2);
-    temp2 = _mm256_extracti128_si256(sum2, 1);
-    temp1 = _mm_add_epi64(temp1, temp2);
-    temp2 = _mm_shuffle_epi32(temp1, 0x4e);
-    temp1 = _mm_add_epi64(temp1, temp2);
-    temp1 = _mm_unpacklo_epi64(temp3, temp1);
-
-    _mm_storeu_si128((__m128i*)distortion_result, temp1);
-}
-
-void svt_full_distortion_kernel_cbf_zero32_bits_avx2(int32_t* coeff, uint32_t coeff_stride,
-                                                     uint64_t distortion_result[DIST_CALC_TOTAL], uint32_t area_width,
-                                                     uint32_t area_height) {
-    uint32_t row_count;
-    __m256i  sum = _mm256_setzero_si256();
-    __m128i  temp1, temp2;
-
-    row_count = area_height;
-    do {
-        int32_t* coeff_temp = coeff;
-
-        uint32_t col_count = area_width / 4;
-        do {
-            __m128i x0;
-            __m256i y0, z0;
-            x0 = _mm_loadu_si128((__m128i*)(coeff_temp));
-            coeff_temp += 4;
-            y0  = _mm256_cvtepi32_epi64(x0);
-            z0  = _mm256_mul_epi32(y0, y0);
-            sum = _mm256_add_epi64(sum, z0);
-        } while (--col_count);
-
-        coeff += coeff_stride;
-        row_count -= 1;
-    } while (row_count > 0);
-
-    temp1 = _mm256_castsi256_si128(sum);
-    temp2 = _mm256_extracti128_si256(sum, 1);
-    temp1 = _mm_add_epi64(temp1, temp2);
-    temp2 = _mm_shuffle_epi32(temp1, 0x4e);
-    temp1 = _mm_add_epi64(temp1, temp2);
-    _mm_storeu_si128((__m128i*)distortion_result, temp1);
 }
 
 static INLINE void residual32_avx2(const uint8_t* const input, const uint8_t* const pred, int16_t* const residual) {
@@ -1812,4 +1719,61 @@ void svt_memcpy_intrin_avx2(void* dst_ptr, void const* src_ptr, size_t size) {
     for (; i < size; ++i) {
         dst[i] = src[i];
     }
+}
+
+static INLINE __m256i coefficient_squares(__m256i v) {
+    const __m256i odd = _mm256_srli_epi64(v, 32);
+    return _mm256_add_epi64(_mm256_mul_epu32(v, v), _mm256_mul_epu32(odd, odd));
+}
+
+static INLINE uint64_t sum_squares_lanes(__m256i v) {
+    const __m128i s = _mm_add_epi64(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+    return _mm_cvtsi128_si64(_mm_add_epi64(s, _mm_srli_si128(s, 8)));
+}
+
+static INLINE void coeff_distortion_rows(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t width,
+                                         uint32_t height, uint64_t* distortion, int has_recon) {
+    __m256i energy = _mm256_setzero_si256(), error = energy;
+    if (stride == width && height && (uint64_t)width * height <= UINT32_MAX) {
+        width *= height;
+        height = 1;
+    }
+    for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; x += 8) {
+            const int     half = width - x == 4;
+            const __m256i c    = half ? _mm256_zextsi128_si256(_mm_loadu_si128((const __m128i*)(coeff + x)))
+                                      : _mm256_loadu_si256((const __m256i*)(coeff + x));
+            energy             = _mm256_add_epi64(energy, coefficient_squares(_mm256_abs_epi32(c)));
+            if (has_recon) {
+                const __m256i r = half ? _mm256_zextsi128_si256(_mm_loadu_si128((const __m128i*)(recon + x)))
+                                       : _mm256_loadu_si256((const __m256i*)(recon + x));
+                const __m256i d = _mm256_sub_epi32(_mm256_max_epi32(c, r), _mm256_min_epi32(c, r));
+                error           = _mm256_add_epi64(error, coefficient_squares(d));
+            }
+        }
+        coeff += stride;
+        if (has_recon) {
+            recon += stride;
+        }
+    }
+    distortion[DIST_CALC_PREDICTION] = sum_squares_lanes(energy);
+    distortion[DIST_CALC_RESIDUAL]   = has_recon ? sum_squares_lanes(error) : distortion[DIST_CALC_PREDICTION];
+}
+
+void svt_full_distortion_kernel32_bits_avx2(int32_t* coeff, int32_t* recon, uint32_t stride, uint32_t w, uint32_t h,
+                                            uint64_t distortion[DIST_CALC_TOTAL]) {
+    if (w & 3) {
+        svt_full_distortion_kernel32_bits_c(coeff, recon, stride, w, h, distortion);
+        return;
+    }
+    coeff_distortion_rows(coeff, recon, stride, w, h, distortion, 1);
+}
+
+void svt_full_distortion_kernel_cbf_zero32_bits_avx2(int32_t* coeff, uint32_t stride,
+                                                     uint64_t distortion[DIST_CALC_TOTAL], uint32_t w, uint32_t h) {
+    if (w & 3) {
+        svt_full_distortion_kernel_cbf_zero32_bits_c(coeff, stride, distortion, w, h);
+        return;
+    }
+    coeff_distortion_rows(coeff, NULL, stride, w, h, distortion, 0);
 }
