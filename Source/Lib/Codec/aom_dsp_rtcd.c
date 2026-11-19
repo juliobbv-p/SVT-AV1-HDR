@@ -453,14 +453,14 @@ void svt_aom_setup_rtcd_internal(EbCpuFlags flags) {
 
     //VARIANCEHBP
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_ONLY_C(svt_aom_highbd_10_variance4x4, svt_aom_highbd_10_variance4x4_c);
-    SET_ONLY_C(svt_aom_highbd_10_variance4x8, svt_aom_highbd_10_variance4x8_c);
-    SET_ONLY_C(svt_aom_highbd_10_variance4x16, svt_aom_highbd_10_variance4x16_c);
-    SET_ONLY_C(svt_aom_highbd_10_variance8x4, svt_aom_highbd_10_variance8x4_c);
+    SET_AVX2(svt_aom_highbd_10_variance4x4, svt_aom_highbd_10_variance4x4_c, svt_aom_highbd_10_variance4x4_avx2);
+    SET_AVX2(svt_aom_highbd_10_variance4x8, svt_aom_highbd_10_variance4x8_c, svt_aom_highbd_10_variance4x8_avx2);
+    SET_AVX2(svt_aom_highbd_10_variance4x16, svt_aom_highbd_10_variance4x16_c, svt_aom_highbd_10_variance4x16_avx2);
+    SET_AVX2(svt_aom_highbd_10_variance8x4, svt_aom_highbd_10_variance8x4_c, svt_aom_highbd_10_variance8x4_avx2);
     SET_SSE2_AVX2(svt_aom_highbd_10_variance8x8, svt_aom_highbd_10_variance8x8_c, svt_aom_highbd_10_variance8x8_sse2, svt_aom_highbd_10_variance8x8_avx2);
     SET_SSE2_AVX2(svt_aom_highbd_10_variance8x16, svt_aom_highbd_10_variance8x16_c, svt_aom_highbd_10_variance8x16_sse2, svt_aom_highbd_10_variance8x16_avx2);
     SET_SSE2_AVX2(svt_aom_highbd_10_variance8x32, svt_aom_highbd_10_variance8x32_c, svt_aom_highbd_10_variance8x32_sse2, svt_aom_highbd_10_variance8x32_avx2);
-    SET_SSE2(svt_aom_highbd_10_variance16x4, svt_aom_highbd_10_variance16x4_c, svt_aom_highbd_10_variance16x4_sse2);
+    SET_SSE2_AVX2(svt_aom_highbd_10_variance16x4, svt_aom_highbd_10_variance16x4_c, svt_aom_highbd_10_variance16x4_sse2, svt_aom_highbd_10_variance16x4_avx2);
     SET_SSE2_AVX2(svt_aom_highbd_10_variance16x8, svt_aom_highbd_10_variance16x8_c, svt_aom_highbd_10_variance16x8_sse2, svt_aom_highbd_10_variance16x8_avx2);
     SET_SSE2_AVX2(svt_aom_highbd_10_variance16x16, svt_aom_highbd_10_variance16x16_c, svt_aom_highbd_10_variance16x16_sse2, svt_aom_highbd_10_variance16x16_avx2);
     SET_SSE2_AVX2(svt_aom_highbd_10_variance16x32, svt_aom_highbd_10_variance16x32_c, svt_aom_highbd_10_variance16x32_sse2, svt_aom_highbd_10_variance16x32_avx2);
