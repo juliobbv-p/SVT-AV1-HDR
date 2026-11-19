@@ -892,7 +892,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 #endif
     SET_SSE41_AVX2(svt_aom_copy_rect8_8bit_to_16bit, svt_aom_copy_rect8_8bit_to_16bit_c, svt_aom_copy_rect8_8bit_to_16bit_sse4_1, svt_aom_copy_rect8_8bit_to_16bit_avx2);
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
-    SET_SSE41_AVX2(svt_av1_highbd_warp_affine, svt_av1_highbd_warp_affine_c, svt_av1_highbd_warp_affine_sse4_1, svt_av1_highbd_warp_affine_avx2);
+    SET_SSE41_AVX2_AVX512(svt_av1_highbd_warp_affine, svt_av1_highbd_warp_affine_c, svt_av1_highbd_warp_affine_sse4_1, svt_av1_highbd_warp_affine_avx2, svt_av1_highbd_warp_affine_avx512);
 #endif
 #if CONFIG_ENABLE_WARP
     SET_SSE41_AVX2(svt_av1_warp_affine, svt_av1_warp_affine_c, svt_av1_warp_affine_sse4_1, svt_av1_warp_affine_avx2);
