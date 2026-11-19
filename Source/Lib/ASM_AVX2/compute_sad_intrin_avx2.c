@@ -5897,3 +5897,100 @@ void svt_pme_sad_loop_kernel_avx2(const svt_mv_cost_param* mv_cost_params,
     *best_mvx  = x_best;
     *best_mvy  = y_best;
 }
+
+// Eight adjacent candidates per half, two source rows per vector. A complete
+// 16x16 SAD fits an unsigned word, including the final cross-lane addition.
+static INLINE __m128i sea_sad8(const __m256i* source, const uint8_t* ref, int stride, int pairs) {
+    __m256i low = _mm256_setzero_si256(), high = low;
+    for (int i = 0; i < pairs; ++i, ref += 2 * stride) {
+        const __m256i a = _mm256_set_m128i(_mm_loadu_si128((const __m128i*)(ref + stride)),
+                                           _mm_loadu_si128((const __m128i*)ref));
+        const __m256i b = _mm256_srli_si256(_mm256_set_m128i(_mm_loadu_si128((const __m128i*)(ref + stride + 7)),
+                                                             _mm_loadu_si128((const __m128i*)(ref + 7))),
+                                            1);
+        low             = _mm256_add_epi16(
+            low, _mm256_add_epi16(_mm256_mpsadbw_epu8(a, source[i], 0), _mm256_mpsadbw_epu8(a, source[i], 45)));
+        high = _mm256_add_epi16(
+            high, _mm256_add_epi16(_mm256_mpsadbw_epu8(b, source[i], 18), _mm256_mpsadbw_epu8(b, source[i], 63)));
+    }
+    low = _mm256_add_epi16(low, high);
+    return _mm_add_epi16(_mm256_castsi256_si128(low), _mm256_extracti128_si256(low, 1));
+}
+
+void svt_sad_loop_16xh_sea_avx2(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
+                                uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
+                                int16_t* best_x, int16_t* best_y, uint32_t raw_stride, uint8_t skip, int16_t width,
+                                int16_t rows) {
+    if (!sea || (height != 8 && height != 16)) {
+        svt_sad_loop_16xh_sea_c(src,
+                                src_stride,
+                                ref,
+                                ref_stride,
+                                height,
+                                sea,
+                                sea_bl,
+                                best_sad,
+                                best_x,
+                                best_y,
+                                raw_stride,
+                                skip,
+                                width,
+                                rows);
+        return;
+    }
+    __m256i source[8];
+    __m128i boxes[4];
+    for (unsigned half = 0; half < 2; ++half) {
+        __m256i sums = _mm256_setzero_si256();
+        for (unsigned j = 0; j < height / 4; ++j) {
+            const unsigned i = half * (height / 4) + j;
+            const __m128i  a = _mm_loadu_si128((const __m128i*)(src + 2 * i * src_stride));
+            const __m128i  b = _mm_loadu_si128((const __m128i*)(src + (2 * i + 1) * src_stride));
+            source[i]        = _mm256_set_m128i(b, a);
+            sums             = _mm256_add_epi16(sums, _mm256_sad_epu8(source[i], _mm256_setzero_si256()));
+        }
+        const __m128i subtotal = _mm_add_epi16(_mm256_castsi256_si128(sums), _mm256_extracti128_si256(sums, 1));
+        boxes[2 * half]        = _mm_broadcastw_epi16(subtotal);
+        boxes[2 * half + 1]    = _mm_broadcastw_epi16(_mm_srli_si128(subtotal, 8));
+    }
+    unsigned best = 0xffffff;
+    for (int y = 0; y < rows; ++y, ref += raw_stride, sea += raw_stride) {
+        if (skip && !(y & 1)) {
+            continue;
+        }
+        int x = 0;
+        for (; x + 8 <= width; x += 8) {
+            __m128i diff[4];
+            for (int b = 0; b < 4; ++b) {
+                const uint16_t* p = sea + x + (b & 1) * 8 + (b >> 1) * sea_bl;
+                diff[b]           = _mm_abs_epi16(_mm_sub_epi16(boxes[b], _mm_loadu_si128((const __m128i*)p)));
+            }
+            const __m128i lb = _mm_add_epi16(_mm_add_epi16(diff[0], diff[1]), _mm_add_epi16(diff[2], diff[3]));
+            if ((unsigned)_mm_extract_epi16(_mm_minpos_epu16(lb), 0) >= best) {
+                continue;
+            }
+            const __m128i min = _mm_minpos_epu16(sea_sad8(source, ref + x, ref_stride, height / 2));
+            unsigned      sad = _mm_extract_epi16(min, 0);
+            if (sad < best) {
+                best    = sad;
+                *best_x = x + _mm_extract_epi16(min, 1);
+                *best_y = y;
+            }
+        }
+        for (; x < width; ++x) {
+            __m128i sums = _mm_setzero_si128();
+            for (unsigned r = 0; r < height; ++r) {
+                sums = _mm_add_epi64(sums,
+                                     _mm_sad_epu8(_mm_loadu_si128((const __m128i*)(src + r * src_stride)),
+                                                  _mm_loadu_si128((const __m128i*)(ref + r * ref_stride + x))));
+            }
+            const unsigned sad = _mm_cvtsi128_si32(_mm_add_epi64(sums, _mm_srli_si128(sums, 8)));
+            if (sad < best) {
+                best    = sad;
+                *best_x = x;
+                *best_y = y;
+            }
+        }
+    }
+    *best_sad = best;
+}
