@@ -124,6 +124,7 @@ RTCD_EXTERN void(*svt_av1_fwd_txfm2d_64x16)(int16_t *input, int32_t *output, uin
 void svt_av1_transform_two_d_64x64_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_64x64)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 uint64_t svt_av1_fwd_txfm2d_64x64_energy_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_avx2(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
 RTCD_EXTERN uint64_t(*svt_av1_fwd_txfm2d_64x64_energy)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t bit_depth);
 void svt_av1_transform_two_d_32x32_c(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);
 RTCD_EXTERN void(*svt_av1_fwd_txfm2d_32x32)(int16_t *input, int32_t *output, uint32_t input_stride, TxType transform_type, uint8_t  bit_depth);

@@ -2626,10 +2626,27 @@ static void fadst16x16_avx2(const __m256i* in, __m256i* out, int8_t bit, const i
     }
 }
 
+// The 8-bit DCT is exact for all residuals in [-255, 255]. Test four
+// independent rows at a time and exit before scanning a high-contrast block.
+static INLINE bool small_dct_input(const int16_t* input, uint32_t stride, int size) {
+    for (int y = 0; y < size; y += 4, input += 4 * stride) {
+        __m256i bits = _mm256_setzero_si256();
+        for (int x = 0; x < size; x += 16) {
+            const __m256i a = _mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)(input + x)));
+            const __m256i b = _mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)(input + stride + x)));
+            const __m256i c = _mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)(input + 2 * stride + x)));
+            const __m256i d = _mm256_abs_epi16(_mm256_loadu_si256((const __m256i*)(input + 3 * stride + x)));
+            bits            = _mm256_or_si256(bits, _mm256_or_si256(_mm256_or_si256(a, b), _mm256_or_si256(c, d)));
+        }
+        if (!_mm256_testz_si256(bits, _mm256_set1_epi16(-256))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void svt_av1_fwd_txfm2d_16x16_avx2(int16_t* input, int32_t* coeff, uint32_t stride, TxType tx_type, uint8_t bd) {
-    // 8-bit content runs the int16 path, where a 16-wide row is one __m256i
-    // rather than two.
-    if (bd == EB_EIGHT_BIT && tx_type == DCT_DCT) {
+    if (tx_type == DCT_DCT && (bd == EB_EIGHT_BIT || (bd == EB_TEN_BIT && small_dct_input(input, stride, 16)))) {
         svt_lbd_fwd_txfm2d_16x16_dct_avx2(input, coeff, stride);
         return;
     }
@@ -3822,7 +3839,7 @@ static INLINE void fwd_txfm2d_32x32_avx2(const int16_t* input, int32_t* output, 
 }
 
 void svt_av1_fwd_txfm2d_32x32_avx2(int16_t* input, int32_t* output, uint32_t stride, TxType tx_type, uint8_t bd) {
-    if (bd == EB_EIGHT_BIT && tx_type == DCT_DCT) {
+    if (tx_type == DCT_DCT && (bd == EB_EIGHT_BIT || (bd == EB_TEN_BIT && small_dct_input(input, stride, 32)))) {
         svt_lbd_fwd_txfm2d_32x32_dct_avx2(input, output, stride);
         return;
     }
@@ -3905,6 +3922,53 @@ void svt_av1_fwd_txfm2d_64x64_avx2(int16_t* input, int32_t* output, uint32_t str
     default:
         assert(0);
     }
+}
+
+// Each stripe holds eight independent 1-D transforms. Store the first
+// pass transposed by tile so the second pass streams contiguous vectors.
+uint64_t svt_av1_fwd_txfm2d_64x64_energy_avx2(int16_t* input, int32_t* output, uint32_t stride, TxType type,
+                                              uint8_t bd) {
+    if (type != DCT_DCT) {
+        svt_av1_fwd_txfm2d_64x64_avx2(input, output, stride, type, bd);
+        return svt_handle_transform64x64_avx2(output);
+    }
+    __m256i       middle[8][64], a[64], b[64];
+    const __m256i bias = _mm256_set1_epi32(2);
+    for (int x = 0; x < 64; x += 8) {
+        for (int y = 0; y < 64; ++y) {
+            a[y] = _mm256_cvtepi16_epi32(_mm_loadu_si128((const __m128i*)(input + y * stride + x)));
+        }
+        av1_fdct64_new_avx2(a, b, fwd_cos_bit_col[4][4], 8, 1);
+        for (int g = 0; g < 8; ++g) {
+            for (int k = 0; k < 8; ++k) {
+                a[k] = _mm256_srai_epi32(_mm256_add_epi32(b[g * 8 + k], bias), 2);
+            }
+            transpose_8x8_avx2(a, middle[g] + x);
+        }
+    }
+    __m256i even = _mm256_setzero_si256(), odd = even;
+    for (int g = 0; g < 8; ++g) {
+        av1_fdct64_new_avx2(middle[g], b, fwd_cos_bit_row[4][4], 8, 1);
+        const int kept = g < 4 ? 32 : 0;
+        for (int x = 0; x < kept; x += 8) {
+            for (int k = 0; k < 8; ++k) {
+                a[k] = _mm256_srai_epi32(_mm256_add_epi32(b[x + k], bias), 2);
+            }
+            transpose_8x8_avx2(a, a + 8);
+            for (int k = 0; k < 8; ++k) {
+                _mm256_storeu_si256((__m256i*)(output + (8 * g + k) * 32 + x), a[8 + k]);
+            }
+        }
+        for (int x = kept; x < 64; ++x) {
+            const __m256i v  = _mm256_srai_epi32(_mm256_add_epi32(b[x], bias), 2);
+            const __m256i hi = _mm256_srli_epi64(v, 32);
+            even             = _mm256_add_epi64(even, _mm256_mul_epi32(v, v));
+            odd              = _mm256_add_epi64(odd, _mm256_mul_epi32(hi, hi));
+        }
+    }
+    even              = _mm256_add_epi64(even, odd);
+    const __m128i sum = _mm_add_epi64(_mm256_castsi256_si128(even), _mm256_extracti128_si256(even, 1));
+    return _mm_cvtsi128_si64(_mm_add_epi64(sum, _mm_srli_si128(sum, 8)));
 }
 
 static INLINE void load_buffer_32_avx2(const int16_t* input, __m256i* in, int32_t stride, int32_t flipud,
