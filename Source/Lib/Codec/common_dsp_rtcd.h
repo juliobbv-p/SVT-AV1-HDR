@@ -1043,6 +1043,7 @@ RTCD_EXTERN void(*svt_aom_cdef_find_dir_dual)(const uint16_t *img1, const uint16
 // Raw 10-bit SSE in compact plan order; configured primary zero uses direction zero.
 struct CdefSearchPlan;
 void svt_cdef_search_block_10bit_c(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
+void svt_cdef_search_block_10bit_avx2(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
 RTCD_EXTERN void(*svt_cdef_search_block_10bit)(const uint16_t *input, const uint16_t *target, int target_stride, const struct CdefSearchPlan *plan, const uint8_t primary[16], int dir, int damping, int bsize, int subsampling_factor, uint64_t ssd[64]);
 #endif
 void svt_cdef_filter_block_c(uint8_t *dst8, uint16_t *dst16, int32_t dstride, const uint16_t *in, int32_t pri_strength, int32_t sec_strength, int32_t dir, int32_t pri_damping, int32_t sec_damping, int32_t bsize, int32_t coeff_shift, uint8_t subsampling_factor);
