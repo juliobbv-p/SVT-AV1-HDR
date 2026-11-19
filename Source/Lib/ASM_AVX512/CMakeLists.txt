@@ -64,6 +64,7 @@ set(all_files
     transpose_avx512.h
     transpose_encoder_avx512.h
     highbd_quantize_avx512.c
+    highbd_inter_prediction_avx512.c
     variance_avx512.c
     variance_window_avx512icl.c
     wiener_convolve_avx512.c

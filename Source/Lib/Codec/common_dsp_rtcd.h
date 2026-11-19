@@ -1893,6 +1893,7 @@ void svt_av1_inv_txfm2d_add_64x32_neon(const int32_t *input, uint16_t *output_r,
 
 #ifdef ARCH_X86_64
 void svt_aom_highbd_10_fullpel_split_avx2(const uint8_t *msb, int msb_stride, const uint8_t *lsb, int lsb_stride, uint16_t *dst, int dst_stride, int w, int h, ConvolveParams *params);
+void svt_aom_highbd_10_fullpel_split_avx512(const uint8_t *msb, int msb_stride, const uint8_t *lsb, int lsb_stride, uint16_t *dst, int dst_stride, int w, int h, ConvolveParams *params);
 
 void svt_aom_blend_a64_vmask_sse4_1(uint8_t *dst, uint32_t dst_stride, const uint8_t *src0, uint32_t src0_stride, const uint8_t *src1, uint32_t src1_stride, const uint8_t *mask, int w, int h);
 
@@ -2021,6 +2022,10 @@ void svt_enc_msb_pack2d_avx2_intrin_al(uint8_t *in8_bit_buffer, uint32_t in8_str
     uint8_t *inn_bit_buffer, uint16_t *out16_bit_buffer,
     uint32_t inn_stride, uint32_t out_stride,
     uint32_t width, uint32_t height);
+void svt_enc_msb_pack2d_avx512(uint8_t *in8_bit_buffer, uint32_t in8_stride,
+    uint8_t *inn_bit_buffer, uint16_t *out16_bit_buffer,
+    uint32_t inn_stride, uint32_t out_stride,
+    uint32_t width, uint32_t height);
 void svt_residual_kernel8bit_sse4_1(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 void svt_residual_kernel8bit_avx2(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
 void svt_residual_kernel8bit_avx512(uint8_t *input, uint32_t input_stride, uint8_t *pred, uint32_t pred_stride, int16_t *residual, uint32_t residual_stride, uint32_t area_width, uint32_t area_height);
@@ -2127,10 +2132,12 @@ void svt_av1_highbd_jnt_convolve_2d_copy_avx2(const uint16_t *src, int32_t src_s
 void svt_av1_highbd_convolve_y_sr_avx2(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 
 void svt_av1_highbd_convolve_2d_sr_avx2(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
+void svt_av1_highbd_convolve_2d_sr_avx512(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 
 void svt_av1_highbd_convolve_2d_scale_sse4_1(const uint16_t *src, int src_stride, uint16_t *dst, int dst_stride, int w, int h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int subpel_x_q4, const int x_step_qn, const int subpel_y_q4, const int y_step_qn, ConvolveParams *conv_params, int bd);
 
 void svt_av1_highbd_jnt_convolve_2d_avx2(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
+void svt_av1_highbd_jnt_convolve_2d_avx512(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 
 void svt_av1_highbd_jnt_convolve_x_avx2(const uint16_t *src, int32_t src_stride, uint16_t *dst, int32_t dst_stride, int32_t w, int32_t h, const InterpFilterParams *filter_params_x, const InterpFilterParams *filter_params_y, const int32_t subpel_x_q4, const int32_t subpel_y_q4, ConvolveParams *conv_params, int32_t bd);
 

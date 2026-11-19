@@ -1314,6 +1314,12 @@ bool svt_aom_try_highbd_fullpel_split(const uint8_t* src, const uint8_t* src_2b,
         return false;
     }
 #if defined(ARCH_X86_64)
+#if EN_AVX512_SUPPORT
+    if (w >= 32 && svt_pack2d_16_bit_src_mul4 == svt_enc_msb_pack2d_avx512) {
+        svt_aom_highbd_10_fullpel_split_avx512(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, params);
+        return true;
+    }
+#endif
     svt_aom_highbd_10_fullpel_split_avx2(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, params);
 #else
     svt_aom_highbd_10_fullpel_split_neon(src, src_stride, src_2b, src_stride, dst, dst_stride, w, h, params);
@@ -1350,8 +1356,12 @@ void svt_inter_predictor_light_pd1(uint8_t* src, uint8_t* src_2b, int32_t src_st
 #if defined(ARCH_AARCH64) || defined(ARCH_X86_64)
         const bool compound = conv_params->is_compound;
 #if defined(ARCH_X86_64)
-        const bool compact_filter = svt_aom_convolveHbd[1][1][compound] ==
-            (compound ? svt_av1_highbd_jnt_convolve_2d_avx2 : svt_av1_highbd_convolve_2d_sr_avx2);
+        const aom_highbd_convolve_fn_t filter = svt_aom_convolveHbd[1][1][compound];
+        const bool                     compact_filter =
+#if EN_AVX512_SUPPORT
+            filter == (compound ? svt_av1_highbd_jnt_convolve_2d_avx512 : svt_av1_highbd_convolve_2d_sr_avx512) ||
+#endif
+            filter == (compound ? svt_av1_highbd_jnt_convolve_2d_avx2 : svt_av1_highbd_convolve_2d_sr_avx2);
         // The AVX2 horizontal load uses three left and five right samples.
         const int left_border = 3;
 #else

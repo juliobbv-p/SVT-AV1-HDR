@@ -448,6 +448,7 @@ EbCpuFlags svt_aom_get_cpu_flags_to_use() { return 0; }
 #define SET_SSE41(ptr, c, sse4_1)                               SET_FUNCTIONS_AVX2(ptr, c, 0, 0, 0, 0, 0, sse4_1, 0, 0, 0, 0)
 #define SET_SSE41_AVX2(ptr, c, sse4_1, avx2)                    SET_FUNCTIONS_AVX2(ptr, c, 0, 0, 0, 0, 0, sse4_1, 0, 0, avx2, 0)
 #define SET_SSE41_AVX2_AVX512(ptr, c, sse4_1, avx2, avx512)     SET_FUNCTIONS_AVX2(ptr, c, 0, 0, 0, 0, 0, sse4_1, 0, 0, avx2, avx512)
+#define SET_SSSE3_AVX2_AVX512(ptr, c, ssse3, avx2, avx512) SET_FUNCTIONS_AVX2(ptr, c, 0, 0, 0, 0, ssse3, 0, 0, 0, avx2, avx512)
 #define SET_AVX2(ptr, c, avx2)                                  SET_FUNCTIONS_AVX2(ptr, c, 0, 0, 0, 0, 0, 0, 0, 0, avx2, 0)
 #define SET_AVX2_AVX512(ptr, c, avx2, avx512)                   SET_FUNCTIONS_AVX2(ptr, c, 0, 0, 0, 0, 0, 0, 0, 0, avx2, avx512)
 #define SET_SSE2_AVX2_AVX512(ptr, c, sse2, avx2, avx512)        SET_FUNCTIONS_AVX2(ptr, c, 0, 0, sse2, 0, 0, 0, 0, 0, avx2, avx512)
@@ -577,7 +578,7 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
     SET_SSE41_AVX2(svt_cfl_luma_subsampling_420_hbd, svt_cfl_luma_subsampling_420_hbd_c, svt_cfl_luma_subsampling_420_hbd_sse4_1, svt_cfl_luma_subsampling_420_hbd_avx2);
     SET_SSE41_AVX2(svt_convert_8bit_to_16bit, svt_convert_8bit_to_16bit_c, svt_convert_8bit_to_16bit_sse4_1, svt_convert_8bit_to_16bit_avx2);
     SET_SSE41_AVX2(svt_convert_16bit_to_8bit, svt_convert_16bit_to_8bit_c, svt_convert_16bit_to_8bit_sse4_1, svt_convert_16bit_to_8bit_avx2);
-    SET_SSE2_AVX2(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d, svt_enc_msb_pack2d_sse2_intrin, svt_enc_msb_pack2d_avx2_intrin_al);
+    SET_SSE2_AVX2_AVX512(svt_pack2d_16_bit_src_mul4, svt_enc_msb_pack2_d, svt_enc_msb_pack2d_sse2_intrin, svt_enc_msb_pack2d_avx2_intrin_al, svt_enc_msb_pack2d_avx512);
     SET_SSE2_AVX2(svt_aom_un_pack2d_16_bit_src_mul4, svt_enc_msb_un_pack2_d, svt_enc_msb_un_pack2d_sse2_intrin, svt_enc_msb_un_pack2d_avx2_intrin);
     SET_SSE41_AVX2_AVX512(svt_full_distortion_kernel_cbf_zero32_bits, svt_full_distortion_kernel_cbf_zero32_bits_c, svt_full_distortion_kernel_cbf_zero32_bits_sse4_1, svt_full_distortion_kernel_cbf_zero32_bits_avx2, svt_full_distortion_kernel_cbf_zero32_bits_avx512);
     SET_SSE41_AVX2_AVX512(svt_full_distortion_kernel32_bits, svt_full_distortion_kernel32_bits_c, svt_full_distortion_kernel32_bits_sse4_1, svt_full_distortion_kernel32_bits_avx2, svt_full_distortion_kernel32_bits_avx512);
@@ -593,10 +594,10 @@ void svt_aom_setup_common_rtcd_internal(EbCpuFlags flags) {
 #endif
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
     SET_SSSE3_AVX2(svt_av1_highbd_convolve_y_sr, svt_av1_highbd_convolve_y_sr_c, svt_av1_highbd_convolve_y_sr_ssse3, svt_av1_highbd_convolve_y_sr_avx2);
-    SET_SSSE3_AVX2(svt_av1_highbd_convolve_2d_sr, svt_av1_highbd_convolve_2d_sr_c, svt_av1_highbd_convolve_2d_sr_ssse3, svt_av1_highbd_convolve_2d_sr_avx2);
+    SET_SSSE3_AVX2_AVX512(svt_av1_highbd_convolve_2d_sr, svt_av1_highbd_convolve_2d_sr_c, svt_av1_highbd_convolve_2d_sr_ssse3, svt_av1_highbd_convolve_2d_sr_avx2, svt_av1_highbd_convolve_2d_sr_avx512);
     SET_SSE41(svt_av1_highbd_convolve_2d_scale, svt_av1_highbd_convolve_2d_scale_c, svt_av1_highbd_convolve_2d_scale_sse4_1);
     SET_SSSE3_AVX2(svt_av1_highbd_convolve_2d_copy_sr, svt_av1_highbd_convolve_2d_copy_sr_c, svt_av1_highbd_convolve_2d_copy_sr_ssse3, svt_av1_highbd_convolve_2d_copy_sr_avx2);
-    SET_SSE41_AVX2(svt_av1_highbd_jnt_convolve_2d, svt_av1_highbd_jnt_convolve_2d_c, svt_av1_highbd_jnt_convolve_2d_sse4_1, svt_av1_highbd_jnt_convolve_2d_avx2);
+    SET_SSE41_AVX2_AVX512(svt_av1_highbd_jnt_convolve_2d, svt_av1_highbd_jnt_convolve_2d_c, svt_av1_highbd_jnt_convolve_2d_sse4_1, svt_av1_highbd_jnt_convolve_2d_avx2, svt_av1_highbd_jnt_convolve_2d_avx512);
     SET_SSE41_AVX2(svt_av1_highbd_jnt_convolve_2d_copy, svt_av1_highbd_jnt_convolve_2d_copy_c, svt_av1_highbd_jnt_convolve_2d_copy_sse4_1, svt_av1_highbd_jnt_convolve_2d_copy_avx2);
     SET_SSE41_AVX2(svt_av1_highbd_jnt_convolve_x, svt_av1_highbd_jnt_convolve_x_c, svt_av1_highbd_jnt_convolve_x_sse4_1, svt_av1_highbd_jnt_convolve_x_avx2);
     SET_SSE41_AVX2(svt_av1_highbd_jnt_convolve_y, svt_av1_highbd_jnt_convolve_y_c, svt_av1_highbd_jnt_convolve_y_sse4_1, svt_av1_highbd_jnt_convolve_y_avx2);
