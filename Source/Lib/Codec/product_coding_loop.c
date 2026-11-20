@@ -5147,8 +5147,8 @@ static INLINE void check_dct_dct_reuse(PictureControlSet* pcs, ModeDecisionConte
 }
 
 static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, ModeDecisionCandidateBuffer* cand_bf,
-                           uint32_t qindex, uint8_t tx_search_skip_flag, uint64_t* y_coeff_bits,
-                           uint64_t y_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL]) {
+                           const ModeDecisionCandidateBuffer* input_bf, uint32_t qindex, uint8_t tx_search_skip_flag,
+                           uint64_t* y_coeff_bits, uint64_t y_full_distortion[DIST_TOTAL][DIST_CALC_TOTAL]) {
     const bool qmpsnr_enabled = svt_use_qmpsnr(pcs, ctx, PLANE_Y, true);
     // A spatial skip estimate has no transform coefficients to weight.
     if (qmpsnr_enabled) {
@@ -5243,7 +5243,7 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     int32_t  tx_type;
     uint16_t txb_origin_x           = tx_org[ctx->blk_geom->bsize][is_inter][ctx->tx_depth][ctx->txb_itr].x;
     uint16_t txb_origin_y           = tx_org[ctx->blk_geom->bsize][is_inter][ctx->tx_depth][ctx->txb_itr].y;
-    uint32_t txb_origin_index       = txb_origin_x + (txb_origin_y * cand_bf->residual->y_stride);
+    uint32_t txb_origin_index       = txb_origin_x + (txb_origin_y * input_bf->residual->y_stride);
     uint32_t input_txb_origin_index = (ctx->blk_org_x + txb_origin_x) +
         ((ctx->blk_org_y + txb_origin_y) * input_pic->y_stride);
     int32_t cropped_tx_width   = MIN((int)txbwidth, pcs->ppcs->aligned_width - (ctx->blk_org_x + txb_origin_x));
@@ -5308,9 +5308,9 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
         prediction_spatial_dist = svt_spatial_full_distortion_kernel_facade(input_pic->y_buffer,
                                                                             input_txb_origin_index,
                                                                             input_pic->y_stride,
-                                                                            cand_bf->pred->y_buffer,
+                                                                            input_bf->pred->y_buffer,
                                                                             (int32_t)txb_origin_index,
-                                                                            cand_bf->pred->y_stride,
+                                                                            input_bf->pred->y_stride,
                                                                             cropped_tx_width,
                                                                             cropped_tx_height,
                                                                             SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
@@ -5324,9 +5324,9 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
         ? get_svt_psy_full_dist_cached(input_pic->y_buffer,
                                        input_txb_origin_index,
                                        input_pic->y_stride,
-                                       cand_bf->pred->y_buffer,
+                                       input_bf->pred->y_buffer,
                                        (int32_t)txb_origin_index,
-                                       cand_bf->pred->y_stride,
+                                       input_bf->pred->y_stride,
                                        cropped_tx_width,
                                        cropped_tx_height,
                                        SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
@@ -5381,15 +5381,15 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                     check_dct_dct_reuse(pcs,
                                         ctx,
                                         cand_bf,
-                                        &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
-                                        cand_bf->residual->y_stride,
+                                        &(((int16_t*)input_bf->residual->y_buffer)[txb_origin_index]),
+                                        input_bf->residual->y_stride,
                                         tx_size,
                                         pf_shape);
                 } else {
                     svt_aom_estimate_transform(pcs,
                                                ctx,
-                                               &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
-                                               cand_bf->residual->y_stride,
+                                               &(((int16_t*)input_bf->residual->y_buffer)[txb_origin_index]),
+                                               input_bf->residual->y_stride,
                                                coeff,
                                                NOT_USED_VALUE,
                                                tx_size,
@@ -5450,9 +5450,9 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                 if (y_has_coeff) {
                     svt_aom_inv_transform_recon_wrapper(pcs,
                                                         ctx,
-                                                        cand_bf->pred->y_buffer,
+                                                        input_bf->pred->y_buffer,
                                                         txb_origin_index,
-                                                        cand_bf->pred->y_stride,
+                                                        input_bf->pred->y_stride,
                                                         recon_ptr->y_buffer,
                                                         txb_origin_index,
                                                         cand_bf->recon->y_stride,
@@ -5464,7 +5464,7 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
                                                         PLANE_TYPE_Y,
                                                         (uint32_t)eob_txt[tx_type]);
                 } else {
-                    svt_av1_picture_copy_y(cand_bf->pred,
+                    svt_av1_picture_copy_y(input_bf->pred,
                                            txb_origin_index,
                                            recon_ptr,
                                            txb_origin_index,
@@ -5734,9 +5734,9 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
         uint64_t ssim_pred_dist = svt_spatial_full_distortion_ssim_kernel(input_pic->y_buffer,
                                                                           input_txb_origin_index,
                                                                           input_pic->y_stride,
-                                                                          cand_bf->pred->y_buffer,
+                                                                          input_bf->pred->y_buffer,
                                                                           (int32_t)txb_origin_index,
-                                                                          cand_bf->pred->y_stride,
+                                                                          input_bf->pred->y_stride,
                                                                           cropped_tx_width,
                                                                           cropped_tx_height,
                                                                           SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
@@ -5761,9 +5761,9 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
         uint64_t ssim_pred_dist = svt_spatial_full_distortion_ssim_kernel(input_pic->y_buffer,
                                                                           input_txb_origin_index,
                                                                           input_pic->y_stride,
-                                                                          cand_bf->pred->y_buffer,
+                                                                          input_bf->pred->y_buffer,
                                                                           (int32_t)txb_origin_index,
-                                                                          cand_bf->pred->y_stride,
+                                                                          input_bf->pred->y_stride,
                                                                           cropped_tx_width,
                                                                           cropped_tx_height,
                                                                           SVT_EFFECTIVE_HBD_MD(ctx->hbd_md),
@@ -5803,186 +5803,23 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     }
 }
 
-static void init_tx_cand_bf(ModeDecisionCandidateBuffer* cand_bf, ModeDecisionContext* ctx, uint8_t tx_depth,
-                            uint8_t is_inter) {
-    uint32_t block_index = 0;
-    if (tx_depth == 1) {
-        memcpy(ctx->cand_bf_tx_depth_1->cand, cand_bf->cand, sizeof(ModeDecisionCandidate));
-        ctx->cand_bf_tx_depth_1->block_has_coeff = cand_bf->block_has_coeff;
-        if (is_inter) {
-            if (SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
-                // Copy pred to tx_depth_1 cand_bf
-                {
-                    uint16_t* src = &(((uint16_t*)cand_bf->pred->y_buffer)[block_index]);
-                    uint16_t* dst = &(((uint16_t*)ctx->cand_bf_tx_depth_1->pred->y_buffer)[block_index]);
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth * sizeof(uint16_t));
-                        src += cand_bf->pred->y_stride;
-                        dst += ctx->cand_bf_tx_depth_1->pred->y_stride;
-                    }
-                }
-                // Copy residual to tx_depth_1 cand_bf
-                {
-                    int16_t* src = &(((int16_t*)cand_bf->residual->y_buffer)[block_index]);
-                    int16_t* dst = &(((int16_t*)ctx->cand_bf_tx_depth_1->residual->y_buffer)[block_index]);
-
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth << 1);
-                        src += cand_bf->residual->y_stride;
-                        dst += ctx->cand_bf_tx_depth_1->residual->y_stride;
-                    }
-                }
-            } else {
-                // Copy pred to tx_depth_1 cand_bf
-                {
-                    EbByte src = &(cand_bf->pred->y_buffer[block_index]);
-                    EbByte dst = &(ctx->cand_bf_tx_depth_1->pred->y_buffer[block_index]);
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth);
-                        src += cand_bf->pred->y_stride;
-                        dst += ctx->cand_bf_tx_depth_1->pred->y_stride;
-                    }
-                }
-                // Copy residual to tx_depth_1 cand_bf
-                {
-                    int16_t* src = &(((int16_t*)cand_bf->residual->y_buffer)[block_index]);
-                    int16_t* dst = &(((int16_t*)ctx->cand_bf_tx_depth_1->residual->y_buffer)[block_index]);
-
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth << 1);
-                        src += cand_bf->residual->y_stride;
-                        dst += ctx->cand_bf_tx_depth_1->residual->y_stride;
-                    }
-                }
-            }
-        }
-    }
-    if (tx_depth == 2) {
-        memcpy(ctx->cand_bf_tx_depth_2->cand, cand_bf->cand, sizeof(ModeDecisionCandidate));
-
-        ctx->cand_bf_tx_depth_2->block_has_coeff = cand_bf->block_has_coeff;
-        if (is_inter) {
-            if (SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
-                // Copy pred to tx_depth_1 cand_bf
-                {
-                    uint16_t* src = &(((uint16_t*)cand_bf->pred->y_buffer)[block_index]);
-                    uint16_t* dst = &(((uint16_t*)ctx->cand_bf_tx_depth_2->pred->y_buffer)[block_index]);
-
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth * sizeof(uint16_t));
-                        src += cand_bf->pred->y_stride;
-                        dst += ctx->cand_bf_tx_depth_2->pred->y_stride;
-                    }
-                }
-                // Copy residual to tx_depth_1 cand_bf
-                {
-                    int16_t* src = &(((int16_t*)cand_bf->residual->y_buffer)[block_index]);
-                    int16_t* dst = &(((int16_t*)ctx->cand_bf_tx_depth_2->residual->y_buffer)[block_index]);
-
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth << 1);
-                        src += cand_bf->residual->y_stride;
-                        dst += ctx->cand_bf_tx_depth_2->residual->y_stride;
-                    }
-                }
-            } else {
-                // Copy pred to tx_depth_2 cand_bf
-                {
-                    EbByte src = &(cand_bf->pred->y_buffer[block_index]);
-                    EbByte dst = &(ctx->cand_bf_tx_depth_2->pred->y_buffer[block_index]);
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth);
-                        src += cand_bf->pred->y_stride;
-                        dst += ctx->cand_bf_tx_depth_2->pred->y_stride;
-                    }
-                }
-                // Copy residual to tx_depth_2 cand_bf
-                {
-                    int16_t* src = &(((int16_t*)cand_bf->residual->y_buffer)[block_index]);
-                    int16_t* dst = &(((int16_t*)ctx->cand_bf_tx_depth_2->residual->y_buffer)[block_index]);
-
-                    for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                        memcpy(dst, src, ctx->blk_geom->bwidth << 1);
-                        src += cand_bf->residual->y_stride;
-                        dst += ctx->cand_bf_tx_depth_2->residual->y_stride;
-                    }
-                }
-            }
-        }
-    }
-}
-
-void update_tx_cand_bf(ModeDecisionCandidateBuffer* cand_bf, ModeDecisionContext* ctx, uint8_t best_tx_depth) {
-    uint32_t block_index = 0;
-    if (best_tx_depth == 1) {
-        // Copy depth 1 mode/type/eob ..
-        memcpy(cand_bf->cand, ctx->cand_bf_tx_depth_1->cand, sizeof(ModeDecisionCandidate));
-        memcpy(cand_bf->eob.y, ctx->cand_bf_tx_depth_1->eob.y, sizeof(uint16_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
-        memcpy(cand_bf->quant_dc.y,
-               ctx->cand_bf_tx_depth_1->quant_dc.y,
-               sizeof(uint8_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
-
-        cand_bf->y_has_coeff = ctx->cand_bf_tx_depth_1->y_has_coeff;
-        // Copy depth 1 pred
-        if (SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
-            uint16_t* src = &(((uint16_t*)ctx->cand_bf_tx_depth_1->pred->y_buffer)[block_index]);
-            uint16_t* dst = &(((uint16_t*)cand_bf->pred->y_buffer)[block_index]);
-            for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                memcpy(dst, src, ctx->blk_geom->bwidth * sizeof(uint16_t));
-                src += ctx->cand_bf_tx_depth_1->pred->y_stride;
-                dst += cand_bf->pred->y_stride;
-            }
-        } else {
-            EbByte src = &(ctx->cand_bf_tx_depth_1->pred->y_buffer[block_index]);
-            EbByte dst = &(cand_bf->pred->y_buffer[block_index]);
-            for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                memcpy(dst, src, ctx->blk_geom->bwidth);
-                src += ctx->cand_bf_tx_depth_1->pred->y_stride;
-                dst += cand_bf->pred->y_stride;
-            }
-        }
-        // Copy depth 1 recon coeff
-        memcpy(cand_bf->rec_coeff->y_buffer,
-               ctx->cand_bf_tx_depth_1->rec_coeff->y_buffer,
-               (ctx->blk_geom->bwidth * ctx->blk_geom->bheight << 2));
-        memcpy(cand_bf->quant->y_buffer,
-               ctx->cand_bf_tx_depth_1->quant->y_buffer,
-               (ctx->blk_geom->bwidth * ctx->blk_geom->bheight << 2));
-    }
-    if (best_tx_depth == 2) {
-        // Copy depth 2 mode/type/eob ..
-        memcpy(cand_bf->cand, ctx->cand_bf_tx_depth_2->cand, sizeof(ModeDecisionCandidate));
-        memcpy(cand_bf->eob.y, ctx->cand_bf_tx_depth_2->eob.y, sizeof(uint16_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
-        memcpy(cand_bf->quant_dc.y,
-               ctx->cand_bf_tx_depth_2->quant_dc.y,
-               sizeof(uint8_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
-
-        cand_bf->y_has_coeff = ctx->cand_bf_tx_depth_2->y_has_coeff;
-        // Copy depth 2 pred
-        if (SVT_EFFECTIVE_HBD_MD(ctx->hbd_md)) {
-            uint16_t* src = &(((uint16_t*)ctx->cand_bf_tx_depth_2->pred->y_buffer)[block_index]);
-            uint16_t* dst = &(((uint16_t*)cand_bf->pred->y_buffer)[block_index]);
-            for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                memcpy(dst, src, ctx->blk_geom->bwidth * sizeof(uint16_t));
-                src += ctx->cand_bf_tx_depth_2->pred->y_stride;
-                dst += cand_bf->pred->y_stride;
-            }
-        } else {
-            EbByte src = &(ctx->cand_bf_tx_depth_2->pred->y_buffer[block_index]);
-            EbByte dst = &(cand_bf->pred->y_buffer[block_index]);
-            for (int i = 0; i < ctx->blk_geom->bheight; i++) {
-                memcpy(dst, src, ctx->blk_geom->bwidth);
-                src += ctx->cand_bf_tx_depth_2->pred->y_stride;
-                dst += cand_bf->pred->y_stride;
-            }
-        }
-        // Copy depth 2 recon coeff
-        memcpy(cand_bf->rec_coeff->y_buffer,
-               ctx->cand_bf_tx_depth_2->rec_coeff->y_buffer,
-               (ctx->blk_geom->bwidth * ctx->blk_geom->bheight << 2));
-        memcpy(cand_bf->quant->y_buffer,
-               ctx->cand_bf_tx_depth_2->quant->y_buffer,
-               (ctx->blk_geom->bwidth * ctx->blk_geom->bheight << 2));
+static void update_tx_cand_bf(ModeDecisionCandidateBuffer* cand_bf, const ModeDecisionCandidateBuffer* best,
+                              const ModeDecisionContext* ctx, bool is_inter) {
+    *cand_bf->cand = *best->cand;
+    memcpy(cand_bf->eob.y, best->eob.y, sizeof(cand_bf->eob.y));
+    memcpy(cand_bf->quant_dc.y, best->quant_dc.y, sizeof(cand_bf->quant_dc.y));
+    cand_bf->y_has_coeff     = best->y_has_coeff;
+    const size_t coeff_bytes = ctx->blk_geom->bwidth * ctx->blk_geom->bheight * sizeof(int32_t);
+    memcpy(cand_bf->rec_coeff->y_buffer, best->rec_coeff->y_buffer, coeff_bytes);
+    memcpy(cand_bf->quant->y_buffer, best->quant->y_buffer, coeff_bytes);
+    if (!is_inter) {
+        svt_av1_picture_copy_y(best->pred,
+                               0,
+                               cand_bf->pred,
+                               0,
+                               ctx->blk_geom->bwidth,
+                               ctx->blk_geom->bheight,
+                               SVT_EFFECTIVE_HBD_MD(ctx->hbd_md));
     }
 }
 
@@ -5994,24 +5831,25 @@ static void perform_tx_partitioning(ModeDecisionCandidateBuffer* cand_bf, ModeDe
                                                                          : ctx->full_lambda_md[EB_8_BIT_MD];
     EbPictureBufferDesc* input_pic   = SVT_EFFECTIVE_HBD_MD(ctx->hbd_md) ? pcs->input_frame16bit
                                                                          : pcs->ppcs->enhanced_pic;
-    const bool is_inter = (is_inter_mode(cand_bf->cand->block_mi.mode) || cand_bf->cand->block_mi.use_intrabc) ? true
-                                                                                                               : false;
-    uint8_t    best_tx_depth    = 0;
-    uint64_t   best_cost_search = (uint64_t)~0;
-    uint32_t   best_coeff_count = (uint32_t)~0;
+    const bool           is_inter = is_inter_mode(cand_bf->cand->block_mi.mode) || cand_bf->cand->block_mi.use_intrabc;
+    uint8_t              best_tx_depth       = 0;
+    uint64_t             best_cost_search    = (uint64_t)~0;
+    uint32_t             best_coeff_count    = (uint32_t)~0;
+    ModeDecisionCandidateBuffer* depth_buf[] = {cand_bf, ctx->cand_bf_tx_depth_1, ctx->cand_bf_tx_depth_2};
     // Transform Depth Loop
     for (ctx->tx_depth = start_tx_depth; ctx->tx_depth <= end_tx_depth; ctx->tx_depth++) {
         if (best_coeff_count < ctx->txs_ctrls.prev_depth_coeff_exit_th) {
             continue;
         }
+        ModeDecisionCandidateBuffer* tx_cand_bf = depth_buf[ctx->tx_depth];
+        // Inter uses one predictor and residual for every depth. Intra regenerates them per transform block.
+        const ModeDecisionCandidateBuffer* input_bf = is_inter ? cand_bf : tx_cand_bf;
         if (ctx->tx_depth) {
-            init_tx_cand_bf(cand_bf, ctx, ctx->tx_depth, is_inter);
+            *tx_cand_bf->cand           = *cand_bf->cand;
+            tx_cand_bf->block_has_coeff = cand_bf->block_has_coeff;
             tx_reset_neighbor_arrays(pcs, ctx, is_inter, ctx->tx_depth);
         }
-        ModeDecisionCandidateBuffer* tx_cand_bf = (ctx->tx_depth == 0) ? cand_bf
-            : (ctx->tx_depth == 1)                                     ? ctx->cand_bf_tx_depth_1
-                                                                       : ctx->cand_bf_tx_depth_2;
-        tx_cand_bf->cand->block_mi.tx_depth     = ctx->tx_depth;
+        tx_cand_bf->cand->block_mi.tx_depth = ctx->tx_depth;
         if (ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx || !is_inter) {
             tx_initialize_neighbor_arrays(pcs, ctx, is_inter);
         }
@@ -6028,7 +5866,7 @@ static void perform_tx_partitioning(ModeDecisionCandidateBuffer* cand_bf, ModeDe
         const int      tx_height = tx_size_high[tx_size];
         const uint16_t txb_count = tx_blocks_per_depth[ctx->blk_geom->bsize][ctx->tx_depth];
 
-        uint32_t block_has_coeff = false;
+        bool block_has_coeff = false;
         for (ctx->txb_itr = 0; ctx->txb_itr < txb_count; ctx->txb_itr++) {
             // Y Prediction
             if (!is_inter) {
@@ -6064,7 +5902,8 @@ static void perform_tx_partitioning(ModeDecisionCandidateBuffer* cand_bf, ModeDe
                  (uint32_t)(ctx->blk_geom->bheight * ctx->blk_geom->bwidth * ctx->qp_index))) {
                 tx_search_skip_flag = 1;
             }
-            tx_type_search(pcs, ctx, tx_cand_bf, qindex, tx_search_skip_flag, &tx_y_coeff_bits, tx_y_full_distortion);
+            tx_type_search(
+                pcs, ctx, tx_cand_bf, input_bf, qindex, tx_search_skip_flag, &tx_y_coeff_bits, tx_y_full_distortion);
 
             uint32_t y_has_coeff = tx_cand_bf->eob.y[ctx->txb_itr] > 0;
 
@@ -6149,7 +5988,7 @@ static void perform_tx_partitioning(ModeDecisionCandidateBuffer* cand_bf, ModeDe
     } // Transform Depth Loop
 
     if (best_tx_depth) {
-        update_tx_cand_bf(cand_bf, ctx, best_tx_depth);
+        update_tx_cand_bf(cand_bf, depth_buf[best_tx_depth], ctx, is_inter);
     }
 }
 

@@ -1948,36 +1948,44 @@ static uint64_t cost_selected_tx_size(const MacroBlockD* xd, MdRateEstimationCon
     return bits;
 }
 
+static INLINE bool signals_tx_size(PictureControlSet* pcs, uint8_t segment_id, TxMode tx_mode, BlockSize bsize,
+                                   bool is_inter, bool skip) {
+    return tx_mode == TX_MODE_SELECT && block_signals_txsize(bsize) && !(is_inter && skip) &&
+        !svt_av1_is_lossless_segment(pcs, segment_id);
+}
+
+static uint64_t cost_inter_tx_size(MacroBlockD* xd, const MbModeInfo* mbmi, BlockSize bsize,
+                                   MdRateEstimationContext* md_rate_est_ctx, FRAME_CONTEXT* ec_ctx,
+                                   uint8_t allow_update_cdf) {
+    uint64_t     bits        = 0;
+    const TxSize max_tx_size = get_vartx_max_txsize(bsize, 0);
+    const int    txbh        = eb_tx_size_high_unit[max_tx_size];
+    const int    txbw        = eb_tx_size_wide_unit[max_tx_size];
+    const int    width       = block_size_wide[bsize] >> tx_size_wide_log2[0];
+    const int    height      = block_size_high[bsize] >> tx_size_high_log2[0];
+    for (int idy = 0; idy < height; idy += txbh) {
+        for (int idx = 0; idx < width; idx += txbw) {
+            bits += cost_tx_size_vartx(xd, mbmi, max_tx_size, 0, idy, idx, md_rate_est_ctx, ec_ctx, allow_update_cdf);
+        }
+    }
+    return bits;
+}
+
 /* Get the TXS rate and update the txfm context.  If allow_update_cdf is true, the TX size CDFs will
 be updated. */
 uint64_t svt_aom_tx_size_bits(PictureControlSet* pcs, uint8_t segment_id, MdRateEstimationContext* md_rate_est_ctx,
                               MacroBlockD* xd, const MbModeInfo* mbmi, TxSize tx_size, TxMode tx_mode, BlockSize bsize,
                               uint8_t skip, FRAME_CONTEXT* ec_ctx, uint8_t allow_update_cdf) {
-    uint64_t bits        = 0;
-    int      is_inter_tx = is_inter_block(&mbmi->block_mi);
-    if (tx_mode == TX_MODE_SELECT && block_signals_txsize(bsize) && !(is_inter_tx && skip) &&
-        !svt_av1_is_lossless_segment(pcs, segment_id)) {
-        if (is_inter_tx) { // This implies skip flag is 0.
-            const TxSize max_tx_size = get_vartx_max_txsize(/*xd,*/ bsize, 0);
-            const int    txbh        = eb_tx_size_high_unit[max_tx_size];
-            const int    txbw        = eb_tx_size_wide_unit[max_tx_size];
-            const int    width       = block_size_wide[bsize] >> tx_size_wide_log2[0];
-            const int    height      = block_size_high[bsize] >> tx_size_high_log2[0];
-            int          idx, idy;
-            for (idy = 0; idy < height; idy += txbh) {
-                for (idx = 0; idx < width; idx += txbw) {
-                    bits += cost_tx_size_vartx(
-                        xd, mbmi, max_tx_size, 0, idy, idx, md_rate_est_ctx, ec_ctx, allow_update_cdf);
-                }
-            }
-        } else {
-            bits += cost_selected_tx_size(xd, md_rate_est_ctx, tx_size, ec_ctx, allow_update_cdf);
-            set_txfm_ctxs(tx_size, xd->n8_w, xd->n8_h, 0, xd);
-        }
-    } else {
-        set_txfm_ctxs(tx_size, xd->n8_w, xd->n8_h, skip && is_inter_block(&mbmi->block_mi), xd);
+    const bool is_inter = is_inter_block(&mbmi->block_mi);
+    if (!signals_tx_size(pcs, segment_id, tx_mode, bsize, is_inter, skip)) {
+        set_txfm_ctxs(tx_size, xd->n8_w, xd->n8_h, skip && is_inter, xd);
+        return 0;
     }
-
+    if (is_inter) {
+        return cost_inter_tx_size(xd, mbmi, bsize, md_rate_est_ctx, ec_ctx, allow_update_cdf);
+    }
+    const uint64_t bits = cost_selected_tx_size(xd, md_rate_est_ctx, tx_size, ec_ctx, allow_update_cdf);
+    set_txfm_ctxs(tx_size, xd->n8_w, xd->n8_h, 0, xd);
     return bits;
 }
 
@@ -1985,10 +1993,6 @@ uint64_t svt_aom_tx_size_bits(PictureControlSet* pcs, uint8_t segment_id, MdRate
 future blocks. */
 uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, ModeDecisionContext* ctx,
                                   PictureControlSet* pcs, uint8_t tx_depth, bool block_has_coeff) {
-    NeighborArrayUnit* txfm_context_array = ctx->txfm_context_array;
-    const uint8_t*     txfm_above_ptr     = svt_aom_na_top_ptr_pu(txfm_context_array, ctx->blk_org_x);
-    const uint8_t*     txfm_left_ptr      = svt_aom_na_left_ptr_pu(txfm_context_array, ctx->blk_org_y);
-
     TxMode       tx_mode = pcs->ppcs->frm_hdr.tx_mode;
     MacroBlockD* xd      = ctx->blk_ptr->av1xd;
     BlockSize    bsize   = ctx->blk_geom->bsize;
@@ -2002,33 +2006,26 @@ uint64_t svt_aom_get_tx_size_bits(ModeDecisionCandidateBuffer* candidateBuffer, 
     mbmi->block_mi.ref_frame[0] = candidateBuffer->cand->block_mi.ref_frame[0];
     mbmi->block_mi.tx_depth     = tx_depth;
 
-    const bool is_inter_tx = is_inter_block(&mbmi->block_mi);
-    if (tx_mode != TX_MODE_SELECT || !block_signals_txsize(bsize) || (is_inter_tx && !block_has_coeff) ||
-        svt_av1_is_lossless_segment(pcs, ctx->blk_ptr->segment_id)) {
-        // No transform size is signalled, and the context updates would be discarded.
+    const bool is_inter = is_inter_block(&mbmi->block_mi);
+    if (!signals_tx_size(pcs, ctx->blk_ptr->segment_id, tx_mode, bsize, is_inter, !block_has_coeff)) {
         return 0;
     }
-    if (!is_inter_tx) {
-        // The rate depends on the first context of each side only.
+
+    NeighborArrayUnit* txfm_context_array = ctx->txfm_context_array;
+    const uint8_t*     txfm_above_ptr     = svt_aom_na_top_ptr_pu(txfm_context_array, ctx->blk_org_x);
+    const uint8_t*     txfm_left_ptr      = svt_aom_na_left_ptr_pu(txfm_context_array, ctx->blk_org_y);
+    // Intra reads only the first neighbor on each edge. Inter partition costs update scratch as they recurse.
+    if (!is_inter) {
         ctx->above_txfm_context[0] = txfm_above_ptr[0];
         ctx->left_txfm_context[0]  = txfm_left_ptr[0];
         return cost_selected_tx_size(xd, ctx->md_rate_est_ctx, tx_size, NULL, 0);
     }
+    svt_aom_na_memcpy_small(
+        ctx->above_txfm_context, txfm_above_ptr, (ctx->blk_geom->bwidth >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
+    svt_aom_na_memcpy_small(
+        ctx->left_txfm_context, txfm_left_ptr, (ctx->blk_geom->bheight >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
 
-    // The variable transform size rate reads and updates the contexts along the block.
-    svt_memcpy(ctx->above_txfm_context, txfm_above_ptr, (ctx->blk_geom->bwidth >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
-    svt_memcpy(ctx->left_txfm_context, txfm_left_ptr, (ctx->blk_geom->bheight >> MI_SIZE_LOG2) * sizeof(TXFM_CONTEXT));
-    return svt_aom_tx_size_bits(pcs,
-                                ctx->blk_ptr->segment_id,
-                                ctx->md_rate_est_ctx,
-                                xd,
-                                mbmi,
-                                tx_size,
-                                tx_mode,
-                                bsize,
-                                !block_has_coeff,
-                                NULL,
-                                0);
+    return cost_inter_tx_size(xd, mbmi, bsize, ctx->md_rate_est_ctx, NULL, 0);
 }
 
 /*
