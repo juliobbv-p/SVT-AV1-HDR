@@ -1095,10 +1095,8 @@ void svt_av1_twopass_postencode_update_gop_const(PictureParentControlSet* ppcs) 
         for (i = pyramid_level; i <= MAX_ARF_LAYERS; ++i) {
             rc->active_best_quality[i] = ppcs->frm_hdr.quantization_params.base_q_idx;
         }
-    }
 
-    // If the rate control is drifting consider adjustment to min or maxq.
-    if (!ppcs->is_overlay) {
+        // If the rate control is drifting consider adjustment to min or maxq.
         int maxq_adj_limit = rc->worst_quality - rc->active_worst_quality;
         int minq_adj_limit = MINQ_ADJ_LIMIT;
 
@@ -1206,10 +1204,8 @@ void svt_av1_twopass_postencode_update(PictureParentControlSet* ppcs) {
         for (i = pyramid_level; i <= MAX_ARF_LAYERS; ++i) {
             rc->active_best_quality[i] = ppcs->frm_hdr.quantization_params.base_q_idx;
         }
-    }
 
-    // If the rate control is drifting consider adjustment to min or maxq.
-    if (!ppcs->is_overlay) {
+        // If the rate control is drifting consider adjustment to min or maxq.
         int maxq_adj_limit = rc->worst_quality - rc->active_worst_quality;
         int minq_adj_limit = MINQ_ADJ_LIMIT;
 

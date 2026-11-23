@@ -3273,8 +3273,9 @@ static void perform_md_reference_pruning(PictureControlSet* pcs, ModeDecisionCon
         unsigned num_of_cand_to_sort = MAX_NUM_OF_REF_PIC_LIST * REF_LIST_MAX_DEPTH;
         uint32_t dev_to_the_best[MAX_NUM_OF_REF_PIC_LIST * REF_LIST_MAX_DEPTH] = {0};
         for (unsigned i = 0; i < num_of_cand_to_sort - 1; ++i) {
-            dev_to_the_best[i] = (((int64_t)MAX(early_inter_distortion_array[i], 1) - MAX(min_dist, 1)) * 100) /
-                MAX(min_dist, 1);
+            dev_to_the_best[i] = (uint32_t)((((int64_t)MAX(early_inter_distortion_array[i], 1) - MAX(min_dist, 1)) *
+                                             100) /
+                                            MAX(min_dist, 1));
         }
         for (unsigned li = 0; li < MAX_NUM_OF_REF_PIC_LIST; li++) {
             for (unsigned ri = 0; ri < REF_LIST_MAX_DEPTH; ri++) {
@@ -3284,7 +3285,7 @@ static void perform_md_reference_pruning(PictureControlSet* pcs, ModeDecisionCon
                         ? 0
                         : (ctx->ref_pruning_ctrls.max_dev_to_best[gi] == (uint32_t)~0)
                         ? (uint32_t)~0
-                        : MAX(0, ((int64_t)ctx->ref_pruning_ctrls.max_dev_to_best[gi] - (int64_t)offset));
+                        : (uint32_t)MAX(0, ((int64_t)ctx->ref_pruning_ctrls.max_dev_to_best[gi] - (int64_t)offset));
 
                     if (dev_to_the_best[li * REF_LIST_MAX_DEPTH + ri] < pruning_th) {
                         ctx->ref_filtering_res[gi][li][ri].do_ref = 1;
@@ -4715,7 +4716,7 @@ static INLINE void check_dct_dct_reuse(PictureControlSet* pcs, ModeDecisionConte
                                        const ModeDecisionCandidateBuffer* cand_bf, int16_t* residual,
                                        uint32_t residual_stride, TxSize tx_size, TxCoeffShape pf_shape) {
 #ifndef NDEBUG
-    DECLARE_ALIGNED(32, int32_t, coeff[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, int32_t, coeff[MAX_TX_SQUARE]);
     uint64_t energy = 0;
     memcpy(coeff, cand_bf->dct_dct_coeff, sizeof(coeff));
     svt_aom_estimate_transform(pcs,
@@ -4885,8 +4886,6 @@ static void tx_type_search(PictureControlSet* pcs, ModeDecisionContext* ctx, Mod
     txb_full_distortion_txt[DIST_SSD][DCT_DCT][DIST_CALC_PREDICTION] = 0;
     if (ssim_level > SSIM_LVL_0) {
         memset(txb_full_distortion_txt[DIST_SSIM], 0, sizeof(txb_full_distortion_txt[DIST_SSIM]));
-    }
-    if (ssim_level > SSIM_LVL_0) {
         assert(ctx->pd_pass == PD_PASS_1);
         assert(ctx->md_stage == MD_STAGE_3);
     }
@@ -5510,7 +5509,7 @@ void update_tx_cand_bf(ModeDecisionCandidateBuffer* cand_bf, ModeDecisionContext
         memcpy(cand_bf->eob.y, ctx->cand_bf_tx_depth_1->eob.y, sizeof(uint16_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
         memcpy(cand_bf->quant_dc.y,
                ctx->cand_bf_tx_depth_1->quant_dc.y,
-               sizeof(int32_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
+               sizeof(uint8_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
 
         cand_bf->y_has_coeff = ctx->cand_bf_tx_depth_1->y_has_coeff;
         // Copy depth 1 pred
@@ -5545,7 +5544,7 @@ void update_tx_cand_bf(ModeDecisionCandidateBuffer* cand_bf, ModeDecisionContext
         memcpy(cand_bf->eob.y, ctx->cand_bf_tx_depth_2->eob.y, sizeof(uint16_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
         memcpy(cand_bf->quant_dc.y,
                ctx->cand_bf_tx_depth_2->quant_dc.y,
-               sizeof(int32_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
+               sizeof(uint8_t) * 1 /*copy luma*/ * MAX_TXB_COUNT);
 
         cand_bf->y_has_coeff = ctx->cand_bf_tx_depth_2->y_has_coeff;
         // Copy depth 2 pred
@@ -9204,7 +9203,6 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
     const uint32_t bheight_uv      = ctx->blk_geom->bheight_uv;
 
     //copy neigh recon data in blk_ptr
-    uint32_t             j;
     EbPictureBufferDesc* recon_ptr;
     uint32_t             rec_luma_offset;
     uint32_t             rec_cb_offset;
@@ -9286,7 +9284,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
         dst_ptr_bot_right_16bit = (uint16_t*)svt_aom_na_topright_ptr(
             ctx->luma_recon_na_16bit, blk_org_x, blk_org_y, bwidth);
         src_ptr_16bit = ((uint16_t*)recon_ptr->y_buffer) + rec_luma_offset + bwidth - 1;
-        for (j = 0; j < bheight; ++j) {
+        for (uint32_t j = 0; j < bheight; ++j) {
             *dst_ptr_bot_right_16bit = dst_ptr_top_left_16bit[j] = src_ptr_16bit[j * recon_ptr->y_stride];
             dst_ptr_bot_right_16bit -= 1;
         }
@@ -9305,7 +9303,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
         dst_ptr_bot_right_16bit = (uint16_t*)svt_aom_na_topright_ptr(
             ctx->cb_recon_na_16bit, blk_origin_x_uv, blk_origin_y_uv, bwidth_uv);
         src_ptr_16bit = ((uint16_t*)recon_ptr->u_buffer) + rec_cb_offset + bwidth_uv - 1;
-        for (j = 0; j < bheight_uv; ++j) {
+        for (uint32_t j = 0; j < bheight_uv; ++j) {
             *dst_ptr_bot_right_16bit = dst_ptr_top_left_16bit[j] = src_ptr_16bit[j * recon_ptr->u_stride];
             dst_ptr_bot_right_16bit -= 1;
         }
@@ -9324,7 +9322,7 @@ static void copy_recon_light_pd1(PictureControlSet* pcs, ModeDecisionContext* ct
         dst_ptr_bot_right_16bit = (uint16_t*)svt_aom_na_topright_ptr(
             ctx->cr_recon_na_16bit, blk_origin_x_uv, blk_origin_y_uv, bwidth_uv);
         src_ptr_16bit = ((uint16_t*)recon_ptr->v_buffer) + rec_cr_offset + bwidth_uv - 1;
-        for (j = 0; j < bheight_uv; ++j) {
+        for (uint32_t j = 0; j < bheight_uv; ++j) {
             *dst_ptr_bot_right_16bit = dst_ptr_top_left_16bit[j] = src_ptr_16bit[j * recon_ptr->v_stride];
             dst_ptr_bot_right_16bit -= 1;
         }
@@ -10417,8 +10415,8 @@ static bool update_skip_nsq_based_on_sq_recon_dist(ModeDecisionContext* ctx, con
                                                MIN(dist_q0, dist_q1));
         const uint32_t quad_dev_b = (uint32_t)((ABS((int64_t)dist_q2 - (int64_t)dist_q3) * 100) /
                                                MIN(dist_q2, dist_q3));
-        max_part0_to_part1_dev    = max_part0_to_part1_dev +
-            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_t, quad_dev_b)) / 100);
+        max_part0_to_part1_dev = (uint32_t)(max_part0_to_part1_dev +
+                                            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_t, quad_dev_b)) / 100));
 
         max_part0_to_part1_dev = (uint32_t)((dist_cost_ratio <= min_ratio) ? 0
                                                 : (dist_cost_ratio <= max_ratio)
@@ -10454,8 +10452,8 @@ static bool update_skip_nsq_based_on_sq_recon_dist(ModeDecisionContext* ctx, con
                                                MIN(dist_q0, dist_q2));
         const uint32_t quad_dev_r = (uint32_t)((ABS((int64_t)dist_q1 - (int64_t)dist_q3) * 100) /
                                                MIN(dist_q1, dist_q3));
-        max_part0_to_part1_dev    = max_part0_to_part1_dev +
-            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_l, quad_dev_r)) / 100);
+        max_part0_to_part1_dev = (uint32_t)(max_part0_to_part1_dev +
+                                            (((uint64_t)max_part0_to_part1_dev * MIN(quad_dev_l, quad_dev_r)) / 100));
 
         max_part0_to_part1_dev = (uint32_t)((dist_cost_ratio <= min_ratio) ? 0
                                                 : (dist_cost_ratio <= max_ratio)

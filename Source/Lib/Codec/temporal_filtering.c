@@ -1567,6 +1567,7 @@ static void tf_subpel_search(TF_SUBPEL_SEARCH_PARAMS* tf_sp_param, PictureParent
                              stride_src[PLANE_Y],
                              bs,
                              bs);
+        // cppcheck-suppress autoVariables ; reset to NULL before returning
         tf_sp_param->sv = &sv;
     }
     // Check centre position
@@ -2194,9 +2195,8 @@ static void tf_64x64_inter_prediction(PictureParentControlSet* pcs, MeContext* m
 
     // Perform final pass using the 1/8 MV
     // AV1 MVs are always in 1/8th pel precision.
-    BlockModeInfo block_mi = {.mv[0]              = {{me_ctx->tf_64x64_mv_x, me_ctx->tf_64x64_mv_y}},
-                              .ref_frame[0]       = LAST_FRAME,
-                              .ref_frame[1]       = NONE_FRAME,
+    BlockModeInfo block_mi = {.mv                 = {{{me_ctx->tf_64x64_mv_x, me_ctx->tf_64x64_mv_y}}},
+                              .ref_frame          = {LAST_FRAME, NONE_FRAME},
                               .is_interintra_used = 0,
                               .motion_mode        = SIMPLE_TRANSLATION,
                               .interp_filters     = (uint32_t)interp_filters,
@@ -2305,16 +2305,14 @@ static void tf_32x32_inter_prediction(PictureParentControlSet* pcs, MeContext* m
                         8;
                     // Perform final pass using the 1/8 MV
                     //AV1 MVs are always in 1/8th pel precision.
-                    BlockModeInfo block_mi = {
-                        .mv[0]              = {{me_ctx->tf_8x8_mv_x[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8],
-                                                me_ctx->tf_8x8_mv_y[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8]}},
-                        .ref_frame[0]       = LAST_FRAME,
-                        .ref_frame[1]       = NONE_FRAME,
-                        .is_interintra_used = 0,
-                        .motion_mode        = SIMPLE_TRANSLATION,
-                        .interp_filters     = (uint32_t)interp_filters,
-                        .mode               = NEWMV,
-                        .use_intrabc        = 0};
+                    BlockModeInfo block_mi = {.mv = {{{me_ctx->tf_8x8_mv_x[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8],
+                                                       me_ctx->tf_8x8_mv_y[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8]}}},
+                                              .ref_frame          = {LAST_FRAME, NONE_FRAME},
+                                              .is_interintra_used = 0,
+                                              .motion_mode        = SIMPLE_TRANSLATION,
+                                              .interp_filters     = (uint32_t)interp_filters,
+                                              .mode               = NEWMV,
+                                              .use_intrabc        = 0};
                     svt_aom_inter_prediction(
                         scs,
                         NULL, //pcs,
@@ -2364,10 +2362,9 @@ static void tf_32x32_inter_prediction(PictureParentControlSet* pcs, MeContext* m
                     8;
                 // Perform final pass using the 1/8 MV
                 //AV1 MVs are always in 1/8th pel precision.
-                BlockModeInfo block_mi = {.mv[0]              = {{me_ctx->tf_16x16_mv_x[idx_32x32 * 4 + idx_16x16],
-                                                                  me_ctx->tf_16x16_mv_y[idx_32x32 * 4 + idx_16x16]}},
-                                          .ref_frame[0]       = LAST_FRAME,
-                                          .ref_frame[1]       = NONE_FRAME,
+                BlockModeInfo block_mi = {.mv                 = {{{me_ctx->tf_16x16_mv_x[idx_32x32 * 4 + idx_16x16],
+                                                                   me_ctx->tf_16x16_mv_y[idx_32x32 * 4 + idx_16x16]}}},
+                                          .ref_frame          = {LAST_FRAME, NONE_FRAME},
                                           .is_interintra_used = 0,
                                           .motion_mode        = SIMPLE_TRANSLATION,
                                           .interp_filters     = (uint32_t)interp_filters,
@@ -2420,9 +2417,8 @@ static void tf_32x32_inter_prediction(PictureParentControlSet* pcs, MeContext* m
 
         // Perform final pass using the 1/8 MV
         //AV1 MVs are always in 1/8th pel precision.
-        BlockModeInfo block_mi = {.mv[0] = {{me_ctx->tf_32x32_mv_x[idx_32x32], me_ctx->tf_32x32_mv_y[idx_32x32]}},
-                                  .ref_frame[0]       = LAST_FRAME,
-                                  .ref_frame[1]       = NONE_FRAME,
+        BlockModeInfo block_mi = {.mv        = {{{me_ctx->tf_32x32_mv_x[idx_32x32], me_ctx->tf_32x32_mv_y[idx_32x32]}}},
+                                  .ref_frame = {LAST_FRAME, NONE_FRAME},
                                   .is_interintra_used = 0,
                                   .motion_mode        = SIMPLE_TRANSLATION,
                                   .interp_filters     = (uint32_t)interp_filters,

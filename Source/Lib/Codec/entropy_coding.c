@@ -4415,7 +4415,7 @@ static INLINE int max_block_wide(const MacroBlockD* xd, BlockSize bsize, int pla
     int max_blocks_wide = block_size_wide[bsize];
 
     if (xd->mb_to_right_edge < 0) {
-        max_blocks_wide += xd->mb_to_right_edge >> (3 + !!plane);
+        max_blocks_wide -= (-xd->mb_to_right_edge) >> (3 + !!plane);
     }
 
     // Scale the width in the transform block unit.
@@ -4426,7 +4426,7 @@ static INLINE int max_block_high(const MacroBlockD* xd, BlockSize bsize, int pla
     int max_blocks_high = block_size_high[bsize];
 
     if (xd->mb_to_bottom_edge < 0) {
-        max_blocks_high += xd->mb_to_bottom_edge >> (3 + !!plane);
+        max_blocks_high -= (-xd->mb_to_bottom_edge) >> (3 + !!plane);
     }
 
     // Scale the height in the transform block unit.
@@ -5012,8 +5012,6 @@ static EbErrorType write_modes_b(PictureControlSet* pcs, EntropyCodingContext* e
 #endif
             if (mbmi->block_mi.use_intrabc == 0) {
                 encode_intra_luma_mode_kf_av1(frame_context, ec_writer, mbmi, blk_ptr, bsize, intra_luma_mode);
-            }
-            if (mbmi->block_mi.use_intrabc == 0) {
                 if (has_uv) {
                     encode_intra_chroma_mode_av1(frame_context,
                                                  ec_writer,

@@ -556,6 +556,68 @@ static INLINE __m256i convolve16_8tap_avx2(const __m256i ss[4], const __m256i co
     return _mm256_add_epi32(res_0123, res_4567);
 }
 
+// Each 128-bit half contains four independent even (or odd) output pixels
+// from one row. Use only the non-padding pairs of the selected filter.
+static AOM_FORCE_INLINE __m256i hbd_dot_horizontal(__m256i lo, __m256i hi, const __m256i* c, int taps, int odd) {
+#define DOT_PAIR(bytes, k) \
+    _mm256_madd_epi16(odd ? _mm256_alignr_epi8(hi, lo, (bytes) + 2) : _mm256_alignr_epi8(hi, lo, (bytes)), c[k])
+    switch (taps) {
+    case 2:
+        return DOT_PAIR(6, 0);
+    case 4:
+        return _mm256_add_epi32(DOT_PAIR(4, 0), DOT_PAIR(8, 1));
+    case 6:
+        return _mm256_add_epi32(_mm256_add_epi32(DOT_PAIR(2, 0), DOT_PAIR(6, 1)), DOT_PAIR(10, 2));
+    default:
+        return _mm256_add_epi32(_mm256_add_epi32(DOT_PAIR(0, 0), DOT_PAIR(4, 1)),
+                                _mm256_add_epi32(DOT_PAIR(8, 2), DOT_PAIR(12, 3)));
+    }
+#undef DOT_PAIR
+}
+
+static AOM_FORCE_INLINE void hbd_horizontal_stripe(const uint16_t* src, int stride, int16_t* im, int rows,
+                                                   const __m256i* coeffs, __m256i bias, __m128i shift, int taps) {
+    const __m128i zip = _mm_setr_epi8(0, 1, 8, 9, 2, 3, 10, 11, 4, 5, 12, 13, 6, 7, 14, 15);
+    for (int y = 0; y < rows; y += 2, src += 2 * stride, im += 16) {
+        const __m256i a  = _mm256_loadu_si256((const __m256i*)src);
+        const __m256i b  = y + 1 < rows ? _mm256_loadu_si256((const __m256i*)(src + stride)) : _mm256_setzero_si256();
+        const __m256i lo = yy_unpacklo_epi128(a, b), hi = yy_unpackhi_epi128(a, b);
+        const __m256i even = _mm256_sra_epi32(_mm256_add_epi32(hbd_dot_horizontal(lo, hi, coeffs, taps, 0), bias),
+                                              shift);
+        const __m256i odd  = _mm256_sra_epi32(_mm256_add_epi32(hbd_dot_horizontal(lo, hi, coeffs, taps, 1), bias),
+                                             shift);
+        _mm256_storeu_si256((__m256i*)im,
+                            _mm256_shuffle_epi8(_mm256_packs_epi32(even, odd), _mm256_broadcastsi128_si256(zip)));
+    }
+}
+
+static INLINE int hbd_filter_coeffs(const InterpFilterParams* params, int phase, __m256i coeffs[4]) {
+    const int      taps = get_convolve_tap(params->filter_ptr);
+    const int16_t* f    = av1_get_interp_filter_subpel_kernel(*params, phase & SUBPEL_MASK) + (8 - taps) / 2;
+    for (int i = 0; i < taps / 2; ++i) {
+        coeffs[i] = _mm256_broadcastd_epi32(_mm_loadu_si32(f + 2 * i));
+    }
+    return taps;
+}
+
+static INLINE void hbd_horizontal_block(const uint16_t* src, int stride, int16_t* im, int rows, const __m256i* coeffs,
+                                        __m256i bias, __m128i shift, int taps) {
+    switch (taps) {
+    case 2:
+        hbd_horizontal_stripe(src, stride, im, rows, coeffs, bias, shift, 2);
+        break;
+    case 4:
+        hbd_horizontal_stripe(src, stride, im, rows, coeffs, bias, shift, 4);
+        break;
+    case 6:
+        hbd_horizontal_stripe(src, stride, im, rows, coeffs, bias, shift, 6);
+        break;
+    default:
+        hbd_horizontal_stripe(src, stride, im, rows, coeffs, bias, shift, 8);
+        break;
+    }
+}
+
 static INLINE __m256i x_convolve_4tap_avx2(const __m256i data, const __m256i coeffs[2], const __m256i filt[2]) {
     __m256i ss[2];
 
@@ -2606,6 +2668,150 @@ static INLINE __m256i highbd_convolve_rounding(const __m256i* const res_unsigned
     const __m256i res_round  = _mm256_srai_epi32(_mm256_add_epi32(res_signed, *round_const), round_shift);
 
     return res_round;
+}
+
+// Each half of a vector produces four columns of one output row. Adjacent
+// outputs share all but the last pair of intermediate rows.
+static INLINE void hbd_vertical_pair(const int16_t* row, __m256i* lo, __m256i* hi, int width) {
+    const __m256i a = _mm256_loadu_si256((const __m256i*)row);
+    const __m256i b = _mm256_loadu_si256((const __m256i*)(row + 8));
+    *lo             = _mm256_unpacklo_epi16(a, b);
+    if (width == 8) {
+        *hi = _mm256_unpackhi_epi16(a, b);
+    }
+}
+
+static AOM_FORCE_INLINE __m256i hbd_vertical_round(const __m256i* s, const __m256i* c, int pairs, __m256i bias,
+                                                   __m128i shift) {
+    __m256i sum = _mm256_madd_epi16(s[0], c[0]);
+    if (pairs >= 2) {
+        sum = _mm256_add_epi32(sum, _mm256_madd_epi16(s[1], c[1]));
+    }
+    if (pairs >= 3) {
+        __m256i other = _mm256_madd_epi16(s[2], c[2]);
+        if (pairs == 4) {
+            other = _mm256_add_epi32(other, _mm256_madd_epi16(s[3], c[3]));
+        }
+        sum = _mm256_add_epi32(sum, other);
+    }
+    return _mm256_sra_epi32(_mm256_add_epi32(sum, bias), shift);
+}
+
+static INLINE void hbd_store_row(uint16_t* dst, __m128i v, int w) {
+    if (w == 8) {
+        _mm_storeu_si128((__m128i*)dst, v);
+    } else if (w == 4) {
+        _mm_storel_epi64((__m128i*)dst, v);
+    } else {
+        _mm_storeu_si32(dst, v);
+    }
+}
+
+static AOM_FORCE_INLINE void hbd_vertical_stripe(const int16_t* im, const __m256i* c, int pairs, uint16_t* dst, int ds,
+                                                 ConvBufType* pred, int ps, int w, int h, int bd,
+                                                 const ConvolveParams* params, int compound) {
+    const int     bits        = 2 * FILTER_BITS - params->round_0 - params->round_1;
+    const int     offset_bits = bd + bits;
+    const __m256i offset      = _mm256_set1_epi32(3 << (offset_bits - 1));
+    const __m256i bias        = _mm256_set1_epi32(((1 << params->round_1) >> 1) -
+                                           (1 << (bd + 2 * FILTER_BITS - params->round_0 - 1)));
+    const __m128i shift       = _mm_cvtsi32_si128(params->round_1);
+    const __m256i rounding    = _mm256_set1_epi32((1 << bits) >> 1);
+    const __m256i max         = _mm256_set1_epi16((1 << bd) - 1);
+    const __m256i fw          = _mm256_set1_epi32(compound ? params->fwd_offset : 0),
+                  bw          = _mm256_set1_epi32(compound ? params->bck_offset : 0);
+    __m256i lo[4], hi[4];
+    for (int k = 0; k < pairs - 1; ++k) {
+        hbd_vertical_pair(im + 16 * k, lo + k, hi + k, w);
+    }
+    for (int y = 0; y < h; y += 2, im += 16) {
+        hbd_vertical_pair(im + 16 * (pairs - 1), lo + pairs - 1, hi + pairs - 1, w);
+        __m256i l = hbd_vertical_round(lo, c, pairs, bias, shift);
+        __m256i r = w == 8 ? hbd_vertical_round(hi, c, pairs, bias, shift) : _mm256_setzero_si256();
+        if (compound) {
+            l = _mm256_add_epi32(l, offset);
+            r = _mm256_add_epi32(r, offset);
+            if (params->do_average) {
+                const __m128i a    = w == 8 ? _mm_loadu_si128((const __m128i*)pred)
+                                            : _mm_loadl_epi64((const __m128i*)pred);
+                const __m128i b    = w == 8 ? _mm_loadu_si128((const __m128i*)(pred + ps))
+                                            : _mm_loadl_epi64((const __m128i*)(pred + ps));
+                const __m256i prev = _mm256_set_m128i(b, a);
+                const __m256i pl   = _mm256_unpacklo_epi16(prev, _mm256_setzero_si256());
+                l                  = highbd_comp_avg(&pl, &l, &fw, &bw, params->use_jnt_comp_avg);
+                l                  = _mm256_sub_epi32(l, offset);
+                if (w == 8) {
+                    const __m256i pr = _mm256_unpackhi_epi16(prev, _mm256_setzero_si256());
+                    r                = highbd_comp_avg(&pr, &r, &fw, &bw, params->use_jnt_comp_avg);
+                    r                = _mm256_sub_epi32(r, offset);
+                }
+            }
+        }
+        const bool store_compound = compound && !params->do_average;
+        __m256i    pixels;
+        if (store_compound) {
+            pixels = _mm256_packus_epi32(l, r);
+        } else {
+            l      = _mm256_srai_epi32(_mm256_add_epi32(l, rounding), bits);
+            r      = _mm256_srai_epi32(_mm256_add_epi32(r, rounding), bits);
+            pixels = _mm256_min_epu16(_mm256_packus_epi32(l, r), max);
+        }
+        uint16_t* out    = store_compound ? pred : dst + y * ds;
+        const int stride = store_compound ? ps : ds;
+        hbd_store_row(out, _mm256_castsi256_si128(pixels), w);
+        hbd_store_row(out + stride, _mm256_extracti128_si256(pixels, 1), w);
+        if (compound) {
+            pred += 2 * ps;
+        }
+        for (int k = 0; k < pairs - 1; ++k) {
+            lo[k] = lo[k + 1];
+            if (w == 8) {
+                hi[k] = hi[k + 1];
+            }
+        }
+    }
+}
+
+static AOM_FORCE_INLINE void hbd_vertical_filter(const int16_t* im, const __m256i* cy, int yt, uint16_t* out, int ds,
+                                                 ConvBufType* pred, int ps, int width, int h, int bd,
+                                                 const ConvolveParams* params, int compound) {
+    switch (yt) {
+    case 2:
+        hbd_vertical_stripe(im, cy, 1, out, ds, pred, ps, width, h, bd, params, compound);
+        break;
+    case 4:
+        hbd_vertical_stripe(im, cy, 2, out, ds, pred, ps, width, h, bd, params, compound);
+        break;
+    case 6:
+        hbd_vertical_stripe(im, cy, 3, out, ds, pred, ps, width, h, bd, params, compound);
+        break;
+    default:
+        hbd_vertical_stripe(im, cy, 4, out, ds, pred, ps, width, h, bd, params, compound);
+        break;
+    }
+}
+
+static AOM_FORCE_INLINE void hbd_convolve_2d_block(const uint16_t* src, int ss, uint16_t* dst, int ds, int w, int h,
+                                                   const InterpFilterParams* fx, const InterpFilterParams* fy, int px,
+                                                   int py, ConvolveParams* params, int bd, int compound) {
+    DECLARE_ALIGNED(32, int16_t, im[(MAX_SB_SIZE + MAX_FILTER_TAP) * 8]);
+    __m256i       cx[4], cy[4];
+    const int     xt = hbd_filter_coeffs(fx, px, cx), yt = hbd_filter_coeffs(fy, py, cy);
+    const __m256i bias  = _mm256_set1_epi32(((1 << params->round_0) >> 1) + (1 << (bd + FILTER_BITS - 1)));
+    const __m128i shift = _mm_cvtsi32_si128(params->round_0);
+    src -= (yt / 2 - 1) * ss + fx->taps / 2 - 1;
+    for (int x = 0; x < w; x += 8) {
+        hbd_horizontal_block(src + x, ss, im, h + yt - 1, cx, bias, shift, xt);
+        const int    width = AOMMIN(w - x, 8);
+        ConvBufType* pred  = compound ? params->dst + x : NULL;
+        const int    ps    = compound ? params->dst_stride : 0;
+        uint16_t*    out   = compound && !params->do_average ? pred : dst + x;
+        if (width == 8) {
+            hbd_vertical_filter(im, cy, yt, out, ds, pred, ps, 8, h, bd, params, compound);
+        } else {
+            hbd_vertical_filter(im, cy, yt, out, ds, pred, ps, width, h, bd, params, compound);
+        }
+    }
 }
 
 #endif

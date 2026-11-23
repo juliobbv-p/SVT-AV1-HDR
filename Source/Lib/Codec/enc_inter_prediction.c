@@ -2090,7 +2090,12 @@ static INLINE bool is_plain_prediction(const PictureControlSet* pcs, const ModeD
     if (!hbd_md) {
         return true;
     }
-#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+#if (defined(ARCH_AARCH64) || defined(ARCH_X86_64)) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+#if defined(ARCH_X86_64)
+    if (svt_av1_highbd_jnt_convolve_2d_copy != svt_av1_highbd_jnt_convolve_2d_copy_avx2) {
+        return false;
+    }
+#endif
     if (pcs->scs->static_config.encoder_bit_depth != EB_TEN_BIT) {
         return false;
     }
@@ -2150,7 +2155,7 @@ static void interpolation_filter_search(PictureControlSet* pcs, ModeDecisionCont
     const bool         plain_luma     = is_plain_prediction(
         pcs, ctx, cand_bf->cand, hbd_md, PICTURE_BUFFER_DESC_LUMA_MASK, ref_pic_list0, ref_pic_list1);
 
-#if defined(ARCH_AARCH64) && CONFIG_ENABLE_HIGH_BIT_DEPTH
+#if (defined(ARCH_AARCH64) || defined(ARCH_X86_64)) && CONFIG_ENABLE_HIGH_BIT_DEPTH
     // Mixed-depth MD must rebuild the prediction when switching from 8 to 10 bits.
     const bool can_reuse_hbd_pred = hbd_md && ctx->hbd_md == EB_10_BIT_MD && !ctx->need_hbd_comp_mds3 && plain_luma;
 #else
@@ -2723,7 +2728,7 @@ void svt_aom_enc_make_inter_predictor(SequenceControlSet* scs, uint8_t* src_ptr,
         }
 #if CONFIG_ENABLE_HIGH_BIT_DEPTH
         if (is16bit) {
-#if defined(ARCH_AARCH64)
+#if defined(ARCH_AARCH64) || defined(ARCH_X86_64)
             if (!use_intrabc &&
                 svt_aom_try_highbd_fullpel_split(src_mod,
                                                  src_mod_2b,

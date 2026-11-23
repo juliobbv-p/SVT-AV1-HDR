@@ -1237,9 +1237,15 @@ typedef struct EbSvtAv1EncConfiguration {
      * */
     int8_t enable_qmpsnr;
 
+    /**
+     * ROI QP offset map block size. Supported values are 16 and 64 pixels.
+     */
+    uint8_t roi_map_block_size;
+
     // clang-format off
     /* Add 128 Byte Padding to Struct to avoid changing the size of the public configuration struct */
     uint8_t padding[128
+        - sizeof(uint8_t) // roi_map_block_size
         - sizeof(PredStructure) + sizeof (uint8_t) // pred_strucutre type was changed from uint8_t to PredStructure
         - sizeof(int) // This was added to take into account the new hbd_mds field while keeping previous ABI compat
         - sizeof(bool) // add the ability to shut MCTF for key frames

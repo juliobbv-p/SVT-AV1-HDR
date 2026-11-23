@@ -85,6 +85,9 @@ static const std::vector<EncTestSetting> default_enc_settings = {
     // test intra period length
     {"IntraPeriodTest1", {{"IntraPeriod", "3"}}, default_test_vectors},
 
+    // test fine-grained ROI map block size
+    {"RoiMapBlockSizeTest", {{"RoiMapBlockSize", "16"}}, dummy_test_vectors},
+
     // test high tier signaling at a level that supports it
     {"TierTest1", {{"Tier", "1"}, {"Level", "4.0"}}, dummy_test_vectors},
 

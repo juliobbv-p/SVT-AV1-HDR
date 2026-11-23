@@ -1,5 +1,44 @@
 # Changelog
 
+## [4.3.1] - 2026-11-18
+
+Encoder (general)
+
+- Faster encoding across use cases, compared with v4.3.0:
+  - ~14-15% less CPU for random access VOD at preset 5
+  - ~8-11% fewer CPU cycles for RTC (presets 7-12) and mobile-build random access (presets 9-11)
+  - ~5-10% fewer CPU cycles for still images (presets 5-9)
+  - Bit-identical output to v4.3.0 for still images and mobile random access preset 9; elsewhere within noise for CRF
+- Speed optimizations in mode decision (light and regular PD1 reuse, class-bucketed MDS0 candidates, cached txb contexts), RDOQ and coefficient rate (precomputed 2D contexts, zero-run skip), TPL (N2/N4-only quantization, fused 16x16 transform), motion estimation, MV and DV cost tables, CDEF, loop filter, padding and entropy coding
+- Random access: full-width ME/TF and TPL segments and a right-sized ME worker pool at low thread counts
+- Align picture buffer rows and plane origins to 64 bytes, and defer reference picture border initialization to first use
+- Pool small allocations on Android, and free the bitstream of output packets never released by the application
+- RTC CBR: faster rate control recovery after key frames (larger qindex drops on the following inter frames, a resolution-scaled initial correction factor, and faster correction updates for 30 frames), and the top 8 qindex steps are kept for buffer overflow
+- VBR: intermediate temporal layers blend their qindex toward a CRF-style cascade anchored on the recent leaf qindex
+- Added `--roi-map-block-size` (`roi_map_block_size`) for 16x16 ROI QP offset maps; ROI maps with more than eight distinct offsets are now grouped into eight segments instead of being rejected
+
+x86
+
+- Added AVX-512 kernels for the 64x64 forward transform, open-loop and full-pel motion search, half-pel search, zone-2 intra prediction, coefficient rate, and VNNI variances
+- Optimized AVX2 variance, and dispatch AVX-512 SAD to AVX2 on odd heights
+
+Arm
+
+- Added Neon int16 64x64 forward DCT, sparse inverse-transform coefficient packing and a DC-only fast path, shared rectangular forward-transform kernels, and a single quantize helper
+- Faster Neon and Neon dot-product full-pel SAD search, CDEF masks and nz-map contexts
+- Fixed the Neon scaled compound first predictor
+
+Bug fixes and build
+
+- Fixed `svt_av1_enc_stream_header()` returning uninitialized fields
+- Public encoder APIs now reject null arguments with `EB_ErrorBadParameter` instead of crashing, and releasing a null output packet is a no-op
+- Fixed an out-of-bounds copy of luma DC quantization data in the transform depth search (no change in output)
+- Fixed cppcheck findings, and the Xcode `-Wshorten-64-to-32` and GCC AArch64 `-Wmaybe-uninitialized` warnings
+- Refreshed the documentation: parameter defaults and ranges, per-use-case preset limits and examples, build options
+- Added ELF function annotations to assembly symbols, and fixed Windows, mingw-w64 and MSVC warnings
+- Added `SVT_AV1_TEST_VECTORS_ONLY` CMake option
+- Moved CI to GitHub Actions (Linux, macOS, Windows, BSD, Android, musl, sanitizers, Valgrind); stylecheck now compares against the GitHub repository
+
 ## [4.3.0] - 2026-11-01
 
 VOD / Random Access / Still Image

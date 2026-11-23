@@ -236,6 +236,8 @@ static AOM_FORCE_INLINE void svt_second_level_check_v2(MacroBlockD* xd, const st
     svt_check_better(xd, cm, col_bias_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr);
 
     // Do an additional search if the second iteration gives a better mv
+    // cppcheck misses that svt_check_better() writes *besterr through the pointer
+    // cppcheck-suppress knownConditionTrueFalse
     if (*besterr < besterr_before) {
         svt_check_better(xd, cm, diag_bias_mv, best_mv, mv_limits, var_params, mv_cost_params, besterr);
     }
@@ -456,8 +458,8 @@ int svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, const s
         if (ms_params->skip_diag_refinement && iter < QUARTER_PEL) {
             org_error = MIN(org_error, besterr);
         }
-        int32_t deviation = (((int64_t)MAX(besterr, 1) - (int64_t)MAX(prev_besterr, 1)) * 100) /
-            (int64_t)MAX(prev_besterr, 1);
+        int32_t deviation = (int32_t)((((int64_t)MAX(besterr, 1) - (int64_t)MAX(prev_besterr, 1)) * 100) /
+                                      (int64_t)MAX(prev_besterr, 1));
         if (deviation >= ms_params->round_dev_th) {
             return besterr;
         }

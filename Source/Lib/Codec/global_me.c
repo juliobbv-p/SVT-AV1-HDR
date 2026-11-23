@@ -250,7 +250,7 @@ void svt_aom_global_motion_estimation(PictureParentControlSet* pcs, EbPictureBuf
                     ref_refinement   = quarter_ref_pic_ptr;
 
                     detect_refine_scale_factor = 1;
-                    chess_refn                 = GM_ADAPT_1 ? pcs->gm_ctrls.chess_rfn : 0;
+                    chess_refn                 = pcs->gm_ctrls.chess_rfn;
                 } else {
                     input_detection = input_pic;
                     ref_detection   = ref_picture_ptr;

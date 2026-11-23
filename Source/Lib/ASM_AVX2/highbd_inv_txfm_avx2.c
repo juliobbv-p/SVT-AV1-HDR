@@ -7615,3 +7615,172 @@ void svt_dav1d_highbd_inv_txfm_add_avx2(const int32_t* input, uint16_t* output_r
         }
     }
 }
+
+// EOB 36 and 136 bound the active input to 8x8 and 16x16 respectively.
+// Process eight input rows in parallel, then finish each output stripe directly.
+static AOM_FORCE_INLINE void sparse_square_10bit(const int32_t* coeff, const uint16_t* src, int ss, uint16_t* dst,
+                                                 int ds, int size, int band, Transform1dAvx2 idct) {
+    __m256i first[128], tile[16], column[64];
+    for (int y = 0; y < band; y += 8) {
+        for (int x = 0; x < band; x += 8) {
+            for (int k = 0; k < 8; ++k) {
+                tile[x + k] = _mm256_loadu_si256((const __m256i*)(coeff + (y + k) * AOMMIN(size, 32) + x));
+            }
+            transpose_8x8_avx2(tile + x, tile + x);
+        }
+        idct(tile, first + y / 8 * size, INV_COS_BIT, 0, 10, 2);
+    }
+    for (int x = 0; x < size; x += 8) {
+        for (int y = 0; y < band; y += 8) {
+            transpose_8x8_avx2(first + y / 8 * size + x, tile + y);
+        }
+        idct(tile, column, INV_COS_BIT, 1, 10, 0);
+        // The final 10-bit column butterfly clips to signed 16 bits.
+        // Join two rows before the rounded shift and predictor addition.
+        for (int y = 0; y < size; y += 2) {
+            const __m256i packed   = _mm256_permute4x64_epi64(_mm256_packs_epi32(column[y], column[y + 1]), 0xd8);
+            const __m256i residual = _mm256_mulhrs_epi16(packed, _mm256_set1_epi16(2048));
+            const __m256i pred     = _mm256_set_m128i(_mm_loadu_si128((const __m128i*)(src + (y + 1) * ss + x)),
+                                                  _mm_loadu_si128((const __m128i*)(src + y * ss + x)));
+            const __m256i sum      = _mm256_add_epi16(residual, pred);
+            const __m256i result   = _mm256_min_epi16(_mm256_set1_epi16(1023),
+                                                    _mm256_max_epi16(_mm256_setzero_si256(), sum));
+            _mm_storeu_si128((__m128i*)(dst + y * ds + x), _mm256_castsi256_si128(result));
+            _mm_storeu_si128((__m128i*)(dst + (y + 1) * ds + x), _mm256_extracti128_si256(result, 1));
+        }
+    }
+}
+
+// The first 136 scan positions form a triangle in the top-left 16x16.
+// The assembly consumes transposed strips of eight and can omit empty strips.
+static AOM_FORCE_INLINE bool sparse_dav1d_10bit(const int32_t* input, const uint16_t* src, int ss, uint16_t* dst,
+                                                int ds, int size, int band) {
+    if (((uintptr_t)dst | (uintptr_t)(2 * ds)) & 31) {
+        return false;
+    }
+    DECLARE_ALIGNED(32, int32_t, coeff[32 * 32]);
+    const int     stride    = AOMMIN(size, 32);
+    const __m256i zero      = _mm256_setzero_si256();
+    __m256i       lane_sums = zero, bottom = zero;
+    for (int x = 0; x < band; x += 8) {
+        for (int y = 0; y < band - x; y += 8) {
+            __m256i tile[8], high = zero;
+            for (int k = 0; k < 8; k++) {
+                tile[k] = _mm256_loadu_si256((const __m256i*)(input + (y + k) * stride + x));
+                high    = _mm256_add_epi32(high, _mm256_abs_epi32(tile[k]));
+            }
+            lane_sums = _mm256_add_epi32(lane_sums, high);
+            if (y) {
+                bottom = high;
+            }
+            transpose_8x8_avx2(tile, tile);
+            for (int k = 0; k < 8; ++k) {
+                _mm256_store_si256((__m256i*)(coeff + (x + k) * stride + y), tile[k]);
+            }
+        }
+    }
+    // Eight lane sums below 4096 bound the entire input L1 norm below 32768.
+    // With the two-bit row shift this leaves headroom in the packed column pass.
+    if (!_mm256_testz_si256(lane_sums, _mm256_set1_epi32(~4095))) {
+        return false;
+    }
+    for (int x = 8; x < band; x++) {
+        _mm256_store_si256((__m256i*)(coeff + x * stride + 8), zero);
+    }
+    for (int x = band; x < stride; x++) {
+        _mm256_store_si256((__m256i*)(coeff + x * stride), zero);
+        if (band == 16) {
+            _mm256_store_si256((__m256i*)(coeff + x * stride + 8), zero);
+        }
+    }
+    if (src != dst || ss != ds) {
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; x += 16) {
+                _mm256_store_si256((__m256i*)(dst + y * ds + x),
+                                   _mm256_loadu_si256((const __m256i*)(src + y * ss + x)));
+            }
+        }
+    }
+    // dav1d takes a zero-based scan index. Select its 8- or 16-row path.
+    const int last = _mm256_testz_si256(bottom, bottom) ? 35 : 135;
+    if (size == 16) {
+        svt_dav1d_inv_txfm_add_dct_dct_16x16_10bpc_avx2(dst, ds * 2, coeff, last, 10);
+    } else if (size == 32) {
+        svt_dav1d_inv_txfm_add_dct_dct_32x32_10bpc_avx2(dst, ds * 2, coeff, last, 10);
+    } else {
+        svt_dav1d_inv_txfm_add_dct_dct_64x64_10bpc_avx2(dst, ds * 2, coeff, last, 10);
+    }
+    return true;
+}
+
+void svt_highbd_inv_txfm_dispatch_avx2(const TranLow* input, uint8_t* src8, int32_t ss, uint8_t* dst8, int32_t ds,
+                                       const TxfmParam* param) {
+    if (param->eob > 1 && param->eob <= 136 && param->tx_type == DCT_DCT && param->bd == 10 && !param->lossless) {
+        uint16_t* src = CONVERT_TO_SHORTPTR(src8);
+        uint16_t* dst = CONVERT_TO_SHORTPTR(dst8);
+        switch (param->tx_size) {
+        case TX_16X16:
+            if (param->eob <= 36) {
+                if (!sparse_dav1d_10bit(input, src, ss, dst, ds, 16, 8)) {
+                    sparse_square_10bit(input, src, ss, dst, ds, 16, 8, idct16_low8_avx2);
+                }
+            } else if (!sparse_dav1d_10bit(input, src, ss, dst, ds, 16, 16)) {
+                sparse_square_10bit(input, src, ss, dst, ds, 16, 16, idct16_avx2);
+            }
+            return;
+        case TX_32X32:
+            if (param->eob <= 36) {
+                sparse_square_10bit(input, src, ss, dst, ds, 32, 8, idct32_low8_avx2);
+            } else if (!sparse_dav1d_10bit(input, src, ss, dst, ds, 32, 16)) {
+                sparse_square_10bit(input, src, ss, dst, ds, 32, 16, idct32_low16_avx2);
+            }
+            return;
+        case TX_64X64:
+            if (param->eob <= 36) {
+                sparse_square_10bit(input, src, ss, dst, ds, 64, 8, idct64_low8_avx2);
+            } else if (!sparse_dav1d_10bit(input, src, ss, dst, ds, 64, 16)) {
+                sparse_square_10bit(input, src, ss, dst, ds, 64, 16, idct64_low16_avx2);
+            }
+            return;
+        default:
+            break;
+        }
+    }
+    if (param->eob != 1 || param->tx_type != DCT_DCT || param->bd != 10 || param->lossless || input[0] < INT16_MIN ||
+        input[0] > INT16_MAX) {
+        svt_av1_highbd_inv_txfm_add_c(input, src8, ss, dst8, ds, param);
+        return;
+    }
+    const int     w = tx_size_wide[param->tx_size], h = tx_size_high[param->tx_size];
+    const int8_t* shift = svt_aom_inv_txfm_shift_ls[param->tx_size];
+    int           dc    = input[0];
+    if (w == 2 * h || h == 2 * w) {
+        dc = ROUND_POWER_OF_TWO(dc * new_inv_sqrt2, new_sqrt2_bits);
+    }
+    // With only DC, each inverse DCT broadcasts its rounded cos(pi/4) product.
+    dc                  = ROUND_POWER_OF_TWO(dc * new_inv_sqrt2, new_sqrt2_bits);
+    dc                  = ROUND_POWER_OF_TWO(dc, -shift[0]);
+    dc                  = ROUND_POWER_OF_TWO(dc * new_inv_sqrt2, new_sqrt2_bits);
+    dc                  = ROUND_POWER_OF_TWO(dc, -shift[1]);
+    const __m256i   add = _mm256_set1_epi16(dc), max = _mm256_set1_epi16(1023);
+    const uint16_t* src = CONVERT_TO_SHORTPTR(src8);
+    uint16_t*       dst = CONVERT_TO_SHORTPTR(dst8);
+    for (int y = 0; y < h; ++y, src += ss, dst += ds) {
+        if (w < 16) {
+            const __m128i v   = w == 4 ? _mm_loadl_epi64((const __m128i*)src) : _mm_loadu_si128((const __m128i*)src);
+            const __m128i sum = _mm_add_epi16(v, _mm256_castsi256_si128(add));
+            const __m128i pix = _mm_min_epi16(_mm256_castsi256_si128(max), _mm_max_epi16(_mm_setzero_si128(), sum));
+            if (w == 4) {
+                _mm_storel_epi64((__m128i*)dst, pix);
+            } else {
+                _mm_storeu_si128((__m128i*)dst, pix);
+            }
+        } else {
+            for (int x = 0; x < w; x += 16) {
+                const __m256i sum = _mm256_add_epi16(_mm256_loadu_si256((const __m256i*)(src + x)), add);
+                _mm256_storeu_si256((__m256i*)(dst + x),
+                                    _mm256_min_epi16(max, _mm256_max_epi16(_mm256_setzero_si256(), sum)));
+            }
+        }
+    }
+}

@@ -19,6 +19,7 @@
  *
  ******************************************************************************/
 #include "EbSvtAv1Enc.h"
+#include "EbSvtAv1Metadata.h"
 #include "gtest/gtest.h"
 #include "SvtAv1EncApiTest.h"
 
@@ -26,34 +27,25 @@ using namespace svt_av1_test;
 
 namespace {
 
-/** @brief set_parameter_null_pointer is a death test case
- * EncApiDeathTest.set_parameter_null_pointer is a test case for reporting a
- * death condition lead to ececptions or signals
- *
- * Test strategy: <br>
- * Report a death caused by set a null pointer to function
- * svt_av1_enc_set_parameter, which should not happen <br>
- *
- * Expected result: <br>
- * Capture a signal of death in function svt_av1_enc_set_parameter <br>
- *
- * Test coverage:
- * svt_av1_enc_set_parameter.
- */
-TEST(EncApiDeathTest, set_parameter_null_pointer) {
-    // death tests: TODO: alert, fix me! fix me!! fix me!!!
-    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+TEST(EncApiTest, set_parameter_null_configuration) {
     SvtAv1Context context{};
 
-    // initialize encoder and get handle
-    EXPECT_EQ(EB_ErrorBadParameter,
-              svt_av1_enc_init_handle(&context.enc_handle, nullptr));
-    // watch out, function down
+    ASSERT_EQ(
+        EB_ErrorNone,
+        svt_av1_enc_init_handle(&context.enc_handle, &context.enc_params));
+    ASSERT_NE(nullptr, context.enc_handle);
     EXPECT_EQ(EB_ErrorBadParameter,
               svt_av1_enc_set_parameter(context.enc_handle, nullptr));
-    // destroy encoder handle
-    EXPECT_EQ(EB_ErrorInvalidComponent, svt_av1_enc_deinit_handle(nullptr));
-    SUCCEED();
+
+    // Rejecting the null configuration must leave the handle usable.
+    context.enc_params.source_width = 64;
+    context.enc_params.source_height = 64;
+    context.enc_params.enc_mode = 13;
+    context.enc_params.level_of_parallelism = 1;
+    EXPECT_EQ(
+        EB_ErrorNone,
+        svt_av1_enc_set_parameter(context.enc_handle, &context.enc_params));
+    EXPECT_EQ(EB_ErrorNone, svt_av1_enc_deinit_handle(context.enc_handle));
 }
 
 /** @brief check_null_pointer is a api test case
@@ -72,36 +64,144 @@ TEST(EncApiDeathTest, set_parameter_null_pointer) {
  */
 TEST(EncApiTest, check_null_pointer) {
     SvtAv1Context context{};
+    EbBufferHeaderType buffer{};
+    EbBufferHeaderType *packet = nullptr;
+    SvtAv1FixedBuf info{};
 
     // initialize encoder and with all null pointer
     EXPECT_EQ(EB_ErrorBadParameter, svt_av1_enc_init_handle(nullptr, nullptr));
     // initialize encoder and with all null pointer and get handle
     EXPECT_EQ(EB_ErrorBadParameter,
               svt_av1_enc_init_handle(&context.enc_handle, nullptr));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_init_handle(nullptr, &context.enc_params));
     // setup encoder parameters with null pointer
     EXPECT_EQ(EB_ErrorBadParameter,
               svt_av1_enc_set_parameter(nullptr, nullptr));
-    // TODO: Some function will crash with nullptr input,
-    // and it will block test on linux platform. please refer to
-    // EncApiDeathTest-->check_null_pointer
-    // EXPECT_EQ(EB_ErrorBadParameter,
-    //          svt_av1_enc_set_parameter(context.enc_handle,
-    //          nullptr));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_set_parameter(nullptr, &context.enc_params));
     // open encoder with null pointer
     EXPECT_EQ(EB_ErrorBadParameter, svt_av1_enc_init(nullptr));
-    // get end of sequence NAL with null pointer
-    // EXPECT_EQ(EB_ErrorBadParameter, svt_av1_enc_send_picture(nullptr,
-    // nullptr)); EXPECT_EQ(EB_ErrorBadParameter,
-    // svt_av1_enc_get_packet(nullptr, nullptr, 0));
-    // EXPECT_EQ(EB_ErrorBadParameter, svt_av1_get_recon(nullptr, nullptr)); No
-    // return value, just feed nullptr as parameter. release output buffer with
-    // null pointer
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_stream_header(nullptr, nullptr));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_stream_header(nullptr, &packet));
+    EXPECT_EQ(EB_ErrorBadParameter, svt_av1_enc_send_picture(nullptr, nullptr));
+    EXPECT_EQ(EB_ErrorBadParameter, svt_av1_enc_send_picture(nullptr, &buffer));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_get_packet(nullptr, nullptr, 0));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_get_packet(nullptr, &packet, 0));
+    EXPECT_EQ(EB_ErrorBadParameter, svt_av1_get_recon(nullptr, nullptr));
+    EXPECT_EQ(EB_ErrorBadParameter, svt_av1_get_recon(nullptr, &buffer));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_get_stream_info(
+                  nullptr, SVT_AV1_STREAM_INFO_FIRST_PASS_STATS_OUT, nullptr));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_get_stream_info(
+                  nullptr, SVT_AV1_STREAM_INFO_FIRST_PASS_STATS_OUT, &info));
     svt_av1_enc_release_out_buffer(nullptr);
     // close encoder with null pointer
     EXPECT_EQ(EB_ErrorBadParameter, svt_av1_enc_deinit(nullptr));
     // destroy encoder handle with null pointer
     EXPECT_EQ(EB_ErrorInvalidComponent, svt_av1_enc_deinit_handle(nullptr));
     SUCCEED();
+}
+
+TEST(EncApiTest, release_null_output_buffer) {
+    EbBufferHeaderType *packet = nullptr;
+    svt_av1_enc_release_out_buffer(&packet);
+    EXPECT_EQ(nullptr, packet);
+}
+
+TEST(EncApiTest, null_buffers_do_not_disrupt_encoding) {
+    SvtAv1Context context{};
+    ASSERT_EQ(
+        EB_ErrorNone,
+        svt_av1_enc_init_handle(&context.enc_handle, &context.enc_params));
+    context.enc_params.encoder_bit_depth = 8;
+    context.enc_params.source_width = 64;
+    context.enc_params.source_height = 64;
+    context.enc_params.enc_mode = 13;
+    context.enc_params.level_of_parallelism = 1;
+    context.enc_params.recon_enabled = true;
+    ASSERT_EQ(
+        EB_ErrorNone,
+        svt_av1_enc_set_parameter(context.enc_handle, &context.enc_params));
+    ASSERT_EQ(EB_ErrorNone, svt_av1_enc_init(context.enc_handle));
+
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_stream_header(context.enc_handle, nullptr));
+    EbBufferHeaderType *header = nullptr;
+    ASSERT_EQ(EB_ErrorNone,
+              svt_av1_enc_stream_header(context.enc_handle, &header));
+    ASSERT_NE(nullptr, header);
+    EXPECT_GT(header->n_filled_len, 0u);
+    EXPECT_EQ(EB_ErrorNone, svt_av1_enc_stream_header_release(header));
+
+    EXPECT_EQ(
+        EB_ErrorBadParameter,
+        svt_av1_enc_get_stream_info(context.enc_handle,
+                                    SVT_AV1_STREAM_INFO_FIRST_PASS_STATS_OUT,
+                                    nullptr));
+    SvtAv1FixedBuf info{};
+    EXPECT_EQ(
+        EB_ErrorNone,
+        svt_av1_enc_get_stream_info(context.enc_handle,
+                                    SVT_AV1_STREAM_INFO_FIRST_PASS_STATS_OUT,
+                                    &info));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_send_picture(context.enc_handle, nullptr));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_get_packet(context.enc_handle, nullptr, 0));
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_get_recon(context.enc_handle, nullptr));
+
+    std::vector<uint8_t> pixels(64 * 64 * 3 / 2, 128);
+    EbSvtIOFormat frame = {pixels.data(),
+                           pixels.data() + 64 * 64,
+                           pixels.data() + 64 * 64 * 5 / 4,
+                           64,
+                           32,
+                           32};
+    EbBufferHeaderType input{};
+    input.size = sizeof(input);
+    input.p_buffer = reinterpret_cast<uint8_t *>(&frame);
+    input.n_filled_len = static_cast<uint32_t>(pixels.size());
+    input.pic_type = EB_AV1_INVALID_PICTURE;
+    ASSERT_EQ(EB_ErrorNone,
+              svt_av1_enc_send_picture(context.enc_handle, &input));
+    EbBufferHeaderType eos{};
+    eos.size = sizeof(eos);
+    eos.flags = EB_BUFFERFLAG_EOS;
+    ASSERT_EQ(EB_ErrorNone, svt_av1_enc_send_picture(context.enc_handle, &eos));
+
+    // A rejected output pointer must not consume a queued packet or recon.
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_enc_get_packet(context.enc_handle, nullptr, 1));
+    bool got_eos = false;
+    unsigned frames = 0;
+    EbBufferHeaderType *packet = nullptr;
+    while (!got_eos && svt_av1_enc_get_packet(context.enc_handle, &packet, 1) ==
+                           EB_ErrorNone) {
+        got_eos = (packet->flags & EB_BUFFERFLAG_EOS) != 0;
+        frames += packet->n_filled_len != 0;
+        svt_av1_enc_release_out_buffer(&packet);
+    }
+    EXPECT_TRUE(got_eos);
+    EXPECT_EQ(1u, frames);
+
+    EXPECT_EQ(EB_ErrorBadParameter,
+              svt_av1_get_recon(context.enc_handle, nullptr));
+    EbBufferHeaderType recon{};
+    recon.size = sizeof(recon);
+    recon.p_buffer = pixels.data();
+    recon.n_alloc_len = static_cast<uint32_t>(pixels.size());
+    EXPECT_EQ(EB_ErrorNone, svt_av1_get_recon(context.enc_handle, &recon));
+    EXPECT_EQ(pixels.size(), recon.n_filled_len);
+    svt_metadata_array_free(&recon.metadata);
+    EXPECT_EQ(EB_ErrorNone, svt_av1_enc_deinit(context.enc_handle));
+    EXPECT_EQ(EB_ErrorNone, svt_av1_enc_deinit_handle(context.enc_handle));
 }
 
 /** @brief check_normal_setup is a api test case

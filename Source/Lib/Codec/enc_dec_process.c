@@ -652,7 +652,7 @@ static void svt_aom_highbd_ssim_parms_8x8_c(const uint8_t* s, int sp, const uint
     uint32_t ss;
     for (i = 0; i < 8; i++, s += sp, sinc += spinc, r += rp) {
         for (j = 0; j < 8; j++) {
-            ss = (int64_t)(s[j] << 2) + ((sinc[j] >> 6) & 0x3);
+            ss = (uint32_t)(s[j] << 2) + ((sinc[j] >> 6) & 0x3);
             *sum_s += ss;
             *sum_r += r[j];
             *sum_sq_s += ss * ss;

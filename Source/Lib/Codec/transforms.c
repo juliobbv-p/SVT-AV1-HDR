@@ -3014,9 +3014,10 @@ static EbErrorType av1_estimate_transform_N4(int16_t* residual_buffer, uint32_t 
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_64x32_N4_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_64x32_N4(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 
@@ -3029,9 +3030,10 @@ static EbErrorType av1_estimate_transform_N4(int16_t* residual_buffer, uint32_t 
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_32x64_N4_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_32x64_N4(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 
@@ -3044,9 +3046,10 @@ static EbErrorType av1_estimate_transform_N4(int16_t* residual_buffer, uint32_t 
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_64x16_N4_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_64x16_N4(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 
@@ -3059,9 +3062,10 @@ static EbErrorType av1_estimate_transform_N4(int16_t* residual_buffer, uint32_t 
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_16x64_N4_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_16x64_N4(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 
@@ -3234,9 +3238,10 @@ static EbErrorType av1_estimate_transform_default(int16_t* residual_buffer, uint
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_64x32_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_64x32(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 
@@ -3249,9 +3254,10 @@ static EbErrorType av1_estimate_transform_default(int16_t* residual_buffer, uint
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_32x64_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_32x64(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 
@@ -3264,9 +3270,10 @@ static EbErrorType av1_estimate_transform_default(int16_t* residual_buffer, uint
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_64x16_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_64x16(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 
@@ -3279,9 +3286,10 @@ static EbErrorType av1_estimate_transform_default(int16_t* residual_buffer, uint
         if (transform_type != DCT_DCT) {
             svt_av1_fwd_txfm2d_16x64_c(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         } else
+#else
+        assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
 #endif
         {
-            assert(transform_type == DCT_DCT); // non-DCT at large/rect tx forbidden by ext-tx set
             svt_av1_fwd_txfm2d_16x64(residual_buffer, coeff_buffer, residual_stride, transform_type, bit_depth);
         }
 

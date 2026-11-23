@@ -16,6 +16,7 @@
 #include "pic_operators_inline_avx2.h"
 #include "picture_operators_sse2.h"
 #include "memory_avx2.h"
+#include "qm_psnr.h"
 
 /*******************************************************************************
  * Helper function that add 32bit values from sum32 to 64bit values in sum64
@@ -336,6 +337,87 @@ uint64_t svt_spatial_full_distortion_kernel_avx512(uint8_t* input, uint32_t inpu
     }
 
     return hadd32_avx2_intrin(sum);
+}
+
+// The magnitude of any difference whose square fits in uint64_t fits one
+// unsigned dword. Subtracting signed min from signed max gives that magnitude
+// even when the original signed subtraction would overflow.
+static INLINE __m512i square_pairs(__m512i v, bool weighted) {
+    const __m512i odd = _mm512_srli_epi64(v, 32);
+    __m512i       a = _mm512_mul_epu32(v, v), b = _mm512_mul_epu32(odd, odd);
+    if (weighted) {
+        const __m512i round = _mm512_set1_epi64(1 << (2 * AOM_QM_BITS - 1));
+        a                   = _mm512_srli_epi64(_mm512_add_epi64(a, round), 2 * AOM_QM_BITS);
+        b                   = _mm512_srli_epi64(_mm512_add_epi64(b, round), 2 * AOM_QM_BITS);
+    }
+    return _mm512_add_epi64(a, b);
+}
+
+static AOM_FORCE_INLINE void coeff_distortion(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t w,
+                                              uint32_t h, uint64_t* result, const QmVal* qm, uint32_t qs, bool residual,
+                                              bool weighted) {
+    if (stride == w && (!weighted || qs == w)) {
+        w *= h;
+        h = 1;
+    }
+    const unsigned  tail   = w & 15;
+    const __mmask16 last   = (__mmask16)((1u << tail) - 1);
+    __m512i         energy = _mm512_setzero_si512(), error = _mm512_setzero_si512();
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; x += 16) {
+            const __mmask16 k   = x < w - tail ? 0xffff : last;
+            const __m512i   c   = _mm512_maskz_loadu_epi32(k, coeff + x);
+            const __m512i   wt  = weighted ? _mm512_cvtepu8_epi32(_mm_maskz_loadu_epi8(k, qm + x))
+                                           : _mm512_setzero_si512();
+            __m512i         mag = _mm512_abs_epi32(c);
+            if (weighted) {
+                mag = _mm512_mullo_epi32(mag, wt);
+            }
+            energy = _mm512_add_epi64(energy, square_pairs(mag, weighted));
+            if (residual) {
+                const __m512i r = _mm512_maskz_loadu_epi32(k, recon + x);
+                __m512i       d = _mm512_sub_epi32(_mm512_max_epi32(c, r), _mm512_min_epi32(c, r));
+                if (weighted) {
+                    d = _mm512_mullo_epi32(d, wt);
+                }
+                error = _mm512_add_epi64(error, square_pairs(d, weighted));
+            }
+        }
+        coeff += stride;
+        if (residual) {
+            recon += stride;
+        }
+        if (weighted) {
+            qm += qs;
+        }
+    }
+    result[DIST_CALC_PREDICTION] = _mm512_reduce_add_epi64(energy);
+    result[DIST_CALC_RESIDUAL]   = residual ? (uint64_t)_mm512_reduce_add_epi64(error) : result[DIST_CALC_PREDICTION];
+}
+
+void svt_full_distortion_kernel32_bits_avx512(int32_t* coeff, int32_t* recon, uint32_t stride, uint32_t w, uint32_t h,
+                                              uint64_t result[DIST_CALC_TOTAL]) {
+    coeff_distortion(coeff, recon, stride, w, h, result, NULL, 0, true, false);
+}
+
+void svt_full_distortion_kernel_cbf_zero32_bits_avx512(int32_t* coeff, uint32_t stride,
+                                                       uint64_t result[DIST_CALC_TOTAL], uint32_t w, uint32_t h) {
+    coeff_distortion(coeff, NULL, stride, w, h, result, NULL, 0, false, false);
+}
+
+void svt_qm_full_distortion_avx512(const int32_t* coeff, const int32_t* recon, uint32_t stride, uint32_t w, uint32_t h,
+                                   uint64_t* result, uint32_t eob, const QmVal* qm, uint32_t qs) {
+    if (!qm) {
+        if (eob) {
+            coeff_distortion(coeff, recon, stride, w, h, result, NULL, 0, true, false);
+        } else {
+            coeff_distortion(coeff, NULL, stride, w, h, result, NULL, 0, false, false);
+        }
+    } else if (eob) {
+        coeff_distortion(coeff, recon, stride, w, h, result, qm, qs, true, true);
+    } else {
+        coeff_distortion(coeff, NULL, stride, w, h, result, qm, qs, false, true);
+    }
 }
 
 #endif // EN_AVX512_SUPPORT

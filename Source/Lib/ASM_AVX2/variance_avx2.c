@@ -289,8 +289,8 @@ unsigned int svt_aom_sub_pixel_variance16xh_avx2(const uint8_t* src, int src_str
                                                             const uint8_t* dst,               \
                                                             int            dst_stride,        \
                                                             unsigned int*  sse_ptr) {         \
-        /*Avoid overflow in helper by capping height.*/                                       \
-        const int    hf  = AOMMIN(h, 64);                                                     \
+        /*Avoid overflow in helper by capping height (h is a power of two up to 128).*/       \
+        const int    hf  = (h) >> ((h) > 64);                                                 \
         const int    wf2 = AOMMIN(wf, 128);                                                   \
         unsigned int sse = 0;                                                                 \
         int          se  = 0;                                                                 \

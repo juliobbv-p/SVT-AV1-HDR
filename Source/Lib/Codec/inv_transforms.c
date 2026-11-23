@@ -3170,6 +3170,15 @@ EbErrorType svt_aom_inv_transform_recon8bit(int32_t* coeff_buffer, //1D buffer
 
 void svt_av1_highbd_inv_txfm_add_c(const TranLow* input, uint8_t* dest_r, int32_t stride_r, uint8_t* dest_w,
                                    int32_t stride_w, const TxfmParam* txfm_param) {
+#if !defined(ARCH_AARCH64)
+    // Some size-specific backends use eob to limit destination writes.
+    TxfmParam full;
+    if (dest_r != dest_w) {
+        full       = *txfm_param;
+        full.eob   = av1_get_max_eob(full.tx_size);
+        txfm_param = &full;
+    }
+#endif
     //assert(av1_ext_tx_used[txfm_param->tx_set_type][txfm_param->tx_type]);
     const TxSize tx_size = txfm_param->tx_size;
     switch (tx_size) {
@@ -3254,15 +3263,6 @@ EbErrorType svt_aom_inv_transform_recon(int32_t* coeff_buffer, //1D buffer
     txfm_param.bd       = bit_depth;
     txfm_param.is_hbd   = 1;
     //TxfmParam.tx_set_type = av1_get_ext_tx_set_type(   txfm_param->tx_size, is_inter_block(xd->mi[0]), reduced_tx_set);
-
-#if !defined(ARCH_AARCH64)
-    if (recon_buffer_r != recon_buffer_w) {
-        /* When output pointers to read and write are differents,
-         * then kernel copy also all buffer from read to write,
-         * and cannot be limited by End Of Buffer calculations. */
-        txfm_param.eob = av1_get_max_eob(txsize);
-    }
-#endif
 
     svt_av1_highbd_inv_txfm_add(
         (const TranLow*)coeff_buffer, recon_buffer_r, recon_stride_r, recon_buffer_w, recon_stride_w, &txfm_param);

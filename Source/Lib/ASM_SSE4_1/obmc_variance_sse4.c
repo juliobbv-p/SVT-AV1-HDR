@@ -266,5 +266,5 @@ uint32_t svt_aom_variance_highbd_sse4_1(const uint16_t* a, int a_stride, const u
         assert(0);
     }
 
-    return *sse - ((int64_t)sum * sum) / (w * h);
+    return (uint32_t)(*sse - ((int64_t)sum * sum) / (w * h));
 }

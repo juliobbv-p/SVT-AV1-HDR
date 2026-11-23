@@ -418,7 +418,7 @@ static void early_hme_b64(uint8_t* sixteenth_b64_buffer, uint32_t sixteenth_b64_
     // intrinsic functions) is the same for search region width from 1 to 8
     sa_width           = (int16_t)((sa_width + 7) & ~0x07);
     int16_t pad_width  = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
-    int16_t pad_height = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
+    int16_t pad_height = pad_width;
 
     int16_t sa_origin_x = -(int16_t)(sa_width >> 1);
     int16_t sa_origin_y = -(int16_t)(sa_height >> 1);
@@ -1012,9 +1012,9 @@ static void prune_sframe_refs(PictureDecisionContext* ctx, PictureParentControlS
         }
 #endif // DEBUG_SFRAME
         // check every reference frames, if it's in ref_list0 and direct to S-Frame, remove it from array
-        uint32_t sframe_poc = ctx->sframe_poc %
-            ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits));
-        uint8_t ref_idx = 0;
+        uint32_t sframe_poc = (uint32_t)(ctx->sframe_poc %
+                                         ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits)));
+        uint8_t  ref_idx    = 0;
         while (ref_idx < *tot_ref_frames) {
             MvReferenceFrame rf[2];
             av1_set_ref_frame(rf, ref_frame_arr[ref_idx]);
@@ -3872,7 +3872,6 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
         //get central
         pcs->temp_filt_pcs_list[num_past_pics] = pcs;
 
-        int actual_past_pics   = num_past_pics;
         int actual_future_pics = 0;
         int pic_i;
         //search reord-queue to get the future pictures
@@ -3910,17 +3909,8 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
                 }
             }
         }
-        pcs->past_altref_nframes   = actual_past_pics;
+        pcs->past_altref_nframes   = num_past_pics;
         pcs->future_altref_nframes = actual_future_pics;
-
-        // adjust the temporal filtering pcs buffer to remove unused past pictures
-        if (actual_past_pics != num_past_pics) {
-            pic_i = 0;
-            while (pcs->temp_filt_pcs_list[pic_i] != NULL) {
-                pcs->temp_filt_pcs_list[pic_i] = pcs->temp_filt_pcs_list[pic_i + num_past_pics - actual_past_pics];
-                pic_i++;
-            }
-        }
     } else {
         if (svt_aom_is_delayed_intra(pcs)) {
             //initilize list
@@ -4041,7 +4031,6 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
                         pd_ctx->mg_pictures_array[idx]->tf_active_region_present = active_region_cnt > 0;
                     }
                 }
-                int actual_past_pics   = num_past_pics;
                 int actual_future_pics = 0;
                 int pic_i;
                 //search reord-queue to get the future pictures
@@ -4086,18 +4075,8 @@ static EbErrorType derive_tf_window_params(SequenceControlSet* scs, EncodeContex
                         }
                     }
                 }
-                pcs->past_altref_nframes   = actual_past_pics;
+                pcs->past_altref_nframes   = num_past_pics;
                 pcs->future_altref_nframes = actual_future_pics;
-
-                // adjust the temporal filtering pcs buffer to remove unused past pictures
-                if (actual_past_pics != num_past_pics) {
-                    pic_i = 0;
-                    while (pcs->temp_filt_pcs_list[pic_i] != NULL) {
-                        pcs->temp_filt_pcs_list[pic_i] =
-                            pcs->temp_filt_pcs_list[pic_i + num_past_pics - actual_past_pics];
-                        pic_i++;
-                    }
-                }
             }
         }
 
@@ -4547,8 +4526,8 @@ static void update_sframe_ref_order_hint(PictureParentControlSet* ppcs, PictureD
         memcpy(ppcs->dpb_order_hint, pd_ctx->ref_order_hint, sizeof(ppcs->dpb_order_hint));
     }
     if (ppcs->av1_ref_signal.refresh_frame_mask != 0) {
-        const uint32_t cur_order_hint = ppcs->picture_number %
-            ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits));
+        const uint32_t cur_order_hint =
+            (uint32_t)(ppcs->picture_number % ((uint64_t)1 << (ppcs->scs->seq_header.order_hint_info.order_hint_bits)));
         for (int32_t i = 0; i < REF_FRAMES; i++) {
             if ((ppcs->av1_ref_signal.refresh_frame_mask >> i) & 1) {
                 pd_ctx->ref_order_hint[i] = cur_order_hint;
@@ -4943,9 +4922,10 @@ static void init_pic_settings(SequenceControlSet* scs, PictureParentControlSet* 
     const OrderHintInfo* const order_hint_info = &pcs->scs->seq_header.order_hint_info;
     uint32_t*                  ref_order_hint  = pcs->ref_order_hint;
     for (uint8_t i = 0; i < INTER_REFS_PER_FRAME; ++i) {
-        ref_order_hint[i] = pcs->av1_ref_signal.ref_poc_array[i] % (uint64_t)(1 << (order_hint_info->order_hint_bits));
+        ref_order_hint[i] = (uint32_t)(pcs->av1_ref_signal.ref_poc_array[i] %
+                                       (uint64_t)(1 << (order_hint_info->order_hint_bits)));
     }
-    pcs->cur_order_hint = pcs->picture_number % (uint64_t)(1 << (order_hint_info->order_hint_bits));
+    pcs->cur_order_hint = (uint32_t)(pcs->picture_number % (uint64_t)(1 << (order_hint_info->order_hint_bits)));
 
     set_ref_frame_sign_bias(scs, pcs);
 
@@ -5432,9 +5412,7 @@ EbErrorType svt_aom_picture_decision_kernel_iter(void* context) {
         pcs->tpl_group_size                 = 0;
         if (pcs->picture_number == 0) {
             ctx->prev_delayed_intra = NULL;
-        }
-        if (pcs->picture_number == 0) {
-            ctx->sframe_hier_lvls = scs->static_config.hierarchical_levels;
+            ctx->sframe_hier_lvls   = scs->static_config.hierarchical_levels;
         }
 
         release_prev_picture_from_reorder_queue(enc_ctx);

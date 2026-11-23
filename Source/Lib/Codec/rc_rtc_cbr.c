@@ -16,6 +16,16 @@
 #include "rc_process.h"
 #include "enc_mode_config.h"
 
+// Inter frames after a key frame that share rate correction updates across mini-GOP positions and use a raised
+// Kalman gain floor.
+#define RCF_FAST_CONVERGENCE_FRAMES 30
+#define RCF_FAST_CONVERGENCE_MIN_GAIN 0.7
+
+// The top qindex steps below worst_quality are kept for buffer overflow: inter frames may use them only
+// while the buffer is above this share of its maximum.
+#define OVERFLOW_QINDEX_HEADROOM 8
+#define OVERFLOW_BUFFER_PCT 60
+
 // Binary search evaluation function type
 typedef double (*arg_eval_fn)(void* ctx, int arg);
 
@@ -390,10 +400,9 @@ static void rtc_set_rate_correction_factor(PictureParentControlSet* ppcs, double
     RATE_CONTROL* rc = &ppcs->scs->enc_ctx->rc;
     svt_block_on_mutex(rc->rc_mutex);
     rc->rcf_values[get_rcf_index(ppcs)] = rcf;
-    if (rc->frames_since_key < rc->mini_qop_size) {
-        // Reset all factors pessimistically at start as initial values could be off
+    if (ppcs->frm_hdr.frame_type != KEY_FRAME && rc->frames_since_key < RCF_FAST_CONVERGENCE_FRAMES) {
         for (int i = 1; i < rc->mini_qop_size + 1; ++i) {
-            rc->rcf_values[i] = AOMMAX(rcf, rc->rcf_values[i]);
+            rc->rcf_values[i] = rcf;
         }
     }
     svt_release_mutex(rc->rc_mutex);
@@ -423,15 +432,19 @@ static uint8_t calculate_qindex(PictureControlSet* pcs, SequenceControlSet* scs)
         rc->min_ref_base_q_idx = get_min_ref_base_q_idx(pcs);
 
         if (pcs->ref_slice_type[REF_LIST_0][0] == I_SLICE) {
-            min_qindex = MAX(min_qindex, rc->min_ref_base_q_idx - 1 * 4);
+            // A key frame is coded far above the steady-state qindex; let the first inter frames recover quickly.
+            min_qindex = MAX(min_qindex, rc->min_ref_base_q_idx - 16 * 4);
         } else {
             EbReferenceObject* ref_obj         = get_ref_obj(pcs, REF_LIST_0, 0);
             bool               is_higher_layer = ref_obj->tmp_layer_idx < pcs->temporal_layer_index &&
                 (pcs->ppcs->hierarchical_levels != 0);
-            int min_limit = is_higher_layer ? 0 : 4;
+            int min_limit = is_higher_layer ? 0 : 8;
             int max_limit = is_higher_layer ? 32 : 16;
             min_qindex    = MAX(min_qindex, rc->min_ref_base_q_idx - min_limit * 4);
             max_qindex    = MIN(max_qindex, rc->min_ref_base_q_idx + max_limit * 4);
+        }
+        if (rc->buffer_level * 100 < rc->maximum_buffer_size * OVERFLOW_BUFFER_PCT) {
+            max_qindex = MIN(max_qindex, MAX(min_qindex, rc->worst_quality - OVERFLOW_QINDEX_HEADROOM));
         }
         ppcs->base_frame_target = calc_pframe_target_size(ppcs);
 
@@ -514,6 +527,13 @@ void svt_av1_rc_apply_frame_skip_drain(RATE_CONTROL* rc, int64_t* drain_bits, ui
     svt_release_mutex(rc->rc_mutex);
 }
 
+// 0.7 fits 640x360; smaller frames need a proportionally smaller factor (linear in frame dimension).
+static double rtc_initial_inter_rcf(PictureControlSet* pcs) {
+    FrameSize* frm_size = &pcs->ppcs->av1_cm->frm_size;
+    double     scale    = sqrt((double)frm_size->frame_width * frm_size->frame_height / (360.0 * 640.0));
+    return fclamp(0.7 * scale, 0.2, 0.7);
+}
+
 void svt_av1_rc_calc_qindex_rtc_cbr(PictureControlSet* pcs) {
     PictureParentControlSet* ppcs = pcs->ppcs;
     SequenceControlSet*      scs  = ppcs->scs;
@@ -560,8 +580,9 @@ void svt_av1_rc_calc_qindex_rtc_cbr(PictureControlSet* pcs) {
                 rc->target_size_factors[k] = 1.0; // flat at start
             }
             rc->mini_qop_size = 1 << (num_layers - 1);
+            double inter_rcf  = rtc_initial_inter_rcf(pcs);
             for (int k = 0; k < rc->mini_qop_size + 1; k++) {
-                rc->rcf_values[k]   = 0.7;
+                rc->rcf_values[k]   = k == 0 ? 0.7 : inter_rcf;
                 rc->rcf_kalman_P[k] = 1.0; // high initial uncertainty for fast convergence
                 rc->rcf_kalman_R[k] = 0.08;
             }
@@ -661,6 +682,9 @@ static void rtc_update_rate_correction_factors(PictureParentControlSet* ppcs) {
     double P = rc->rcf_kalman_P[k] + Q;
     // Update step: Kalman gain
     double K = P / (P + R);
+    if (ppcs->frm_hdr.frame_type != KEY_FRAME && rc->frames_since_key < RCF_FAST_CONVERGENCE_FRAMES) {
+        K = AOMMAX(K, RCF_FAST_CONVERGENCE_MIN_GAIN);
+    }
     // Update state: log(rcf) += K * innovation  →  rcf *= exp(K * innovation)
     rcf *= exp(K * innovation);
     // Update estimation variance

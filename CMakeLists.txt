@@ -16,7 +16,7 @@ if("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_CURRENT_BINARY_DIR}")
                     "Please use the Build folder or create your own.")
 endif()
 
-project(svt-av1 VERSION 4.3.0
+project(svt-av1 VERSION 4.3.1
     LANGUAGES NONE)
 
 option(SVT_AV1_TEST_VECTORS_ONLY "Configure only the TestVectors download target" OFF)
@@ -522,13 +522,12 @@ else()
 check_c_compiler_flag("-mavx512f" HAS_AVX512)
 endif()
 
-if(HAS_AVX512)
+if(HAS_AVX512 AND HAVE_X86_PLATFORM AND NOT COMPILE_C_ONLY)
     option(ENABLE_AVX512 "Enable building avx512 code" ON)
 else()
-    set(ENABLE_AVX512 OFF CACHE INTERNAL "Enable building avx512 code")
+    set(ENABLE_AVX512 OFF)
 endif()
-
-if(ENABLE_AVX512 AND HAVE_X86_PLATFORM AND NOT COMPILE_C_ONLY)
+if(ENABLE_AVX512)
     add_definitions(-DEN_AVX512_SUPPORT=1)
 else()
     add_definitions(-DEN_AVX512_SUPPORT=0)

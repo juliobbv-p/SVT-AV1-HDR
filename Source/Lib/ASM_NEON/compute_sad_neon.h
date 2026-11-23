@@ -39,7 +39,7 @@ static inline uint16_t findposq_u32(uint32x4_t x, uint32_t value) {
 static inline void update_best_sad_u32(uint32x4_t sad4, uint64_t* best_sad, int16_t* x_search_center,
                                        int16_t* y_search_center, int16_t x_search_index, int16_t y_search_index) {
     /* Find the minimum SAD value out of the 4 search spaces. */
-    uint64_t temp_sad = vminvq_u32(sad4);
+    uint32_t temp_sad = vminvq_u32(sad4);
 
     if (temp_sad < *best_sad) {
         *best_sad        = temp_sad;

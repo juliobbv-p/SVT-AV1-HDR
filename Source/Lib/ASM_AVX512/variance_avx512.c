@@ -639,8 +639,8 @@ static INLINE unsigned int svt_aom_sub_pixel_variance32xh_avx512(const uint8_t* 
                                                               const uint8_t* dst,             \
                                                               int            dst_stride,      \
                                                               unsigned int*  sse_ptr) {       \
-        /*Avoid overflow in helper by capping height.*/                                       \
-        const int    hf  = AOMMIN(h, 64);                                                     \
+        /*Avoid overflow in helper by capping height (h is a power of two up to 128).*/       \
+        const int    hf  = (h) >> ((h) > 64);                                                 \
         const int    wf2 = AOMMIN(wf, 128);                                                   \
         unsigned int sse = 0;                                                                 \
         int          se  = 0;                                                                 \
@@ -896,5 +896,107 @@ void svt_aom_sub_pixel_variance_cross_half_avx512(const uint8_t* ref, int ref_st
         var[k] = variance_reduce_avx512(vsse[k], vsum[k], log2_n, &sse[k]);
     }
 }
+
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+// Each quarter holds eight residuals from one row or two four-wide rows.
+static INLINE __m128i narrow_rows(const uint16_t* p, int stride, int w) {
+    if (w == 8) {
+        return _mm_loadu_si128((const __m128i*)p);
+    }
+    return _mm_unpacklo_epi64(_mm_loadl_epi64((const __m128i*)p), _mm_loadl_epi64((const __m128i*)(p + stride)));
+}
+
+static INLINE __m512i narrow_block(const uint16_t* p, int stride, int w) {
+    const int step = w == 8 ? stride : 2 * stride;
+    __m512i   row  = _mm512_castsi128_si512(narrow_rows(p, stride, w));
+    row            = _mm512_inserti32x4(row, narrow_rows(p + step, stride, w), 1);
+    row            = _mm512_inserti32x4(row, narrow_rows(p + 2 * step, stride, w), 2);
+    return _mm512_inserti32x4(row, narrow_rows(p + 3 * step, stride, w), 3);
+}
+
+static AOM_FORCE_INLINE uint32_t hbd_variance(const uint16_t* a, int as, const uint16_t* b, int bs, int w, int h,
+                                              uint32_t* sse, bool normalize) {
+    __m512i squares = _mm512_setzero_si512(), sum = _mm512_setzero_si512();
+    for (int y = 0; y < h; y += w < 32 ? 32 / w : 1) {
+        for (int x = 0; x < w; x += 32) {
+            __m512i d;
+            if (w < 16) {
+                d = _mm512_sub_epi16(narrow_block(a, as, w), narrow_block(b, bs, w));
+            } else if (w == 16) {
+                const __m256i lo = _mm256_sub_epi16(_mm256_loadu_si256((const __m256i*)a),
+                                                    _mm256_loadu_si256((const __m256i*)b));
+                const __m256i hi = _mm256_sub_epi16(_mm256_loadu_si256((const __m256i*)(a + as)),
+                                                    _mm256_loadu_si256((const __m256i*)(b + bs)));
+                d                = _mm512_inserti64x4(_mm512_castsi256_si512(lo), hi, 1);
+            } else {
+                d = _mm512_sub_epi16(_mm512_loadu_si512(a + x), _mm512_loadu_si512(b + x));
+            }
+            squares = _mm512_add_epi32(squares, _mm512_madd_epi16(d, d));
+            if (w * h <= 1024) {
+                sum = _mm512_add_epi16(sum, d);
+            } else {
+                sum = _mm512_add_epi32(sum, _mm512_madd_epi16(d, _mm512_set1_epi16(1)));
+            }
+        }
+        a += (w < 32 ? 32 / w : 1) * as;
+        b += (w < 32 ? 32 / w : 1) * bs;
+    }
+    if (w * h <= 1024) {
+        sum = _mm512_madd_epi16(sum, _mm512_set1_epi16(1));
+    }
+    int64_t  total = _mm512_reduce_add_epi32(sum);
+    uint64_t energy;
+    if (w * h <= 4096) {
+        energy = (uint32_t)_mm512_reduce_add_epi32(squares);
+    } else {
+        const __m512i pairs = _mm512_add_epi64(_mm512_and_si512(squares, _mm512_set1_epi64(UINT32_MAX)),
+                                               _mm512_srli_epi64(squares, 32));
+        energy              = _mm512_reduce_add_epi64(pairs);
+    }
+    if (normalize) {
+        total  = ROUND_POWER_OF_TWO(total, 2);
+        energy = ROUND_POWER_OF_TWO(energy, 4);
+    }
+    *sse              = (uint32_t)energy;
+    const int64_t var = (int64_t)*sse - total * total / (w * h);
+    return (uint32_t)AOMMAX(var, 0);
+}
+
+#define VARIANCE_10(w, h)                                                                             \
+    uint32_t svt_aom_highbd_10_variance##w##x##h##_avx512(                                            \
+        const uint8_t* a, int as, const uint8_t* b, int bs, uint32_t* sse) {                          \
+        return hbd_variance(CONVERT_TO_SHORTPTR(a), as, CONVERT_TO_SHORTPTR(b), bs, w, h, sse, true); \
+    }
+VARIANCE_10(16, 4)
+VARIANCE_10(16, 8)
+VARIANCE_10(16, 16)
+VARIANCE_10(16, 32)
+VARIANCE_10(16, 64)
+VARIANCE_10(32, 8)
+VARIANCE_10(32, 16)
+VARIANCE_10(32, 32)
+VARIANCE_10(32, 64)
+VARIANCE_10(64, 16)
+VARIANCE_10(64, 32)
+VARIANCE_10(64, 64)
+VARIANCE_10(64, 128)
+VARIANCE_10(128, 64)
+VARIANCE_10(128, 128)
+
+VARIANCE_10(4, 8)
+VARIANCE_10(4, 16)
+VARIANCE_10(8, 4)
+VARIANCE_10(8, 8)
+VARIANCE_10(8, 16)
+VARIANCE_10(8, 32)
+#undef VARIANCE_10
+
+uint32_t svt_aom_variance_highbd_avx512(const uint16_t* a, int as, const uint16_t* b, int bs, int w, int h,
+                                        uint32_t* sse) {
+    assert(w == h && (w == 16 || w == 32));
+    (void)h;
+    return w == 16 ? hbd_variance(a, as, b, bs, 16, 16, sse, false) : hbd_variance(a, as, b, bs, 32, 32, sse, false);
+}
+#endif
 
 #endif // !EN_AVX512_SUPPORT

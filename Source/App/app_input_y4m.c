@@ -219,10 +219,10 @@ EbErrorType read_y4m_header(EbConfig* cfg) {
     }
 
     /* Assign parameters to cfg */
-    cfg->config.source_width           = width;
-    cfg->config.source_height          = height;
-    cfg->config.frame_rate_numerator   = fr_n;
-    cfg->config.frame_rate_denominator = fr_d;
+    cfg->config.source_width           = (uint32_t)width;
+    cfg->config.source_height          = (uint32_t)height;
+    cfg->config.frame_rate_numerator   = (uint32_t)fr_n;
+    cfg->config.frame_rate_denominator = (uint32_t)fr_d;
     cfg->config.encoder_bit_depth      = bitdepth;
     cfg->mmap.y4m_seq_hdr              = ftell(cfg->input_file);
 

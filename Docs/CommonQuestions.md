@@ -36,8 +36,8 @@ Generally speaking, presets 1-3 represent extremely high efficiency, for
 use when encode time is not important and quality/size of the resulting
 video file is critical. Presets 4-6 are commonly used by home enthusiasts
 as they represent a balance of efficiency and reasonable compute time. Presets
-between 7 and 13 are used for fast and real-time encoding. One
-should use the lowest preset that is tolerable.
+between 7 and 11 are used for fast encoding, and presets 7 to 13 for real-time
+encoding (`--rtc 1`). One should use the lowest preset that is tolerable.
 
 The features enabled or changed by each preset are as follows
 

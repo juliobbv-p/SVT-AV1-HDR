@@ -813,20 +813,15 @@ static void open_loop_me_fullpel_search_sblock(MeContext* me_ctx, uint32_t list_
     }
 }
 
-#if EN_AVX512_SUPPORT
-void svt_sad_loop_16xh_sea_avx512(const uint8_t* src, uint32_t src_stride, const uint8_t* ref, uint32_t ref_stride,
-                                  uint32_t height, const uint16_t* sea, uint32_t sea_bl, uint64_t* best_sad,
-                                  int16_t* x_search_center, int16_t* y_search_center, uint32_t src_stride_raw,
-                                  uint8_t skip_search_line, int16_t search_area_width, int16_t search_area_height);
-#endif
-
 // Sixteenth-resolution 16-wide full-pel search (pre-HME / HME level 0); successive elimination when box sums exist
 static void sixteenth_sad_loop(MeContext* me_ctx, EbPictureBufferDesc* ref_pic, int32_t search_region_index,
                                uint32_t block_width, uint32_t block_height, uint64_t* best_sad, int16_t* x, int16_t* y,
                                uint8_t skip_search_line, int16_t sa_width, int16_t sa_height) {
     const bool full = me_ctx->hme_search_method == FULL_SAD_SEARCH;
-#if defined(ARCH_AARCH64)
+#if defined(ARCH_AARCH64) || defined(ARCH_X86_64)
     const uint16_t* sea = full ? ref_pic->sea_full : ref_pic->sea_sub;
+#endif
+#if defined(ARCH_AARCH64) || defined(ARCH_X86_64)
     if (sea && block_width == 16 && block_height == 16 && svt_sad_loop_16xh_sea != svt_sad_loop_16xh_sea_c) {
         svt_sad_loop_16xh_sea(me_ctx->sixteenth_b64_buffer,
                               full ? me_ctx->sixteenth_b64_buffer_stride : 2 * me_ctx->sixteenth_b64_buffer_stride,
@@ -842,28 +837,6 @@ static void sixteenth_sad_loop(MeContext* me_ctx, EbPictureBufferDesc* ref_pic, 
                               skip_search_line,
                               sa_width,
                               sa_height);
-        return;
-    }
-#endif
-#if EN_AVX512_SUPPORT
-    const uint16_t* sea = full ? ref_pic->sea_full : ref_pic->sea_sub;
-    if (svt_aom_use_avx512 && sea && block_width == 16 && block_height == 16 &&
-        (sa_width == 8 || sa_width == 16 || (sa_width <= 496 && sa_height <= 128))) {
-        svt_sad_loop_16xh_sea_avx512(
-            &me_ctx->sixteenth_b64_buffer[0],
-            full ? me_ctx->sixteenth_b64_buffer_stride : me_ctx->sixteenth_b64_buffer_stride * 2,
-            &ref_pic->y_buffer[search_region_index],
-            full ? ref_pic->y_stride : ref_pic->y_stride * 2,
-            full ? block_height : block_height >> 1,
-            sea + search_region_index,
-            8 * ref_pic->y_stride,
-            best_sad,
-            x,
-            y,
-            ref_pic->y_stride,
-            skip_search_line,
-            sa_width,
-            sa_height);
         return;
     }
 #endif
@@ -901,7 +874,7 @@ static void hme_level_0(MeContext*           me_ctx, // ME context Ptr, used to 
     // intrinsic functions) is the same for search region width from 1 to 8
     sa_width           = (int16_t)((sa_width + 7) & ~0x07);
     int16_t pad_width  = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
-    int16_t pad_height = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
+    int16_t pad_height = pad_width;
 
     int16_t x_search_region_distance = sa_width * sr_w;
     int16_t y_search_region_distance = sa_height * sr_h;
@@ -1461,7 +1434,7 @@ static void prehme_core(MeContext* me_ctx, int16_t org_x, int16_t org_y, uint32_
     int32_t search_region_index;
 
     int16_t pad_width  = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
-    int16_t pad_height = (int16_t)(sixteenth_ref_pic_ptr->border) - 1;
+    int16_t pad_height = pad_width;
 
     int16_t search_area_width  = prehme_data->sa.width;
     int16_t search_area_height = prehme_data->sa.height;
@@ -1892,7 +1865,7 @@ static HmeRect hme_l1_window(int16_t org_x, int16_t org_y, const EbPictureBuffer
                              int16_t sa_height, int16_t hme_l0_sc_x, int16_t hme_l0_sc_y) {
     sa_width            = (int16_t)((sa_width + 7) & ~0x07);
     int16_t pad_width   = (int16_t)(ref->border) - 1;
-    int16_t pad_height  = (int16_t)(ref->border) - 1;
+    int16_t pad_height  = pad_width;
     int16_t sa_origin_x = -(sa_width >> 1) + hme_l0_sc_x;
     int16_t sa_origin_y = -(sa_height >> 1) + hme_l0_sc_y;
     if (((org_x + sa_origin_x) < -pad_width)) {
@@ -2561,8 +2534,7 @@ static void construct_me_candidate_array_mrp_off(PictureParentControlSet* pcs, M
     }
 }
 
-static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs, MeContext* ctx,
-                                                    uint32_t num_of_list_to_search, uint32_t sb_index) {
+static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs, MeContext* ctx, uint32_t sb_index) {
     // This function should only be called if there is one ref frame in list 0
     assert(ctx->num_of_ref_pic_to_search[0] == 1);
     assert(ctx->num_of_ref_pic_to_search[1] == 0);
@@ -2570,10 +2542,6 @@ static void construct_me_candidate_array_single_ref(PictureParentControlSet* pcs
 
     // Set whether the reference from each list is allowed
     uint8_t blk_do_ref = ctx->search_results[REF_LIST_0][0].do_ref;
-
-    if (num_of_list_to_search < 2 || !ctx->search_results[REF_LIST_1][0].do_ref) {
-        num_of_list_to_search = 1;
-    }
 
     // Set the count to 1 for all PUs using memset, which is faster than setting at the end of each loop.  The count will only need
     // to be updated if both reference frames are allowed.
@@ -2719,10 +2687,8 @@ static void construct_me_candidate_array(PictureParentControlSet* pcs, MeContext
                         me_cand_offset++;
                     }
                 }
-            }
 
-            // 3rd set of BIPRED cand: (BWD, ALT)
-            if (!pcs->scs->mrp_ctrls.only_l_bwd) {
+                // 3rd set of BIPRED cand: (BWD, ALT)
                 if (me_ctx->num_of_ref_pic_to_search[REF_LIST_1] == 3 && blk_do_ref[REF_LIST_1][0] &&
                     blk_do_ref[REF_LIST_1][2]) {
                     {
@@ -3059,7 +3025,7 @@ EbErrorType svt_aom_motion_estimation_b64(
         {
             if (me_ctx->num_of_ref_pic_to_search[REF_LIST_0] == 1 &&
                 me_ctx->num_of_ref_pic_to_search[REF_LIST_1] == 0) {
-                construct_me_candidate_array_single_ref(pcs, me_ctx, num_of_list_to_search, b64_index);
+                construct_me_candidate_array_single_ref(pcs, me_ctx, b64_index);
             } else if (me_ctx->num_of_ref_pic_to_search[REF_LIST_0] == 1 &&
                        me_ctx->num_of_ref_pic_to_search[REF_LIST_1] == 1) {
                 construct_me_candidate_array_mrp_off(pcs, me_ctx, num_of_list_to_search, b64_index);

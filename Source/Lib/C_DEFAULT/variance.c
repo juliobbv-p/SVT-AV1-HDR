@@ -176,7 +176,7 @@ uint32_t svt_aom_variance_highbd_c(const uint16_t* a, int a_stride, const uint16
         b += b_stride;
     }
 
-    return *sse - ((int64_t)sad * sad) / (w * h);
+    return (uint32_t)(*sse - ((int64_t)sad * sad) / (w * h));
 }
 
 void svt_aom_variance_window_c(const uint8_t* src, int src_stride, const uint8_t* ref, int ref_stride, int bw, int bh,

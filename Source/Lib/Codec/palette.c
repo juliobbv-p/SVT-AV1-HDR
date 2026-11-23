@@ -249,7 +249,7 @@ void svt_aom_get_block_dimensions(BlockSize bsize, int plane, const MacroBlockD*
 // TODO: Try other schemes to improve compression.
 static AOM_INLINE void optimize_palette_colors(uint16_t* color_cache, int n_cache, int n_colors, int stride,
                                                int* centroids, int bit_depth, uint8_t qp_index) {
-    if (n_cache <= 0) {
+    if (n_cache <= 0 || !color_cache) {
         return;
     }
     for (int i = 0; i < n_colors * stride; i += stride) {
@@ -725,9 +725,9 @@ static inline int av1_fast_palette_color_index_context(const uint8_t* color_map,
 
     // Sort everything
     if (num_valid_colors > 1) {
-        if (color_neighbors[1] == INVALID_COLOR_IDX) {
-            scores[1]          = scores[2];
-            color_neighbors[1] = color_neighbors[2];
+        if (color_rank[1] == INVALID_COLOR_IDX) {
+            score_rank[1] = score_rank[2];
+            color_rank[1] = color_rank[2];
         }
 
         // We need to swap the first two elements if they have the same score but
